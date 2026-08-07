@@ -1,0 +1,163 @@
+# Agent daemon analysis and Hitch port
+
+## Verdict
+
+Multica's agent daemon design is useful, but its package is not a reusable
+library. The mature implementation combines two different layers:
+
+1. a generally useful local execution supervisor; and
+2. Multica-specific coordination for workspaces, runtimes, issues, comments,
+   skills, repositories, server heartbeats, and updates.
+
+Hitch ports the first layer and deliberately leaves the second behind. Copying
+the complete package would bring tens of thousands of lines of product-specific
+state and invert Hitch's boundary: a local runtime would become a client of a
+particular task-management server.
+
+## What was reused
+
+| Multica pattern | Hitch implementation |
+| --- | --- |
+| Probe native agent CLIs and pin the resolved path | Registry resolves symlinks, records version, and fingerprints the executable |
+| Bounded task-slot semaphore | FIFO scheduler with `max_concurrent` slots |
+| Separate preparation and execution failure stages | Persisted request/manifest/result with typed exit categories |
+| Stream agent output while retaining raw logs | Normalized `events.jsonl` plus `stdout.log` and `stderr.log` |
+| Cancel the complete subprocess tree | POSIX process groups; Windows `taskkill /t` |
+| Bind a local health server before accepting work | Loopback HTTP server with explicit starting/running/stopping status |
+| Keep one daemon owner per state root | Exclusive `daemon.lock`, random instance ID, and ownership-checked cleanup |
+| Graceful daemon stop | Authenticated `/shutdown`, stop accepting work, cancel active children |
+| Do not silently replay ambiguous work after a crash | Interrupted queued/running records become `daemon_restarted` failures |
+| Atomic state transitions | Temporary-file plus rename for manifests and results |
+
+## What was not copied
+
+The following are Multica product concerns rather than a portable agent runtime:
+
+- cloud login and token renewal;
+- workspace discovery and runtime registration;
+- server polling, WebSocket wakeups, heartbeats, and leases;
+- issue/comment/chat prompt construction;
+- skill bundle download and local skill import;
+- repository allowlists and workspace project bindings;
+- server-driven CLI and daemon auto-update;
+- Multica-specific session recovery and failure taxonomy;
+- product analytics and runtime status reconciliation.
+
+Hitch can later accept tasks from a remote backend, but that belongs behind a
+backend interface. It must not be embedded in the local agent adapter contract.
+
+## Hitch daemon architecture
+
+```text
+CLI / local caller
+       |
+       | authenticated loopback HTTP
+       v
++-----------------------+
+| Daemon API            |
+| health / submit / get |
+| cancel / shutdown     |
++-----------+-----------+
+            |
+            v
++-----------------------+
+| FIFO scheduler        |
+| bounded worker slots  |
++-----------+-----------+
+            |
+            v
++-----------------------+       +-------------------+
+| Shared run engine     |------>| Codex adapter     |
+| persist / supervise   |       +-------------------+
+| events / timeout      |------>| Claude adapter    |
++-----------------------+       +-------------------+
+```
+
+Direct `hitch run` calls the shared run engine without going through HTTP.
+`hitch run --daemon` submits to the queue and follows the same persisted run.
+This keeps daemon and direct behavior from drifting.
+
+## Lifecycle
+
+```text
+accepted -> queued -> running -> succeeded
+                         |  \-> failed
+                         |  \-> timed_out
+                         \----> cancelled
+```
+
+An accepted daemon request is written to disk before it enters the in-memory
+queue. The run engine pins the executable identity before launch, writes raw and
+normalized output during execution, and atomically finalizes the result.
+
+On restart, any record still marked `queued` or `running` without a result is
+failed with `daemon_restarted`. Automatic replay is intentionally avoided:
+coding-agent runs mutate workspaces and are not generally idempotent.
+
+## Local API
+
+The daemon listens only on `127.0.0.1`. `GET /health` is unauthenticated so the
+CLI can distinguish liveness from readiness. Every other endpoint requires the
+per-root bearer token in `daemon.token`.
+
+Run requests are validated against the contract represented by
+`docs/schemas/run-request.schema.json`. Error responses carry stable `code` and
+`exit_code` fields, which the CLI restores as a typed `HitchError`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Readiness, PID, uptime, detected agents, queue counts |
+| `GET` | `/v1/agents` | Refresh and return detailed agent discovery |
+| `POST` | `/v1/runs` | Validate, persist, and enqueue a run |
+| `GET` | `/v1/runs/{id}` | Read manifest and final result when present |
+| `GET` | `/v1/runs/{id}/events?offset={byte}` | Incrementally read normalized NDJSON events and receive the next offset |
+| `POST` | `/v1/runs/{id}/cancel` | Cancel queued or active work |
+| `POST` | `/shutdown` | Gracefully stop the daemon |
+
+## Filesystem contract
+
+```text
+~/.hitch/
+  daemon.json
+  daemon.lock
+  daemon.token
+  daemon.log
+  daemon.err.log
+  runs/
+    run_<uuid>/
+      request.json
+      manifest.json
+      events.jsonl
+      stdout.log
+      stderr.log
+      result.json
+```
+
+The root is relocatable with `--root` or `HITCH_ROOT`, which makes concurrent
+test profiles and isolated callers possible.
+
+## Current limitations
+
+- The daemon currently hosts direct agent runs only; benchmark jobs have not
+  yet been connected to the scheduler.
+- Codex and Claude are the first adapters. Codex uses ephemeral execution to
+  avoid shared session writes. Full per-run credential/config homes and resume
+  semantics still need adapter-specific work.
+- Event translation is intentionally additive. Native events that do not have a
+  stable common meaning are preserved as `provider.event`.
+- Run-history GC, durable queue replay policy, push-based SSE/WebSocket delivery,
+  revision preparation, and managed worktrees are not implemented yet.
+- Loopback plus a file token protects the local control API from accidental
+  cross-process use; it is not an OS sandbox for the launched coding agent.
+
+## Extension points for subsequent features
+
+New work should attach to one of four boundaries:
+
+- add native behavior in an agent adapter;
+- add a new execution backend beside direct execution;
+- add scheduling policy around the queue without changing agent semantics; or
+- add persisted run metadata/events through schema-versioned additive fields.
+
+This boundary is the main value of the port: future features do not need to
+inherit Multica's server protocol or duplicate process-supervision logic.

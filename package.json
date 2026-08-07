@@ -1,0 +1,19 @@
+{
+  "name": "agent-hitch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local runtime and daemon for coding agents",
+  "type": "module",
+  "bin": {
+    "hitch": "./bin/hitch.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "coverage": "node --experimental-test-coverage --test-coverage-include=src/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test",
+    "check": "node scripts/check-syntax.js && node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED"
+}
