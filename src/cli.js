@@ -11,6 +11,7 @@ import { HitchError, invalidInput } from "./errors.js";
 import { delay } from "./process.js";
 import { ensureDir, readJSON } from "./fs.js";
 import { listPreparedArtifacts, prepareHarness, resolveHarness } from "./artifacts.js";
+import { inspectWorkspace, removeWorkspace, WORKSPACE_MODES } from "./workspaces.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -25,6 +26,7 @@ export async function main(argv) {
     case "resolve": return resolveCommand(args, root);
     case "prepare": return prepareCommand(args, root);
     case "run": return runCommand(args, root);
+    case "workspace": return workspaceCommand(args, root);
     case "daemon": return daemonCommand(args, root);
     case "help":
     case "--help":
@@ -130,6 +132,39 @@ async function daemonCommand(args, root) {
   }
 }
 
+async function workspaceCommand(args, root) {
+  const action = args.shift();
+  const runId = args.shift();
+  if (!runId) throw invalidInput("workspace requires a run ID");
+  if (action === "inspect") {
+    const json = takeFlag(args, "--json");
+    assertNoArgs(args);
+    const workspace = await inspectWorkspace({ root, runId });
+    if (!workspace) throw new HitchError(`workspace record not found: ${runId}`, { code: "workspace_not_found", exitCode: 3 });
+    if (json) process.stdout.write(`${JSON.stringify(workspace, null, 2)}\n`);
+    else process.stdout.write(`${runId}: ${workspace.mode} ${workspace.status}\n  source: ${workspace.source_workspace}\n  execution: ${workspace.execution_workspace}\n  retained: ${workspace.retained ? "yes" : "no"}${workspace.changed === undefined || workspace.changed === null ? "" : `\n  changed: ${workspace.changed ? "yes" : "no"}`}\n`);
+    return;
+  }
+  if (action === "path") {
+    assertNoArgs(args);
+    const workspace = await inspectWorkspace({ root, runId });
+    if (!workspace) throw new HitchError(`workspace record not found: ${runId}`, { code: "workspace_not_found", exitCode: 3 });
+    if (!workspace.retained) throw new HitchError(`run ${runId} has no retained workspace`, { code: "workspace_not_retained", exitCode: 3 });
+    process.stdout.write(`${workspace.execution_workspace}\n`);
+    return;
+  }
+  if (action === "remove") {
+    const force = takeFlag(args, "--force");
+    const json = takeFlag(args, "--json");
+    assertNoArgs(args);
+    const workspace = await removeWorkspace({ root, runId, force });
+    if (json) process.stdout.write(`${JSON.stringify(workspace, null, 2)}\n`);
+    else process.stdout.write(`Removed workspace for ${runId}\n`);
+    return;
+  }
+  throw invalidInput("workspace requires inspect, path, or remove");
+}
+
 async function daemonServe(args, root) {
   const port = Number(takeOption(args, "--port") || DEFAULT_PORT);
   const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
@@ -232,19 +267,21 @@ async function parseRunRequest(args) {
   const agent = takeOption(args, "--agent");
   const model = takeOption(args, "--model") || "";
   const cwd = takeOption(args, "--cwd") || process.cwd();
+  const workspaceMode = takeOption(args, "--workspace-mode") || "shared";
   const promptValue = takeOption(args, "--prompt");
   const promptFile = takeOption(args, "--prompt-file");
   const timeout = parseDuration(takeOption(args, "--timeout") || "0");
   const agentArgs = takeRepeatedOption(args, "--agent-arg");
   if (harness && agent) throw invalidInput("use only one of --harness and the legacy --agent option");
   if (!harness && !agent) throw invalidInput("--harness is required");
+  if (!WORKSPACE_MODES.has(workspaceMode)) throw invalidInput(`--workspace-mode must be one of: ${[...WORKSPACE_MODES].join(", ")}`);
   if (agent?.includes("@")) throw invalidInput("--agent accepts only a harness name; use --harness for revision selection");
   if (promptValue !== undefined && promptFile) throw invalidInput("use only one of --prompt and --prompt-file");
   let prompt = promptValue;
   if (promptFile) prompt = await readFile(path.resolve(promptFile), "utf8");
   if (prompt === undefined && !process.stdin.isTTY) prompt = readFileSync(0, "utf8");
   if (!prompt) throw invalidInput("provide --prompt, --prompt-file, or stdin");
-  return { harness_ref: harness || `${agent}@installed`, model, cwd, prompt, timeout_ms: timeout, agent_args: agentArgs };
+  return { harness_ref: harness || `${agent}@installed`, model, cwd, workspace_mode: workspaceMode, prompt, timeout_ms: timeout, agent_args: agentArgs };
 }
 
 function revisionLabel(resolved) {
@@ -321,5 +358,5 @@ function assertNoArgs(args) {
 }
 
 function helpText() {
-  return `Hitch — one local runtime for coding agents\n\nUsage:\n  hitch list [--json]\n  hitch inspect <harness> [--json]\n  hitch resolve <harness-ref> [--json]\n  hitch prepare <harness-ref> [--json]\n  hitch run --harness <ref> [--model <id>] --prompt <text> [--daemon]\n  hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]\n  hitch daemon stop | status [--json] | logs [-n <lines>]\n  hitch daemon submit --harness <ref> --prompt <text> [--wait]\n  hitch daemon cancel <run-id>\n\nHarness refs:\n  codex                         Installed executable (compatibility default)\n  codex@installed               Installed executable\n  codex@version:0.42.1          Exact published version\n  codex@commit:abc1234          Commit from the registered Git source\n  codex@git+file:///src#abc1234 Commit from a clean local Git repository\n\nGlobal:\n  --root <path>    Relocate all Hitch state (default: ~/.hitch)\n`;
+  return `Hitch — one local runtime for coding agents\n\nUsage:\n  hitch list [--json]\n  hitch inspect <harness> [--json]\n  hitch resolve <harness-ref> [--json]\n  hitch prepare <harness-ref> [--json]\n  hitch run --harness <ref> [--model <id>] [--workspace-mode <mode>] --prompt <text> [--daemon]\n  hitch workspace inspect <run-id> [--json]\n  hitch workspace path <run-id>\n  hitch workspace remove <run-id> [--force] [--json]\n  hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]\n  hitch daemon stop | status [--json] | logs [-n <lines>]\n  hitch daemon submit --harness <ref> --prompt <text> [--workspace-mode <mode>] [--wait]\n  hitch daemon cancel <run-id>\n\nWorkspace modes:\n  shared    Use the source directory directly (compatibility default)\n  worktree  Create a detached worktree from a clean Git HEAD\n  copy      Copy the current filesystem state into an independent workspace\n\nHarness refs:\n  codex                         Installed executable (compatibility default)\n  codex@installed               Installed executable\n  codex@version:0.42.1          Exact published version\n  codex@commit:abc1234          Commit from the registered Git source\n  codex@git+file:///src#abc1234 Commit from a clean local Git repository\n\nGlobal:\n  --root <path>    Relocate all Hitch state (default: ~/.hitch)\n`;
 }

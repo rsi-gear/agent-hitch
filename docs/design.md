@@ -18,11 +18,12 @@ The resolver, artifact store, and prepared revisions described below are now
 implemented for installed executables, exact npm package versions, registered
 Git commits, and clean local Git commits. Codex and Pi provide source-build
 recipes; Claude Code and OpenCode currently provide installed and package-version
-recipes. Benchmark backends and managed workspaces remain planned.
+recipes. Shared, detached-worktree, and independent-copy workspace modes are
+implemented. Benchmark backends remain planned.
 
 Sections 1–23 describe the target architecture. Current daemon behavior is also
-specified in `docs/daemon.md`; workspace-isolation behavior must not be inferred
-as already available.
+specified in `docs/daemon.md`, and the workspace contract is specified in
+`docs/workspaces.md`.
 
 ## 1. Summary
 
@@ -452,6 +453,7 @@ Every public document includes:
 Core event types:
 
 - `run.started`
+- `workspace.ready`
 - `process.stdout`
 - `process.stderr`
 - `message.delta`
@@ -664,10 +666,21 @@ parent environment should be configurable and conservative by default.
 
 ### 15.4 Workspace isolation
 
-Hitch does not automatically clone or copy the task workspace in the MVP. The
-caller supplies the workspace and owns concurrency safety for repository writes.
-A future `--workspace-mode worktree|copy|shared` option may provide managed
-workspace isolation.
+Every run selects an explicit workspace mode:
+
+- `shared` uses the caller's directory directly and preserves the original
+  compatibility behavior. The caller owns concurrency safety.
+- `worktree` requires a clean Git workspace and creates a detached worktree at
+  the accepted `HEAD` commit. The requested `cwd` is mapped to the same relative
+  subdirectory in the new checkout.
+- `copy` snapshots the current filesystem state. Git sources are cloned without
+  hardlinks and overlaid with the source work tree, so their root Git metadata is
+  independent and dirty, untracked, and ignored files are retained.
+
+Managed workspaces are stored by run ID and retained after completion. Hitch
+never applies their contents back to the source workspace automatically. The
+`workspace inspect`, `workspace path`, and `workspace remove` commands expose
+their lifecycle. See `docs/workspaces.md` for the detailed contract.
 
 ## 16. Configuration and secrets
 
@@ -712,6 +725,10 @@ Proposed default:
   locks/
     artifacts/
     sources/
+    workspaces/
+  workspaces/
+    run_<id>/
+      root/
   tmp/
   runs/
   profiles/
@@ -854,9 +871,5 @@ The MVP is successful when an external agent can:
    default, or require a trust flag?
 4. How should installed vendor CLIs be fingerprinted when their package manager
    does not expose an integrity hash?
-5. Should local dirty trees be rejected in the MVP or snapshotted by content
-   digest?
-6. Which session behaviors belong in the common contract versus adapter-specific
+5. Which session behaviors belong in the common contract versus adapter-specific
    extensions?
-7. Is managed Git worktree isolation important enough for the first public
-   release?

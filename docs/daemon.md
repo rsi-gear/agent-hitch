@@ -126,10 +126,14 @@ Run requests are validated against the contract represented by
   daemon.token
   daemon.log
   daemon.err.log
+  workspaces/
+    run_<uuid>/
+      root/
   runs/
     run_<uuid>/
       request.json
       resolution.json
+      workspace.json
       manifest.json
       events.jsonl
       stdout.log
@@ -152,8 +156,8 @@ test profiles and isolated callers possible.
   Code and OpenCode is not currently declared.
 - Event translation is intentionally additive. Native events that do not have a
   stable common meaning are preserved as `provider.event`.
-- Run-history/artifact GC, durable queue replay policy, push-based
-  SSE/WebSocket delivery, and managed worktrees are not implemented yet.
+- Run-history/artifact/workspace GC, durable queue replay policy, and push-based
+  SSE/WebSocket delivery are not implemented yet.
 - Loopback plus a file token protects the local control API from accidental
   cross-process use; it is not an OS sandbox for the launched coding agent.
 

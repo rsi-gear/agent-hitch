@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DaemonServer, daemonClient } from "../src/daemon.js";
@@ -10,6 +10,7 @@ import { atomicWriteJSON, readJSON } from "../src/fs.js";
 import { statePaths } from "../src/config.js";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { removeWorkspace } from "../src/workspaces.js";
 
 const hitchExecutable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -85,6 +86,30 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   const secondEventRead = await client.requestWithMetadata(`/v1/runs/${accepted.run_id}/events?offset=${nextOffset}`);
   assert.equal(secondEventRead.payload, "");
   assert.equal(Number(secondEventRead.headers.get("x-hitch-next-offset")), nextOffset);
+
+  const isolatedSource = await mkdtemp(path.join(tmpdir(), "hitch-daemon-copy-source-"));
+  t.after(() => rm(isolatedSource, { recursive: true, force: true }));
+  const isolatedAccepted = await client.request("/v1/runs", {
+    method: "POST",
+    body: JSON.stringify({
+      agent: "codex",
+      cwd: isolatedSource,
+      workspace_mode: "copy",
+      prompt: "isolated",
+      timeout_ms: 5_000,
+    }),
+  });
+  let isolatedStatus;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    isolatedStatus = await client.request(`/v1/runs/${isolatedAccepted.run_id}`);
+    if (isolatedStatus.result) break;
+    await delay(20);
+  }
+  assert.equal(isolatedStatus.result.status, "succeeded");
+  assert.equal(isolatedStatus.result.workspace.mode, "copy");
+  assert.equal(isolatedStatus.manifest.workspace, isolatedSource);
+  assert.notEqual(isolatedStatus.manifest.execution_workspace, isolatedSource);
+  await removeWorkspace({ root, runId: isolatedAccepted.run_id });
 });
 
 function runCLI(args) {

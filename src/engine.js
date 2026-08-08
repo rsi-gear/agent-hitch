@@ -11,12 +11,23 @@ import { terminateProcess } from "./process.js";
 import { SCHEMA_VERSION } from "./config.js";
 import { parseHarnessReference } from "./harness-reference.js";
 import { prepareHarness, resolveHarness } from "./artifacts.js";
+import {
+  abandonPlannedWorkspace,
+  finalizeWorkspace,
+  inspectWorkspace,
+  markWorkspaceRunning,
+  planWorkspace,
+  prepareWorkspace,
+  WORKSPACE_MODES,
+  workspaceManifestFields,
+  workspaceRecordPath,
+} from "./workspaces.js";
 
 export async function validateRunRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw invalidInput("run request must be a JSON object");
   }
-  const allowedFields = new Set(["schema_version", "harness_ref", "agent", "model", "cwd", "prompt", "timeout_ms", "agent_args"]);
+  const allowedFields = new Set(["schema_version", "harness_ref", "agent", "model", "cwd", "workspace_mode", "prompt", "timeout_ms", "agent_args"]);
   const unexpectedField = Object.keys(input).find((field) => !allowedFields.has(field));
   if (unexpectedField) throw invalidInput(`unknown run request field: ${unexpectedField}`);
   if (input.schema_version !== undefined && input.schema_version !== SCHEMA_VERSION) {
@@ -35,6 +46,9 @@ export async function validateRunRequest(input) {
   if (typeof input.prompt !== "string" || !input.prompt.trim()) throw invalidInput("prompt must be a non-empty string");
   if (input.cwd !== undefined && (typeof input.cwd !== "string" || !input.cwd.trim())) {
     throw invalidInput("cwd must be a non-empty string");
+  }
+  if (input.workspace_mode !== undefined && !WORKSPACE_MODES.has(input.workspace_mode)) {
+    throw invalidInput(`workspace_mode must be one of: ${[...WORKSPACE_MODES].join(", ")}`);
   }
   if (input.model !== undefined && typeof input.model !== "string") throw invalidInput("model must be a string");
   if (input.timeout_ms !== undefined && (typeof input.timeout_ms !== "number" || !Number.isFinite(input.timeout_ms) || input.timeout_ms < 0)) {
@@ -60,7 +74,7 @@ export function newRunId() {
   return `run_${randomUUID().replaceAll("-", "")}`;
 }
 
-export function buildManifest(runId, request) {
+export function buildManifest(runId, request, workspacePlan) {
   const reference = parseHarnessReference(request.harness_ref);
   return {
     schema_version: SCHEMA_VERSION,
@@ -73,6 +87,8 @@ export function buildManifest(runId, request) {
     requested_model: request.model || null,
     effective_model: request.model || null,
     workspace: request.cwd,
+    workspace_mode: request.workspace_mode,
+    ...workspaceManifestFields(workspacePlan),
     timeout_ms: request.timeout_ms,
     agent_args_count: request.agent_args.length,
     agent_args_sha256: request.agent_args.length > 0
@@ -82,13 +98,16 @@ export function buildManifest(runId, request) {
   };
 }
 
-export async function executeRun({ runId, request, runsRoot, root = path.dirname(runsRoot), resolvedRevision, onEvent, onProcess, signal }) {
+export async function executeRun({ runId, request, runsRoot, root = path.dirname(runsRoot), resolvedRevision, workspacePlan, onEvent, onProcess, signal }) {
   const normalized = await validateRunRequest(request);
+  workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const runDirectory = path.join(runsRoot, runId);
   await ensureDir(runDirectory);
+  const workspacePath = workspaceRecordPath(root, runId);
+  await atomicWriteJSON(workspacePath, workspacePlan);
   const manifestPath = path.join(runDirectory, "manifest.json");
   const resultPath = path.join(runDirectory, "result.json");
-  const existingManifest = buildManifest(runId, normalized);
+  const existingManifest = buildManifest(runId, normalized, workspacePlan);
   let manifest = existingManifest;
   const startedAt = new Date();
   await atomicWriteJSON(path.join(runDirectory, "request.json"), {
@@ -110,6 +129,7 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
   let stage = "resolution";
   let resolution = resolvedRevision;
   let artifact;
+  let workspaceLease;
 
   try {
     const reference = parseHarnessReference(normalized.harness_ref);
@@ -126,6 +146,9 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
     stage = "preparation";
     artifact = await prepareHarness(resolution, { root, signal });
 
+    stage = "workspace_preparation";
+    workspaceLease = await prepareWorkspace(workspacePlan, { recordPath: workspacePath, signal });
+
     manifest = {
       ...manifest,
       status: "running",
@@ -135,6 +158,7 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
       artifact_entrypoint: artifact.entrypoint_args?.[0] || artifact.executable,
       agent_version: artifact.observed_version || resolution.revision.version || null,
       agent_identity: resolution.identity,
+      ...workspaceManifestFields(workspaceLease),
       started_at: startedAt.toISOString(),
     };
     await atomicWriteJSON(manifestPath, manifest);
@@ -144,27 +168,39 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
     await sink.open();
     sinkOpened = true;
     sink.emit({
+      type: "workspace.ready",
+      mode: workspaceLease.mode,
+      workspace: workspaceLease.execution_workspace,
+      retained: workspaceLease.retained,
+    });
+    sink.emit({
       type: "run.started",
       harness: reference.harness_id,
       agent: reference.harness_id,
       model: normalized.model || null,
       revision_identity: resolution.identity,
       artifact_id: artifact.artifact_id,
+      workspace_mode: workspaceLease.mode,
+      workspace: workspaceLease.execution_workspace,
     });
 
     stage = "adapter_setup";
     const adapter = getAdapter(reference.harness_id);
     const adapterState = {};
-    const specification = adapter.process(normalized, artifact.executable);
+    const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
+    const specification = adapter.process(executionRequest, artifact.executable);
     if (artifact.entrypoint_args?.length) specification.args.unshift(...artifact.entrypoint_args);
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);
       sink.emit({ type: "run.failed", status: "cancelled", error: result.error });
     } else {
       stage = "launch";
+      workspaceLease = await markWorkspaceRunning(workspaceLease, { recordPath: workspacePath });
+      const childEnvironment = { ...process.env, PWD: workspaceLease.execution_workspace };
+      delete childEnvironment.OLDPWD;
       child = spawn(specification.executable, specification.args, {
-        cwd: normalized.cwd,
-        env: process.env,
+        cwd: workspaceLease.execution_workspace,
+        env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,
@@ -261,6 +297,31 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
     onProcess?.(null);
   }
 
+  if (workspaceLease) {
+    try {
+      stage = "workspace_finalization";
+      workspaceLease = await finalizeWorkspace(workspaceLease, { recordPath: workspacePath });
+      manifest = { ...manifest, ...workspaceManifestFields(workspaceLease) };
+      result.workspace = {
+        mode: workspaceLease.mode,
+        source: workspaceLease.source_workspace,
+        execution: workspaceLease.execution_workspace,
+        retained: workspaceLease.retained,
+        changed: workspaceLease.changed,
+      };
+    } catch (error) {
+      const warning = { code: "workspace_finalization_failed", message: error?.message || String(error) };
+      manifest = { ...manifest, workspace_retained: workspaceLease.mode !== "shared", workspace_warning: warning };
+      result.workspace_warning = warning;
+    }
+  } else {
+    const workspaceStatus = await inspectWorkspace({ root, runId }).catch(() => null);
+    const currentWorkspace = workspaceStatus?.status === "planned"
+      ? await abandonPlannedWorkspace({ root, runId, status: result.status === "cancelled" ? "cancelled" : "unused" })
+      : workspaceStatus;
+    manifest = { ...manifest, ...workspaceManifestFields(currentWorkspace) };
+  }
+
   if (sinkOpened) {
     try {
       await sink.close();
@@ -277,15 +338,17 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
 export async function createQueuedRun({ runId = newRunId(), request, runsRoot, root = path.dirname(runsRoot) }) {
   const normalized = await validateRunRequest(request);
   const resolvedRevision = await resolveHarness(normalized.harness_ref, { root });
+  const workspacePlan = await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const directory = await ensureDir(path.join(runsRoot, runId));
+  await atomicWriteJSON(workspaceRecordPath(root, runId), workspacePlan);
   await atomicWriteJSON(path.join(directory, "manifest.json"), {
-    ...buildManifest(runId, normalized),
+    ...buildManifest(runId, normalized, workspacePlan),
     resolved_revision: resolvedRevision,
     revision_identity: resolvedRevision.identity,
   });
   await atomicWriteJSON(path.join(directory, "request.json"), { ...normalized, schema_version: SCHEMA_VERSION });
   await atomicWriteJSON(path.join(directory, "resolution.json"), resolvedRevision);
-  return { runId, request: normalized, resolvedRevision, directory };
+  return { runId, request: normalized, resolvedRevision, workspacePlan, directory };
 }
 
 function failureResult(runId, startedAt, code, message, exitCode, processExit = {}) {

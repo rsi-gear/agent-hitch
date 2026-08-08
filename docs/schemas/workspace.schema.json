@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/workspace.schema.json",
+  "title": "Hitch run workspace record",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "run_id",
+    "mode",
+    "status",
+    "source_workspace",
+    "source_realpath",
+    "execution_workspace",
+    "snapshot",
+    "retained"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "mode": { "enum": ["shared", "worktree", "copy"] },
+    "status": {
+      "enum": [
+        "planned",
+        "provisioning",
+        "ready",
+        "running",
+        "retained",
+        "orphaned",
+        "released",
+        "cancelled",
+        "failed",
+        "unused",
+        "removed"
+      ]
+    },
+    "source_workspace": { "type": "string", "minLength": 1 },
+    "source_realpath": { "type": "string", "minLength": 1 },
+    "execution_workspace": { "type": "string", "minLength": 1 },
+    "changed": { "type": ["boolean", "null"] },
+    "retained": { "type": "boolean" },
+    "snapshot": {
+      "type": "object",
+      "required": ["consistency", "source_subdirectory"],
+      "properties": {
+        "consistency": { "enum": ["none", "git_commit", "best_effort"] },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+        "source_subdirectory": { "type": "string" },
+        "content_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "captured_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

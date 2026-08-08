@@ -42,6 +42,8 @@ export function statePaths(root) {
     sourceCache: path.join(root, "cache", "sources"),
     artifactLocks: path.join(root, "locks", "artifacts"),
     sourceLocks: path.join(root, "locks", "sources"),
+    workspaceLocks: path.join(root, "locks", "workspaces"),
+    workspaces: path.join(root, "workspaces"),
     temporary: path.join(root, "tmp"),
   };
 }

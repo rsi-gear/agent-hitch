@@ -344,6 +344,7 @@ export function normalizeRequest(input) {
     harness_ref: harnessRef,
     model: typeof input?.model === "string" ? input.model : "",
     cwd,
+    workspace_mode: typeof input?.workspace_mode === "string" ? input.workspace_mode : "shared",
     prompt: typeof input?.prompt === "string" ? input.prompt : "",
     timeout_ms: input?.timeout_ms ?? 0,
     agent_args: Array.isArray(input?.agent_args) ? [...input.agent_args] : [],

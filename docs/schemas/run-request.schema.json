@@ -34,6 +34,10 @@
       "type": "string",
       "minLength": 1
     },
+    "workspace_mode": {
+      "enum": ["shared", "worktree", "copy"],
+      "default": "shared"
+    },
     "prompt": {
       "type": "string",
       "minLength": 1

@@ -3,6 +3,7 @@ import path from "node:path";
 import { createQueuedRun, executeRun } from "./engine.js";
 import { atomicWriteJSON, ensureDir, readJSON } from "./fs.js";
 import { SCHEMA_VERSION } from "./config.js";
+import { cancelPlannedWorkspace, recoverInterruptedWorkspace } from "./workspaces.js";
 
 export class Scheduler {
   constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {} }) {
@@ -46,6 +47,7 @@ export class Scheduler {
       await atomicWriteJSON(path.join(entry.directory, "result.json"), result);
       const manifest = await readJSON(path.join(entry.directory, "manifest.json"));
       await atomicWriteJSON(path.join(entry.directory, "manifest.json"), { ...manifest, status: "cancelled", completed_at: now });
+      await cancelPlannedWorkspace({ root: this.root, runId });
       return true;
     }
     const active = this.active.get(runId);
@@ -89,6 +91,7 @@ export class Scheduler {
         runsRoot: this.runsRoot,
         root: this.root,
         resolvedRevision: entry.resolvedRevision,
+        workspacePlan: entry.workspacePlan,
         onEvent: this.onEvent,
         signal: controller.signal,
         onProcess: (processControl) => {
@@ -135,7 +138,7 @@ export class Scheduler {
       const manifestPath = path.join(directory, "manifest.json");
       const manifest = await readJSON(manifestPath, null);
       const result = await readJSON(path.join(directory, "result.json"), null);
-      if (!manifest || result || !["queued", "running"].includes(manifest.status)) continue;
+      if (!manifest || result || !["queued", "preparing", "running"].includes(manifest.status)) continue;
       const now = new Date().toISOString();
       const recovered = {
         schema_version: SCHEMA_VERSION,
@@ -147,6 +150,7 @@ export class Scheduler {
       };
       await atomicWriteJSON(path.join(directory, "result.json"), recovered);
       await atomicWriteJSON(manifestPath, { ...manifest, status: "failed", completed_at: now });
+      await recoverInterruptedWorkspace({ root: this.root, runId: entry.name });
     }
   }
 }

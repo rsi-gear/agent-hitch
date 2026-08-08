@@ -4,7 +4,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Scheduler } from "../src/scheduler.js";
-import { atomicWriteJSON } from "../src/fs.js";
+import { atomicWriteJSON, readJSON } from "../src/fs.js";
 import { writeFakeCodex } from "../test-support/helpers.js";
 import { delay } from "../src/process.js";
 
@@ -26,6 +26,7 @@ test("scheduler can cancel a queued run without launching it", async (t) => {
   assert.equal(await scheduler.cancel(second), true);
   const status = await scheduler.status(second);
   assert.equal(status.result.status, "cancelled");
+  assert.equal((await readJSON(path.join(root, "runs", second, "workspace.json"))).status, "cancelled");
   await scheduler.cancel(first);
   const firstStatus = await waitForResult(scheduler, first);
   assert.equal(firstStatus.result.status, "cancelled");
@@ -42,12 +43,20 @@ test("scheduler fails ambiguous interrupted work instead of replaying it", async
     run_id: runId,
     status: "running",
   });
+  await atomicWriteJSON(path.join(directory, "workspace.json"), {
+    schema_version: "1",
+    run_id: runId,
+    mode: "copy",
+    status: "running",
+    retained: true,
+  });
 
   const scheduler = new Scheduler({ runsRoot, maxConcurrent: 1 });
   await scheduler.initialize();
   const status = await scheduler.status(runId);
   assert.equal(status.result.status, "failed");
   assert.equal(status.result.error.code, "daemon_restarted");
+  assert.equal((await readJSON(path.join(directory, "workspace.json"))).status, "orphaned");
 });
 
 test("scheduler starts runs in FIFO order at bounded concurrency", async (t) => {

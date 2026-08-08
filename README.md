@@ -22,6 +22,7 @@ Hitch currently supports Codex CLI, Claude Code, Pi, and OpenCode adapters. It p
 - direct execution with normalized JSONL events;
 - a persistent local daemon with bounded concurrency;
 - queued and active-run cancellation, timeouts, and process-tree cleanup;
+- managed shared, Git worktree, and independent-copy workspace modes;
 - atomic manifests/results plus raw stdout and stderr logs; and
 - conservative recovery of interrupted records after daemon restart.
 
@@ -44,6 +45,7 @@ hitch run \
   --harness codex@installed \
   --model gpt-5.6-terra \
   --cwd /workspace/project \
+  --workspace-mode worktree \
   --prompt-file task.md \
   --output jsonl
 ```
@@ -137,7 +139,6 @@ cancellation, and event behavior do not drift.
 
 ## Planned work
 
-- [ ] Managed workspace isolation
 - [ ] Additional harness adapters
 - [ ] Additional API provider support
 - [ ] Local model inference support
@@ -157,6 +158,7 @@ cancellation, and event behavior do not drift.
 
 - [Design document](docs/design.md)
 - [Agent daemon analysis and port](docs/daemon.md)
+- [Workspace isolation](docs/workspaces.md)
 
 ## Naming
 
