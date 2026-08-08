@@ -6,7 +6,7 @@ Hitch is an agent-first CLI and daemon for discovering and running native coding
 agents through one stable, machine-oriented interface.
 
 It lets an agent choose which harness and revision to use for each run. Hitch is
-designed as infrastructure for RSI, including harness evolution and model
+designed as infrastructure for Recursive Self-Improvement (RSI), including harness evolution and model
 evolution.
 
 > Status: pre-alpha. Installed-harness discovery, immutable revision resolution,
