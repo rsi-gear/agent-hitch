@@ -11,7 +11,7 @@ agents through one stable, machine-oriented interface.
 
 ## Available now
 
-Hitch currently supports Codex CLI and Claude Code adapters. It provides:
+Hitch currently supports Codex CLI, Claude Code, Pi, and OpenCode adapters. It provides:
 
 - executable discovery, version probing, and executable fingerprints;
 - direct execution with normalized JSONL events;
@@ -73,7 +73,8 @@ hitch daemon cancel run_<id>
 
 State is stored below `~/.hitch` by default. Use `--root <path>` or
 `HITCH_ROOT` to relocate it. Native executable overrides use
-`HITCH_CODEX_PATH` and `HITCH_CLAUDE_PATH`.
+`HITCH_CODEX_PATH`, `HITCH_CLAUDE_PATH`, `HITCH_PI_PATH`, and
+`HITCH_OPENCODE_PATH`.
 
 ## Why Hitch?
 
@@ -85,6 +86,8 @@ runtime.
 ```text
 caller -> Hitch CLI / daemon -> shared run engine -> Codex CLI
                                              \----> Claude Code
+                                             \----> Pi
+                                             \----> OpenCode
 ```
 
 The direct CLI and daemon use the same engine, so persistence, timeout,

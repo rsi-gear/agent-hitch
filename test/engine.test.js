@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { executeRun, newRunId } from "../src/engine.js";
 import { readJSON } from "../src/fs.js";
-import { writeFakeCodex } from "../test-support/helpers.js";
+import { writeFakeCodex, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
 
 test("run engine records normalized events and a reproducible result", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-engine-"));
@@ -31,6 +31,35 @@ test("run engine records normalized events and a reproducible result", async (t)
   assert.equal(manifest.status, "succeeded");
   assert.equal(manifest.agent_version, "codex-cli 9.9.9");
 });
+
+for (const agent of [
+  { id: "pi", env: "HITCH_PI_PATH", version: "pi 0.82.1", write: writeFakePi },
+  { id: "opencode", env: "HITCH_OPENCODE_PATH", version: "opencode 1.18.15", write: writeFakeOpenCode },
+]) {
+  test(`${agent.id} runs through native JSON mode`, async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), `hitch-${agent.id}-`));
+    const executable = await agent.write(root);
+    const previous = process.env[agent.env];
+    process.env[agent.env] = executable;
+    t.after(() => restoreEnv(agent.env, previous));
+    const runId = newRunId();
+    const events = [];
+
+    const result = await executeRun({
+      runId,
+      request: { agent: agent.id, cwd: root, prompt: "hello", timeout_ms: 5_000, agent_args: [] },
+      runsRoot: path.join(root, "runs"),
+      onEvent: (event) => events.push(event),
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.output, "reply:hello");
+    assert.equal(events.filter((event) => event.type === "session.created").length, 1);
+    assert.ok(events.some((event) => event.type === "usage.updated"));
+    const manifest = await readJSON(path.join(root, "runs", runId, "manifest.json"));
+    assert.equal(manifest.agent_version, agent.version);
+  });
+}
 
 test("run request validation returns typed invalid input for malformed cwd", async () => {
   await assert.rejects(

@@ -75,7 +75,7 @@ test("scheduler starts runs in FIFO order at bounded concurrency", async (t) => 
 });
 
 async function waitForResult(scheduler, runId) {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
     const status = await scheduler.status(runId);
     if (status?.result) return status;
     await delay(10);

@@ -140,9 +140,9 @@ test profiles and isolated callers possible.
 
 - The daemon currently hosts direct agent runs only; benchmark jobs have not
   yet been connected to the scheduler.
-- Codex and Claude are the first adapters. Codex uses ephemeral execution to
-  avoid shared session writes. Full per-run credential/config homes and resume
-  semantics still need adapter-specific work.
+- Codex, Claude, Pi, and OpenCode have native adapters. Codex and Pi use
+  ephemeral execution to avoid shared session writes. Full per-run
+  credential/config homes and resume semantics still need adapter-specific work.
 - Event translation is intentionally additive. Native events that do not have a
   stable common meaning are preserved as `provider.event`.
 - Run-history GC, durable queue replay policy, push-based SSE/WebSocket delivery,

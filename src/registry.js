@@ -6,23 +6,24 @@ import { createHash } from "node:crypto";
 import { getAdapter, listDefinitions, publicDefinition } from "./adapters.js";
 
 export async function discoverAgents({ env = process.env, probeVersions = true } = {}) {
-  return Promise.all(listDefinitions().map(async (definition) => {
-    const configured = env[definition.path_env]?.trim() || definition.command;
-    const executable = await resolveExecutable(configured, env.PATH || "");
-    if (!executable) return { ...definition, status: "unavailable" };
-
-    const version = probeVersions
-      ? await detectVersion(executable, getAdapter(definition.id).version_args)
-      : "";
-    const identity = await fingerprintExecutable(executable);
-    return { ...definition, status: "available", executable, version, identity };
-  }));
+  return Promise.all(listDefinitions().map((definition) => inspectDefinition(definition, { env, probeVersions })));
 }
 
-export async function inspectAgent(id, options) {
+export async function inspectAgent(id, { env = process.env, probeVersions = true } = {}) {
   const definition = publicDefinition(getAdapter(id));
-  const discovered = await discoverAgents(options);
-  return discovered.find((entry) => entry.id === definition.id);
+  return inspectDefinition(definition, { env, probeVersions });
+}
+
+async function inspectDefinition(definition, { env, probeVersions }) {
+  const configured = env[definition.path_env]?.trim() || definition.command;
+  const executable = await resolveExecutable(configured, env.PATH || "");
+  if (!executable) return { ...definition, status: "unavailable" };
+
+  const version = probeVersions
+    ? await detectVersion(executable, getAdapter(definition.id).version_args)
+    : "";
+  const identity = await fingerprintExecutable(executable);
+  return { ...definition, status: "available", executable, version, identity };
 }
 
 export async function resolveExecutable(command, searchPath) {

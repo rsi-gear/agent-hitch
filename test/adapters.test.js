@@ -2,6 +2,26 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { getAdapter } from "../src/adapters.js";
 
+test("Pi and OpenCode adapters use their native JSON modes with prompt stdin", () => {
+  const request = {
+    cwd: "/workspace",
+    model: "provider/model",
+    prompt: "a long prompt",
+    agent_args: ["--extra-flag"],
+  };
+
+  assert.deepEqual(getAdapter("pi").process(request, "/bin/pi"), {
+    executable: "/bin/pi",
+    args: ["--mode", "json", "--no-session", "--model", "provider/model", "--extra-flag"],
+    input: "a long prompt",
+  });
+  assert.deepEqual(getAdapter("opencode").process(request, "/bin/opencode"), {
+    executable: "/bin/opencode",
+    args: ["run", "--format", "json", "--dir", "/workspace", "--model", "provider/model", "--extra-flag"],
+    input: "a long prompt",
+  });
+});
+
 test("Claude adapter emits matched structured tool lifecycle events", () => {
   const adapter = getAdapter("claude");
   const started = adapter.translate({
@@ -38,4 +58,104 @@ test("Claude result exposes the authoritative complete final reply", () => {
     { type: "message.completed", text: "complete final answer" },
     { type: "usage.updated", usage: { input_tokens: 10, output_tokens: 4 } },
   ]);
+});
+
+test("Pi adapter preserves streaming text, final text, usage, and tool lifecycle", () => {
+  const adapter = getAdapter("pi");
+  assert.deepEqual(adapter.translate({ type: "session", id: "session_1" }), [
+    { type: "session.created", session_id: "session_1" },
+  ]);
+  assert.deepEqual(adapter.translate({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", delta: "hello" },
+  }), [{ type: "message.delta", text: "hello" }]);
+  assert.deepEqual(adapter.translate({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "hidden" }, { type: "text", text: "final" }],
+      usage: { input: 3, output: 2 },
+      stopReason: "stop",
+    },
+  }), [
+    { type: "message.completed", text: "final" },
+    { type: "usage.updated", usage: { input: 3, output: 2 } },
+  ]);
+  assert.deepEqual(adapter.translate({
+    type: "tool_execution_start",
+    toolCallId: "call_1",
+    toolName: "read",
+    args: { path: "README.md" },
+  }), [{ type: "tool.started", call_id: "call_1", name: "read", input: { path: "README.md" } }]);
+  assert.deepEqual(adapter.translate({
+    type: "tool_execution_end",
+    toolCallId: "call_1",
+    toolName: "read",
+    result: { content: "done" },
+    isError: false,
+  }), [{
+    type: "tool.completed",
+    call_id: "call_1",
+    name: "read",
+    status: "succeeded",
+    output: { content: "done" },
+  }]);
+});
+
+test("OpenCode adapter normalizes its terminal tool events and emits one session per run", () => {
+  const adapter = getAdapter("opencode");
+  const state = {};
+  const started = adapter.translate({
+    type: "step_start",
+    sessionID: "session_1",
+    part: { type: "step-start", id: "part_1" },
+  }, state);
+  const text = adapter.translate({
+    type: "text",
+    sessionID: "session_1",
+    part: { type: "text", text: "hello" },
+  }, state);
+  const tool = adapter.translate({
+    type: "tool_use",
+    sessionID: "session_1",
+    part: {
+      id: "part_2",
+      callID: "call_1",
+      tool: "bash",
+      state: { status: "error", input: { command: "false" }, error: "exit 1" },
+    },
+  }, state);
+  const usage = adapter.translate({
+    type: "step_finish",
+    sessionID: "session_1",
+    part: { tokens: { input: 4, output: 2, reasoning: 1, cache: { read: 3, write: 0 } }, cost: 0.01 },
+  }, state);
+
+  assert.deepEqual(started, [
+    { type: "session.created", session_id: "session_1" },
+    {
+      type: "provider.event",
+      provider_type: "step_start",
+      native: { type: "step_start", sessionID: "session_1", part: { type: "step-start", id: "part_1" } },
+    },
+  ]);
+  assert.deepEqual(text, [{ type: "message.delta", text: "hello" }]);
+  assert.deepEqual(tool, [{
+    type: "tool.completed",
+    call_id: "call_1",
+    name: "bash",
+    status: "failed",
+    input: { command: "false" },
+    output: "exit 1",
+    native: {
+      id: "part_2",
+      callID: "call_1",
+      tool: "bash",
+      state: { status: "error", input: { command: "false" }, error: "exit 1" },
+    },
+  }]);
+  assert.deepEqual(usage, [{
+    type: "usage.updated",
+    usage: { input: 4, output: 2, reasoning: 1, cache: { read: 3, write: 0 }, cost: 0.01 },
+  }]);
 });

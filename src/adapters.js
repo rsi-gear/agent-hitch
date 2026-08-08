@@ -115,6 +115,130 @@ const definitions = {
       return [{ type: "provider.event", provider_type: event.type || "unknown", native: event }];
     },
   },
+  pi: {
+    id: "pi",
+    display_name: "Pi Coding Agent",
+    command: "pi",
+    path_env: "HITCH_PI_PATH",
+    version_args: ["--version"],
+    capabilities: {
+      non_interactive: true,
+      streaming: true,
+      structured_messages: true,
+      structured_tool_events: true,
+      sessions: true,
+      resume: false,
+      model_selection: true,
+      graceful_cancel: true,
+    },
+    process(request, executable) {
+      const args = ["--mode", "json", "--no-session"];
+      if (request.model) args.push("--model", request.model);
+      args.push(...request.agent_args);
+      return { executable, args, input: request.prompt };
+    },
+    translate(event) {
+      if (event.type === "session" && event.id) {
+        return [{ type: "session.created", session_id: event.id }];
+      }
+      if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+        return [{ type: "message.delta", text: event.assistantMessageEvent.delta || "" }];
+      }
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        const translated = [{ type: "message.completed", text: assistantMessageText(event.message) }];
+        if (event.message.usage) translated.push({ type: "usage.updated", usage: event.message.usage });
+        if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+          translated.push({
+            type: "diagnostic",
+            level: "error",
+            message: event.message.errorMessage || `Pi request ${event.message.stopReason}`,
+          });
+        }
+        return translated;
+      }
+      if (event.type === "tool_execution_start") {
+        return [{
+          type: "tool.started",
+          call_id: event.toolCallId,
+          name: event.toolName,
+          input: event.args,
+        }];
+      }
+      if (event.type === "tool_execution_end") {
+        return [{
+          type: "tool.completed",
+          call_id: event.toolCallId,
+          name: event.toolName,
+          status: event.isError ? "failed" : "succeeded",
+          output: event.result,
+        }];
+      }
+      return [{ type: "provider.event", provider_type: event.type || "unknown", native: event }];
+    },
+  },
+  opencode: {
+    id: "opencode",
+    display_name: "OpenCode",
+    command: "opencode",
+    path_env: "HITCH_OPENCODE_PATH",
+    version_args: ["--version"],
+    capabilities: {
+      non_interactive: true,
+      streaming: true,
+      structured_messages: true,
+      structured_tool_events: true,
+      sessions: true,
+      resume: false,
+      model_selection: true,
+      graceful_cancel: true,
+    },
+    process(request, executable) {
+      const args = ["run", "--format", "json", "--dir", request.cwd];
+      if (request.model) args.push("--model", request.model);
+      args.push(...request.agent_args);
+      return { executable, args, input: request.prompt };
+    },
+    translate(event, state = {}) {
+      const translated = [];
+      if (event.sessionID && state.session_id !== event.sessionID) {
+        state.session_id = event.sessionID;
+        translated.push({ type: "session.created", session_id: event.sessionID });
+      }
+      if (event.type === "text") {
+        translated.push({
+          type: "message.delta",
+          text: typeof event.part?.text === "string" ? event.part.text : event.text || "",
+        });
+        return translated;
+      }
+      if (event.type === "tool_use" && event.part) {
+        const failed = event.part.state?.status === "error";
+        translated.push({
+          type: "tool.completed",
+          call_id: event.part.callID || event.part.id,
+          name: event.part.tool,
+          status: failed ? "failed" : "succeeded",
+          input: event.part.state?.input,
+          output: failed ? event.part.state?.error : event.part.state?.output,
+          native: event.part,
+        });
+        return translated;
+      }
+      if (event.type === "step_finish" && event.part?.tokens) {
+        translated.push({
+          type: "usage.updated",
+          usage: { ...event.part.tokens, cost: event.part.cost },
+        });
+        return translated;
+      }
+      if (event.type === "error") {
+        translated.push({ type: "diagnostic", level: "error", message: openCodeErrorMessage(event.error) });
+        return translated;
+      }
+      translated.push({ type: "provider.event", provider_type: event.type || "unknown", native: event });
+      return translated;
+    },
+  },
 };
 
 export function listDefinitions() {
@@ -129,6 +253,22 @@ function claudeToolResultText(content) {
     if (block?.type === "text") return block.text || "";
     return JSON.stringify(block);
   }).join("");
+}
+
+function assistantMessageText(message) {
+  if (!Array.isArray(message?.content)) return "";
+  return message.content
+    .filter((block) => block?.type === "text")
+    .map((block) => block.text || "")
+    .join("");
+}
+
+function openCodeErrorMessage(error) {
+  if (typeof error === "string") return error;
+  if (typeof error?.data?.message === "string") return error.data.message;
+  if (typeof error?.message === "string") return error.message;
+  if (typeof error?.name === "string") return error.name;
+  return error == null ? "OpenCode error" : JSON.stringify(error);
 }
 
 export function getAdapter(id) {

@@ -9,7 +9,7 @@
 ## 0. Implementation status
 
 The first executable slice is implemented in dependency-free Node.js 22+. It
-includes native Codex CLI and Claude Code discovery, direct execution,
+includes native Codex CLI, Claude Code, Pi, and OpenCode discovery and direct execution,
 normalized JSONL events, persisted run records, bounded daemon concurrency,
 cancellation, timeout handling, health reporting, and conservative crash
 recovery.

@@ -123,6 +123,7 @@ export async function executeRun({ runId, request, runsRoot, onEvent, onProcess,
 
     stage = "adapter_setup";
     const adapter = getAdapter(normalized.agent);
+    const adapterState = {};
     const specification = adapter.process(normalized, discovered.executable);
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);
@@ -153,7 +154,7 @@ export async function executeRun({ runId, request, runsRoot, onEvent, onProcess,
           sink.emit({ type: "process.stdout", text: line });
           return;
         }
-        for (const event of adapter.translate(native)) {
+        for (const event of adapter.translate(native, adapterState)) {
           if (event.type === "message.delta" && event.text) messageParts.push(event.text);
           if (event.type === "message.completed" && typeof event.text === "string") finalMessage = event.text;
           sink.emit(event);

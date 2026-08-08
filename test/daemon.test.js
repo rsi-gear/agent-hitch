@@ -31,7 +31,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   assert.equal(health.status, "running");
   assert.match(health.instance_id, /^[a-f0-9]{32}$/);
   assert.match(health.root_id, /^[a-f0-9]{24}$/);
-  assert.deepEqual(health.agents, ["codex"]);
+  assert.ok(health.agents.includes("codex"));
 
   const unauthorized = await fetch(`http://127.0.0.1:${server.port}/v1/runs`, {
     method: "POST",
