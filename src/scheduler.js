@@ -5,8 +5,9 @@ import { atomicWriteJSON, ensureDir, readJSON } from "./fs.js";
 import { SCHEMA_VERSION } from "./config.js";
 
 export class Scheduler {
-  constructor({ runsRoot, maxConcurrent = 4, onEvent = () => {} }) {
+  constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {} }) {
     this.runsRoot = runsRoot;
+    this.root = root;
     this.maxConcurrent = maxConcurrent;
     this.onEvent = onEvent;
     this.queue = [];
@@ -22,7 +23,7 @@ export class Scheduler {
 
   async submit(request) {
     if (!this.accepting) throw new Error("daemon is shutting down");
-    const queued = await createQueuedRun({ request, runsRoot: this.runsRoot });
+    const queued = await createQueuedRun({ request, runsRoot: this.runsRoot, root: this.root });
     this.queue.push(queued);
     this.onEvent({ type: "run.queued", run_id: queued.runId });
     queueMicrotask(() => this.drain());
@@ -86,6 +87,8 @@ export class Scheduler {
         runId: entry.runId,
         request: entry.request,
         runsRoot: this.runsRoot,
+        root: this.root,
+        resolvedRevision: entry.resolvedRevision,
         onEvent: this.onEvent,
         signal: controller.signal,
         onProcess: (processControl) => {

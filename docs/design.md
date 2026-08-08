@@ -14,15 +14,15 @@ normalized JSONL events, persisted run records, bounded daemon concurrency,
 cancellation, timeout handling, health reporting, and conservative crash
 recovery.
 
-The resolver, artifact store, prepared revisions, and benchmark backends
-described below remain planned. The current implementation fingerprints an
-installed native executable but does not claim that the fingerprint is a
-reproducible prepared artifact.
+The resolver, artifact store, and prepared revisions described below are now
+implemented for installed executables, exact npm package versions, registered
+Git commits, and clean local Git commits. Codex and Pi provide source-build
+recipes; Claude Code and OpenCode currently provide installed and package-version
+recipes. Benchmark backends and managed workspaces remain planned.
 
-Sections 1–23 below describe the target architecture unless a section explicitly
-says it is implemented. Current behavior is summarized here and specified in
-`docs/daemon.md`; planned `resolve`, `prepare`, artifact-store, and workspace
-isolation behavior must not be inferred as already available.
+Sections 1–23 describe the target architecture. Current daemon behavior is also
+specified in `docs/daemon.md`; workspace-isolation behavior must not be inferred
+as already available.
 
 ## 1. Summary
 
@@ -147,8 +147,9 @@ Metadata and adapter configuration for a harness family, such as `pi` or
 
 ### Harness reference
 
-A user-facing expression that may be mutable, such as `pi`, `pi@main`, or a Git
-branch.
+A user-facing expression such as `pi@installed`, `pi@version:0.84.1`, or
+`pi@commit:abc1234`. A bare `pi` is the compatibility alias for
+`pi@installed`. Future branch or tag selectors would be mutable inputs.
 
 ### Harness revision
 
@@ -183,7 +184,7 @@ change artifact identity.
 The primary run interface always accepts an explicit harness reference:
 
 ```bash
-hitch run --harness pi@abc123 ...
+hitch run --harness pi@commit:abc1234 ...
 ```
 
 An optional workspace default may be added for human convenience, but explicit
@@ -195,7 +196,7 @@ selection always wins. The core API must never depend on a process-global
 Mutable inputs must be resolved before execution:
 
 ```text
-pi@main -> pi@git:<repository>#<full-commit-sha>
+pi@commit:abc1234 -> pi@git:<repository>#<full-commit-sha>
 ```
 
 The resolved value is recorded in the artifact and run manifests.
@@ -309,7 +310,7 @@ porting analysis and API.
 
 ## 9. CLI surface
 
-The initial CLI contains five commands.
+The CLI contains seven primary commands.
 
 ### 9.1 `hitch list`
 
@@ -349,7 +350,7 @@ hitch inspect pi --json
 Resolves a mutable reference without preparing or running it.
 
 ```bash
-hitch resolve pi@main --json
+hitch resolve pi@commit:abc1234 --json
 ```
 
 Example response:
@@ -357,7 +358,7 @@ Example response:
 ```json
 {
   "schema_version": "1",
-  "requested_ref": "pi@main",
+  "requested_ref": "pi@commit:abc1234",
   "resolved_revision": {
     "harness": "pi",
     "source_type": "git",
@@ -373,7 +374,7 @@ Example response:
 Resolves, fetches, builds, validates, and caches a revision.
 
 ```bash
-hitch prepare pi@abc123 --json
+hitch prepare pi@commit:abc1234 --json
 ```
 
 Calling `prepare` repeatedly for the same resolved identity must be safe and
@@ -385,7 +386,7 @@ Runs a task with an explicitly selected harness.
 
 ```bash
 hitch run \
-  --harness pi@abc123 \
+  --harness pi@commit:abc1234 \
   --cwd /workspace/project \
   --prompt-file task.md \
   --profile default \
@@ -401,22 +402,25 @@ so agents can inspect cost and failure boundaries before execution.
 The first parser should support:
 
 ```text
-pi                              registry default
-pi@0.42.1                       exact package/tag version
-pi@abc123                       Git revision resolved from default source
-pi@git+https://host/repo#main   explicit remote Git source
-pi@git+file:///path/to/pi#sha   explicit local Git repository and revision
-pi@path:/path/to/tree           local source tree, resolved by content digest
+pi                                      installed executable compatibility alias
+pi@installed                            installed executable
+pi@version:0.42.1                       exact published package version
+pi@commit:abc1234                       commit from the registered Git source
+pi@git+file:///path/to/pi#abc1234       clean local Git repository and commit
 ```
 
 Rules:
 
 1. A successful resolution always produces an immutable identity.
-2. Short Git SHAs are expanded to full SHAs.
-3. Branches and tags are recorded both as requested refs and resolved commits.
-4. Dirty local trees require an explicit policy: reject by default, or snapshot
-   and identify by content digest when `--allow-dirty` is provided.
-5. Authentication material must not appear in persisted source URLs.
+2. Package versions are exact semantic versions. Ranges, tags such as `latest`,
+   and implicit selector guessing are rejected.
+3. Short Git SHAs are expanded to full SHAs and must be unambiguous.
+4. Branch and tag selection is not part of the first implementation.
+5. Dirty local trees are rejected. A future explicit snapshot mode may identify
+   them by content digest.
+6. Explicit Git URLs are limited to `file://` in the first implementation;
+   remote commits use the harness's registered source.
+7. Authentication material must not appear in persisted source URLs.
 
 ## 11. Machine output contract
 
@@ -515,7 +519,7 @@ capabilities:
 harness: pi
 source_type: git
 source: https://github.com/example/pi.git
-requested_revision: main
+requested_revision: abc1234
 resolved_revision: abc123fullsha
 identity: sha256:...
 resolved_at: 2026-08-07T00:00:00Z
@@ -540,6 +544,8 @@ prepared_at: 2026-08-07T00:00:00Z
 run_id: run_01
 artifact_id: sha256:...
 harness: pi
+requested_harness_ref: pi@commit:abc1234
+revision_identity: sha256:...
 revision: abc123fullsha
 workspace: /workspace/project
 profile: default
@@ -700,8 +706,13 @@ Proposed default:
     harnesses/
   store/
     artifacts/
+    refs/
   cache/
     sources/
+  locks/
+    artifacts/
+    sources/
+  tmp/
   runs/
   profiles/
 ```
@@ -821,6 +832,10 @@ The MVP is successful when an external agent can:
 - The primary interface is a CLI with JSON/JSONL, not a GUI.
 - Harness selection is explicit per run; global switching is not the core model.
 - Git revision support is a first-class feature.
+- Harness references use explicit `version:` and `commit:` selector types.
+- A bare harness name means `@installed` for compatibility.
+- `--harness` is the public selector; legacy `--agent <name>` means
+  `--harness <name>@installed` and cannot select a revision.
 - Evaluation and self-evolution remain outside this repository.
 - The first adapters should be Pi and Codex to test materially different native
   interfaces.

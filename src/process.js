@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 
 export async function terminateProcess(child, graceMs = 3_000) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -9,7 +8,7 @@ export async function terminateProcess(child, graceMs = 3_000) {
       stdio: "ignore",
       windowsHide: true,
     });
-    await Promise.race([once(killer, "exit"), delay(graceMs)]);
+    await waitForExitOrTimeout(killer, graceMs);
     return;
   }
 
@@ -20,7 +19,7 @@ export async function terminateProcess(child, graceMs = 3_000) {
     return;
   }
 
-  await Promise.race([once(child, "exit"), delay(graceMs)]);
+  await waitForExitOrTimeout(child, graceMs);
   if (child.exitCode === null && child.signalCode === null) {
     try {
       process.kill(-child.pid, "SIGKILL");
@@ -32,4 +31,19 @@ export async function terminateProcess(child, graceMs = 3_000) {
 
 export function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function waitForExitOrTimeout(child, milliseconds) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    child.once("exit", finish);
+  });
 }

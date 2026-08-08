@@ -71,6 +71,9 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   }
   assert.equal(status.result.status, "succeeded");
   assert.equal(status.result.output, "reply:daemon");
+  assert.equal(status.manifest.canonical_harness_ref, "codex@installed");
+  assert.equal(status.manifest.resolved_revision.source.type, "installed");
+  assert.match(status.manifest.artifact_id, /^sha256:/);
 
   const firstEventRead = await client.requestWithMetadata(`/v1/runs/${accepted.run_id}/events?offset=0`);
   const rawEvents = firstEventRead.payload;

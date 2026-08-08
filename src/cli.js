@@ -10,6 +10,7 @@ import { executeRun, newRunId } from "./engine.js";
 import { HitchError, invalidInput } from "./errors.js";
 import { delay } from "./process.js";
 import { ensureDir, readJSON } from "./fs.js";
+import { listPreparedArtifacts, prepareHarness, resolveHarness } from "./artifacts.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -20,7 +21,9 @@ export async function main(argv) {
 
   switch (command) {
     case "list": return listCommand(args);
-    case "inspect": return inspectCommand(args);
+    case "inspect": return inspectCommand(args, root);
+    case "resolve": return resolveCommand(args, root);
+    case "prepare": return prepareCommand(args, root);
     case "run": return runCommand(args, root);
     case "daemon": return daemonCommand(args, root);
     case "help":
@@ -43,7 +46,7 @@ async function listCommand(args) {
   assertNoArgs(args);
   const agents = await discoverAgents();
   if (json) {
-    process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, agents }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, harnesses: agents }, null, 2)}\n`);
     return;
   }
   for (const agent of agents) {
@@ -52,14 +55,38 @@ async function listCommand(args) {
   }
 }
 
-async function inspectCommand(args) {
+async function inspectCommand(args, root) {
   const json = takeFlag(args, "--json");
   const id = args.shift();
-  if (!id) throw invalidInput("inspect requires an agent name");
+  if (!id) throw invalidInput("inspect requires a harness name");
   assertNoArgs(args);
-  const agent = await inspectAgent(id);
-  if (json) process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, agent }, null, 2)}\n`);
-  else process.stdout.write(`${agent.display_name}: ${agent.status}${agent.executable ? `\n  executable: ${agent.executable}\n  version: ${agent.version || "unknown"}` : ""}\n`);
+  const harness = {
+    ...await inspectAgent(id),
+    prepared_artifacts: await listPreparedArtifacts(id, { root }),
+  };
+  if (json) process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, harness }, null, 2)}\n`);
+  else process.stdout.write(`${harness.display_name}: ${harness.status}${harness.executable ? `\n  executable: ${harness.executable}\n  version: ${harness.version || "unknown"}` : ""}\n  prepared artifacts: ${harness.prepared_artifacts.length}\n`);
+}
+
+async function resolveCommand(args, root) {
+  const json = takeFlag(args, "--json");
+  const reference = args.shift();
+  if (!reference) throw invalidInput("resolve requires a harness reference");
+  assertNoArgs(args);
+  const resolved = await resolveHarness(reference, { root });
+  if (json) process.stdout.write(`${JSON.stringify(resolved, null, 2)}\n`);
+  else process.stdout.write(`${resolved.canonical_ref} -> ${revisionLabel(resolved)} (${resolved.identity})\n`);
+}
+
+async function prepareCommand(args, root) {
+  const json = takeFlag(args, "--json");
+  const reference = args.shift();
+  if (!reference) throw invalidInput("prepare requires a harness reference");
+  assertNoArgs(args);
+  const resolved = await resolveHarness(reference, { root });
+  const artifact = await prepareHarness(resolved, { root });
+  if (json) process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, resolved_revision: resolved, artifact }, null, 2)}\n`);
+  else process.stdout.write(`${artifact.cache_hit ? "Cached" : "Prepared"} ${resolved.canonical_ref} as ${artifact.artifact_id}\n`);
 }
 
 async function runCommand(args, root) {
@@ -82,6 +109,7 @@ async function runCommand(args, root) {
     runId,
     request,
     runsRoot: statePaths(root).runs,
+    root,
     onEvent: output === "jsonl" ? (event) => process.stdout.write(`${JSON.stringify(event)}\n`) : undefined,
   });
   if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -200,6 +228,7 @@ async function daemonLogs(args, root) {
 }
 
 async function parseRunRequest(args) {
+  const harness = takeOption(args, "--harness");
   const agent = takeOption(args, "--agent");
   const model = takeOption(args, "--model") || "";
   const cwd = takeOption(args, "--cwd") || process.cwd();
@@ -207,13 +236,21 @@ async function parseRunRequest(args) {
   const promptFile = takeOption(args, "--prompt-file");
   const timeout = parseDuration(takeOption(args, "--timeout") || "0");
   const agentArgs = takeRepeatedOption(args, "--agent-arg");
-  if (!agent) throw invalidInput("--agent is required");
+  if (harness && agent) throw invalidInput("use only one of --harness and the legacy --agent option");
+  if (!harness && !agent) throw invalidInput("--harness is required");
+  if (agent?.includes("@")) throw invalidInput("--agent accepts only a harness name; use --harness for revision selection");
   if (promptValue !== undefined && promptFile) throw invalidInput("use only one of --prompt and --prompt-file");
   let prompt = promptValue;
   if (promptFile) prompt = await readFile(path.resolve(promptFile), "utf8");
   if (prompt === undefined && !process.stdin.isTTY) prompt = readFileSync(0, "utf8");
   if (!prompt) throw invalidInput("provide --prompt, --prompt-file, or stdin");
-  return { agent, model, cwd, prompt, timeout_ms: timeout, agent_args: agentArgs };
+  return { harness_ref: harness || `${agent}@installed`, model, cwd, prompt, timeout_ms: timeout, agent_args: agentArgs };
+}
+
+function revisionLabel(resolved) {
+  if (resolved.revision.type === "commit") return resolved.revision.commit;
+  if (resolved.revision.type === "version") return resolved.revision.version;
+  return resolved.revision.version || resolved.source.integrity;
 }
 
 async function waitForDaemonRun(client, runId, output) {
@@ -284,5 +321,5 @@ function assertNoArgs(args) {
 }
 
 function helpText() {
-  return `Hitch — one local runtime for coding agents\n\nUsage:\n  hitch list [--json]\n  hitch inspect <agent> [--json]\n  hitch run --agent <name> [--model <id>] --prompt <text> [--daemon]\n  hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]\n  hitch daemon stop | status [--json] | logs [-n <lines>]\n  hitch daemon submit --agent <name> --prompt <text> [--wait]\n  hitch daemon cancel <run-id>\n\nGlobal:\n  --root <path>    Relocate all Hitch state (default: ~/.hitch)\n`;
+  return `Hitch — one local runtime for coding agents\n\nUsage:\n  hitch list [--json]\n  hitch inspect <harness> [--json]\n  hitch resolve <harness-ref> [--json]\n  hitch prepare <harness-ref> [--json]\n  hitch run --harness <ref> [--model <id>] --prompt <text> [--daemon]\n  hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]\n  hitch daemon stop | status [--json] | logs [-n <lines>]\n  hitch daemon submit --harness <ref> --prompt <text> [--wait]\n  hitch daemon cancel <run-id>\n\nHarness refs:\n  codex                         Installed executable (compatibility default)\n  codex@installed               Installed executable\n  codex@version:0.42.1          Exact published version\n  codex@commit:abc1234          Commit from the registered Git source\n  codex@git+file:///src#abc1234 Commit from a clean local Git repository\n\nGlobal:\n  --root <path>    Relocate all Hitch state (default: ~/.hitch)\n`;
 }

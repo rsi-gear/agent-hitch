@@ -36,5 +36,12 @@ export function statePaths(root) {
     log: path.join(root, "daemon.log"),
     errorLog: path.join(root, "daemon.err.log"),
     runs: path.join(root, "runs"),
+    store: path.join(root, "store"),
+    artifacts: path.join(root, "store", "artifacts"),
+    artifactIndex: path.join(root, "store", "refs"),
+    sourceCache: path.join(root, "cache", "sources"),
+    artifactLocks: path.join(root, "locks", "artifacts"),
+    sourceLocks: path.join(root, "locks", "sources"),
+    temporary: path.join(root, "tmp"),
   };
 }

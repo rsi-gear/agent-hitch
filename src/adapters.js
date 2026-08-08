@@ -8,6 +8,17 @@ const definitions = {
     command: "codex",
     path_env: "HITCH_CODEX_PATH",
     version_args: ["--version"],
+    revision_sources: {
+      version: { type: "npm", package: "@openai/codex", bin: "codex" },
+      commit: {
+        type: "git",
+        url: "https://github.com/openai/codex.git",
+        commands: [
+          { executable: "cargo", args: ["build", "--release", "--locked", "--bin", "codex"], cwd: "codex-rs" },
+        ],
+        entrypoint: "codex-rs/target/release/codex",
+      },
+    },
     capabilities: {
       non_interactive: true,
       streaming: true,
@@ -64,6 +75,9 @@ const definitions = {
     command: "claude",
     path_env: "HITCH_CLAUDE_PATH",
     version_args: ["--version"],
+    revision_sources: {
+      version: { type: "npm", package: "@anthropic-ai/claude-code", bin: "claude" },
+    },
     capabilities: {
       non_interactive: true,
       streaming: true,
@@ -121,6 +135,22 @@ const definitions = {
     command: "pi",
     path_env: "HITCH_PI_PATH",
     version_args: ["--version"],
+    revision_sources: {
+      version: {
+        type: "npm",
+        packages: ["@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"],
+        bin: "pi",
+      },
+      commit: {
+        type: "git",
+        url: "https://github.com/earendil-works/pi.git",
+        commands: [
+          { executable: "npm", args: ["ci", "--ignore-scripts"] },
+          { executable: "npm", args: ["run", "build"] },
+        ],
+        entrypoint: "packages/coding-agent/dist/cli.js",
+      },
+    },
     capabilities: {
       non_interactive: true,
       streaming: true,
@@ -182,6 +212,9 @@ const definitions = {
     command: "opencode",
     path_env: "HITCH_OPENCODE_PATH",
     version_args: ["--version"],
+    revision_sources: {
+      version: { type: "npm", package: "opencode-ai", bin: "opencode" },
+    },
     capabilities: {
       non_interactive: true,
       streaming: true,
@@ -274,25 +307,41 @@ function openCodeErrorMessage(error) {
 export function getAdapter(id) {
   const adapter = definitions[id];
   if (!adapter) {
-    throw new HitchError(`unknown agent: ${id}`, { code: "agent_not_found", exitCode: 3 });
+    throw new HitchError(`unknown harness: ${id}`, { code: "harness_not_found", exitCode: 3 });
   }
   return adapter;
 }
 
 export function publicDefinition(definition) {
+  const revisionSources = definition.revision_sources || {};
   return {
     id: definition.id,
     display_name: definition.display_name,
     command: definition.command,
     path_env: definition.path_env,
     capabilities: definition.capabilities,
+    revision_selectors: ["installed", ...Object.keys(revisionSources)],
+    revision_sources: Object.fromEntries(Object.entries(revisionSources).map(([selector, source]) => [
+      selector,
+      {
+        type: source.type,
+        ...(source.package ? { package: source.package } : {}),
+        ...(source.packages ? { packages: source.packages } : {}),
+        ...(source.url ? { url: source.url } : {}),
+      },
+    ])),
   };
 }
 
 export function normalizeRequest(input) {
   const cwd = path.resolve(typeof input?.cwd === "string" && input.cwd ? input.cwd : process.cwd());
+  const harnessRef = typeof input?.harness_ref === "string"
+    ? input.harness_ref.trim()
+    : typeof input?.agent === "string" && input.agent.trim()
+      ? `${input.agent.trim()}@installed`
+      : "";
   return {
-    agent: typeof input?.agent === "string" ? input.agent.trim() : "",
+    harness_ref: harnessRef,
     model: typeof input?.model === "string" ? input.model : "",
     cwd,
     prompt: typeof input?.prompt === "string" ? input.prompt : "",

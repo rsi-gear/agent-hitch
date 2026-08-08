@@ -4,12 +4,26 @@
   "title": "Hitch run request",
   "type": "object",
   "additionalProperties": false,
-  "required": ["agent", "prompt"],
+  "required": ["prompt"],
+  "oneOf": [
+    {
+      "required": ["harness_ref"],
+      "not": { "required": ["agent"] }
+    },
+    {
+      "required": ["agent"],
+      "not": { "required": ["harness_ref"] }
+    }
+  ],
   "properties": {
     "schema_version": {
       "const": "1"
     },
     "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "harness_ref": {
       "type": "string",
       "minLength": 1
     },

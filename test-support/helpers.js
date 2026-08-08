@@ -29,9 +29,16 @@ process.stdin.on("end", () => {
 
 export async function writeFakePi(directory) {
   const file = path.join(directory, "fake-pi");
-  const source = `#!/usr/bin/env node
+  const source = fakePiSource();
+  await writeFile(file, source, { mode: 0o755 });
+  await chmod(file, 0o755);
+  return file;
+}
+
+export function fakePiSource(version = "0.82.1") {
+  return `#!/usr/bin/env node
 if (process.argv.includes("--version")) {
-  process.stdout.write("pi 0.82.1\\n");
+  process.stdout.write("pi ${version}\\n");
   process.exit(0);
 }
 let prompt = "";
@@ -44,6 +51,57 @@ process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify({type:"message_update",assistantMessageEvent:{type:"text_delta",contentIndex:0,delta:prompt}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"reply:" + prompt}],usage,stopReason:"stop"}}) + "\\n");
 });
+`;
+}
+
+export async function writeFakeNpm(directory, {
+  version = "1.2.3",
+  installedIntegrity = "sha512-fake-integrity",
+  installDelayMs = 0,
+} = {}) {
+  const file = path.join(directory, "fake-npm");
+  const installedPi = fakePiSource(version);
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "--version") {
+  process.stdout.write("10.9.0\\n");
+  process.exit(0);
+}
+if (args[0] === "view") {
+  process.stdout.write(JSON.stringify({
+    version: ${JSON.stringify(version)},
+    dist: {
+      integrity: "sha512-fake-integrity",
+      tarball: "https://registry.example.test/pi-${version}.tgz"
+    }
+  }));
+  process.exit(0);
+}
+if (args[0] === "install") {
+  setTimeout(() => {
+    const bin = path.join(process.cwd(), "node_modules", ".bin");
+    const packageRoot = path.join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent");
+    fs.mkdirSync(bin, {recursive:true});
+    fs.mkdirSync(path.join(packageRoot, "dist"), {recursive:true});
+    fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({name:"@earendil-works/pi-coding-agent",version:${JSON.stringify(version)},bin:{pi:"dist/cli.js"}}));
+    fs.writeFileSync(path.join(packageRoot, "dist", "cli.js"), ${JSON.stringify(installedPi)}, {mode:0o755});
+    fs.writeFileSync(path.join(process.cwd(), "package-lock.json"), JSON.stringify({
+      lockfileVersion:3,
+      packages:{
+        "node_modules/@earendil-works/pi-coding-agent":{
+          version:${JSON.stringify(version)},
+          integrity:${JSON.stringify(installedIntegrity)}
+        }
+      }
+    }));
+    process.exit(0);
+  }, ${installDelayMs});
+  return;
+}
+process.stderr.write("unsupported fake npm invocation: " + args.join(" ") + "\\n");
+process.exit(2);
 `;
   await writeFile(file, source, { mode: 0o755 });
   await chmod(file, 0o755);

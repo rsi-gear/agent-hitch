@@ -6,22 +6,32 @@ import { getAdapter, normalizeRequest } from "./adapters.js";
 import { EventSink } from "./events.js";
 import { HitchError, invalidInput } from "./errors.js";
 import { atomicWriteJSON, ensureDir } from "./fs.js";
-import { inspectAgent } from "./registry.js";
 import { consumeLines } from "./line-stream.js";
 import { terminateProcess } from "./process.js";
 import { SCHEMA_VERSION } from "./config.js";
+import { parseHarnessReference } from "./harness-reference.js";
+import { prepareHarness, resolveHarness } from "./artifacts.js";
 
 export async function validateRunRequest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw invalidInput("run request must be a JSON object");
   }
-  const allowedFields = new Set(["schema_version", "agent", "model", "cwd", "prompt", "timeout_ms", "agent_args"]);
+  const allowedFields = new Set(["schema_version", "harness_ref", "agent", "model", "cwd", "prompt", "timeout_ms", "agent_args"]);
   const unexpectedField = Object.keys(input).find((field) => !allowedFields.has(field));
   if (unexpectedField) throw invalidInput(`unknown run request field: ${unexpectedField}`);
   if (input.schema_version !== undefined && input.schema_version !== SCHEMA_VERSION) {
     throw invalidInput(`unsupported schema_version: ${input.schema_version}`);
   }
-  if (typeof input.agent !== "string" || !input.agent.trim()) throw invalidInput("agent must be a non-empty string");
+  if (input.harness_ref !== undefined && input.agent !== undefined) {
+    throw invalidInput("use only one of harness_ref and the legacy agent field");
+  }
+  if (typeof input.agent === "string" && input.agent.includes("@")) {
+    throw invalidInput("the legacy agent field accepts only a harness name; use harness_ref for revision selection");
+  }
+  const referenceValue = input.harness_ref ?? input.agent;
+  if (typeof referenceValue !== "string" || !referenceValue.trim()) {
+    throw invalidInput("harness_ref must be a non-empty string");
+  }
   if (typeof input.prompt !== "string" || !input.prompt.trim()) throw invalidInput("prompt must be a non-empty string");
   if (input.cwd !== undefined && (typeof input.cwd !== "string" || !input.cwd.trim())) {
     throw invalidInput("cwd must be a non-empty string");
@@ -34,7 +44,8 @@ export async function validateRunRequest(input) {
     throw invalidInput("agent_args must be an array of strings");
   }
   const request = normalizeRequest(input);
-  getAdapter(request.agent);
+  const reference = parseHarnessReference(request.harness_ref);
+  getAdapter(reference.harness_id);
   let workspace;
   try {
     workspace = await stat(request.cwd);
@@ -50,11 +61,15 @@ export function newRunId() {
 }
 
 export function buildManifest(runId, request) {
+  const reference = parseHarnessReference(request.harness_ref);
   return {
     schema_version: SCHEMA_VERSION,
     run_id: runId,
     status: "queued",
-    agent: request.agent,
+    harness_id: reference.harness_id,
+    requested_harness_ref: reference.raw,
+    canonical_harness_ref: reference.canonical,
+    agent: reference.harness_id,
     requested_model: request.model || null,
     effective_model: request.model || null,
     workspace: request.cwd,
@@ -67,7 +82,7 @@ export function buildManifest(runId, request) {
   };
 }
 
-export async function executeRun({ runId, request, runsRoot, onEvent, onProcess, signal }) {
+export async function executeRun({ runId, request, runsRoot, root = path.dirname(runsRoot), resolvedRevision, onEvent, onProcess, signal }) {
   const normalized = await validateRunRequest(request);
   const runDirectory = path.join(runsRoot, runId);
   await ensureDir(runDirectory);
@@ -92,20 +107,34 @@ export async function executeRun({ runId, request, runsRoot, onEvent, onProcess,
   let finalMessage;
   let abortHandler;
   let result;
-  let stage = "discovery";
+  let stage = "resolution";
+  let resolution = resolvedRevision;
+  let artifact;
 
   try {
-    const discovered = await inspectAgent(normalized.agent);
-    if (!discovered || discovered.status !== "available") {
-      throw new HitchError(`agent is not installed: ${normalized.agent}`, { code: "launch_failed", exitCode: 6 });
-    }
-
+    const reference = parseHarnessReference(normalized.harness_ref);
+    resolution ||= await resolveHarness(reference, { root });
+    await atomicWriteJSON(path.join(runDirectory, "resolution.json"), resolution);
     manifest = {
       ...existingManifest,
+      status: "preparing",
+      resolved_revision: resolution,
+      revision_identity: resolution.identity,
+    };
+    await atomicWriteJSON(manifestPath, manifest);
+
+    stage = "preparation";
+    artifact = await prepareHarness(resolution, { root, signal });
+
+    manifest = {
+      ...manifest,
       status: "running",
-      executable: discovered.executable,
-      agent_version: discovered.version || null,
-      agent_identity: discovered.identity,
+      artifact_id: artifact.artifact_id,
+      artifact_source_type: artifact.source_type,
+      executable: artifact.executable,
+      artifact_entrypoint: artifact.entrypoint_args?.[0] || artifact.executable,
+      agent_version: artifact.observed_version || resolution.revision.version || null,
+      agent_identity: resolution.identity,
       started_at: startedAt.toISOString(),
     };
     await atomicWriteJSON(manifestPath, manifest);
@@ -116,15 +145,18 @@ export async function executeRun({ runId, request, runsRoot, onEvent, onProcess,
     sinkOpened = true;
     sink.emit({
       type: "run.started",
-      agent: normalized.agent,
+      harness: reference.harness_id,
+      agent: reference.harness_id,
       model: normalized.model || null,
-      agent_identity: discovered.identity,
+      revision_identity: resolution.identity,
+      artifact_id: artifact.artifact_id,
     });
 
     stage = "adapter_setup";
-    const adapter = getAdapter(normalized.agent);
+    const adapter = getAdapter(reference.harness_id);
     const adapterState = {};
-    const specification = adapter.process(normalized, discovered.executable);
+    const specification = adapter.process(normalized, artifact.executable);
+    if (artifact.entrypoint_args?.length) specification.args.unshift(...artifact.entrypoint_args);
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);
       sink.emit({ type: "run.failed", status: "cancelled", error: result.error });
@@ -205,6 +237,9 @@ export async function executeRun({ runId, request, runsRoot, onEvent, onProcess,
           exit_code: 0,
           process_exit_code: exit.code,
           output: finalMessage ?? messageParts.join(""),
+          harness_id: reference.harness_id,
+          revision_identity: resolution.identity,
+          artifact_id: artifact.artifact_id,
           started_at: startedAt.toISOString(),
           completed_at: new Date().toISOString(),
         };
@@ -214,7 +249,7 @@ export async function executeRun({ runId, request, runsRoot, onEvent, onProcess,
   } catch (error) {
     if (timeout) clearTimeout(timeout);
     if (child) await terminateProcess(child).catch(() => {});
-    const launchStage = stage === "discovery" || stage === "adapter_setup" || stage === "launch";
+    const launchStage = stage === "adapter_setup" || stage === "launch";
     const code = error instanceof HitchError ? error.code : launchStage ? "launch_failed" : "internal_error";
     const exitCode = error instanceof HitchError ? error.exitCode : launchStage ? 6 : 12;
     result = failureResult(runId, startedAt, code, error?.message || String(error), exitCode);
@@ -239,12 +274,18 @@ export async function executeRun({ runId, request, runsRoot, onEvent, onProcess,
   return result;
 }
 
-export async function createQueuedRun({ runId = newRunId(), request, runsRoot }) {
+export async function createQueuedRun({ runId = newRunId(), request, runsRoot, root = path.dirname(runsRoot) }) {
   const normalized = await validateRunRequest(request);
+  const resolvedRevision = await resolveHarness(normalized.harness_ref, { root });
   const directory = await ensureDir(path.join(runsRoot, runId));
-  await atomicWriteJSON(path.join(directory, "manifest.json"), buildManifest(runId, normalized));
+  await atomicWriteJSON(path.join(directory, "manifest.json"), {
+    ...buildManifest(runId, normalized),
+    resolved_revision: resolvedRevision,
+    revision_identity: resolvedRevision.identity,
+  });
   await atomicWriteJSON(path.join(directory, "request.json"), { ...normalized, schema_version: SCHEMA_VERSION });
-  return { runId, request: normalized, directory };
+  await atomicWriteJSON(path.join(directory, "resolution.json"), resolvedRevision);
+  return { runId, request: normalized, resolvedRevision, directory };
 }
 
 function failureResult(runId, startedAt, code, message, exitCode, processExit = {}) {

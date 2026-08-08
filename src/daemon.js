@@ -32,6 +32,7 @@ export class DaemonServer {
       this.agents = await discoverAgents();
       this.scheduler = new Scheduler({
         runsRoot: this.paths.runs,
+        root: this.paths.root,
         maxConcurrent: this.maxConcurrent,
         onEvent: (event) => this.logger("event", { type: event.type, run_id: event.run_id }),
       });
@@ -40,7 +41,7 @@ export class DaemonServer {
       this.server = createServer((request, response) => {
         this.handle(request, response).catch((error) => {
           this.logger("request_error", { error: error.message, path: request.url });
-          const status = error?.exitCode === 2 ? 400 : error?.exitCode === 3 ? 404 : 500;
+          const status = errorStatus(error);
           json(response, status, {
             error: {
               code: error.code || "internal_error",
@@ -116,9 +117,10 @@ export class DaemonServer {
       return json(response, 401, { error: { code: "unauthorized", message: "missing or invalid daemon token" } });
     }
 
-    if (request.method === "GET" && url.pathname === "/v1/agents") {
+    if (request.method === "GET" && ["/v1/harnesses", "/v1/agents"].includes(url.pathname)) {
       this.agents = await discoverAgents();
-      return json(response, 200, { schema_version: SCHEMA_VERSION, agents: this.agents });
+      const key = url.pathname === "/v1/agents" ? "agents" : "harnesses";
+      return json(response, 200, { schema_version: SCHEMA_VERSION, [key]: this.agents });
     }
     if (request.method === "POST" && url.pathname === "/v1/runs") {
       const requestBody = await readBodyJSON(request);
@@ -190,6 +192,7 @@ export class DaemonServer {
       root_id: this.rootId,
       uptime_seconds: Math.floor((Date.now() - this.startedAt.getTime()) / 1000),
       agents: this.agents?.filter((agent) => agent.status === "available").map((agent) => agent.id) || [],
+      harnesses: this.agents?.filter((agent) => agent.status === "available").map((agent) => agent.id) || [],
       scheduler: this.scheduler?.snapshot() || null,
     };
   }
@@ -294,6 +297,14 @@ function httpExitCode(status) {
   if (status === 400) return 2;
   if (status === 404) return 3;
   return 12;
+}
+
+function errorStatus(error) {
+  if (error?.exitCode === 2) return 400;
+  if (error?.exitCode === 3) return 404;
+  if (error?.exitCode === 11) return 403;
+  if ([4, 5, 10].includes(error?.exitCode)) return 422;
+  return 500;
 }
 
 function httpErrorCode(status) {

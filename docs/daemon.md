@@ -87,8 +87,10 @@ accepted -> queued -> running -> succeeded
 ```
 
 An accepted daemon request is written to disk before it enters the in-memory
-queue. The run engine pins the executable identity before launch, writes raw and
-normalized output during execution, and atomically finalizes the result.
+queue. Submission resolves the requested harness reference to an immutable
+revision before it is accepted. The run engine prepares or reuses the artifact,
+writes raw and normalized output during execution, and atomically finalizes the
+result.
 
 On restart, any record still marked `queued` or `running` without a result is
 failed with `daemon_restarted`. Automatic replay is intentionally avoided:
@@ -106,8 +108,9 @@ Run requests are validated against the contract represented by
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Readiness, PID, uptime, detected agents, queue counts |
-| `GET` | `/v1/agents` | Refresh and return detailed agent discovery |
+| `GET` | `/health` | Readiness, PID, uptime, detected harnesses, queue counts |
+| `GET` | `/v1/harnesses` | Refresh and return detailed harness discovery |
+| `GET` | `/v1/agents` | Compatibility alias using the legacy response key |
 | `POST` | `/v1/runs` | Validate, persist, and enqueue a run |
 | `GET` | `/v1/runs/{id}` | Read manifest and final result when present |
 | `GET` | `/v1/runs/{id}/events?offset={byte}` | Incrementally read normalized NDJSON events and receive the next offset |
@@ -126,6 +129,7 @@ Run requests are validated against the contract represented by
   runs/
     run_<uuid>/
       request.json
+      resolution.json
       manifest.json
       events.jsonl
       stdout.log
@@ -143,10 +147,13 @@ test profiles and isolated callers possible.
 - Codex, Claude, Pi, and OpenCode have native adapters. Codex and Pi use
   ephemeral execution to avoid shared session writes. Full per-run
   credential/config homes and resume semantics still need adapter-specific work.
+- Exact npm versions are available for all four harnesses. Codex and Pi also
+  support registered or clean local Git commits; source-build support for Claude
+  Code and OpenCode is not currently declared.
 - Event translation is intentionally additive. Native events that do not have a
   stable common meaning are preserved as `provider.event`.
-- Run-history GC, durable queue replay policy, push-based SSE/WebSocket delivery,
-  revision preparation, and managed worktrees are not implemented yet.
+- Run-history/artifact GC, durable queue replay policy, push-based
+  SSE/WebSocket delivery, and managed worktrees are not implemented yet.
 - Loopback plus a file token protects the local control API from accidental
   cross-process use; it is not an OS sandbox for the launched coding agent.
 
