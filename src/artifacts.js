@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { constants } from "node:fs";
-import { access, chmod, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { access, chmod, lstat, open, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { getAdapter } from "./adapters.js";
@@ -10,6 +10,7 @@ import { atomicWriteJSON, ensureDir, readJSON, removeIfExists } from "./fs.js";
 import { parseHarnessReference } from "./harness-reference.js";
 import { detectVersion, fingerprintExecutable, inspectAgent } from "./registry.js";
 import { delay, terminateProcess } from "./process.js";
+import { reclaimStaleLock } from "./locks.js";
 
 const RECIPE_VERSION = "1";
 const COMMAND_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -78,9 +79,8 @@ export async function listPreparedArtifacts(harnessId, { root } = {}) {
     if (!entry.isDirectory()) continue;
     const manifest = await readJSON(path.join(directory, entry.name, "artifact.json"), null).catch(() => null);
     if (!manifest || manifest.harness_id !== harnessId) continue;
-    const executable = path.join(directory, entry.name, manifest.entrypoint || "");
-    const ready = Boolean(manifest.entrypoint_integrity)
-      && await executableMatches(executable, manifest.entrypoint_integrity);
+    const artifactDirectory = path.join(directory, entry.name);
+    const ready = await artifactMatches(artifactDirectory, manifest);
     artifacts.push({ ...manifest, status: ready ? "ready" : "invalid" });
   }
   return artifacts.sort((left, right) => String(right.prepared_at || "").localeCompare(String(left.prepared_at || "")));
@@ -294,6 +294,7 @@ async function prepareInstalled(resolved, adapter) {
     entrypoint: resolved.source.executable,
     launcher: "direct",
     entrypoint_integrity: currentIdentity,
+    artifact_integrity: currentIdentity,
     toolchain: { node: process.version },
     resolved_revision: resolved,
     executable: resolved.source.executable,
@@ -323,21 +324,26 @@ async function prepareNpmArtifact(resolved, adapter, source, paths, preparationK
     await assertEntrypoint(stagedExecutable, entrypointLauncher(entrypoint), resolved.canonical_ref);
     const lockIdentity = await optionalFileDigest(path.join(staging, "package-lock.json"));
     const toolchain = { node: process.version, npm: await commandVersion(npm, env, signal) };
+    const launcher = entrypointLauncher(entrypoint);
+    const invocation = artifactInvocation({ entrypoint, launcher }, staging);
+    const observedVersion = await detectVersion(invocation.executable, [...invocation.entrypoint_args, ...adapter.version_args]);
+    throwIfAborted(signal);
+    assertObservedVersion(observedVersion, resolved.revision.version, resolved.canonical_ref);
+    const entrypointIntegrity = await fingerprintExecutable(stagedExecutable);
+    const artifactIntegrity = await artifactDirectoryIntegrity(staging);
     const artifactId = digest({
       preparation_key: preparationKey,
       dependency_lock: lockIdentity,
       toolchain,
+      artifact_integrity: artifactIntegrity,
     });
     const manifest = artifactManifest(resolved, adapter, artifactId, entrypoint, toolchain, {
       dependency_lock: lockIdentity,
+      artifact_integrity: artifactIntegrity,
     });
-    manifest.launcher = entrypointLauncher(entrypoint);
-    const invocation = artifactInvocation(manifest, staging);
-    const observedVersion = await detectVersion(invocation.executable, [...invocation.entrypoint_args, ...adapter.version_args]);
-    throwIfAborted(signal);
-    assertObservedVersion(observedVersion, resolved.revision.version, resolved.canonical_ref);
+    manifest.launcher = launcher;
     manifest.observed_version = observedVersion || null;
-    manifest.entrypoint_integrity = await fingerprintExecutable(stagedExecutable);
+    manifest.entrypoint_integrity = entrypointIntegrity;
     await atomicWriteJSON(path.join(staging, "artifact.json"), manifest);
     return promoteArtifact(paths, staging, manifest, preparationKey);
   } catch (error) {
@@ -381,21 +387,26 @@ async function prepareGitArtifact(resolved, adapter, source, paths, preparationK
     if (stagedExecutable.endsWith(".js")) await chmod(stagedExecutable, 0o755).catch(() => {});
     await assertEntrypoint(stagedExecutable, entrypointLauncher(entrypoint), resolved.canonical_ref);
     const lockIdentity = await sourceLockIdentity(sourceDirectory);
+    await rm(path.join(sourceDirectory, ".git"), { recursive: true, force: true });
+    const launcher = entrypointLauncher(entrypoint);
+    const invocation = artifactInvocation({ entrypoint, launcher }, staging);
+    const observedVersion = await detectVersion(invocation.executable, [...invocation.entrypoint_args, ...adapter.version_args]);
+    throwIfAborted(signal);
+    const entrypointIntegrity = await fingerprintExecutable(stagedExecutable);
+    const artifactIntegrity = await artifactDirectoryIntegrity(staging);
     const artifactId = digest({
       preparation_key: preparationKey,
       dependency_lock: lockIdentity,
       toolchain,
+      artifact_integrity: artifactIntegrity,
     });
-    await rm(path.join(sourceDirectory, ".git"), { recursive: true, force: true });
     const manifest = artifactManifest(resolved, adapter, artifactId, entrypoint, toolchain, {
       dependency_lock: lockIdentity,
+      artifact_integrity: artifactIntegrity,
     });
-    manifest.launcher = entrypointLauncher(entrypoint);
-    const invocation = artifactInvocation(manifest, staging);
-    const observedVersion = await detectVersion(invocation.executable, [...invocation.entrypoint_args, ...adapter.version_args]);
-    throwIfAborted(signal);
+    manifest.launcher = launcher;
     manifest.observed_version = observedVersion || null;
-    manifest.entrypoint_integrity = await fingerprintExecutable(stagedExecutable);
+    manifest.entrypoint_integrity = entrypointIntegrity;
     await atomicWriteJSON(path.join(staging, "artifact.json"), manifest);
     return promoteArtifact(paths, staging, manifest, preparationKey);
   } catch (error) {
@@ -431,10 +442,8 @@ async function promoteArtifact(paths, staging, manifest, preparationKey) {
   } catch (error) {
     if (!["EEXIST", "ENOTEMPTY"].includes(error?.code)) throw error;
     const existing = await readJSON(path.join(artifactDirectory, "artifact.json"), null);
-    const executable = existing && path.join(artifactDirectory, existing.entrypoint || "");
     const valid = existing?.artifact_id === manifest.artifact_id
-      && existing?.entrypoint_integrity
-      && await executableMatches(executable, existing.entrypoint_integrity);
+      && await artifactMatches(artifactDirectory, existing);
     if (!valid) {
       const quarantine = path.join(paths.temporary, `invalid-${manifest.artifact_id.replace("sha256:", "")}-${randomBytes(6).toString("hex")}`);
       await rename(artifactDirectory, quarantine);
@@ -466,7 +475,7 @@ async function readCachedArtifact(paths, preparationKey, expectedRevisionIdentit
   const executable = path.join(directory, manifest.entrypoint);
   try {
     await access(executable, manifest.launcher === "node" ? constants.R_OK : constants.X_OK);
-    if (!manifest.entrypoint_integrity || !await executableMatches(executable, manifest.entrypoint_integrity)) return null;
+    if (!await artifactMatches(directory, manifest)) return null;
   } catch {
     return null;
   }
@@ -594,7 +603,7 @@ async function withFileLock(directory, key, operation, {
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       if (await staleLock(file)) {
-        await removeIfExists(file);
+        if (!await reclaimStaleLock(file, staleLock)) await delay(100);
         continue;
       }
       await delay(100);
@@ -863,6 +872,60 @@ async function executableMatches(executable, identity) {
     return await fingerprintExecutable(executable) === identity;
   } catch {
     return false;
+  }
+}
+
+async function artifactMatches(directory, manifest) {
+  if (!manifest?.entrypoint || !manifest.entrypoint_integrity || !manifest.artifact_integrity) return false;
+  const root = path.resolve(directory);
+  const executable = path.resolve(root, manifest.entrypoint);
+  if (executable !== root && !executable.startsWith(`${root}${path.sep}`)) return false;
+  if (!await executableMatches(executable, manifest.entrypoint_integrity)) return false;
+  try {
+    return await artifactDirectoryIntegrity(directory) === manifest.artifact_integrity;
+  } catch {
+    return false;
+  }
+}
+
+async function artifactDirectoryIntegrity(directory) {
+  const root = path.resolve(directory);
+  const hash = createHash("sha256");
+  await digestArtifactDirectory(hash, root, root, "", true);
+  return `sha256:${hash.digest("hex")}`;
+}
+
+async function digestArtifactDirectory(hash, root, directory, relative, topLevel) {
+  const entries = await readdir(directory);
+  entries.sort();
+  for (const name of entries) {
+    if (topLevel && name === "artifact.json") continue;
+    const absolute = path.join(directory, name);
+    const childRelative = relative ? path.join(relative, name) : name;
+    const info = await lstat(absolute);
+    if (info.isDirectory()) {
+      hash.update(`d\0${childRelative}\0${info.mode & 0o7777}\0`);
+      await digestArtifactDirectory(hash, root, absolute, childRelative, false);
+    } else if (info.isFile()) {
+      hash.update(`f\0${childRelative}\0${info.mode & 0o7777}\0${info.size}\0`);
+      for await (const chunk of createReadStream(absolute)) hash.update(chunk);
+      hash.update("\0");
+    } else if (info.isSymbolicLink()) {
+      const target = await readlink(absolute);
+      const resolvedTarget = path.resolve(path.dirname(absolute), target);
+      if (resolvedTarget !== root && !resolvedTarget.startsWith(`${root}${path.sep}`)) {
+        throw new HitchError(`artifact symlink escapes its installation directory: ${absolute}`, {
+          code: "artifact_invalid",
+          exitCode: 5,
+        });
+      }
+      hash.update(`l\0${childRelative}\0${target}\0`);
+    } else {
+      throw new HitchError(`unsupported special file in prepared artifact: ${absolute}`, {
+        code: "artifact_invalid",
+        exitCode: 5,
+      });
+    }
   }
 }
 

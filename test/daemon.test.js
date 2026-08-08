@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DaemonServer, daemonClient } from "../src/daemon.js";
@@ -87,6 +87,24 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   assert.equal(secondEventRead.payload, "");
   assert.equal(Number(secondEventRead.headers.get("x-hitch-next-offset")), nextOffset);
 
+  const appendedEvent = JSON.stringify({
+    schema_version: "1",
+    sequence: 999,
+    timestamp: new Date().toISOString(),
+    run_id: accepted.run_id,
+    type: "provider.event",
+  });
+  const splitAt = Math.floor(appendedEvent.length / 2);
+  const eventsPath = path.join(statePaths(root).runs, accepted.run_id, "events.jsonl");
+  await appendFile(eventsPath, appendedEvent.slice(0, splitAt));
+  const partialEventRead = await client.requestWithMetadata(`/v1/runs/${accepted.run_id}/events?offset=${nextOffset}`);
+  assert.equal(partialEventRead.payload, "");
+  assert.equal(Number(partialEventRead.headers.get("x-hitch-next-offset")), nextOffset);
+  await appendFile(eventsPath, `${appendedEvent.slice(splitAt)}\n`);
+  const completedEventRead = await client.requestWithMetadata(`/v1/runs/${accepted.run_id}/events?offset=${nextOffset}`);
+  assert.equal(completedEventRead.payload, `${appendedEvent}\n`);
+  assert.ok(Number(completedEventRead.headers.get("x-hitch-next-offset")) > nextOffset);
+
   const isolatedSource = await mkdtemp(path.join(tmpdir(), "hitch-daemon-copy-source-"));
   t.after(() => rm(isolatedSource, { recursive: true, force: true }));
   const isolatedAccepted = await client.request("/v1/runs", {
@@ -165,4 +183,26 @@ test("daemon reclaims a stale lock and releases it after startup failure", async
   const server = new DaemonServer({ root, port: -1, maxConcurrent: 1, logger: () => {} });
   await assert.rejects(server.start());
   assert.equal(await readJSON(statePaths(root).lock, null), null);
+});
+
+test("concurrent stale-lock recovery elects exactly one daemon", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-stale-lock-race-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await atomicWriteJSON(statePaths(root).lock, {
+    schema_version: "1",
+    instance_id: "stale",
+    pid: 2_147_483_647,
+  });
+  const candidates = [
+    new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }),
+    new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }),
+  ];
+
+  const settled = await Promise.allSettled(candidates.map((server) => server.start()));
+  const winners = settled.filter((result) => result.status === "fulfilled");
+  const losers = settled.filter((result) => result.status === "rejected");
+  assert.equal(winners.length, 1);
+  assert.equal(losers.length, 1);
+  assert.equal(losers[0].reason.code, "already_running");
+  await winners[0].value.close();
 });

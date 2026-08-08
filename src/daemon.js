@@ -1,13 +1,14 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
-import { open, readFile, rename, rm, stat } from "node:fs/promises";
+import { open, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
 import { atomicWriteJSON, ensureDir, readJSON, removeIfExists, writePrivateFile } from "./fs.js";
 import { discoverAgents } from "./registry.js";
 import { SCHEMA_VERSION, statePaths } from "./config.js";
 import { HitchError, invalidInput } from "./errors.js";
+import { reclaimStaleLock } from "./locks.js";
 
 export class DaemonServer {
   constructor({ root, port, maxConcurrent, logger = defaultLogger }) {
@@ -151,15 +152,22 @@ export class DaemonServer {
         try {
           const info = await stat(eventsPath);
           if (offset > info.size) throw invalidInput(`events offset ${offset} exceeds current size ${info.size}`);
+          const completeSize = await completeLineSize(eventsPath, info.size);
+          if (offset > completeSize) {
+            throw invalidInput(`events offset ${offset} exceeds committed size ${completeSize}`);
+          }
+          if (!await isLineBoundary(eventsPath, offset)) {
+            throw invalidInput(`events offset ${offset} is not at an event boundary`);
+          }
           response.writeHead(200, {
             "content-type": "application/x-ndjson",
-            "x-hitch-next-offset": String(info.size),
+            "x-hitch-next-offset": String(completeSize),
             "accept-ranges": "bytes",
           });
-          if (offset === info.size) {
+          if (offset === completeSize) {
             response.end();
           } else {
-            await streamFileRange(eventsPath, offset, info.size - 1, response);
+            await streamFileRange(eventsPath, offset, completeSize - 1, response);
           }
         } catch (error) {
           if (error?.code === "ENOENT") return json(response, 404, { error: { code: "events_not_found", message: "events not available" } });
@@ -260,13 +268,21 @@ async function acquireInstanceLock(file, instanceId) {
       if (processIsAlive(existing.pid)) {
         throw new HitchError(`another daemon owns this root (pid ${existing.pid})`, { code: "already_running", exitCode: 2 });
       }
-      const stale = `${file}.stale.${instanceId}`;
-      try {
-        await rename(file, stale);
-        await rm(stale, { force: true });
-      } catch (renameError) {
-        if (renameError?.code !== "ENOENT") throw renameError;
-      }
+      const reclaimed = await reclaimStaleLock(file, async (candidate) => {
+        let current;
+        try {
+          current = JSON.parse(await readFile(candidate, "utf8"));
+        } catch (readError) {
+          if (readError?.code === "ENOENT") return false;
+          throw new HitchError("daemon lock exists but its owner record is unreadable", {
+            code: "daemon_lock_invalid",
+            exitCode: 12,
+            cause: readError,
+          });
+        }
+        return !processIsAlive(current.pid);
+      });
+      if (!reclaimed) await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
   throw new HitchError("could not acquire daemon root lock", { code: "daemon_lock_failed", exitCode: 12 });
@@ -321,6 +337,37 @@ function streamFileRange(file, start, end, response) {
     response.once("finish", resolve);
     stream.pipe(response);
   });
+}
+
+async function completeLineSize(file, size) {
+  if (size === 0) return 0;
+  const handle = await open(file, "r");
+  try {
+    let end = size;
+    while (end > 0) {
+      const start = Math.max(0, end - 64 * 1024);
+      const buffer = Buffer.allocUnsafe(end - start);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+      const newline = buffer.subarray(0, bytesRead).lastIndexOf(0x0a);
+      if (newline >= 0) return start + newline + 1;
+      end = start;
+    }
+    return 0;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function isLineBoundary(file, offset) {
+  if (offset === 0) return true;
+  const handle = await open(file, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(1);
+    const { bytesRead } = await handle.read(buffer, 0, 1, offset - 1);
+    return bytesRead === 1 && buffer[0] === 0x0a;
+  } finally {
+    await handle.close();
+  }
 }
 
 async function ensureToken(file) {

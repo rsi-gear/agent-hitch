@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { executeRun, newRunId } from "../src/engine.js";
@@ -153,6 +153,32 @@ test("spawn failure still finalizes the run record", async (t) => {
   assert.equal(manifest.status, "failed");
   assert.ok(await readJSON(path.join(runsRoot, runId, "result.json")));
 });
+
+test("preparation failures still emit a terminal JSONL event", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-preparation-failure-"));
+  const previous = process.env.HITCH_CODEX_PATH;
+  process.env.HITCH_CODEX_PATH = path.join(root, "missing-codex");
+  t.after(() => restoreEnv("HITCH_CODEX_PATH", previous));
+  const runId = newRunId();
+  const events = [];
+
+  const result = await executeRun({
+    runId,
+    request: { agent: "codex", cwd: root, prompt: "hello", timeout_ms: 5_000 },
+    runsRoot: path.join(root, "runs"),
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "revision_not_found");
+  assert.ok(events.some((event) => event.type === "run.failed" && event.error.code === "revision_not_found"));
+  const persisted = (await readJSONLines(path.join(root, "runs", runId, "events.jsonl")));
+  assert.ok(persisted.some((event) => event.type === "run.failed"));
+});
+
+async function readJSONLines(file) {
+  return (await readFile(file, "utf8")).trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
 
 function restoreEnv(name, value) {
   if (value === undefined) delete process.env[name];

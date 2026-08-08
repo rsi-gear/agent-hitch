@@ -16,6 +16,7 @@ import {
   finalizeWorkspace,
   inspectWorkspace,
   markWorkspaceRunning,
+  markWorkspaceFinalizationFailed,
   planWorkspace,
   prepareWorkspace,
   WORKSPACE_MODES,
@@ -126,12 +127,17 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
   let finalMessage;
   let abortHandler;
   let result;
-  let stage = "resolution";
+  let stage = "event_setup";
   let resolution = resolvedRevision;
   let artifact;
   let workspaceLease;
 
   try {
+    sink = new EventSink(runDirectory, runId, onEvent);
+    await sink.open();
+    sinkOpened = true;
+
+    stage = "resolution";
     const reference = parseHarnessReference(normalized.harness_ref);
     resolution ||= await resolveHarness(reference, { root });
     await atomicWriteJSON(path.join(runDirectory, "resolution.json"), resolution);
@@ -163,10 +169,6 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
     };
     await atomicWriteJSON(manifestPath, manifest);
 
-    stage = "event_setup";
-    sink = new EventSink(runDirectory, runId, onEvent);
-    await sink.open();
-    sinkOpened = true;
     sink.emit({
       type: "workspace.ready",
       mode: workspaceLease.mode,
@@ -311,7 +313,22 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
       };
     } catch (error) {
       const warning = { code: "workspace_finalization_failed", message: error?.message || String(error) };
-      manifest = { ...manifest, workspace_retained: workspaceLease.mode !== "shared", workspace_warning: warning };
+      try {
+        workspaceLease = await markWorkspaceFinalizationFailed(workspaceLease, {
+          recordPath: workspacePath,
+          warning,
+        });
+      } catch {
+        workspaceLease = { ...workspaceLease, retained: workspaceLease.mode !== "shared", changed: null };
+      }
+      manifest = { ...manifest, ...workspaceManifestFields(workspaceLease), workspace_warning: warning };
+      result.workspace = {
+        mode: workspaceLease.mode,
+        source: workspaceLease.source_workspace,
+        execution: workspaceLease.execution_workspace,
+        retained: workspaceLease.retained,
+        changed: workspaceLease.changed,
+      };
       result.workspace_warning = warning;
     }
   } else {

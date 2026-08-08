@@ -304,6 +304,44 @@ test("run engine launches the harness in the isolated execution workspace", asyn
   await removeWorkspace({ root: state, runId, force: true });
 });
 
+test("run engine makes a failed workspace finalization recoverable", async (t) => {
+  const { source, state } = await gitFixture(t);
+  await writeFile(path.join(source, "tracked.txt"), "base\n");
+  await git(source, "add", ".");
+  await git(source, "commit", "-m", "initial");
+  const executable = await writeMutatingCodex(state, { breakGit: true });
+  const previous = process.env.HITCH_CODEX_PATH;
+  process.env.HITCH_CODEX_PATH = executable;
+  t.after(() => {
+    if (previous === undefined) delete process.env.HITCH_CODEX_PATH;
+    else process.env.HITCH_CODEX_PATH = previous;
+  });
+
+  const runId = "run_12121212121212121212121212121212";
+  const result = await executeRun({
+    runId,
+    request: {
+      harness_ref: "codex@installed",
+      cwd: source,
+      workspace_mode: "copy",
+      prompt: "hello",
+      timeout_ms: 5_000,
+    },
+    runsRoot: path.join(state, "runs"),
+    root: state,
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.workspace.changed, null);
+  assert.equal(result.workspace_warning.code, "workspace_finalization_failed");
+  const workspace = await readJSON(workspaceRecordPath(state, runId));
+  assert.equal(workspace.status, "orphaned");
+  assert.equal(workspace.retained, true);
+  assert.equal(workspace.changed, null);
+  await assert.rejects(removeWorkspace({ root: state, runId }), (error) => error.code === "workspace_has_changes");
+  await removeWorkspace({ root: state, runId, force: true });
+});
+
 async function gitFixture(t) {
   const source = await mkdtemp(path.join(tmpdir(), "hitch-workspace-source-"));
   const state = await mkdtemp(path.join(tmpdir(), "hitch-workspace-state-"));
@@ -321,7 +359,7 @@ async function git(cwd, ...args) {
   return (await executeFile("git", args, { cwd, encoding: "utf8" })).stdout;
 }
 
-async function writeMutatingCodex(directory) {
+async function writeMutatingCodex(directory, { breakGit = false } = {}) {
   const file = path.join(directory, "mutating-codex");
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -334,6 +372,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { prompt += chunk; });
 process.stdin.on("end", () => {
   fs.writeFileSync("agent-output.txt", prompt);
+  ${breakGit ? 'fs.renameSync(".git", ".git-broken");' : ""}
   process.stdout.write(JSON.stringify({type:"thread.started",thread_id:"thread_fake"}) + "\\n");
   process.stdout.write(JSON.stringify({type:"item.completed",item:{id:"item_1",type:"agent_message",text:"reply:" + prompt}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"turn.completed",usage:{input_tokens:1,output_tokens:2}}) + "\\n");

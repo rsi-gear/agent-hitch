@@ -45,6 +45,12 @@ test("exact package versions resolve by integrity, prepare once, and run from th
   assert.equal(second.artifact_id, first.artifact_id);
 
   const storedEntrypoint = first.entrypoint_args[0] || first.executable;
+  const storedPackage = path.resolve(path.dirname(storedEntrypoint), "..", "package.json");
+  await writeFile(storedPackage, `${JSON.stringify({ tampered: true })}\n`);
+  const dependencyRepaired = await prepareHarness(resolved, { root });
+  assert.equal(dependencyRepaired.cache_hit, false);
+  assert.equal(dependencyRepaired.artifact_id, first.artifact_id);
+
   await writeFile(storedEntrypoint, "#!/bin/sh\nexit 99\n", { mode: 0o755 });
   const repaired = await prepareHarness(resolved, { root });
   assert.equal(repaired.cache_hit, false);

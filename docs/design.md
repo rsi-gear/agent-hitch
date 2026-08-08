@@ -537,6 +537,7 @@ adapter: pi
 adapter_version: "1"
 platform: darwin-arm64
 entrypoint: bin/pi
+artifact_integrity: sha256:...
 prepared_at: 2026-08-07T00:00:00Z
 ```
 

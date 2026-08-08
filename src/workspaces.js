@@ -21,6 +21,7 @@ import { statePaths, SCHEMA_VERSION } from "./config.js";
 import { HitchError, invalidInput } from "./errors.js";
 import { atomicWriteJSON, ensureDir, readJSON, removeIfExists } from "./fs.js";
 import { delay, terminateProcess } from "./process.js";
+import { reclaimStaleLock } from "./locks.js";
 
 export const WORKSPACE_MODES = new Set(["shared", "worktree", "copy"]);
 
@@ -138,11 +139,12 @@ export async function prepareWorkspace(plan, { recordPath, signal } = {}) {
     }
     await mkdir(plan.managed_directory, { mode: 0o700 });
     ownsManagedDirectory = true;
-    if (plan.mode === "worktree") await prepareWorktree(plan, { signal });
-    else await prepareCopy(plan, { signal });
+    const preparation = plan.mode === "worktree"
+      ? await prepareWorktree(plan, { signal })
+      : await prepareCopy(plan, { signal });
     await chmod(plan.managed_directory, 0o700);
     await chmod(plan.execution_root, 0o700);
-    const baselineDigest = await workspaceDigest(plan.execution_root, {
+    const baselineDigest = preparation?.baseline_digest || await workspaceDigest(plan.execution_root, {
       signal,
       excludedTopLevel: gitMetadataExclusion(plan),
     });
@@ -236,6 +238,23 @@ export async function finalizeWorkspace(workspace, { recordPath } = {}) {
   };
   if (recordPath) await atomicWriteJSON(recordPath, retained);
   return retained;
+}
+
+export async function markWorkspaceFinalizationFailed(workspace, { recordPath, warning } = {}) {
+  if (!workspace) return null;
+  const terminal = {
+    ...workspace,
+    status: workspace.mode === "shared" ? "released" : "orphaned",
+    retained: workspace.mode !== "shared",
+    changed: null,
+    warning: warning || {
+      code: "workspace_finalization_failed",
+      message: "workspace finalization failed",
+    },
+    finalized_at: new Date().toISOString(),
+  };
+  if (recordPath) await atomicWriteJSON(recordPath, terminal);
+  return terminal;
 }
 
 export async function cancelPlannedWorkspace({ root, runId }) {
@@ -452,6 +471,9 @@ async function prepareCopy(plan, { signal }) {
       exitCode: 2,
     });
   }
+  // Unborn repositories include .git in the source consistency check but
+  // exclude it from the work-tree baseline, so that case needs one fresh hash.
+  return { baseline_digest: plan.git && !plan.git.head ? null : copiedDigest };
 }
 
 async function inspectGitWorkspace(directory, { required }) {
@@ -684,7 +706,7 @@ async function withWorkspaceLock(root, identity, operation, { signal } = {}) {
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       if (await staleLock(file)) {
-        await removeIfExists(file);
+        if (!await reclaimStaleLock(file, staleLock)) await delay(100);
         continue;
       }
       await delay(100);
