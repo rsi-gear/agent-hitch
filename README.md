@@ -80,6 +80,13 @@ hitch daemon submit \
 hitch daemon cancel run_<id>
 ```
 
+State is stored below `~/.hitch` by default. Use `--root <path>` or
+`HITCH_ROOT` to relocate it. Native executable overrides use
+`HITCH_CODEX_PATH`, `HITCH_CLAUDE_PATH`, `HITCH_PI_PATH`, and
+`HITCH_OPENCODE_PATH`.
+
+## Harbor-backed evals
+
 Run an agent eval with Harbor:
 
 ```bash
@@ -118,11 +125,6 @@ credentials are forwarded by environment-variable reference; use
 `--pass-env NAME` for an additional variable. Eval records are stored under
 `~/.hitch/evals` and include the request, resolved revision, plan, generated
 Harbor config, raw backend logs/result, normalized result, and JSONL events.
-
-State is stored below `~/.hitch` by default. Use `--root <path>` or
-`HITCH_ROOT` to relocate it. Native executable overrides use
-`HITCH_CODEX_PATH`, `HITCH_CLAUDE_PATH`, `HITCH_PI_PATH`, and
-`HITCH_OPENCODE_PATH`.
 
 ## Select a harness revision
 
@@ -202,6 +204,12 @@ cancellation, and event behavior do not drift.
 - [Workspace isolation](docs/workspaces.md)
 - [Harbor-backed evals](docs/evals.md)
 
+## Acknowledgements
+
+Hitch draws inspiration from [Multica](https://github.com/multica-ai/multica) and
+uses [Harbor](https://github.com/harbor-framework/harbor) as its evaluation
+backend. We are grateful to both projects for the foundations they provide.
+
 ## Naming
 
 The repository is named `agent-hitch`; the product and executable are named
@@ -209,4 +217,4 @@ The repository is named `agent-hitch`; the product and executable are named
 
 ## License
 
-License to be selected before the first public release.
+Licensed under the [Apache License 2.0](LICENSE).
