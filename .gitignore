@@ -3,3 +3,5 @@ node_modules/
 .hitch/
 coverage/
 *.log
+__pycache__/
+*.py[cod]

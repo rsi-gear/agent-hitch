@@ -22,6 +22,21 @@ test("Pi and OpenCode adapters use their native JSON modes with prompt stdin", (
   });
 });
 
+test("Codex adapter only uses --ephemeral when the installed version supports it", () => {
+  const request = {
+    cwd: "/workspace",
+    model: "gpt-test",
+    prompt: "hello",
+    agent_args: [],
+  };
+  const adapter = getAdapter("codex");
+  const oldVersion = adapter.process(request, "/bin/codex", { observed_version: "codex-cli 0.92.0" });
+  const newVersion = adapter.process(request, "/bin/codex", { observed_version: "codex-cli 0.99.0" });
+  assert.equal(oldVersion.args.includes("--ephemeral"), false);
+  assert.equal(newVersion.args.includes("--ephemeral"), true);
+  assert.equal(oldVersion.args.includes("--skip-git-repo-check"), true);
+});
+
 test("Claude adapter emits matched structured tool lifecycle events", () => {
   const adapter = getAdapter("claude");
   const started = adapter.translate({

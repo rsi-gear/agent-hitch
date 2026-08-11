@@ -36,6 +36,8 @@ export function statePaths(root) {
     log: path.join(root, "daemon.log"),
     errorLog: path.join(root, "daemon.err.log"),
     runs: path.join(root, "runs"),
+    evals: path.join(root, "evals"),
+    tools: path.join(root, "tools"),
     store: path.join(root, "store"),
     artifacts: path.join(root, "store", "artifacts"),
     artifactIndex: path.join(root, "store", "refs"),

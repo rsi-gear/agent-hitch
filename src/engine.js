@@ -190,7 +190,10 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
     const adapter = getAdapter(reference.harness_id);
     const adapterState = {};
     const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
-    const specification = adapter.process(executionRequest, artifact.executable);
+    const specification = adapter.process(executionRequest, artifact.executable, {
+      observed_version: artifact.observed_version,
+      resolution,
+    });
     if (artifact.entrypoint_args?.length) specification.args.unshift(...artifact.entrypoint_args);
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);

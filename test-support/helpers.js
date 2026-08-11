@@ -108,6 +108,95 @@ process.exit(2);
   return file;
 }
 
+export async function writeFakeHarbor(directory) {
+  const file = path.join(directory, "fake-harbor");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.1.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
+  process.stderr.write("unexpected Harbor invocation: " + args.join(" ") + "\\n");
+  process.exit(2);
+}
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const output = path.join(config.jobs_dir, config.job_name);
+fs.mkdirSync(output, {recursive:true});
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials: 2,
+  stats: {n_completed_trials: 2, n_errored_trials: 0, n_cancelled_trials: 0}
+}));
+for (const trial of [
+  {task_name:"one",trial_name:"one__1",verifier_result:{rewards:{reward:1}}},
+  {task_name:"two",trial_name:"two__1",verifier_result:{rewards:{reward:0.5}}}
+]) {
+  const trialOutput = path.join(output, trial.trial_name);
+  fs.mkdirSync(trialOutput, {recursive:true});
+  fs.writeFileSync(path.join(trialOutput, "result.json"), JSON.stringify(trial));
+}
+process.stdout.write("Results written\\n");
+`;
+  await writeFile(file, source, { mode: 0o755 });
+  await chmod(file, 0o755);
+  return file;
+}
+
+export async function writeFakePython(directory, { version = "3.12.9" } = {}) {
+  const file = path.join(directory, "fake-python");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "-c") {
+  process.stdout.write(${JSON.stringify(version)} + "\\n");
+  process.exit(0);
+}
+if (args[0] === "-m" && args[1] === "venv") {
+  const target = args[2];
+  const bin = path.join(target, "bin");
+  fs.mkdirSync(bin, {recursive:true});
+  fs.copyFileSync(process.argv[1], path.join(bin, "python"));
+  fs.chmodSync(path.join(bin, "python"), 0o755);
+  process.exit(0);
+}
+if (args[0] === "-m" && args[1] === "pip" && args[2] === "install") {
+  const spec = args.find((value) => value.startsWith("harbor=="));
+  const harborVersion = spec ? spec.slice("harbor==".length) : "0.0.0";
+  const harbor = path.join(path.dirname(process.argv[1]), "harbor");
+  fs.writeFileSync(harbor, "#!/usr/bin/env node\\nprocess.stdout.write(" + JSON.stringify(harborVersion + "\\n") + ");\\n", {mode:0o755});
+  process.exit(0);
+}
+process.stderr.write("unexpected fake Python invocation: " + args.join(" ") + "\\n");
+process.exit(2);
+`;
+  await writeFile(file, source, { mode: 0o755 });
+  await chmod(file, 0o755);
+  return file;
+}
+
+export async function writeFakeDocker(directory, { daemonRunning = true } = {}) {
+  const file = path.join(directory, "fake-docker");
+  const source = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "version" && args.includes("--format")) {
+  if (${JSON.stringify(daemonRunning)}) {
+    process.stdout.write("27.4.0\\n");
+    process.exit(0);
+  }
+  process.stderr.write("Cannot connect to the Docker daemon\\n");
+  process.exit(1);
+}
+process.exit(2);
+`;
+  await writeFile(file, source, { mode: 0o755 });
+  await chmod(file, 0o755);
+  return file;
+}
+
 export async function writeFakeOpenCode(directory) {
   const file = path.join(directory, "fake-opencode");
   const source = `#!/usr/bin/env node

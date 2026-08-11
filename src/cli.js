@@ -7,6 +7,8 @@ import { DaemonServer, daemonClient } from "./daemon.js";
 import { defaultRoot, DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, parseDuration, positiveInteger, SCHEMA_VERSION, statePaths } from "./config.js";
 import { discoverAgents, inspectAgent } from "./registry.js";
 import { executeRun, newRunId } from "./engine.js";
+import { inspectEval, listEvals, runEval } from "./evals.js";
+import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "./eval-tools.js";
 import { HitchError, invalidInput } from "./errors.js";
 import { delay } from "./process.js";
 import { ensureDir, readJSON } from "./fs.js";
@@ -26,6 +28,7 @@ export async function main(argv) {
     case "resolve": return resolveCommand(args, root);
     case "prepare": return prepareCommand(args, root);
     case "run": return runCommand(args, root);
+    case "eval": return evalCommand(args, root);
     case "workspace": return workspaceCommand(args, root);
     case "daemon": return daemonCommand(args, root);
     case "help":
@@ -116,6 +119,118 @@ async function runCommand(args, root) {
   });
   if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   process.exitCode = result.exit_code;
+}
+
+async function evalCommand(args, root) {
+  const action = args.shift();
+  switch (action) {
+    case "run": return evalRunCommand(args, root);
+    case "list": return evalListCommand(args, root);
+    case "inspect": return evalInspectCommand(args, root);
+    case "setup": return evalSetupCommand(args, root);
+    case "doctor": return evalDoctorCommand(args, root);
+    default: throw invalidInput("eval requires run, list, inspect, setup, or doctor");
+  }
+}
+
+async function evalSetupCommand(args, root) {
+  const backend = args.shift();
+  if (backend !== "harbor") throw invalidInput("eval setup currently supports only harbor");
+  const version = takeOption(args, "--version") || DEFAULT_HARBOR_VERSION;
+  const python = takeOption(args, "--python");
+  const force = takeFlag(args, "--force");
+  const json = takeFlag(args, "--json");
+  assertNoArgs(args);
+  const result = await setupHarbor({
+    root,
+    version,
+    python,
+    force,
+    onProgress: json ? undefined : (message) => process.stderr.write(`${message}\n`),
+  });
+  if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  else process.stdout.write(`${result.cache_hit ? "Using" : "Installed"} Harbor ${result.version} at ${result.executable}\n`);
+}
+
+async function evalDoctorCommand(args, root) {
+  const json = takeFlag(args, "--json");
+  const python = takeOption(args, "--python");
+  const harbor = takeOption(args, "--harbor");
+  const docker = takeOption(args, "--docker");
+  assertNoArgs(args);
+  const result = await doctorHarbor({ root, python, harbor, docker });
+  if (json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    process.stdout.write(`Harbor eval: ${result.status}\n`);
+    for (const [name, check] of Object.entries(result.checks)) {
+      const detail = check.version || check.message || (check.present?.length ? check.present.join(", ") : "");
+      process.stdout.write(`  ${name.padEnd(12)} ${check.status}${detail ? `  ${detail}` : ""}\n`);
+    }
+  }
+  if (!result.ready) process.exitCode = 3;
+}
+
+async function evalRunCommand(args, root) {
+  const output = takeOption(args, "--output") || "json";
+  const harborExecutable = takeOption(args, "--harbor");
+  const request = parseEvalRequest(args);
+  assertNoArgs(args);
+  if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
+  try {
+    const result = await runEval({
+      request,
+      root,
+      harborExecutable,
+      signal: controller.signal,
+      onEvent: output === "jsonl" ? (event) => process.stdout.write(`${JSON.stringify(event)}\n`) : undefined,
+    });
+    if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exitCode = result.exit_code;
+  } finally {
+    process.removeListener("SIGINT", cancel);
+    process.removeListener("SIGTERM", cancel);
+  }
+}
+
+async function evalListCommand(args, root) {
+  const json = takeFlag(args, "--json");
+  assertNoArgs(args);
+  const evals = await listEvals({ root });
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, evals }, null, 2)}\n`);
+    return;
+  }
+  if (evals.length === 0) {
+    process.stdout.write("No evals found\n");
+    return;
+  }
+  for (const evaluation of evals) {
+    const reward = evaluation.primary_reward === null ? "-" : String(evaluation.primary_reward);
+    process.stdout.write(`${evaluation.eval_id}  ${String(evaluation.status).padEnd(9)}  reward=${reward}  ${evaluation.harness_ref || "-"}  ${evaluation.dataset || "-"}\n`);
+  }
+}
+
+async function evalInspectCommand(args, root) {
+  const json = takeFlag(args, "--json");
+  const evalId = args.shift();
+  if (!evalId) throw invalidInput("eval inspect requires an eval ID");
+  assertNoArgs(args);
+  const evaluation = await inspectEval(evalId, { root });
+  if (json) {
+    process.stdout.write(`${JSON.stringify(evaluation, null, 2)}\n`);
+    return;
+  }
+  const result = evaluation.result;
+  process.stdout.write(`${evaluation.eval_id}: ${result?.status || "running"}\n`);
+  process.stdout.write(`  dataset: ${evaluation.request.dataset}\n`);
+  process.stdout.write(`  harness: ${evaluation.plan?.candidate?.harness_ref || evaluation.request.harness_ref}\n`);
+  process.stdout.write(`  primary reward: ${result?.summary?.primary_reward ?? "-"}\n`);
+  process.stdout.write(`  directory: ${evaluation.directory}\n`);
 }
 
 async function daemonCommand(args, root) {
@@ -284,6 +399,33 @@ async function parseRunRequest(args) {
   return { harness_ref: harness || `${agent}@installed`, model, cwd, workspace_mode: workspaceMode, prompt, timeout_ms: timeout, agent_args: agentArgs };
 }
 
+function parseEvalRequest(args) {
+  const backend = takeOption(args, "--backend") || "harbor";
+  const dataset = takeOption(args, "--dataset");
+  const harness = takeOption(args, "--harness");
+  const model = takeOption(args, "--model") || "";
+  const attempts = positiveInteger(takeOption(args, "--attempts") || 1, "--attempts");
+  const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
+  const timeoutValue = takeOption(args, "--timeout");
+  const setupTimeoutValue = takeOption(args, "--setup-timeout");
+  const agentArgs = takeRepeatedOption(args, "--agent-arg");
+  const passEnv = takeRepeatedOption(args, "--pass-env");
+  if (!dataset) throw invalidInput("--dataset is required");
+  if (!harness) throw invalidInput("--harness is required");
+  return {
+    backend,
+    dataset,
+    harness_ref: harness,
+    model,
+    attempts,
+    max_concurrent: maxConcurrent,
+    timeout_ms: timeoutValue === undefined ? undefined : parseDuration(timeoutValue),
+    setup_timeout_ms: setupTimeoutValue === undefined ? undefined : parseDuration(setupTimeoutValue),
+    agent_args: agentArgs,
+    pass_env: passEnv,
+  };
+}
+
 function revisionLabel(resolved) {
   if (resolved.revision.type === "commit") return resolved.revision.commit;
   if (resolved.revision.type === "version") return resolved.revision.version;
@@ -358,5 +500,5 @@ function assertNoArgs(args) {
 }
 
 function helpText() {
-  return `Hitch — one local runtime for coding agents\n\nUsage:\n  hitch list [--json]\n  hitch inspect <harness> [--json]\n  hitch resolve <harness-ref> [--json]\n  hitch prepare <harness-ref> [--json]\n  hitch run --harness <ref> [--model <id>] [--workspace-mode <mode>] --prompt <text> [--daemon]\n  hitch workspace inspect <run-id> [--json]\n  hitch workspace path <run-id>\n  hitch workspace remove <run-id> [--force] [--json]\n  hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]\n  hitch daemon stop | status [--json] | logs [-n <lines>]\n  hitch daemon submit --harness <ref> --prompt <text> [--workspace-mode <mode>] [--wait]\n  hitch daemon cancel <run-id>\n\nWorkspace modes:\n  shared    Use the source directory directly (compatibility default)\n  worktree  Create a detached worktree from a clean Git HEAD\n  copy      Copy the current filesystem state into an independent workspace\n\nHarness refs:\n  codex                         Installed executable (compatibility default)\n  codex@installed               Installed executable\n  codex@version:0.42.1          Exact published version\n  codex@commit:abc1234          Commit from the registered Git source\n  codex@git+file:///src#abc1234 Commit from a clean local Git repository\n\nGlobal:\n  --root <path>    Relocate all Hitch state (default: ~/.hitch)\n`;
+  return `Hitch — one local runtime for coding agents\n\nUsage:\n  hitch list [--json]\n  hitch inspect <harness> [--json]\n  hitch resolve <harness-ref> [--json]\n  hitch prepare <harness-ref> [--json]\n  hitch run --harness <ref> [--model <id>] [--workspace-mode <mode>] --prompt <text> [--daemon]\n  hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]\n  hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]\n  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>]\n  hitch eval list [--json]\n  hitch eval inspect <eval-id> [--json]\n  hitch workspace inspect <run-id> [--json]\n  hitch workspace path <run-id>\n  hitch workspace remove <run-id> [--force] [--json]\n  hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]\n  hitch daemon stop | status [--json] | logs [-n <lines>]\n  hitch daemon submit --harness <ref> --prompt <text> [--workspace-mode <mode>] [--wait]\n  hitch daemon cancel <run-id>\n\nEval:\n  Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.\n  Use 'hitch eval setup harbor' for an isolated managed install and 'hitch eval doctor' to verify it.\n  Eval accepts exact version: or registered commit: refs. Use --pass-env NAME for extra credentials.\n\nWorkspace modes:\n  shared    Use the source directory directly (compatibility default)\n  worktree  Create a detached worktree from a clean Git HEAD\n  copy      Copy the current filesystem state into an independent workspace\n\nHarness refs:\n  codex                         Installed executable (compatibility default)\n  codex@installed               Installed executable\n  codex@version:0.42.1          Exact published version\n  codex@commit:abc1234          Commit from the registered Git source\n  codex@git+file:///src#abc1234 Commit from a clean local Git repository\n\nGlobal:\n  --root <path>    Relocate all Hitch state (default: ~/.hitch)\n`;
 }

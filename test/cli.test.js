@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeDocker, writeFakeHarbor, writeFakeNpm, writeFakePython } from "../test-support/helpers.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -26,6 +27,9 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /--harness <ref>/);
   assert.match(help.stdout, /--workspace-mode <mode>/);
   assert.match(help.stdout, /hitch workspace inspect <run-id>/);
+  assert.match(help.stdout, /hitch eval run \[--backend harbor\] --dataset <ref>/);
+  assert.match(help.stdout, /hitch eval setup harbor/);
+  assert.match(help.stdout, /hitch eval doctor/);
 
   const result = spawnSync(process.execPath, [
     executable,
@@ -46,6 +50,43 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   ], { encoding: "utf8" });
   assert.equal(invalidWorkspaceMode.status, 2);
   assert.match(invalidWorkspaceMode.stderr, /workspace-mode must be one of/);
+
+  const mutableEval = spawnSync(process.execPath, [
+    executable,
+    "eval", "run",
+    "--backend", "harbor",
+    "--dataset", "demo",
+    "--harness", "codex@installed",
+  ], { encoding: "utf8" });
+  assert.equal(mutableEval.status, 2);
+  assert.match(mutableEval.stderr, /eval requires an immutable harness ref/);
+});
+
+test("CLI sets up and diagnoses a managed Harbor backend", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-cli-eval-setup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const python = await writeFakePython(root);
+  const docker = await writeFakeDocker(root);
+  const setup = spawnSync(process.execPath, [
+    executable,
+    "--root", root,
+    "eval", "setup", "harbor",
+    "--python", python,
+    "--json",
+  ], { encoding: "utf8" });
+  assert.equal(setup.status, 0, setup.stderr);
+  assert.equal(JSON.parse(setup.stdout).version, "0.21.0");
+
+  const doctor = spawnSync(process.execPath, [
+    executable,
+    "--root", root,
+    "eval", "doctor",
+    "--python", python,
+    "--docker", docker,
+    "--json",
+  ], { encoding: "utf8", env: { ...process.env, OPENAI_API_KEY: "test-only" } });
+  assert.equal(doctor.status, 0, doctor.stderr);
+  assert.equal(JSON.parse(doctor.stdout).status, "ready");
 });
 
 test("CLI inspects, resolves, and removes retained workspaces", async (t) => {
@@ -80,4 +121,33 @@ test("CLI inspects, resolves, and removes retained workspaces", async (t) => {
   const remove = spawnSync(process.execPath, [executable, "--root", root, "workspace", "remove", runId], { encoding: "utf8" });
   assert.equal(remove.status, 0);
   assert.match(remove.stdout, /Removed workspace/);
+});
+
+test("CLI runs, lists, and inspects Harbor evals", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-cli-eval-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const harbor = await writeFakeHarbor(root);
+  const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  const run = spawnSync(process.execPath, [
+    executable,
+    "--root", root,
+    "eval", "run",
+    "--dataset", "demo@1.0",
+    "--harness", "pi@version:1.2.3",
+    "--model", "openai/test-model",
+    "--harbor", harbor,
+    "--output", "json",
+  ], { encoding: "utf8", env });
+  assert.equal(run.status, 0, run.stderr);
+  const result = JSON.parse(run.stdout);
+  assert.equal(result.status, "succeeded");
+
+  const list = spawnSync(process.execPath, [executable, "--root", root, "eval", "list", "--json"], { encoding: "utf8" });
+  assert.equal(list.status, 0, list.stderr);
+  assert.equal(JSON.parse(list.stdout).evals[0].eval_id, result.eval_id);
+
+  const inspect = spawnSync(process.execPath, [executable, "--root", root, "eval", "inspect", result.eval_id, "--json"], { encoding: "utf8" });
+  assert.equal(inspect.status, 0, inspect.stderr);
+  assert.equal(JSON.parse(inspect.stdout).result.summary.primary_reward, 0.75);
 });

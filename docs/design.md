@@ -19,7 +19,11 @@ implemented for installed executables, exact npm package versions, registered
 Git commits, and clean local Git commits. Codex and Pi provide source-build
 recipes; Claude Code and OpenCode currently provide installed and package-version
 recipes. Shared, detached-worktree, and independent-copy workspace modes are
-implemented. Benchmark backends remain planned.
+implemented. A first optional benchmark backend delegates task execution,
+container lifecycle, verification, and rewards to Harbor while retaining Hitch
+as the agent execution path inside each task container. Harbor can be installed
+into Hitch-owned state with `hitch eval setup harbor`, and the read-only
+`hitch eval doctor` command verifies its prerequisites.
 
 Sections 1–23 describe the target architecture. Current daemon behavior is also
 specified in `docs/daemon.md`, and the workspace contract is specified in
@@ -94,8 +98,8 @@ The first versions of Hitch will not:
 - decide which harness should be used
 - edit or mutate harness source code
 - create Git commits on behalf of an evolution agent
-- schedule A/B tests or benchmark suites
-- score trajectories or promote winners
+- implement benchmark tasks, verifiers, reward logic, or winner promotion
+- schedule multi-candidate A/B experiments
 - coordinate multiple agents
 - provide model routing or API gateway behavior
 - synchronize user prompts, MCP servers, or skills across desktop applications
@@ -397,6 +401,21 @@ hitch run \
 
 `run` may implicitly call `resolve` and `prepare`. The separate commands exist
 so agents can inspect cost and failure boundaries before execution.
+
+### 9.6 `hitch eval`
+
+The optional eval surface delegates benchmark semantics to Harbor:
+
+```bash
+hitch eval setup harbor
+hitch eval doctor --json
+hitch eval run --dataset terminal-bench@2.0 --harness codex@version:0.92.0
+```
+
+Setup installs a pinned Harbor version into the selected Hitch state root. It
+does not mutate system Python or install Docker. Doctor checks Python, Harbor,
+the Docker daemon, and provider credential presence without exposing secret
+values. Eval execution automatically discovers the managed Harbor installation.
 
 ## 10. Harness reference syntax
 
@@ -854,7 +873,8 @@ The MVP is successful when an external agent can:
 - A bare harness name means `@installed` for compatibility.
 - `--harness` is the public selector; legacy `--agent <name>` means
   `--harness <name>@installed` and cannot select a revision.
-- Evaluation and self-evolution remain outside this repository.
+- Benchmark definitions, reward policy, winner promotion, and self-evolution
+  remain outside this repository; Hitch may invoke an optional eval backend.
 - The first adapters should be Pi and Codex to test materially different native
   interfaces.
 - The contract spike uses dependency-free Node.js 22+ before Hitch commits to a

@@ -29,8 +29,10 @@ const definitions = {
       model_selection: true,
       graceful_cancel: true,
     },
-    process(request, executable) {
-      const args = ["exec", "--json", "--ephemeral", "--color", "never", "-C", request.cwd];
+    process(request, executable, runtime = {}) {
+      const args = ["exec", "--json"];
+      if (codexSupportsEphemeral(runtime.observed_version)) args.push("--ephemeral");
+      args.push("--skip-git-repo-check", "--color", "never", "-C", request.cwd);
       if (request.model) args.push("--model", request.model);
       args.push(...request.agent_args, "-");
       return { executable, args, input: request.prompt };
@@ -273,6 +275,13 @@ const definitions = {
     },
   },
 };
+
+function codexSupportsEphemeral(observedVersion) {
+  const match = String(observedVersion || "").match(/\b(\d+)\.(\d+)\.(\d+)\b/);
+  if (!match) return false;
+  const [, major, minor] = match.map(Number);
+  return major > 0 || minor >= 99;
+}
 
 export function listDefinitions() {
   return Object.values(definitions).map(publicDefinition);

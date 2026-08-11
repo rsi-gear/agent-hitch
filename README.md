@@ -10,7 +10,8 @@ designed as infrastructure for Recursive Self-Improvement (RSI), including harne
 evolution.
 
 > Status: pre-alpha. Installed-harness discovery, immutable revision resolution,
-> prepared artifact caching, direct runs, and the local daemon are implemented.
+> prepared artifact caching, direct runs, the local daemon, and Harbor-backed
+> agent evals are implemented.
 
 ## Available now
 
@@ -23,6 +24,7 @@ Hitch currently supports Codex CLI, Claude Code, Pi, and OpenCode adapters. It p
 - a persistent local daemon with bounded concurrency;
 - queued and active-run cancellation, timeouts, and process-tree cleanup;
 - managed shared, Git worktree, and independent-copy workspace modes;
+- Harbor-backed evaluation in Docker with normalized reward summaries;
 - atomic manifests/results plus raw stdout and stderr logs; and
 - conservative recovery of interrupted records after daemon restart.
 
@@ -77,6 +79,45 @@ hitch daemon submit \
 
 hitch daemon cancel run_<id>
 ```
+
+Run an agent eval with Harbor:
+
+```bash
+# Installs pinned Harbor into ~/.hitch/tools without changing system Python.
+hitch eval setup harbor
+hitch eval doctor
+
+hitch eval run \
+  --backend harbor \
+  --dataset terminal-bench@2.0 \
+  --harness codex@version:0.92.0 \
+  --model openai/gpt-5.6 \
+  --attempts 1 \
+  --max-concurrent 4
+
+hitch eval list
+hitch eval inspect eval_<id> --json
+```
+
+`hitch eval setup harbor` requires Python 3.12+ and creates an isolated virtual
+environment at `~/.hitch/tools/harbor-<version>`. It does not install or start
+Docker. `hitch eval doctor` checks Python, the selected Harbor installation,
+the Docker daemon, and whether a common provider credential is present. Hitch
+automatically prefers the managed Harbor installation for subsequent evals;
+`--harbor` and `HITCH_HARBOR_PATH` remain explicit overrides.
+
+Harbor owns task discovery, Docker lifecycle, verification, and rewards. Its
+custom Hitch agent uploads a minimal Hitch runtime into each task container and
+runs the exact selected harness revision in `/app`. This ensures the benchmark
+measures the Hitch execution path rather than Harbor's native agent adapter.
+
+Eval currently accepts exact `version:` refs and `commit:` refs backed by a
+registered remote source. Installed executables and local `git+file://` refs are
+rejected because they are not portable into Harbor containers. Common provider
+credentials are forwarded by environment-variable reference; use
+`--pass-env NAME` for an additional variable. Eval records are stored under
+`~/.hitch/evals` and include the request, resolved revision, plan, generated
+Harbor config, raw backend logs/result, normalized result, and JSONL events.
 
 State is stored below `~/.hitch` by default. Use `--root <path>` or
 `HITCH_ROOT` to relocate it. Native executable overrides use
@@ -159,6 +200,7 @@ cancellation, and event behavior do not drift.
 - [Design document](docs/design.md)
 - [Agent daemon analysis and port](docs/daemon.md)
 - [Workspace isolation](docs/workspaces.md)
+- [Harbor-backed evals](docs/evals.md)
 
 ## Naming
 
