@@ -9,21 +9,23 @@
 ## 0. Implementation status
 
 The first executable slice is implemented in dependency-free Node.js 22+. It
-includes native Codex CLI, Claude Code, Pi, and OpenCode discovery and direct execution,
-normalized JSONL events, persisted run records, bounded daemon concurrency,
-cancellation, timeout handling, health reporting, and conservative crash
-recovery.
+includes native Codex CLI, Claude Code, Pi, OpenCode, and DeepSeek Harness
+discovery and direct execution, normalized JSONL events, persisted run records,
+bounded daemon concurrency, cancellation, timeout handling, health reporting,
+and conservative crash recovery.
 
 The resolver, artifact store, and prepared revisions described below are now
 implemented for installed executables, exact npm package versions, registered
-Git commits, and clean local Git commits. Codex and Pi provide source-build
-recipes; Claude Code and OpenCode currently provide installed and package-version
-recipes. Shared, detached-worktree, and independent-copy workspace modes are
-implemented. A first optional benchmark backend delegates task execution,
-container lifecycle, verification, and rewards to Harbor while retaining Hitch
-as the agent execution path inside each task container. Harbor can be installed
-into Hitch-owned state with `hitch eval setup harbor`, and the read-only
-`hitch eval doctor` command verifies its prerequisites.
+Git commits, and clean local Git commits. Codex, Pi, and DeepSeek Harness provide
+source-build recipes; Claude Code and OpenCode currently provide installed and
+package-version recipes. DeepSeek Harness runs through its official headless
+profile with plain-text final output and a per-run `DSH_HOME`. Shared,
+detached-worktree, and independent-copy workspace modes are implemented. A
+first optional benchmark backend delegates task execution, container lifecycle,
+verification, and rewards to Harbor while retaining Hitch as the agent
+execution path inside each task container. Harbor can be installed into
+Hitch-owned state with `hitch eval setup harbor`, and the read-only `hitch eval
+doctor` command verifies its prerequisites.
 
 Sections 1–23 describe the target architecture. Current daemon behavior is also
 specified in `docs/daemon.md`, and the workspace contract is specified in

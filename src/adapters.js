@@ -1,3 +1,4 @@
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HitchError } from "./errors.js";
 
@@ -274,6 +275,54 @@ const definitions = {
       return translated;
     },
   },
+  deepseek: {
+    id: "deepseek",
+    display_name: "DeepSeek Harness",
+    command: "dsh",
+    path_env: "HITCH_DEEPSEEK_PATH",
+    version_args: ["--version"],
+    revision_sources: {
+      version: { type: "npm", package: "@deepseek-ai/dsh", bin: "dsh" },
+      commit: {
+        type: "git",
+        url: "https://github.com/deepseek-ai/deepseek-harness.git",
+        commands: [
+          { executable: "pnpm", args: ["install", "--frozen-lockfile"] },
+          { executable: "pnpm", args: ["run", "build"] },
+        ],
+        entrypoint: "apps/cli/lib/bin.js",
+      },
+    },
+    capabilities: {
+      non_interactive: true,
+      streaming: false,
+      structured_messages: false,
+      structured_tool_events: false,
+      sessions: false,
+      resume: false,
+      model_selection: true,
+      graceful_cancel: true,
+    },
+    async process(request, executable, runtime = {}) {
+      const args = ["--profile", "headless", ...request.agent_args];
+      if (request.model) {
+        const patchFile = await writeDeepseekModelPatch(request.model, runtime.run_directory);
+        args.push("--patch", patchFile);
+      }
+      args.push(request.prompt);
+      return {
+        executable,
+        args,
+        input: "",
+        env: runtime.runtime_home ? { DSH_HOME: runtime.runtime_home } : {},
+      };
+    },
+    translateLine(line, state = {}) {
+      const text = state.has_stdout_line ? `\n${line}` : line;
+      state.has_stdout_line = true;
+      return [{ type: "message.delta", text }];
+    },
+  },
 };
 
 function codexSupportsEphemeral(observedVersion) {
@@ -311,6 +360,31 @@ function openCodeErrorMessage(error) {
   if (typeof error?.message === "string") return error.message;
   if (typeof error?.name === "string") return error.name;
   return error == null ? "OpenCode error" : JSON.stringify(error);
+}
+
+async function writeDeepseekModelPatch(value, runDirectory) {
+  if (!runDirectory) {
+    throw new HitchError("DeepSeek model selection requires an isolated run directory", {
+      code: "adapter_setup_failed",
+      exitCode: 6,
+    });
+  }
+  const separator = value.indexOf("/");
+  const provider = separator < 0 ? "deepseek-official" : value.slice(0, separator);
+  const model = separator < 0 ? value : value.slice(separator + 1);
+  if (!provider || !model) {
+    throw new HitchError(`invalid DeepSeek model selector: ${value}`, {
+      code: "invalid_input",
+      exitCode: 2,
+    });
+  }
+  const file = path.join(runDirectory, "config", "deepseek-model.json");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify([{
+    id: "agent-default-model",
+    config: { provider, model },
+  }], null, 2)}\n`, { mode: 0o600 });
+  return file;
 }
 
 export function getAdapter(id) {

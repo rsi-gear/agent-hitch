@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { executeRun, newRunId } from "../src/engine.js";
 import { readJSON } from "../src/fs.js";
-import { writeFakeCodex, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
+import { writeFakeCodex, writeFakeDeepseek, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
 
 test("run engine records normalized events and a reproducible result", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-engine-"));
@@ -60,6 +60,30 @@ for (const agent of [
     assert.equal(manifest.agent_version, agent.version);
   });
 }
+
+test("DeepSeek runs through its headless plain-text mode", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-"));
+  const executable = await writeFakeDeepseek(root, { output: 'first\n\n{"answer":true}' });
+  const previous = process.env.HITCH_DEEPSEEK_PATH;
+  process.env.HITCH_DEEPSEEK_PATH = executable;
+  t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
+  const runId = newRunId();
+  const events = [];
+
+  const result = await executeRun({
+    runId,
+    request: { agent: "deepseek", cwd: root, prompt: "hello", timeout_ms: 5_000, agent_args: [] },
+    runsRoot: path.join(root, "runs"),
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.output, 'first\n\n{"answer":true}');
+  assert.ok(events.some((event) => event.type === "message.delta"));
+  assert.equal(events.some((event) => event.type === "provider.event"), false);
+  const manifest = await readJSON(path.join(root, "runs", runId, "manifest.json"));
+  assert.equal(manifest.agent_version, "0.1.0-rc.6");
+});
 
 test("run request validation returns typed invalid input for malformed cwd", async () => {
   await assert.rejects(

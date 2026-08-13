@@ -218,3 +218,17 @@ process.stdin.on("end", () => {
   await chmod(file, 0o755);
   return file;
 }
+
+export async function writeFakeDeepseek(directory, { output = "reply:hello" } = {}) {
+  const file = path.join(directory, "fake-dsh");
+  const source = `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write("0.1.0-rc.6\\n");
+  process.exit(0);
+}
+process.stdout.write(${JSON.stringify(output)} + "\\n");
+`;
+  await writeFile(file, source, { mode: 0o755 });
+  await chmod(file, 0o755);
+  return file;
+}
