@@ -4,14 +4,14 @@
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/agent-hitch)](https://github.com/rsi-gear/agent-hitch/releases)
 [![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZ4NBbHDk)
 
-**One local runtime. Any coding agent.**
+**Let agents choose their harness with one runtime.**
 
-Hitch is an agent-first CLI and daemon for discovering and running native coding
-agents through one stable, machine-oriented interface.
+Hitch lets an agent choose which harness and revision to use for each run. It is
+an agent-first CLI and daemon for discovering and running native coding agents
+through one stable, machine-oriented interface.
 
-It lets an agent choose which harness and revision to use for each run. Hitch is
-designed as infrastructure for Recursive Self-Improvement (RSI), including harness evolution and model
-evolution.
+Hitch is designed as infrastructure for Recursive Self-Improvement (RSI),
+including harness evolution and model evolution.
 
 > Status: pre-alpha. Installed-harness discovery, immutable revision resolution,
 > prepared artifact caching, direct runs, the local daemon, and Harbor-backed
