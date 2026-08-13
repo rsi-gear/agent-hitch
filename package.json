@@ -1,6 +1,6 @@
 {
   "name": "agent-hitch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A local runtime and daemon for coding agents",
   "keywords": [
     "ai-agents",
