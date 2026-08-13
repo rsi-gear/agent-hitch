@@ -31,12 +31,12 @@ test("Harbor doctor reports required runtime checks and credential warnings", as
     root,
     python,
     docker,
-    env: { ...process.env, OPENAI_API_KEY: "test-only" },
+    env: { ...process.env, DEEPSEEK_API_KEY: "test-only", OPENAI_API_KEY: "test-only" },
   });
   assert.equal(ready.ready, true);
   assert.equal(ready.status, "ready");
   assert.equal(ready.checks.harbor.source, "managed");
-  assert.deepEqual(ready.checks.credentials.present, ["OPENAI_API_KEY"]);
+  assert.deepEqual(ready.checks.credentials.present, ["DEEPSEEK_API_KEY", "OPENAI_API_KEY"]);
 
   const stoppedDocker = await writeFakeDocker(root, { daemonRunning: false });
   const actionRequired = await doctorHarbor({ root, python, docker: stoppedDocker, env: process.env });

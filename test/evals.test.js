@@ -37,6 +37,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const env = {
     ...process.env,
     HITCH_NPM_PATH: fakeNpm,
+    DEEPSEEK_API_KEY: "deepseek-must-not-be-written",
     OPENAI_API_KEY: "must-not-be-written",
   };
   const result = await runEval({
@@ -63,8 +64,9 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(config.agents[0].import_path, "hitch_harbor_agent:HitchHarborAgent");
   assert.equal(config.agents[0].kwargs.harness_ref, "pi@version:1.2.3");
   assert.equal(config.agents[0].kwargs.workdir, "/app");
+  assert.equal(config.agents[0].env.DEEPSEEK_API_KEY, "${DEEPSEEK_API_KEY}");
   assert.equal(config.agents[0].env.OPENAI_API_KEY, "${OPENAI_API_KEY}");
-  assert.doesNotMatch(await readFile(path.join(directory, "harbor", "job.json"), "utf8"), /must-not-be-written/);
+  assert.doesNotMatch(await readFile(path.join(directory, "harbor", "job.json"), "utf8"), /(?:deepseek-)?must-not-be-written/);
   assert.deepEqual(config.datasets, [{ name: "demo", version: "1.0" }]);
   assert.equal((await stat(path.join(directory, "runtime", "bin", "hitch.js"))).isFile(), true);
 

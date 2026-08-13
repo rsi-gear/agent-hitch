@@ -10,6 +10,8 @@ import { detectVersion, resolveExecutable } from "./registry.js";
 
 export const DEFAULT_HARBOR_VERSION = "0.21.0";
 export const HARBOR_CREDENTIAL_ENV = [
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_BASE_URL",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
   "OPENAI_ORG_ID",
@@ -32,6 +34,7 @@ export const HARBOR_CREDENTIAL_ENV = [
   "GH_TOKEN",
 ];
 const PROVIDER_CREDENTIAL_ENV = [
+  "DEEPSEEK_API_KEY",
   "OPENAI_API_KEY",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",

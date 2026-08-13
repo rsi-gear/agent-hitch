@@ -1,3 +1,6 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { getAdapter } from "../src/adapters.js";
@@ -173,4 +176,37 @@ test("OpenCode adapter normalizes its terminal tool events and emits one session
     type: "usage.updated",
     usage: { input: 4, output: 2, reasoning: 1, cache: { read: 3, write: 0 }, cost: 0.01 },
   }]);
+});
+
+test("DeepSeek adapter runs the headless profile with an isolated home and model patch", async () => {
+  const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-adapter-"));
+  const runtimeHome = path.join(runDirectory, "runtime-home");
+  const specification = await getAdapter("deepseek").process({
+    cwd: "/workspace",
+    model: "deepseek-official/deepseek-v4-pro",
+    prompt: "fix the tests",
+    agent_args: ["--patch", "/workspace/custom.yml"],
+  }, "/bin/dsh", { run_directory: runDirectory, runtime_home: runtimeHome });
+
+  assert.equal(specification.executable, "/bin/dsh");
+  assert.equal(specification.input, "");
+  assert.deepEqual(specification.env, { DSH_HOME: runtimeHome });
+  assert.deepEqual(specification.args.slice(0, 4), ["--profile", "headless", "--patch", "/workspace/custom.yml"]);
+  assert.deepEqual(specification.args.slice(-3, -1), ["--patch", path.join(runDirectory, "config", "deepseek-model.json")]);
+  assert.equal(specification.args.at(-1), "fix the tests");
+  assert.deepEqual(JSON.parse(await readFile(specification.args.at(-2), "utf8")), [{
+    id: "agent-default-model",
+    config: { provider: "deepseek-official", model: "deepseek-v4-pro" },
+  }]);
+});
+
+test("DeepSeek adapter preserves multiline plain-text output including JSON-looking lines", () => {
+  const adapter = getAdapter("deepseek");
+  const state = {};
+  const events = ["first", "", '{"answer":true}'].flatMap((line) => adapter.translateLine(line, state));
+  assert.deepEqual(events, [
+    { type: "message.delta", text: "first" },
+    { type: "message.delta", text: "\n" },
+    { type: "message.delta", text: '\n{"answer":true}' },
+  ]);
 });

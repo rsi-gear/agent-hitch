@@ -148,12 +148,16 @@ test profiles and isolated callers possible.
 
 - The daemon currently hosts direct agent runs only; benchmark jobs have not
   yet been connected to the scheduler.
-- Codex, Claude, Pi, and OpenCode have native adapters. Codex and Pi use
-  ephemeral execution to avoid shared session writes. Full per-run
-  credential/config homes and resume semantics still need adapter-specific work.
-- Exact npm versions are available for all four harnesses. Codex and Pi also
-  support registered or clean local Git commits; source-build support for Claude
-  Code and OpenCode is not currently declared.
+- Codex, Claude, Pi, OpenCode, and DeepSeek Harness have native adapters. Codex
+  and Pi use ephemeral execution to avoid shared session writes, while DeepSeek
+  uses a per-run `DSH_HOME`. Full per-run credential/config homes and resume
+  semantics still need adapter-specific work elsewhere.
+- Exact npm versions are available for all five harnesses. Codex, Pi, and
+  DeepSeek Harness also support registered or clean local Git commits;
+  source-build support for Claude Code and OpenCode is not currently declared.
+- DeepSeek Harness's official headless profile exposes final plain text rather
+  than a native event stream, so its adapter cannot normalize tool lifecycle,
+  session ID, or usage events.
 - Event translation is intentionally additive. Native events that do not have a
   stable common meaning are preserved as `provider.event`.
 - Run-history/artifact/workspace GC, durable queue replay policy, and push-based

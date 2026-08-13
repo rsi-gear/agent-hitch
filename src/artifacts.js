@@ -703,6 +703,7 @@ function commandExecutable(command, env) {
     git: "HITCH_GIT_PATH",
     cargo: "HITCH_CARGO_PATH",
     bun: "HITCH_BUN_PATH",
+    pnpm: "HITCH_PNPM_PATH",
   }[command];
   return override && env[override]?.trim() ? env[override].trim() : command;
 }
@@ -849,7 +850,7 @@ async function assertNpmResolution(directory, resolved) {
 }
 
 async function sourceLockIdentity(directory) {
-  const candidates = ["package-lock.json", "npm-shrinkwrap.json", "bun.lock", path.join("codex-rs", "Cargo.lock")];
+  const candidates = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock", path.join("codex-rs", "Cargo.lock")];
   const locks = {};
   for (const candidate of candidates) {
     const identity = await optionalFileDigest(path.join(directory, candidate));

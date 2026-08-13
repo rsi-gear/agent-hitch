@@ -190,9 +190,11 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
     const adapter = getAdapter(reference.harness_id);
     const adapterState = {};
     const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
-    const specification = adapter.process(executionRequest, artifact.executable, {
+    const specification = await adapter.process(executionRequest, artifact.executable, {
       observed_version: artifact.observed_version,
       resolution,
+      run_directory: runDirectory,
+      runtime_home: path.join(runDirectory, "runtime-home"),
     });
     if (artifact.entrypoint_args?.length) specification.args.unshift(...artifact.entrypoint_args);
     if (signal?.aborted) {
@@ -201,7 +203,11 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
     } else {
       stage = "launch";
       workspaceLease = await markWorkspaceRunning(workspaceLease, { recordPath: workspacePath });
-      const childEnvironment = { ...process.env, PWD: workspaceLease.execution_workspace };
+      const childEnvironment = {
+        ...process.env,
+        ...specification.env,
+        PWD: workspaceLease.execution_workspace,
+      };
       delete childEnvironment.OLDPWD;
       child = spawn(specification.executable, specification.args, {
         cwd: workspaceLease.execution_workspace,
@@ -220,6 +226,14 @@ export async function executeRun({ runId, request, runsRoot, root = path.dirname
 
       consumeLines(child.stdout, (line) => {
         sink.writeStdout(line);
+        if (adapter.translateLine) {
+          for (const event of adapter.translateLine(line, adapterState)) {
+            if (event.type === "message.delta" && event.text) messageParts.push(event.text);
+            if (event.type === "message.completed" && typeof event.text === "string") finalMessage = event.text;
+            sink.emit(event);
+          }
+          return;
+        }
         let native;
         try {
           native = JSON.parse(line);

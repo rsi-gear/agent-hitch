@@ -17,9 +17,14 @@ including harness evolution and model evolution.
 > prepared artifact caching, direct runs, the local daemon, and Harbor-backed
 > agent evals are implemented.
 
+## News
+
+- **2026-08-13:** Hitch now supports DeepSeek Harness.
+
 ## Available now
 
-Hitch currently supports Codex CLI, Claude Code, Pi, and OpenCode adapters. It provides:
+Hitch currently supports Codex CLI, Claude Code, Pi, OpenCode, and DeepSeek
+Harness adapters. It provides:
 
 - executable discovery, version probing, and executable fingerprints;
 - exact package-version and Git-commit resolution;
@@ -102,8 +107,8 @@ hitch daemon cancel run_<id>
 
 State is stored below `~/.hitch` by default. Use `--root <path>` or
 `HITCH_ROOT` to relocate it. Native executable overrides use
-`HITCH_CODEX_PATH`, `HITCH_CLAUDE_PATH`, `HITCH_PI_PATH`, and
-`HITCH_OPENCODE_PATH`.
+`HITCH_CODEX_PATH`, `HITCH_CLAUDE_PATH`, `HITCH_PI_PATH`,
+`HITCH_OPENCODE_PATH`, and `HITCH_DEEPSEEK_PATH`.
 
 ## Harbor-backed evals
 
@@ -172,8 +177,9 @@ hitch run \
 
 Version selectors require exact semantic versions; ranges and `latest` are not
 accepted. Short commit IDs are expanded and must be unambiguous. Local Git
-repositories must be clean. Codex and Pi support source-commit preparation;
-Claude Code and OpenCode currently support installed and exact-version sources.
+repositories must be clean. Codex, Pi, and DeepSeek Harness support
+source-commit preparation; Claude Code and OpenCode currently support installed
+and exact-version sources.
 
 The legacy `--agent <name>` option remains available as an alias for
 `--harness <name>@installed`. It cannot select revisions or be combined with
@@ -195,6 +201,7 @@ caller -> Hitch CLI / daemon -> shared run engine -> Codex CLI
                                              \----> Claude Code
                                              \----> Pi
                                              \----> OpenCode
+                                             \----> DeepSeek Harness
 ```
 
 The direct CLI and daemon use the same engine, so persistence, timeout,
