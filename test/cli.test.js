@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,13 @@ test("CLI help is available without daemon or agent setup", () => {
   const result = spawnSync(process.execPath, [executable, "--help"], { encoding: "utf8" });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Hitch — one local runtime/);
+});
+
+test("CLI version matches the package version", async () => {
+  const metadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const result = spawnSync(process.execPath, [executable, "--version"], { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, `hitch ${metadata.version}\n`);
 });
 
 test("CLI preserves typed exit code for invalid commands", () => {

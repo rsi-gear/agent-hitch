@@ -16,6 +16,7 @@ import { listPreparedArtifacts, prepareHarness, resolveHarness } from "./artifac
 import { inspectWorkspace, removeWorkspace, WORKSPACE_MODES } from "./workspaces.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
+const packageVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 export async function main(argv) {
   const args = [...argv];
@@ -39,7 +40,7 @@ export async function main(argv) {
       return;
     case "--version":
     case "-V":
-      process.stdout.write("hitch 0.1.0\n");
+      process.stdout.write(`hitch ${packageVersion}\n`);
       return;
     default:
       throw invalidInput(`unknown command: ${command}`);

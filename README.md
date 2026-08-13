@@ -32,7 +32,23 @@ Versioned machine-contract schemas live in [`docs/schemas`](docs/schemas).
 Runtime validation rejects unknown request fields and preserves typed errors
 across the daemon HTTP boundary.
 
-Hitch requires Node.js 22 or newer. From this checkout:
+## Installation
+
+Hitch requires Node.js 22 or newer. Install the CLI globally from npm:
+
+```bash
+npm install --global agent-hitch
+hitch --version
+hitch list --json
+```
+
+You can also try it without a global installation:
+
+```bash
+npx agent-hitch --help
+```
+
+For development from a checkout:
 
 ```bash
 npm test
