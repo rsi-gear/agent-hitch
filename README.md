@@ -1,5 +1,8 @@
 # Hitch
 
+[![npm version](https://img.shields.io/npm/v/agent-hitch.svg)](https://www.npmjs.com/package/agent-hitch)
+[![GitHub release](https://img.shields.io/github/v/release/rsi-gear/agent-hitch)](https://github.com/rsi-gear/agent-hitch/releases)
+
 **One local runtime. Any coding agent.**
 
 Hitch is an agent-first CLI and daemon for discovering and running native coding
@@ -219,6 +222,7 @@ cancellation, and event behavior do not drift.
 - [Agent daemon analysis and port](docs/daemon.md)
 - [Workspace isolation](docs/workspaces.md)
 - [Harbor-backed evals](docs/evals.md)
+- [Release process](docs/releasing.md)
 
 ## Acknowledgements
 
