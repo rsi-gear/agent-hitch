@@ -1,0 +1,42 @@
+{
+  "name": "agent-hitch",
+  "version": "0.1.0",
+  "description": "A local runtime and daemon for coding agents",
+  "keywords": [
+    "ai-agents",
+    "cli",
+    "coding-agents",
+    "daemon"
+  ],
+  "homepage": "https://github.com/YehuiTang0316/agent-hitch#readme",
+  "bugs": {
+    "url": "https://github.com/YehuiTang0316/agent-hitch/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YehuiTang0316/agent-hitch.git"
+  },
+  "type": "module",
+  "bin": {
+    "hitch": "bin/hitch.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "integrations/harbor/hitch_harbor_agent.py",
+    "docs/schemas/"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "coverage": "node --experimental-test-coverage --test-coverage-include=src/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test",
+    "check": "node scripts/check-syntax.js && node --test",
+    "prepublishOnly": "npm run check"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0"
+}

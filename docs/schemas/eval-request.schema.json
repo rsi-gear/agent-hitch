@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/eval-request.schema.json",
+  "title": "Hitch eval request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["backend", "dataset", "harness_ref"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "backend": { "const": "harbor" },
+    "dataset": { "type": "string", "minLength": 1 },
+    "harness_ref": { "type": "string", "minLength": 1 },
+    "model": { "type": "string" },
+    "attempts": { "type": "integer", "minimum": 1 },
+    "max_concurrent": { "type": "integer", "minimum": 1 },
+    "timeout_ms": { "type": "number", "minimum": 0 },
+    "setup_timeout_ms": { "type": "number", "minimum": 0 },
+    "agent_args": { "type": "array", "items": { "type": "string" } },
+    "pass_env": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/resolved-revision.schema.json",
+  "title": "Hitch resolved harness revision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "requested_ref",
+    "canonical_ref",
+    "harness_id",
+    "selector",
+    "source",
+    "revision",
+    "identity",
+    "resolved_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "requested_ref": { "type": "string", "minLength": 1 },
+    "canonical_ref": { "type": "string", "minLength": 1 },
+    "harness_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "selector": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["installed", "version", "commit"] },
+        "value": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["installed", "npm", "git"] },
+        "executable": { "type": "string" },
+        "integrity": { "type": "string" },
+        "package": { "type": "string" },
+        "tarball": { "type": "string" },
+        "url": { "type": "string" },
+        "registered": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "revision": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["installed", "version", "commit"] },
+        "version": { "type": ["string", "null"] },
+        "requested_commit": { "type": "string" },
+        "commit": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "identity": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "resolved_at": { "type": "string", "format": "date-time" }
+  }
+}

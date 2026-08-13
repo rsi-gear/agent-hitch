@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/run-request.schema.json",
+  "title": "Hitch run request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["prompt"],
+  "oneOf": [
+    {
+      "required": ["harness_ref"],
+      "not": { "required": ["agent"] }
+    },
+    {
+      "required": ["agent"],
+      "not": { "required": ["harness_ref"] }
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "harness_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_mode": {
+      "enum": ["shared", "worktree", "copy"],
+      "default": "shared"
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "agent_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
