@@ -8,13 +8,13 @@
     "coding-agents",
     "daemon"
   ],
-  "homepage": "https://github.com/YehuiTang0316/agent-hitch#readme",
+  "homepage": "https://github.com/rsi-gear/agent-hitch#readme",
   "bugs": {
-    "url": "https://github.com/YehuiTang0316/agent-hitch/issues"
+    "url": "https://github.com/rsi-gear/agent-hitch/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YehuiTang0316/agent-hitch.git"
+    "url": "git+https://github.com/rsi-gear/agent-hitch.git"
   },
   "type": "module",
   "bin": {
