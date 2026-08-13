@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/agent-hitch.svg)](https://www.npmjs.com/package/agent-hitch)
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/agent-hitch)](https://github.com/rsi-gear/agent-hitch/releases)
+[![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZ4NBbHDk)
 
 **One local runtime. Any coding agent.**
 
@@ -223,6 +224,11 @@ cancellation, and event behavior do not drift.
 - [Workspace isolation](docs/workspaces.md)
 - [Harbor-backed evals](docs/evals.md)
 - [Release process](docs/releasing.md)
+
+## Community
+
+Join the [Hitch community on Discord](https://discord.gg/cZ4NBbHDk) to ask
+questions, share feedback, and discuss coding-agent infrastructure.
 
 ## Acknowledgements
 
