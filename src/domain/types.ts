@@ -119,6 +119,8 @@ export interface MessageFeedbackItem {
 
 export interface MessageFeedbackRow {
   session: {
+    /** Session id binding: prevents a reused id from inheriting stale feedback. */
+    sessionId?: string;
     createdAt: number;
     cwd?: string;
   };

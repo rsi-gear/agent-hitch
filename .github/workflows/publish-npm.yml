@@ -27,7 +27,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
-        run: node scripts/check-release.js "$RELEASE_TAG" "$RELEASE_IS_PRERELEASE"
+        run: node dist/scripts/check-release.js "$RELEASE_TAG" "$RELEASE_IS_PRERELEASE"
 
       - name: Require a commit from main
         env:
@@ -40,6 +40,7 @@ jobs:
             exit 1
           }
 
+      - run: npm ci
       - run: npm run check
 
       - name: Publish stable release

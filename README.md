@@ -14,11 +14,16 @@ Hitch is designed as infrastructure for Recursive Self-Improvement (RSI),
 including harness evolution and model evolution.
 
 > Status: pre-alpha. Installed-harness discovery, immutable revision resolution,
-> prepared artifact caching, direct runs, the local daemon, and Harbor-backed
-> agent evals are implemented.
+> prepared artifact caching, direct runs, the local daemon, Harbor-backed agent
+> evals, a shared content-addressed controller runtime cache, DSH-compatible
+> canonical trajectories, and lifecycle-bound message feedback are implemented.
 
 ## News
 
+- **2026-08-20:** Hitch 0.2 development — the codebase is strict TypeScript
+  compiled to ESM; evals reference a shared SHA-256 controller runtime cache;
+  every run records a DSH-compatible canonical trajectory with
+  `trajectory.ref.json`; message feedback is available under `hitch feedback`.
 - **2026-08-13:** Hitch now supports DeepSeek Harness.
 
 ## Available now
@@ -34,6 +39,9 @@ Harness adapters. It provides:
 - queued and active-run cancellation, timeouts, and process-tree cleanup;
 - managed shared, Git worktree, and independent-copy workspace modes;
 - Harbor-backed evaluation in Docker with normalized reward summaries;
+- a shared, read-only, SHA-256-addressed controller runtime cache for evals;
+- DSH-compatible canonical trajectories with explicit fidelity per run;
+- lifecycle-bound message feedback sidecars; and
 - atomic manifests/results plus raw stdout and stderr logs; and
 - conservative recovery of interrupted records after daemon restart.
 

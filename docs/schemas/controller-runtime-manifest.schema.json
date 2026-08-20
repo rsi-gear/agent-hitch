@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/rsi-gear/agent-hitch/docs/schemas/controller-runtime-manifest.schema.json",
+  "title": "Controller runtime manifest",
+  "description": "Content-addressed manifest for a shared read-only Hitch controller runtime bundle (spec §4.3). The runtime_id is the SHA-256 of the canonical encoding of { schema_version, node_range, files }; created_at is descriptive and excluded from the identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "runtime_id", "node_range", "files", "created_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "runtime_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "node_range": { "const": ">=22" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "size", "executable", "sha256"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Normalized NFC path with / separators, relative to the payload root.",
+            "minLength": 1
+          },
+          "size": { "type": "integer", "minimum": 0 },
+          "executable": { "type": "boolean" },
+          "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        }
+      },
+      "uniqueItems": true
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

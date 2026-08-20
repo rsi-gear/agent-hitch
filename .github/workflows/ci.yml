@@ -19,6 +19,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: npm run check
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
       - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run coverage
+      - run: npm pack --dry-run
+      - name: Release validation smoke test
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: |
+          PREFIX="$(mktemp -d)"
+          npm pack --pack-destination "$PREFIX"
+          npm install --prefix "$PREFIX" "$PREFIX"/agent-hitch-*.tgz --no-save
+          "$PREFIX"/node_modules/.bin/hitch --version
+          "$PREFIX"/node_modules/.bin/hitch list --json
+          "$PREFIX"/node_modules/.bin/hitch eval doctor --json
+          python3 -c "import pathlib; compile(pathlib.Path('$PREFIX/node_modules/agent-hitch/integrations/harbor/hitch_harbor_agent.py').read_text(), 'x', 'exec'); print('bridge syntax OK')"

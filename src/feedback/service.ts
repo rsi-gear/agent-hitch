@@ -212,13 +212,17 @@ export class MessageFeedbackService {
   }
 }
 
-function identitySession(identity: FeedbackSessionIdentity): { createdAt: number; cwd?: string } {
-  const session: { createdAt: number; cwd?: string } = { createdAt: identity.createdAt };
+function identitySession(identity: FeedbackSessionIdentity): { sessionId: string; createdAt: number; cwd?: string } {
+  const session: { sessionId: string; createdAt: number; cwd?: string } = {
+    sessionId: identity.sessionId,
+    createdAt: identity.createdAt,
+  };
   if (identity.cwd !== undefined) session.cwd = identity.cwd;
   return session;
 }
 
-function sameIdentity(stored: { createdAt: number; cwd?: string }, expected: FeedbackSessionIdentity): boolean {
+function sameIdentity(stored: { sessionId?: string; createdAt: number; cwd?: string }, expected: FeedbackSessionIdentity): boolean {
+  if (stored.sessionId !== undefined && stored.sessionId !== expected.sessionId) return false;
   if (stored.createdAt !== expected.createdAt) return false;
   if ((stored.cwd ?? undefined) !== (expected.cwd ?? undefined)) return false;
   return true;

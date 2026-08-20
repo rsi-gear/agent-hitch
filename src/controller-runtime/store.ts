@@ -10,7 +10,6 @@
 import { randomBytes } from "node:crypto";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, readdir, rename, rm, stat, chmod, open } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { statePaths, SCHEMA_VERSION } from "../config.js";
 import type { StatePaths } from "../config.js";
@@ -58,8 +57,11 @@ export async function ensureControllerRuntime(
 ): Promise<ControllerRuntimeUseResult> {
   if (!root) throw new HitchError("a Hitch state root is required for the controller runtime", { code: "invalid_input", exitCode: 2 });
   const paths = statePaths(root);
+  // Stage inside the state root's tmp/ directory so promotion is a same-
+  // filesystem atomic rename (spec §4.2 `tmp/runtime-staging-*`, §4.5).
+  const stagingBase = path.join(paths.temporary, "controller-runtime");
   // Stage a fresh copy, hash it, and promote under a runtime-id lock.
-  const staging = await stagePayload(payloadRoot, rules);
+  const staging = await stagePayload(payloadRoot, rules, stagingBase);
   try {
     return await withRuntimeLock(paths, staging.runtimeId, async () => {
       return promoteStagedRuntime(paths, staging);
@@ -74,12 +76,12 @@ interface StagedRuntime {
   runtimeId: string;
 }
 
-async function stagePayload(payloadRoot: string, rules: RuntimePayloadRule[]): Promise<StagedRuntime> {
+async function stagePayload(payloadRoot: string, rules: RuntimePayloadRule[], stagingBase: string): Promise<StagedRuntime> {
   const payloadRootReal = path.resolve(payloadRoot);
   const hashResult = await hashRuntimePayload({ payloadRoot: payloadRootReal, rules });
   const runtimeId = hashResult.runtimeId.replace("sha256:", "");
 
-  const stagingBase = await ensureRuntimeTemporaryDir();
+  await ensureDir(stagingBase);
   const staging = path.join(stagingBase, `runtime-staging-${runtimeId.slice(0, 12)}-${randomBytes(6).toString("hex")}`);
   await mkdir(staging, { recursive: true });
 
@@ -99,12 +101,6 @@ async function stagePayload(payloadRoot: string, rules: RuntimePayloadRule[]): P
   return { directory: staging, runtimeId };
 }
 
-async function ensureRuntimeTemporaryDir(): Promise<string> {
-  const root = path.join(tmpdir(), "hitch", "controller-runtime");
-  await ensureDir(root);
-  return root;
-}
-
 async function copyPayload(sourceRoot: string, destinationRoot: string, rules: RuntimePayloadRule[]): Promise<void> {
   for (const rule of rules) {
     const relative = rule.path || rule.directory || "";
@@ -118,6 +114,12 @@ async function copyPayload(sourceRoot: string, destinationRoot: string, rules: R
 async function promoteStagedRuntime(paths: StatePaths, staging: StagedRuntime): Promise<ControllerRuntimeUseResult> {
   await ensureDir(paths.controllerRuntimes);
   const destination = path.join(paths.controllerRuntimes, staging.runtimeId);
+  // If a valid bundle already exists, discard staging and return the cache hit
+  // (spec §4.5). Check first so a same-filesystem rename is never attempted
+  // onto an existing directory (POSIX rejects it).
+  if (await pathExists(destination)) {
+    return useControllerRuntimeById(paths, staging.runtimeId);
+  }
   let promoted = false;
   try {
     await rename(staging.directory, destination);
@@ -140,6 +142,16 @@ async function promoteStagedRuntime(paths: StatePaths, staging: StagedRuntime): 
     };
   }
   return useControllerRuntimeById(paths, staging.runtimeId);
+}
+
+async function pathExists(file: string): Promise<boolean> {
+  try {
+    await stat(file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 async function applyReadOnlyPermissions(directory: string): Promise<void> {

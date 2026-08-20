@@ -180,6 +180,8 @@ export function validateMessageFeedbackRow(value: unknown): MessageFeedbackRow {
     session: { createdAt: asEpochMillis(session.createdAt, "session.createdAt") },
     items: asArray(record.items, "items").map((item) => validateMessageFeedbackItem(item)),
   };
+  const sessionId = asOptionalString(session.sessionId, "session.sessionId");
+  if (sessionId !== undefined) row.session.sessionId = sessionId;
   const cwd = asOptionalString(session.cwd, "session.cwd");
   if (cwd !== undefined) row.session.cwd = cwd;
   return row;

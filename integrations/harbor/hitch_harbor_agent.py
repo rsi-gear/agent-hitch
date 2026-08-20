@@ -23,6 +23,7 @@ class HitchHarborAgent(BaseAgent):
         revision_identity: str,
         hitch_runtime_dir: str,
         candidate_id: str = "candidate-1",
+        controller_runtime_id: str | None = None,
         hitch_timeout_ms: int = 900_000,
         agent_args: list[str] | None = None,
         workdir: str = "/app",
@@ -32,6 +33,7 @@ class HitchHarborAgent(BaseAgent):
         self.harness_ref = harness_ref
         self.revision_identity = revision_identity
         self.hitch_runtime_dir = Path(hitch_runtime_dir)
+        self.controller_runtime_id = controller_runtime_id
         self.candidate_id = candidate_id
         self.hitch_timeout_ms = int(hitch_timeout_ms)
         self.agent_args = list(agent_args or [])
@@ -130,6 +132,7 @@ class HitchHarborAgent(BaseAgent):
             "candidate_id": self.candidate_id,
             "harness_ref": self.harness_ref,
             "revision_identity": self.revision_identity,
+            "controller_runtime_id": self.controller_runtime_id,
             "hitch_run_id": run_id,
             "hitch_status": hitch_result.get("status") if hitch_result else None,
             "hitch_artifact_id": hitch_result.get("artifact_id") if hitch_result else None,

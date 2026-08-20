@@ -1,0 +1,241 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { TrajectoryProjector } from "../src/trajectories/projector.js";
+import { TrajectoryWriter, readTrajectory, validateTrajectoryInvariants, trajectoryRef, loadTrajectoryRef } from "../src/trajectories/store.js";
+import { encodeSegment, decodeSegment, projectKey, logPath } from "../src/trajectories/format.js";
+import { TRAJECTORY_FORMAT, CONTRACT_COMMIT } from "../src/trajectories/contract.js";
+import type { NormalizedEvent } from "../src/adapters.js";
+import type { SessionEvent } from "../src/domain/types.js";
+import { forceRemove } from "../test-support/helpers.js";
+
+function normalizedEvents(overrides: NormalizedEvent[] = []): NormalizedEvent[] {
+  return [
+    { type: "session.created", session_id: "native-1" },
+    { type: "message.delta", text: "Hello " },
+    { type: "message.delta", text: "world" },
+    { type: "message.completed", text: "Hello world" },
+    { type: "tool.started", call_id: "call_1", name: "read" },
+    { type: "tool.completed", call_id: "call_1", status: "succeeded", output: "file contents" },
+    { type: "usage.updated", usage: { input_tokens: 5, output_tokens: 2 } },
+    ...overrides,
+  ];
+}
+
+test("projector emits a closed turn with contiguous seq and paired tools", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_00000000000000000000000000000000",
+    cwd: "/workspace",
+    prompt: "please work",
+    fidelity: "normalized",
+  });
+  for (const event of normalizedEvents()) projector.feed(event);
+  const session = projector.finalize("succeeded");
+
+  assert.equal(session.finalOutput, "Hello world");
+  assert.equal(session.fidelity, "normalized");
+  assert.equal(session.providerSessionId, "native-1");
+  // seq starts at 0 and stays contiguous
+  session.events.forEach((event, index) => assert.equal(event.seq, index));
+  assert.equal(session.events[0]?.type, "turn/start");
+  const last = session.events.at(-1);
+  assert.equal(last?.type, "turn/end");
+  validateTrajectoryInvariants(session.header, session.events);
+});
+
+test("projector replaces deltas with the authoritative completed text", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_11111111111111111111111111111111",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "normalized",
+  });
+  for (const event of normalizedEvents()) projector.feed(event);
+  const session = projector.finalize("succeeded");
+  const assistant = session.events.find((event) => event.type === "assistant/message");
+  assert.ok(assistant);
+  const data = assistant.data as { message: { content: Array<{ text?: string }> } };
+  assert.equal(data.message.content.map((block) => block.text ?? "").join(""), "Hello world");
+});
+
+test("tool result pairs with exactly one tool call in the same step", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_22222222222222222222222222222222",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "normalized",
+  });
+  for (const event of normalizedEvents()) projector.feed(event);
+  const session = projector.finalize("succeeded");
+  const calls = session.events.filter((event) => event.type === "tool/call");
+  const results = session.events.filter((event) => event.type === "tool/result");
+  assert.equal(calls.length, 1);
+  assert.equal(results.length, 1);
+  const callData = calls[0]?.data as { callId: string };
+  const resultData = results[0]?.data as { message: { source: { callId: string } } };
+  assert.equal(resultData.message.source.callId, callData.callId);
+});
+
+test("an unpaired tool result is recorded as an ignorable event, not a fabricated call", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_33333333333333333333333333333333",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "normalized",
+  });
+  for (const event of [
+    { type: "session.created" as const, session_id: "s" },
+    { type: "message.delta" as const, text: "hi" },
+    { type: "tool.completed" as const, call_id: "ghost", status: "succeeded", output: "x" },
+  ]) projector.feed(event);
+  const session = projector.finalize("succeeded");
+  const unpaired = session.events.filter((event) => event.type === "hitch/unpaired-tool-result");
+  assert.equal(unpaired.length, 1);
+  assert.equal(unpaired[0]?.ignorable, true);
+  // No fabricated tool/call event and the trajectory still validates.
+  assert.equal(session.events.some((event) => event.type === "tool/call"), false);
+  validateTrajectoryInvariants(session.header, session.events);
+});
+
+test("timeout finalization emits a terminal aborted boundary with recorded work preserved", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_44444444444444444444444444444444",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "normalized",
+  });
+  for (const event of [
+    { type: "session.created" as const, session_id: "s" },
+    { type: "message.delta" as const, text: "partial " },
+  ]) projector.feed(event);
+  const session = projector.finalize("timed_out");
+  const last = session.events.at(-1);
+  assert.equal(last?.type, "turn/end");
+  const reason = last?.data as { reason: { kind?: string } };
+  assert.equal(reason.reason.kind, "aborted");
+  // Recorded work is preserved (the partial text became an interrupted message).
+  const assistant = session.events.find((event) => event.type === "assistant/message");
+  assert.ok(assistant);
+  assert.equal((assistant.data as { interrupted?: true }).interrupted, true);
+  validateTrajectoryInvariants(session.header, session.events);
+});
+
+test("empty interrupted runs still close a valid terminal boundary", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_55555555555555555555555555555555",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "minimal",
+  });
+  const session = projector.finalize("cancelled");
+  assert.equal(session.events.at(-1)?.type, "turn/end");
+  validateTrajectoryInvariants(session.header, session.events);
+});
+
+test("writer persists a header plus events and reads them back with invariants", async () => {
+  const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-store-"));
+  try {
+    const projector = new TrajectoryProjector({
+      runId: "run_66666666666666666666666666666666",
+      cwd: "/workspace",
+      prompt: "hello",
+      fidelity: "normalized",
+    });
+    for (const event of normalizedEvents()) projector.feed(event);
+    const projected = projector.finalize("succeeded");
+
+    const writer = await TrajectoryWriter.open({
+      runDirectory,
+      cwd: "/workspace",
+      sessionId: projected.header.id,
+      fidelity: projected.fidelity,
+      header: projected.header,
+    });
+    for (const event of projected.events) writer.append(event);
+    const writtenPath = await writer.close();
+
+    const read = await readTrajectory(writtenPath);
+    assert.equal(read.header.id, projected.header.id);
+    assert.equal(read.header.cwd, "/workspace");
+    assert.equal(read.events.length, projected.events.length);
+    assert.match(read.sha256, /^sha256:[0-9a-f]{64}$/);
+  } finally {
+    await forceRemove(runDirectory);
+  }
+});
+
+test("writer rejects non-contiguous sequence numbers", async () => {
+  const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-seq-"));
+  try {
+    const projector = new TrajectoryProjector({
+      runId: "run_77777777777777777777777777777777",
+      cwd: "/workspace",
+      prompt: "x",
+      fidelity: "minimal",
+    });
+    const projected = projector.finalize("succeeded");
+    const writer = await TrajectoryWriter.open({
+      runDirectory,
+      cwd: "/workspace",
+      sessionId: projected.header.id,
+      fidelity: projected.fidelity,
+      header: projected.header,
+    });
+    const dup: SessionEvent = { type: "turn/end", seq: 99, time: Date.now(), data: { turn: 0 } };
+    assert.throws(() => writer.append(dup), /seq must be contiguous/);
+    await writer.close();
+  } finally {
+    await forceRemove(runDirectory);
+  }
+});
+
+test("trajectory ref pins the DSH contract and path encoding is reversible", () => {
+  const ref = trajectoryRef(
+    "run_88888888888888888888888888888888",
+    "session-1",
+    "normalized",
+    "/tmp/run/trajectory/session.jsonl",
+    "sha256:" + "a".repeat(64),
+    "provider-1",
+  );
+  assert.equal(ref.schema_version, "1");
+  assert.equal(ref.format.family, "dsh-session");
+  assert.equal(ref.format.version, 0);
+  assert.equal(ref.format.contract_commit, CONTRACT_COMMIT);
+  assert.equal(ref.format.compression, "none");
+  assert.equal(ref.format.pack_chunks, false);
+  assert.equal(TRAJECTORY_FORMAT.compression, "none");
+
+  assert.equal(decodeSegment(encodeSegment("../evil/name")), "../evil/name");
+  assert.equal(encodeSegment(".."), "~002E~002E");
+  assert.equal(encodeSegment("."), "~002E");
+  assert.equal(projectKey("/workspace/example"), "--workspace-example--");
+  const p = logPath("/root", "/workspace", "session id!");
+  assert.ok(p.startsWith(path.join("/root", "--workspace--")));
+  assert.ok(p.endsWith("session.jsonl"));
+});
+
+test("loadTrajectoryRef returns null when no ref exists", async () => {
+  const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-noref-"));
+  try {
+    assert.equal(await loadTrajectoryRef(runDirectory), null);
+  } finally {
+    await forceRemove(runDirectory);
+  }
+});
+
+test("reader rejects an open turn at the end of the log", () => {
+  const header = {
+    type: "session" as const,
+    version: 0,
+    id: "s",
+    createdAt: Date.now(),
+    delegationDepth: 0,
+  };
+  const events: SessionEvent[] = [
+    { type: "turn/start", seq: 0, time: Date.now(), data: { turn: 0 } },
+  ];
+  assert.throws(() => validateTrajectoryInvariants(header, events), /open turn/);
+});
