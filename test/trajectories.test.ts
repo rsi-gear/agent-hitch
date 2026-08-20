@@ -208,8 +208,9 @@ test("late usage.updated after message.completed is attached to the assistant me
   const session = projector.finalize("succeeded");
   const assistant = session.events.find((event) => event.type === "assistant/message");
   assert.ok(assistant);
-  const data = assistant.data as { usage?: { input_tokens: number } };
-  assert.equal(data.usage?.input_tokens, 7);
+  const data = assistant.data as { usage?: { inputTokens: number; outputTokens: number } };
+  assert.equal(data.usage?.inputTokens, 7);
+  assert.equal(data.usage?.outputTokens, 3);
 });
 
 test("writer persists a header plus events and reads them back with invariants", async () => {

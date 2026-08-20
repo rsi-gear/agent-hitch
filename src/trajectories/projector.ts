@@ -159,18 +159,21 @@ export class TrajectoryProjector {
             },
             ...(isError ? { error: { name: open.name, code: "tool_failed" } } : {}),
           },
+          surfaceOp: "append",
         });
         break;
       }
       case "usage.updated":
+        const usage = normalizeUsage(event.usage);
+        if (!usage) break;
         if (this.assistantOpen) {
-          this.assistantUsage = event.usage;
+          this.assistantUsage = usage;
         } else if (this.lastAssistantEvent && this.lastAssistantEvent.type === "assistant/message") {
           // Some adapters (Pi, OpenCode) emit usage after `message.completed`
           // closed the assistant message. Attach it to the just-closed
           // assistant/message so the canonical record carries the accounting.
           const data = this.lastAssistantEvent.data as Record<string, unknown>;
-          if (!("usage" in data)) data.usage = event.usage;
+          if (!("usage" in data)) data.usage = usage;
         }
         break;
       case "diagnostic":
@@ -245,6 +248,7 @@ export class TrajectoryProjector {
             },
             error: { name: open.name, code: "TOOL_OUTCOME_UNKNOWN" },
           },
+          surfaceOp: "append",
         });
       }
       this.append({ type: "step/end", data: { turn: this.turn, step: this.step } });
@@ -351,6 +355,20 @@ function parseModelSource(model: string): { provider: string; model: string } {
     return { provider: model.slice(0, separator), model: model.slice(separator + 1) };
   }
   return { provider: "hitch", model: model || "unknown" };
+}
+
+/** Convert native harness accounting into the canonical DSH usage envelope. */
+function normalizeUsage(usage: Record<string, unknown>): Record<string, number> | undefined {
+  const cache = usage.cache && typeof usage.cache === "object" ? usage.cache as Record<string, unknown> : {};
+  const number = (...values: unknown[]): number => {
+    for (const value of values) if (typeof value === "number" && Number.isFinite(value)) return value;
+    return 0;
+  };
+  const input = number(usage.inputTokens, usage.uncachedInputTokens, usage.input_tokens, usage.input);
+  const output = number(usage.outputTokens, usage.output_tokens, usage.output);
+  const cacheRead = number(usage.cacheReadTokens, usage.cached_input_tokens, usage.cacheRead, cache.read);
+  const cacheWrite = number(usage.cacheWriteTokens, usage.cache_write_input_tokens, usage.cacheWrite, cache.write);
+  return { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite };
 }
 
 function toolResultText(output: unknown): string {
