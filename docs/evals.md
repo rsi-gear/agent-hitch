@@ -48,11 +48,13 @@ discovery.
 ```text
 Hitch eval engine
   -> resolve immutable harness revision
+  -> for local Git, build and verify an exact-commit object pack
   -> generate Harbor JobConfig
   -> harbor run --config ... --yes
        -> create one Docker task environment per trial
        -> load HitchHarborAgent in the Harbor process
        -> upload the minimal Hitch runtime into the task container
+       -> upload, re-verify, and materialize the local Git pack when present
        -> Hitch prepare + Hitch run in /app (shared workspace)
        -> selected native harness edits the task filesystem
        -> Harbor verifier computes rewards
@@ -78,11 +80,36 @@ need to install Node.js 22 and prepare the selected harness revision.
 
 ## Inputs and portability
 
-The first implementation supports one candidate and the Docker Harbor backend.
-The harness must use an exact published version or a commit from Hitch's
-registered remote source. `@installed` and local `git+file://` refs are rejected:
-the host executable or source tree would not describe the same runtime inside a
-fresh task container.
+The eval surface supports one candidate and the Docker Harbor backend. A harness
+may use an exact published version, a commit from Hitch's registered remote, or
+an exact commit from a clean local Git repository:
+
+```bash
+hitch eval run \
+  --backend harbor \
+  --dataset terminal-bench@2.0 \
+  --harness 'deepseek@git+file:///absolute/path/to/repo#0123456789abcdef0123456789abcdef01234567'
+```
+
+Local transport requires an explicit absolute `git+file://` source and a full
+lowercase 40-character SHA-1 or 64-character SHA-256 commit OID. Abbreviations,
+branches, tags, `HEAD`, dirty repositories, and `@installed` are rejected before
+Harbor starts. Ordinary local `resolve`, `prepare`, and `run` remain compatible
+with abbreviated commit IDs.
+
+Hitch packs only the selected commit object and the trees/blobs needed to check
+out that commit. Uncommitted files, unrelated refs and history, `.git/config`,
+hooks, credentials, and host paths are not included. The payload is size-limited
+and SHA-256 verified on the host before handoff and again inside every trial.
+The container prepares from a private shallow Git source while retaining the
+host resolver's canonical revision identity; it never fetches the candidate
+from the original local path or registered remote.
+
+Deployment policy may lower the defaults with
+`HITCH_LOCAL_GIT_MAX_BYTES`, `HITCH_LOCAL_GIT_MAX_OBJECTS`,
+`HITCH_LOCAL_GIT_MAX_FILES`, and `HITCH_LOCAL_GIT_MAX_FILE_BYTES`. Values are
+positive integers; defaults are 512 MiB, 100,000 objects, 50,000 files, and
+64 MiB per blob respectively.
 
 Dataset values use Harbor conventions:
 
@@ -103,6 +130,10 @@ request.json
 resolution.json
 plan.json
 runtime/
+local-source/                 # present only for transported local Git commits
+  manifest.json
+  payload.pack
+  resolution.json
 events.jsonl
 result.json
 harbor/
@@ -114,6 +145,9 @@ harbor/
 
 `result.json` includes the Harbor executable identity, backend paths, trial
 counts, per-reward aggregates, a primary reward, and compact per-trial status.
+For a local Git eval, `plan.json` and `result.json` also record the commit, tree,
+host resolution identity, payload SHA-256, byte count, object count, and file
+count. These durable records never depend on the container's temporary path.
 The untouched Harbor `result.json` remains authoritative for backend-specific
 detail.
 

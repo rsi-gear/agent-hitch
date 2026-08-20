@@ -21,8 +21,16 @@ test("eval requests require immutable container-portable harness revisions", asy
   );
   await assert.rejects(
     validateEvalRequest(evalRequest({ harness_ref: "pi@git+file:///tmp/pi#abcdef1" })),
-    /does not yet support local git\+file/,
+    /full lowercase 40- or 64-character commit OID/,
   );
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const local = await validateEvalRequest(evalRequest({ harness_ref: `pi@git+file:///tmp/pi#${commit}` }));
+  assert.equal(local.harness_ref, `pi@git+file:///tmp/pi#${commit}`);
+  await assert.rejects(
+    validateEvalRequest(evalRequest({ harness_ref: `pi@git+file:///tmp/pi#${commit.toUpperCase()}` })),
+    /full lowercase/,
+  );
+  await assert.rejects(validateEvalRequest(evalRequest({ harness_ref: "pi@git+file:///tmp/pi#HEAD" })), /hexadecimal ID/);
   const request = await validateEvalRequest(evalRequest());
   assert.equal(request.backend, "harbor");
   assert.equal(request.attempts, 1);
