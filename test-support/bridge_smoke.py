@@ -127,6 +127,7 @@ def main() -> int:
     manifest = json.loads((Path(bundle_root) / "manifest.json").read_text(encoding="utf-8"))
     entrypoint = manifest["entrypoints"]["cli"]["path"]
     revision_identity = "sha256:" + "a" * 64
+    runtime_id = manifest["runtime_id"]
 
     env = BaseEnvironment(revision_identity=revision_identity)
     context = AgentContext()
@@ -136,7 +137,7 @@ def main() -> int:
         revision_identity=revision_identity,
         hitch_runtime_dir=bundle_root,
         candidate_id="candidate-1",
-        controller_runtime_id="sha256:" + "b" * 64,
+        controller_runtime_id=runtime_id,
         hitch_timeout_ms=5_000,
         agent_args=[],
         workdir="/app",
@@ -163,20 +164,21 @@ def main() -> int:
         errors.append(f"upload source must be the payload directory, got {dir_uploads[0][1]}")
 
     # 2. The CLI entrypoint comes from the manifest, and the exec commands use
-    #    /opt/hitch/<entrypoint> — never a hardcoded dist path.
-    expected_entry = f"/opt/hitch/{entrypoint}"
-    if f"node {expected_entry} --version" not in " ".join(env.execs):
-        errors.append(f"--version must use the manifest entrypoint {expected_entry}")
-    if f"node {expected_entry} prepare" not in " ".join(env.execs):
-        errors.append(f"prepare must use the manifest entrypoint {expected_entry}")
-    if f"node {expected_entry} run" not in " ".join(env.execs):
-        errors.append(f"run must use the manifest entrypoint {expected_entry}")
+    #    the shell-quoted /opt/hitch/<entrypoint> — never a hardcoded dist path.
+    import shlex
+    quoted_entry = shlex.quote(f"/opt/hitch/{entrypoint}")
+    if f"node {quoted_entry} --version" not in " ".join(env.execs):
+        errors.append(f"--version must use the manifest entrypoint {quoted_entry}")
+    if f"node {quoted_entry} prepare" not in " ".join(env.execs):
+        errors.append(f"prepare must use the manifest entrypoint {quoted_entry}")
+    if f"node {quoted_entry} run" not in " ".join(env.execs):
+        errors.append(f"run must use the manifest entrypoint {quoted_entry}")
     if any("/opt/hitch/bin/hitch.js" in command for command in env.execs):
         errors.append("bridge still hardcodes /opt/hitch/bin/hitch.js")
 
-    # 3. The runtime id is recorded in context metadata.
-    if context.metadata.get("controller_runtime_id") != "sha256:" + "b" * 64:
-        errors.append("controller_runtime_id missing from context metadata")
+    # 3. The runtime id is recorded in context metadata and matches the manifest.
+    if context.metadata.get("controller_runtime_id") != runtime_id:
+        errors.append(f"controller_runtime_id was {context.metadata.get('controller_runtime_id')!r}, expected {runtime_id}")
     if context.metadata.get("hitch_status") != "succeeded":
         errors.append(f"hitch_status was {context.metadata.get('hitch_status')!r}")
 
@@ -188,5 +190,46 @@ def main() -> int:
     return 0
 
 
+def negative_main() -> int:
+    """Drive setup() with a deliberately mismatched controller_runtime_id and
+    assert the bridge refuses to upload (spec §4.6)."""
+    bridge_path, bundle_root, logs_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+    install_harbor_stubs()
+    bridge = load_bridge(bridge_path)
+
+    manifest = json.loads((Path(bundle_root) / "manifest.json").read_text(encoding="utf-8"))
+    env = BaseEnvironment(revision_identity="sha256:" + "a" * 64)
+    agent = bridge.HitchHarborAgent(
+        logs_dir=Path(logs_dir),
+        harness_ref="pi@version:1.2.3",
+        revision_identity="sha256:" + "a" * 64,
+        hitch_runtime_dir=bundle_root,
+        candidate_id="candidate-1",
+        controller_runtime_id="sha256:" + "f" * 64,  # deliberately wrong
+        hitch_timeout_ms=5_000,
+        agent_args=[],
+        workdir="/app",
+        model_name="openai/test-model",
+    )
+
+    import asyncio
+
+    try:
+        asyncio.run(agent.setup(env))
+    except RuntimeError as error:
+        if "runtime id mismatch" not in str(error):
+            print(f"bridge negative failure: unexpected error {error}", file=sys.stderr)
+            return 1
+        if any(u[2] == "/opt/hitch" for u in env.uploads):
+            print("bridge negative failure: payload was uploaded despite id mismatch", file=sys.stderr)
+            return 1
+        print("bridge negative OK (id mismatch rejected before upload)")
+        return 0
+    print("bridge negative failure: setup() succeeded with a mismatched runtime id", file=sys.stderr)
+    return 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 4 and sys.argv[4] == "--expect-mismatch":
+        sys.exit(negative_main())
     sys.exit(main())

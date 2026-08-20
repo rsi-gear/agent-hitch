@@ -105,7 +105,8 @@ test("Harbor bridge source is valid Python", () => {
 test("Harbor bridge reads the manifest entrypoint and validates it against the file set", async () => {
   // The bridge must not hardcode the TypeScript build layout: it reads the
   // manifest, requires schema v2 with a node launcher, and refuses entrypoints
-  // that are absolute, traverse, or are not declared files (spec §4.3).
+  // that are absolute, traverse, contain control characters, or are not
+  // declared files (spec §4.3).
   const source = await readFile("integrations/harbor/hitch_harbor_agent.py", "utf8");
   assert.match(source, /CONTROLLER_RUNTIME_MANIFEST_VERSION = "2"/);
   assert.match(source, /upload_dir\(payload_dir, "\/opt\/hitch"\)/);
@@ -113,6 +114,14 @@ test("Harbor bridge reads the manifest entrypoint and validates it against the f
   assert.doesNotMatch(source, /node \/opt\/hitch\/bin\/hitch\.js/);
   assert.doesNotMatch(source, /dist\/bin\/hitch\.js/);
   assert.match(source, /entrypoint not in declared/);
+  // Shell-quoting of the full remote path, not just the entrypoint string.
+  assert.match(source, /shlex\.quote\(f"\/opt\/hitch\/\{entrypoint\}"\)/);
+  assert.match(source, /control characters/);
+  // The bridge re-verifies the canonical digest and payload hashes before
+  // uploading (TOCTOU closure) and rejects a job-pinned runtime id mismatch.
+  assert.match(source, /_verify_manifest_identity/);
+  assert.match(source, /_verify_payload/);
+  assert.match(source, /runtime id mismatch/);
 });
 
 test("Harbor bridge setup() and run() behave against a real bundle", async (t) => {
@@ -130,4 +139,19 @@ test("Harbor bridge setup() and run() behave against a real bundle", async (t) =
   const result = spawnSync("python3", [smoke, bridge, use.directory, logs], { encoding: "utf8" });
   assert.equal(result.status, 0, `bridge smoke failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge smoke OK/);
+});
+
+test("Harbor bridge rejects a job-pinned controller_runtime_id mismatch before uploading", async (t) => {
+  // The bridge must compare the job-pinned controller_runtime_id with the
+  // manifest's runtime_id and refuse to upload when they differ (spec §4.6).
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-mismatch-"));
+  const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
+  const use = await ensureControllerRuntime({ root: state });
+  t.after(() => forceRemove(state));
+  const smoke = path.resolve("test-support", "bridge_smoke.py");
+  const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
+  const logs = path.join(state, "logs");
+  const result = spawnSync("python3", [smoke, bridge, use.directory, logs, "--expect-mismatch"], { encoding: "utf8" });
+  assert.equal(result.status, 0, `bridge mismatch smoke failed:\n${result.stderr || result.stdout}`);
+  assert.match(result.stdout, /bridge negative OK/);
 });

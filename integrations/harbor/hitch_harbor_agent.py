@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shlex
 import tempfile
 from pathlib import Path
@@ -67,6 +69,13 @@ class HitchHarborAgent(BaseAgent):
             )
         entrypoint = self._validate_entrypoint(manifest)
         self._entrypoint = entrypoint
+        # Verify the bundle identity on the Python side before anything is
+        # uploaded: the declared runtime_id must match the identity the Harbor
+        # job pinned, and the payload must still match the manifest's declared
+        # digests (closing the TOCTOU window between the TS-side verification
+        # and the actual container upload, spec §4.6).
+        self._verify_manifest_identity(manifest)
+        self._verify_payload(manifest)
         payload_dir = self.hitch_runtime_dir / "payload"
         if not payload_dir.is_dir():
             raise RuntimeError(f"Hitch runtime bundle has no payload directory: {self.hitch_runtime_dir}")
@@ -75,7 +84,7 @@ class HitchHarborAgent(BaseAgent):
         # bookkeeping and is not identity (spec §4.2).
         await environment.upload_dir(payload_dir, "/opt/hitch")
         await self._ensure_node(environment)
-        entry = f"/opt/hitch/{entrypoint}"
+        entry = self._remote_entry(entrypoint)
         version = await self._exec(environment, f"{self._node_prefix()} node {entry} --version")
         self._hitch_version = (version.stdout or "").strip() or None
         prepare = " ".join(
@@ -90,12 +99,67 @@ class HitchHarborAgent(BaseAgent):
         await self._exec(environment, prepare)
 
     @staticmethod
+    def _remote_entry(entrypoint: str) -> str:
+        """Shell-quote the full remote path so the entrypoint is always a
+        single argv word, even if a (digest-verified) manifest path contains
+        shell metacharacters (spec §4.3, §8.5)."""
+        return shlex.quote(f"/opt/hitch/{entrypoint}")
+
+    def _verify_manifest_identity(self, manifest: dict[str, Any]) -> None:
+        """Assert the canonical digest equals the declared runtime_id and the
+        job-pinned controller_runtime_id (spec §4.4, §4.6)."""
+        expected_id = manifest.get("runtime_id")
+        if not isinstance(expected_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_id):
+            raise RuntimeError("controller runtime manifest runtime_id is not a sha256 digest")
+        recomputed = "sha256:" + hashlib.sha256(
+            canonical_manifest_json(manifest).encode("utf-8")
+        ).hexdigest()
+        if recomputed != expected_id:
+            raise RuntimeError(
+                f"controller runtime manifest digest mismatch: recomputed {recomputed}, declared {expected_id}"
+            )
+        if self.controller_runtime_id is not None and self.controller_runtime_id != expected_id:
+            raise RuntimeError(
+                f"controller runtime id mismatch: job pinned {self.controller_runtime_id}, manifest declares {expected_id}"
+            )
+
+    def _verify_payload(self, manifest: dict[str, Any]) -> None:
+        """Re-hash the on-disk payload against the manifest's declared files
+        (sizes, executable bits, SHA-256 digests) before upload (spec §4.6)."""
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            raise RuntimeError("controller runtime manifest is missing files")
+        payload_dir = self.hitch_runtime_dir / "payload"
+        for file in files:
+            if not isinstance(file, dict):
+                raise RuntimeError("controller runtime manifest file entry is not an object")
+            rel = file.get("path")
+            size = file.get("size")
+            digest = file.get("sha256")
+            if not isinstance(rel, str) or not isinstance(size, int) or not isinstance(digest, str):
+                raise RuntimeError("controller runtime manifest file entry is malformed")
+            target = (payload_dir / rel).resolve()
+            if not str(target).startswith(str(payload_dir.resolve())):
+                raise RuntimeError(f"controller runtime payload file escapes the payload: {rel}")
+            if not target.is_file():
+                raise RuntimeError(f"controller runtime payload file is missing: {rel}")
+            actual_size = target.stat().st_size
+            if actual_size != size:
+                raise RuntimeError(
+                    f"controller runtime payload size mismatch for {rel}: expected {size}, got {actual_size}"
+                )
+            actual_digest = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+            if actual_digest != digest:
+                raise RuntimeError(f"controller runtime payload digest mismatch for {rel}")
+
+    @staticmethod
     def _validate_entrypoint(manifest: dict[str, Any]) -> str:
         """Return the declared CLI entrypoint, validated against the file set.
 
         The path must be a declared regular file: not absolute, no traversal,
-        no backslashes (spec §4.3). It must be one of the manifest's files so a
-        manifest can never point execution outside the uploaded payload.
+        no backslashes, no control characters (spec §4.3). It must be one of
+        the manifest's files so a manifest can never point execution outside
+        the uploaded payload.
         """
         entrypoints = manifest.get("entrypoints")
         if not isinstance(entrypoints, dict):
@@ -115,6 +179,8 @@ class HitchHarborAgent(BaseAgent):
             or "/../" in f"/{entrypoint}"
         ):
             raise RuntimeError(f"controller runtime manifest CLI entrypoint escapes the payload: {entrypoint}")
+        if any(ord(ch) < 0x20 for ch in entrypoint):
+            raise RuntimeError(f"controller runtime manifest CLI entrypoint contains control characters: {entrypoint!r}")
         files = manifest.get("files")
         if not isinstance(files, list):
             raise RuntimeError("controller runtime manifest is missing files")
@@ -150,7 +216,7 @@ class HitchHarborAgent(BaseAgent):
 
         if self._entrypoint is None:
             raise RuntimeError("Hitch agent setup() must run before run() to resolve the runtime entrypoint")
-        entry = f"/opt/hitch/{self._entrypoint}"
+        entry = self._remote_entry(self._entrypoint)
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
@@ -279,3 +345,45 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)
             diagnostic = (result.stderr or result.stdout or "no output").strip()
             raise RuntimeError(f"container setup command failed ({result.return_code}): {diagnostic}")
         return result
+
+
+def canonical_manifest_json(manifest: dict[str, Any]) -> str:
+    """Canonically encode the runtime identity `{ schema_version, node_range,
+    entrypoints, files }` with sorted object keys and no insignificant
+    whitespace, mirroring the TypeScript `canonicalEncodeManifest` (spec §4.4.6).
+    `created_at` is descriptive and excluded from the identity."""
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise RuntimeError("controller runtime manifest is missing files")
+    sorted_files = sorted(
+        files,
+        key=lambda f: (f.get("path") if isinstance(f, dict) else "").encode("utf-8"),
+    )
+    payload = {
+        "schema_version": manifest.get("schema_version"),
+        "node_range": manifest.get("node_range"),
+        "entrypoints": manifest.get("entrypoints"),
+        "files": [
+            {
+                "path": f.get("path"),
+                "size": f.get("size"),
+                "executable": f.get("executable"),
+                "sha256": f.get("sha256"),
+            }
+            for f in sorted_files
+            if isinstance(f, dict)
+        ],
+    }
+    return _canonical_stringify(payload)
+
+
+def _canonical_stringify(value: Any) -> str:
+    if isinstance(value, list):
+        return "[" + ",".join(_canonical_stringify(item) for item in value) + "]"
+    if isinstance(value, dict):
+        keys = sorted(value.keys(), key=lambda k: k.encode("utf-8"))
+        return "{" + ",".join(
+            json.dumps(key, ensure_ascii=False) + ":" + _canonical_stringify(value[key])
+            for key in keys
+        ) + "}"
+    return json.dumps(value, ensure_ascii=False)

@@ -90,6 +90,21 @@ test("entrypoints are recorded as executable in the manifest", async () => {
   await fixture.cleanup();
 });
 
+test("only the declared CLI entrypoint is executable; sibling source maps are not", async () => {
+  const fixture = await payloadFixture();
+  // A source map next to the entrypoint must not be marked executable (spec
+  // §4.5): only entrypoints.cli.path gets the executable bit.
+  await writeFile(path.join(fixture.root, "dist", "bin", "hitch.js.map"), "{\"version\":3}\n");
+  const result = await hashRuntimePayload({ payloadRoot: fixture.root });
+  const map = result.manifest.files.find((file) => file.path === "dist/bin/hitch.js.map");
+  assert.ok(map);
+  assert.equal(map.executable, false);
+  const entrypoint = result.manifest.files.find((file) => file.path === "dist/bin/hitch.js");
+  assert.equal(entrypoint?.executable, true);
+  assert.equal(isEntrypointPath("dist/bin/hitch.js.map"), false);
+  await fixture.cleanup();
+});
+
 test("manifest canonical encoding sorts files, includes entrypoints, and omits created_at", async () => {
   const fixture = await payloadFixture();
   const result = await hashRuntimePayload({ payloadRoot: fixture.root });

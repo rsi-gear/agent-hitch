@@ -65,15 +65,24 @@ The manifest shape (schema v2):
 ```
 
 The Harbor Python bridge reads `manifest.json`, validates that the declared CLI
-entrypoint is a non-absolute, non-traversing file in the declared `files` set,
-uploads `<bundle>/payload` (a package root with `dist/`) to `/opt/hitch`, and
-executes `/opt/hitch/<entrypoint>`. The bundle root's `manifest.json` and the
-host cache path are host-side bookkeeping and are not identity (spec §4.2).
+entrypoint is a non-absolute, non-traversing file (no control characters) in
+the declared `files` set, re-verifies the canonical digest and the on-disk
+payload hashes against the manifest (closing the TOCTOU window), and asserts
+the job-pinned `controller_runtime_id` equals the manifest's `runtime_id`
+before uploading. It uploads `<bundle>/payload` (a package root with `dist/`)
+to `/opt/hitch` and executes the shell-quoted `/opt/hitch/<entrypoint>`. The
+bundle root's `manifest.json` and the host cache path are host-side bookkeeping
+and are not identity (spec §4.2).
 
 Verification enforces the content-addressed binding: the recomputed canonical
 manifest digest must equal both the manifest's declared `runtime_id` and the
 cache directory id, so a runtime id can never be rebound to a different
 payload (spec §4.4, §11.1).
+
+Only `entrypoints.cli.path` is marked executable (`0555`) after promotion;
+sibling files such as `.map` sources stay `0444` (spec §4.5). The Python
+canonical encoder mirrors the TypeScript `canonicalEncodeManifest`
+byte-for-byte (verified against a real bundle).
 
 Planned-but-blocked fixtures (spec §10 Phase 0 / §12):
 

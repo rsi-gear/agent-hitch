@@ -137,9 +137,9 @@ async function promoteStagedRuntime(paths: StatePaths, staging: StagedRuntime): 
     // A concurrent first use promoted first; validate the existing bundle.
   }
   if (promoted) {
-    await applyReadOnlyPermissions(destination);
-    // Verify the promoted tree a second time before it can be used.
     const manifest = await loadManifest(destination);
+    await applyReadOnlyPermissions(destination, manifest.entrypoints.cli.path);
+    // Verify the promoted tree a second time before it can be used.
     await verifyRuntimePayload(path.join(destination, "payload"), manifest);
     return {
       runtime_id: `sha256:${staging.runtimeId}`,
@@ -179,7 +179,7 @@ async function pathExists(file: string): Promise<boolean> {
   }
 }
 
-async function applyReadOnlyPermissions(directory: string): Promise<void> {
+async function applyReadOnlyPermissions(directory: string, cliEntrypoint: string): Promise<void> {
   if (process.platform === "win32") return;
   const stack: string[] = [directory];
   while (stack.length > 0) {
@@ -191,7 +191,9 @@ async function applyReadOnlyPermissions(directory: string): Promise<void> {
         stack.push(absolute);
       } else if (entry.isFile()) {
         const payloadRelative = relativeToPayload(directory, absolute);
-        const isEntrypoint = /^dist[\\/]bin[\\/]/.test(payloadRelative);
+        // Only the declared CLI entrypoint becomes executable (0555); sibling
+        // files such as .map sources stay read-only (0444) (spec §4.5).
+        const isEntrypoint = payloadRelative === cliEntrypoint;
         await chmod(absolute, isEntrypoint ? 0o555 : 0o444);
       }
     }

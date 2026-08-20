@@ -172,16 +172,37 @@ interface ControllerRuntimeFile {
   sha256: Sha256
 }
 
+interface ControllerRuntimeEntrypoints {
+  cli: {
+    path: string
+    launcher: 'node'
+  }
+}
+
 interface ControllerRuntimeManifest {
-  schema_version: '1'
+  schema_version: '2'
   runtime_id: Sha256
   node_range: '>=22'
+  entrypoints: ControllerRuntimeEntrypoints
   files: ControllerRuntimeFile[]
   created_at: string
 }
 ```
 
-`created_at` is descriptive and is excluded from `runtime_id` calculation.
+`entrypoints.cli.path` is the CLI entrypoint relative to the upload root
+(`/opt/hitch`); it MUST be one of the declared `files` and is executed by the
+Harbor bridge instead of a hardcoded TypeScript build path. `created_at` is
+descriptive and is excluded from `runtime_id` calculation.
+
+The controller-runtime manifest was promoted from `schema_version: '1'` to
+`'2'` when `entrypoints` was added to the canonical identity. Legacy
+`controller-runtime-ref-v1` references that point at a v1 manifest are treated
+as invalid (`controller_runtime_integrity_mismatch`) rather than silently
+re-interpreted: a v1 manifest cannot declare `entrypoints`, so there is no
+trusted entrypoint to execute. There is no automatic v1→v2 promotion or
+rewrite of historical bundles; a future explicit migration/GC command may
+re-materialize them (spec §4.7 policy applies to any historical runtime
+storage kind).
 
 ### 4.4 Canonical identity
 
@@ -193,13 +214,17 @@ Runtime identity is calculated as follows:
 3. Normalize manifest paths to NFC with `/` separators.
 4. Sort files by the UTF-8 bytes of the normalized path.
 5. Hash each file's original bytes with SHA-256.
-6. Canonically encode `{ schema_version, node_range, files }` with sorted
-   object keys and no insignificant whitespace.
+6. Canonically encode `{ schema_version, node_range, entrypoints, files }` with
+   sorted object keys and no insignificant whitespace.
 7. Set `runtime_id` to the SHA-256 of that canonical encoding.
 
 The digest excludes cache path, source path, file mtime, uid/gid, creation
 time, and host-specific metadata. The executable bit is included. The package
 name/version are covered because `package.json` is part of the payload.
+
+A bundle's identity is only valid when the recomputed canonical digest equals
+both the manifest's declared `runtime_id` and the content-addressed cache
+directory id; a runtime id can never be rebound to a different payload.
 
 ### 4.5 Creation and promotion
 
@@ -216,7 +241,8 @@ name/version are covered because `package.json` is part of the payload.
   promoted. An expected historical runtime id must never be relabeled with
   different bytes.
 - After promotion on POSIX, directories are set to `0555`, ordinary files to
-  `0444`, and entrypoints to `0555`.
+  `0444`, and the declared CLI entrypoint (`entrypoints.cli.path`) to `0555`.
+  Sibling files in the same directory (for example `.map` sources) stay `0444`.
 
 Read-only permissions prevent accidental mutation. They are not a security
 boundary against a user with permission to rewrite the Hitch state root.
@@ -230,6 +256,13 @@ Integrity is enforced by hashes, not by permission bits alone.
 - The Harbor bridge uploads the shared host bundle into each isolated trial
   container. V1 removes duplicate host copies; it does not remove the required
   container upload.
+- Before uploading, the bridge re-verifies the canonical digest and the
+  on-disk payload hashes against the manifest, and asserts the job-pinned
+  `controller_runtime_id` equals the manifest's `runtime_id`. This closes the
+  TOCTOU window between the TypeScript-side verification and the container
+  upload. The full remote entrypoint path is shell-quoted and control
+  characters are rejected, so command-argument boundaries never depend on
+  path content safety.
 - A missing or corrupt expected runtime produces
   `controller_runtime_integrity_mismatch`; it must not silently fall back to
   the currently installed Hitch version.

@@ -119,9 +119,13 @@ export async function hashRuntimePayload(input: RuntimeHashInput): Promise<Runti
   };
 }
 
-/** True when a payload path is a runtime entrypoint (executable after promotion). */
+/**
+ * True when a payload path is THE declared CLI entrypoint. Only
+ * `entrypoints.cli.path` is marked executable after promotion; sibling files
+ * in the same directory (e.g. `.map` sources) stay non-executable (spec §4.5).
+ */
 export function isEntrypointPath(normalizedPath: string): boolean {
-  return normalizedPath === "dist/bin/hitch.js" || normalizedPath.startsWith("dist/bin/");
+  return normalizedPath === RUNTIME_CLI_ENTRYPOINT;
 }
 
 /**
