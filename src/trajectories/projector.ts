@@ -51,8 +51,9 @@ export class TrajectoryProjector {
   // DSH's current persistence format numbers turns from one. A zero turn is
   // reserved for an older pre-react-loop envelope and is rejected on load.
   private turn = 1;
-  private step = 0;
+  private step = 1;
   private stepOpen = false;
+  private promptRecorded = false;
   private requestHeaderRecorded = false;
   private turnOpen = false;
   private assistantOpen = false;
@@ -271,6 +272,10 @@ export class TrajectoryProjector {
       type: "turn/start",
       data: { turn: this.turn },
     });
+  }
+
+  private appendPrompt(): void {
+    if (this.promptRecorded) return;
     this.append({
       type: "user/message",
       data: {
@@ -281,6 +286,7 @@ export class TrajectoryProjector {
       },
       surfaceOp: "append",
     });
+    this.promptRecorded = true;
   }
 
   private ensureStepOpen(): void {
@@ -288,6 +294,7 @@ export class TrajectoryProjector {
     if (this.stepOpen) return;
     this.stepOpen = true;
     this.append({ type: "step/start", data: { turn: this.turn, step: this.step } });
+    this.appendPrompt();
     if (!this.requestHeaderRecorded) {
       this.append({
         type: "request/header",
