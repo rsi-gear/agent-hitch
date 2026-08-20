@@ -101,6 +101,7 @@ export class TrajectoryProjector {
         this.ensureSessionOpen();
         break;
       case "message.delta":
+        this.advanceAfterCompletedStep();
         this.ensureStepOpen();
         this.assistantOpen = true;
         this.assistantText += event.text;
@@ -305,6 +306,15 @@ export class TrajectoryProjector {
       });
       this.requestHeaderRecorded = true;
     }
+  }
+
+  /** A new model reply after a completed reply starts the next DSH react step. */
+  private advanceAfterCompletedStep(): void {
+    if (!this.stepOpen || this.assistantOpen || !this.lastAssistantEvent || this.openCalls.size > 0) return;
+    this.append({ type: "step/end", data: { turn: this.turn, step: this.step } });
+    this.step += 1;
+    this.stepOpen = false;
+    this.lastAssistantEvent = undefined;
   }
 
   private closeAssistantMessage(interrupted = false): void {
