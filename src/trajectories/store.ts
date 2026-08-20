@@ -165,7 +165,7 @@ export async function readTrajectory(file: string): Promise<TrajectoryReadResult
 export function validateTrajectoryInvariants(header: SessionHeaderLine, events: SessionEvent[]): void {
   const knownTypes = new Set([
     "turn/start", "turn/end", "step/start", "step/end",
-    "user/message", "assistant/chunk", "assistant/message",
+    "request/header", "user/message", "assistant/chunk", "assistant/message",
     "tool/call", "tool/result",
   ]);
   let turnOpen = false;

@@ -29,6 +29,7 @@ test("projector emits a closed turn with contiguous seq and paired tools", () =>
     runId: "run_00000000000000000000000000000000",
     cwd: "/workspace",
     prompt: "please work",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   for (const event of normalizedEvents()) projector.feed(event);
@@ -50,6 +51,7 @@ test("projector replaces deltas with the authoritative completed text", () => {
     runId: "run_11111111111111111111111111111111",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   for (const event of normalizedEvents()) projector.feed(event);
@@ -65,6 +67,7 @@ test("tool result pairs with exactly one tool call in the same step", () => {
     runId: "run_22222222222222222222222222222222",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   for (const event of normalizedEvents()) projector.feed(event);
@@ -83,6 +86,7 @@ test("an unpaired tool result is recorded as an ignorable event, not a fabricate
     runId: "run_33333333333333333333333333333333",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   for (const event of [
@@ -104,6 +108,7 @@ test("timeout finalization emits a terminal aborted boundary with recorded work 
     runId: "run_44444444444444444444444444444444",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   for (const event of [
@@ -127,6 +132,7 @@ test("an interrupted run with an open tool call closes a valid trajectory", () =
     runId: "run_99999999999999999999999999999999",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   for (const event of [
@@ -154,6 +160,7 @@ test("empty interrupted runs still close a valid terminal boundary", () => {
     runId: "run_55555555555555555555555555555555",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "minimal",
   });
   const session = projector.finalize("cancelled");
@@ -166,6 +173,7 @@ test("a successful run with an open tool call fails finalization", () => {
     runId: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   for (const event of [
@@ -187,6 +195,7 @@ test("late usage.updated after message.completed is attached to the assistant me
     runId: "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     cwd: "/workspace",
     prompt: "x",
+    model: "deepseek/test-model",
     fidelity: "normalized",
   });
   // Pi/OpenCode emit usage after the assistant message completes.
@@ -210,6 +219,7 @@ test("writer persists a header plus events and reads them back with invariants",
       runId: "run_66666666666666666666666666666666",
       cwd: "/workspace",
       prompt: "hello",
+      model: "deepseek/test-model",
       fidelity: "normalized",
     });
     for (const event of normalizedEvents()) projector.feed(event);
@@ -242,6 +252,7 @@ test("writer rejects non-contiguous sequence numbers", async () => {
       runId: "run_77777777777777777777777777777777",
       cwd: "/workspace",
       prompt: "x",
+      model: "deepseek/test-model",
       fidelity: "minimal",
     });
     const projected = projector.finalize("succeeded");
@@ -252,7 +263,7 @@ test("writer rejects non-contiguous sequence numbers", async () => {
       fidelity: projected.fidelity,
       header: projected.header,
     });
-    const dup: SessionEvent = { type: "turn/end", seq: 99, time: Date.now(), data: { turn: 0 } };
+    const dup: SessionEvent = { type: "turn/end", seq: 99, time: Date.now(), data: { turn: 1 } };
     assert.throws(() => writer.append(dup), /seq must be contiguous/);
     await writer.close();
   } finally {
@@ -304,7 +315,7 @@ test("reader rejects an open turn at the end of the log", () => {
     delegationDepth: 0,
   };
   const events: SessionEvent[] = [
-    { type: "turn/start", seq: 0, time: Date.now(), data: { turn: 0 } },
+    { type: "turn/start", seq: 0, time: Date.now(), data: { turn: 1 } },
   ];
   assert.throws(() => validateTrajectoryInvariants(header, events), /open turn/);
 });

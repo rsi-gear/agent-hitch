@@ -193,6 +193,7 @@ export async function executeRun({
     runId,
     cwd: normalized.cwd,
     prompt: normalized.prompt,
+    model: normalized.model,
     fidelity: adapterFidelity(normalized.harness_ref),
   });
   let trajectoryWriter: TrajectoryWriter | undefined;

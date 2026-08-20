@@ -24,6 +24,8 @@ export interface ProjectionOptions {
   runId: string;
   cwd: string;
   prompt: string;
+  /** Provider/model identity required by current DSH assistant-message validation. */
+  model: string;
   fidelity: TrajectoryFidelity;
   agentPreset?: string;
 }
@@ -44,10 +46,14 @@ export class TrajectoryProjector {
   private readonly events: SessionEvent[] = [];
   private readonly fidelity: TrajectoryFidelity;
   private readonly prompt: string;
+  private readonly modelSource: { provider: string; model: string };
   private seq = 0;
-  private turn = 0;
+  // DSH's current persistence format numbers turns from one. A zero turn is
+  // reserved for an older pre-react-loop envelope and is rejected on load.
+  private turn = 1;
   private step = 0;
   private stepOpen = false;
+  private requestHeaderRecorded = false;
   private turnOpen = false;
   private assistantOpen = false;
   private assistantText = "";
@@ -61,6 +67,7 @@ export class TrajectoryProjector {
   constructor(options: ProjectionOptions) {
     this.fidelity = options.fidelity;
     this.prompt = options.prompt;
+    this.modelSource = parseModelSource(options.model);
     this.header = {
       type: "session",
       version: 0,
@@ -268,7 +275,6 @@ export class TrajectoryProjector {
         content: [{ type: "text", text: this.prompt }],
         source: { kind: "user" },
       },
-      sourceEventSeqs: [],
       surfaceOp: "append",
     });
   }
@@ -278,6 +284,16 @@ export class TrajectoryProjector {
     if (this.stepOpen) return;
     this.stepOpen = true;
     this.append({ type: "step/start", data: { turn: this.turn, step: this.step } });
+    if (!this.requestHeaderRecorded) {
+      this.append({
+        type: "request/header",
+        data: {
+          header: { config: { ...this.modelSource } },
+          reason: "initial",
+        },
+      });
+      this.requestHeaderRecorded = true;
+    }
   }
 
   private closeAssistantMessage(interrupted = false): void {
@@ -293,7 +309,7 @@ export class TrajectoryProjector {
           id: randomUUID(),
           role: "assistant",
           content: [{ type: "text", text }],
-          source: { kind: "model" },
+          source: { kind: "model", ...this.modelSource },
         },
         ...(this.assistantUsage ? { usage: this.assistantUsage } : {}),
         ...(interrupted ? { interrupted: true } : {}),
@@ -327,6 +343,14 @@ export class TrajectoryProjector {
     if (this.providerSessionId) result.providerSessionId = this.providerSessionId;
     return result;
   }
+}
+
+function parseModelSource(model: string): { provider: string; model: string } {
+  const separator = model.indexOf("/");
+  if (separator > 0 && separator < model.length - 1) {
+    return { provider: model.slice(0, separator), model: model.slice(separator + 1) };
+  }
+  return { provider: "hitch", model: model || "unknown" };
 }
 
 function toolResultText(output: unknown): string {

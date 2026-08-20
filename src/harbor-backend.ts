@@ -3,17 +3,17 @@ import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { HitchError, invalidInput } from "./errors.js";
 import { atomicWriteJSON, ensureDir, readJSON } from "./fs.js";
 import { consumeLines } from "./line-stream.js";
 import { terminateProcess } from "./process.js";
 import { detectVersion, fingerprintExecutable } from "./registry.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./eval-tools.js";
+import { packageRoot } from "./package-root.js";
 import type { ResolvedRevision } from "./artifacts.js";
 import type { EvalRequest } from "./evals.js";
 
-const BRIDGE_DIRECTORY = fileURLToPath(new URL("../integrations/harbor", import.meta.url));
+const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
 
 export interface RunHarborBackendOptions {
   evalDirectory: string;
