@@ -107,6 +107,7 @@ export class TrajectoryProjector {
         this.assistantText += event.text;
         break;
       case "message.completed":
+        this.advanceAfterCompletedStep();
         this.ensureStepOpen();
         this.assistantOpen = true;
         // A completed message is the authoritative final text for the step:
