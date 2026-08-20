@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/rsi-gear/agent-hitch/docs/schemas/controller-runtime-ref.schema.json",
+  "title": "Controller runtime reference",
+  "description": "Durable portable reference to a shared controller runtime bundle stored inside an eval record (spec §4.2, §4.7). The local absolute cache path in Harbor's generated job.json is diagnostic machine-local state and is not identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "storage", "runtime_id", "manifest_digest", "created_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "storage": { "const": "controller-runtime-ref-v1" },
+    "runtime_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "manifest_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

@@ -65,6 +65,13 @@ translation, and revision identity checks. Instead, Harbor sees one custom
 `hitch` agent and Hitch starts the selected native harness inside the trial
 container.
 
+Harbor already isolates every trial in a disposable Docker environment, so
+Hitch evals match Harbor's built-in unattended execution behavior: Codex gets
+`--dangerously-bypass-approvals-and-sandbox` and OpenCode gets
+`--dangerously-skip-permissions`. These are native agent flags; the benchmark
+instruction is passed through unchanged. Explicit `--agent-arg` values are
+preserved, and an explicitly supplied bypass flag is not duplicated.
+
 The outer Harbor agent timeout is the Hitch timeout plus a 30-second cleanup
 window. Harbor's agent setup timeout is configured separately because it may
 need to install Node.js 22 and prepare the selected harness revision.
