@@ -183,7 +183,11 @@ export class MessageFeedbackService {
       const existingIndex = row.items.findIndex((item) => item.messageId === request.messageId);
       if (existingIndex < 0) return { absent: true };
       const existing = row.items[existingIndex];
-      if (existing && request.ifVersion !== null && existing.version !== request.ifVersion) {
+      // Delete ignores the supplied version only when the item is already
+      // absent; an existing item requires its exact current version even when
+      // `ifVersion` is null (spec §6.2). A null ifVersion therefore cannot
+      // delete an existing item.
+      if (existing && existing.version !== request.ifVersion) {
         throw versionConflict(existing);
       }
       const items = row.items.filter((item) => item.messageId !== request.messageId);

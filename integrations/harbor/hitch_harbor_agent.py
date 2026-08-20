@@ -48,17 +48,24 @@ class HitchHarborAgent(BaseAgent):
         return self._hitch_version
 
     async def setup(self, environment: BaseEnvironment) -> None:
+        payload_dir = self.hitch_runtime_dir / "payload"
         if not self.hitch_runtime_dir.is_dir():
             raise RuntimeError(f"Hitch runtime directory does not exist: {self.hitch_runtime_dir}")
-        await environment.upload_dir(self.hitch_runtime_dir, "/opt/hitch")
+        if not payload_dir.is_dir():
+            raise RuntimeError(f"Hitch runtime bundle has no payload directory: {self.hitch_runtime_dir}")
+        # Upload the cached bundle's payload (package.json + dist/) as the
+        # package root so /opt/hitch/dist/bin/hitch.js is the real entrypoint.
+        # The manifest.json and local cache path are host-side bookkeeping and
+        # are not identity (spec §4.2).
+        await environment.upload_dir(payload_dir, "/opt/hitch")
         await self._ensure_node(environment)
-        version = await self._exec(environment, f"{self._node_prefix()} node /opt/hitch/bin/hitch.js --version")
+        version = await self._exec(environment, f"{self._node_prefix()} node /opt/hitch/dist/bin/hitch.js --version")
         self._hitch_version = (version.stdout or "").strip() or None
         prepare = " ".join(
             [
                 self._node_prefix(),
                 "HITCH_ROOT=/tmp/hitch-state",
-                "node /opt/hitch/bin/hitch.js prepare",
+                "node /opt/hitch/dist/bin/hitch.js prepare",
                 shlex.quote(self.harness_ref),
                 "--json",
             ]
@@ -93,7 +100,7 @@ class HitchHarborAgent(BaseAgent):
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
-            "node /opt/hitch/bin/hitch.js run",
+            "node /opt/hitch/dist/bin/hitch.js run",
             "--harness",
             shlex.quote(self.harness_ref),
             "--cwd",

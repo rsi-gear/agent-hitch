@@ -33,6 +33,26 @@ Deterministic fixtures live under `test-support/`:
 | `writeFakeHarbor` / `writeFakePython` / `writeFakeDocker` | Fake Harbor backend, Python venv, and Docker for eval tooling tests. |
 | `forceRemove` | Removes trees containing read-only controller runtime bundles (promoted payloads are 0555/0444). |
 
+## 4. Controller runtime payload layout
+
+The runtime allowlist mirrors the published package `files` list exactly:
+
+```text
+package.json
+dist/bin/   (compiled CLI entrypoint)
+dist/src/   (compiled modules)
+dist/scripts/ (compiled tooling scripts)
+```
+
+Build-time-only directories (`dist/test/`, `dist/test-support/`) are excluded,
+so a checkout runtime and an npm-installed runtime hash to the same
+`runtime_id` (spec §4.4, §11.1).
+
+The Harbor Python bridge uploads `<bundle>/payload` (a package root with
+`dist/`) to `/opt/hitch` and executes `/opt/hitch/dist/bin/hitch.js`; the
+bundle root's `manifest.json` and the host cache path are host-side bookkeeping
+and are not identity (spec §4.2).
+
 Planned-but-blocked fixtures (spec §10 Phase 0 / §12):
 
 - **Deterministic mock model**: a fake model endpoint for DSH headless is only

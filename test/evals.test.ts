@@ -101,3 +101,14 @@ test("Harbor bridge source is valid Python", () => {
   });
   assert.equal(result.status, 0, result.stderr || undefined);
 });
+
+test("Harbor bridge uploads the cached bundle payload as /opt/hitch and runs the compiled entrypoint", async () => {
+  // The bridge must not execute a non-existent /opt/hitch/bin/hitch.js; it
+  // uploads <bundle>/payload (the package root with dist/) and runs
+  // /opt/hitch/dist/bin/hitch.js (spec §4.2, §8.5).
+  const source = await readFile("integrations/harbor/hitch_harbor_agent.py", "utf8");
+  assert.match(source, /upload_dir\(payload_dir, "\/opt\/hitch"\)/);
+  assert.match(source, /node \/opt\/hitch\/dist\/bin\/hitch\.js/);
+  assert.doesNotMatch(source, /node \/opt\/hitch\/bin\/hitch\.js/);
+  assert.match(source, /hitch_runtime_dir \/ "payload"/);
+});

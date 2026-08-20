@@ -23,6 +23,11 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
+      # dist/ is not committed (spec §8.3), so compile before running any
+      # validation that executes a compiled script.
+      - run: npm ci
+      - run: npm run build
+
       - name: Validate release metadata
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -40,7 +45,6 @@ jobs:
             exit 1
           }
 
-      - run: npm ci
       - run: npm run check
 
       - name: Publish stable release

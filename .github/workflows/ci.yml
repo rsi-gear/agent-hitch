@@ -34,5 +34,14 @@ jobs:
           npm install --prefix "$PREFIX" "$PREFIX"/agent-hitch-*.tgz --no-save
           "$PREFIX"/node_modules/.bin/hitch --version
           "$PREFIX"/node_modules/.bin/hitch list --json
-          "$PREFIX"/node_modules/.bin/hitch eval doctor --json
+          # eval doctor is a diagnostic command: without a managed Harbor
+          # install or a running Docker daemon it reports "action_required"
+          # and exits 3, which is a valid result for this smoke test. Require
+          # valid JSON output and accept either the ready or not-ready code.
+          set +e
+          "$PREFIX"/node_modules/.bin/hitch eval doctor --json > "$PREFIX/doctor.json"
+          doctor_code=$?
+          set -e
+          python3 -c "import json,sys; json.load(open('$PREFIX/doctor.json')); sys.exit(0)"
+          [ "$doctor_code" -eq 0 ] || [ "$doctor_code" -eq 3 ] || { echo "eval doctor exited $doctor_code" >&2; exit 1; }
           python3 -c "import pathlib; compile(pathlib.Path('$PREFIX/node_modules/agent-hitch/integrations/harbor/hitch_harbor_agent.py').read_text(), 'x', 'exec'); print('bridge syntax OK')"

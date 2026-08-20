@@ -118,7 +118,15 @@ async function promoteStagedRuntime(paths: StatePaths, staging: StagedRuntime): 
   // (spec §4.5). Check first so a same-filesystem rename is never attempted
   // onto an existing directory (POSIX rejects it).
   if (await pathExists(destination)) {
-    return useControllerRuntimeById(paths, staging.runtimeId);
+    try {
+      return await useControllerRuntimeById(paths, staging.runtimeId);
+    } catch (error) {
+      if ((error as HitchError)?.code !== "controller_runtime_integrity_mismatch") throw error;
+      // The destination is corrupt: quarantine it before promoting the fresh
+      // staged bundle with the same runtime id (spec §4.5). The replacement
+      // carries the exact same bytes, so the id is never relabeled.
+      await quarantineInvalidRuntime(paths, destination, staging.runtimeId);
+    }
   }
   let promoted = false;
   try {
@@ -142,6 +150,23 @@ async function promoteStagedRuntime(paths: StatePaths, staging: StagedRuntime): 
     };
   }
   return useControllerRuntimeById(paths, staging.runtimeId);
+}
+
+async function quarantineInvalidRuntime(paths: StatePaths, destination: string, runtimeId: string): Promise<void> {
+  const quarantine = path.join(paths.temporary, `invalid-runtime-${runtimeId}-${randomBytes(6).toString("hex")}`);
+  await ensureDir(path.dirname(quarantine));
+  await rm(quarantine, { recursive: true, force: true }).catch(() => {});
+  try {
+    // The promoted bundle tree is read-only (0555/0444); make the root
+    // writable so the rename into quarantine is permitted on all platforms.
+    await chmod(destination, 0o755).catch(() => {});
+    await rename(destination, quarantine);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    throw error;
+  }
+  // Do not remove the quarantine eagerly; keep the corrupt bytes for
+  // diagnostics. A future GC command may reclaim it.
 }
 
 async function pathExists(file: string): Promise<boolean> {

@@ -200,6 +200,33 @@ export class TrajectoryProjector {
     if (this.events.length === 0 && status !== "succeeded") this.ensureSessionOpen();
     if (this.assistantOpen && this.assistantText) this.closeAssistantMessage(true);
     if (this.stepOpen) {
+      // Any tool call still open when the run ended must be paired with a
+      // failed/unknown-outcome result before the step closes (spec §5.4:
+      // "A tool result pairs with exactly one tool call in the same step" and
+      // a completed run has no open call). The DSH crash-recovery contract
+      // synthesizes TOOL_OUTCOME_UNKNOWN-style results for interrupted calls.
+      for (const open of [...this.openCalls.values()]) {
+        this.openCalls.delete(open.callId);
+        this.append({
+          type: "tool/result",
+          data: {
+            turn: this.turn,
+            step: this.step,
+            message: {
+              id: randomUUID(),
+              role: "user",
+              content: [{
+                type: "tool-result",
+                toolCallId: open.callId,
+                content: [{ type: "text", text: `tool call interrupted: ${open.name} outcome unknown` }],
+                isError: true,
+              }],
+              source: { kind: "tool", callId: open.callId },
+            },
+            error: { name: open.name, code: "TOOL_OUTCOME_UNKNOWN" },
+          },
+        });
+      }
       this.append({ type: "step/end", data: { turn: this.turn, step: this.step } });
       this.stepOpen = false;
     }

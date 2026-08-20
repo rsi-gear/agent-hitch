@@ -191,6 +191,30 @@ test("delete requires the exact current version when the item exists", async (t)
   );
 });
 
+test("delete with ifVersion:null cannot remove an existing item (CAS enforced)", async (t) => {
+  const { service, cleanup } = await serviceFixture();
+  t.after(cleanup);
+  const created = await service.put(
+    { sessionId: identity.sessionId, messageId: "m1", rating: "positive", ifVersion: null },
+    identity,
+    { messageId: "m1" },
+  );
+  // An existing item must provide its exact current version even when
+  // ifVersion is null (spec §6.2); the null request must not delete it.
+  await assert.rejects(
+    service.delete({ sessionId: identity.sessionId, messageId: "m1", ifVersion: null }, identity),
+    (error: unknown) => (error as MessageFeedbackError).code === "version-conflict",
+  );
+  const items = await service.list({ sessionId: identity.sessionId }, identity);
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.version, created.version);
+  // With the exact version the delete succeeds.
+  assert.deepEqual(await service.delete(
+    { sessionId: identity.sessionId, messageId: "m1", ifVersion: created.version },
+    identity,
+  ), { absent: true });
+});
+
 test("recreate after delete moves the item to the end", async (t) => {
   const { service, cleanup } = await serviceFixture();
   t.after(cleanup);

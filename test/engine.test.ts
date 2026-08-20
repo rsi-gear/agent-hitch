@@ -230,6 +230,47 @@ test("timed-out runs preserve a valid trajectory with a terminal boundary", asyn
   assert.equal(turnEnd.reason?.kind, "aborted");
 });
 
+test("an interrupted run with an open tool call records a readable trajectory", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-open-tool-"));
+  // Fake codex emits a tool start (command_execution) and then stalls; the
+  // engine timeout must interrupt it with an open tool call in the step.
+  const executable = path.join(root, "open-tool-codex");
+  await writeFile(executable, `#!/usr/bin/env node
+if (process.argv.includes("--version")) { process.stdout.write("codex-cli 9.9.9\\n"); process.exit(0); }
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({type:"thread.started",thread_id:"thread_fake"}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"item.started",item:{id:"call_1",type:"command_execution"}}) + "\\n");
+  setTimeout(() => {}, 60_000);
+});
+`, { mode: 0o755 });
+  await chmod(executable, 0o755);
+  const previous = process.env.HITCH_CODEX_PATH;
+  process.env.HITCH_CODEX_PATH = executable;
+  t.after(() => restoreEnv("HITCH_CODEX_PATH", previous));
+  const runId = newRunId();
+
+  const result = await executeRun({
+    runId,
+    request: request({ agent: "codex", cwd: root, prompt: "open tool", timeout_ms: 100, agent_args: [] }),
+    runsRoot: path.join(root, "runs"),
+  });
+  assert.equal(result.status, "timed_out");
+
+  // The trajectory must be structurally valid (open tool call paired with an
+  // unknown-outcome result before step/end) and readable by consumers.
+  const ref = await loadTrajectoryRef(path.join(root, "runs", runId));
+  assert.ok(ref);
+  const { events } = await readTrajectory(ref.path);
+  const results = events.filter((event) => event.type === "tool/result");
+  assert.equal(results.length, 1);
+  const resultData = results[0]?.data as { error?: { code: string }; message: { source: { callId: string } } };
+  assert.equal(resultData.message.source.callId, "call_1");
+  assert.equal(resultData.error?.code, "TOOL_OUTCOME_UNKNOWN");
+});
+
 test("run engine preserves the complete ordered final reply", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-output-"));
   const executable = await writeFakeCodex(root, { splitReply: true });

@@ -9,13 +9,19 @@
  */
 
 import { createHash } from "node:crypto";
-import { lstat, readdir, stat } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { ControllerRuntimeFile, ControllerRuntimeManifest } from "../domain/types.js";
 
 export const RUNTIME_SCHEMA_VERSION = "1";
 export const RUNTIME_NODE_RANGE = ">=22";
-export const RUNTIME_PAYLOAD_DIRECTORY = "dist";
+
+/**
+ * Directories of the compiled payload that are part of every runtime. This
+ * must mirror the published package's `files` list so a checkout runtime and
+ * an npm-installed runtime hash to the same `runtime_id` (spec §4.4, §11.1).
+ */
+export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src", "dist/scripts"] as const;
 
 /** An explicitly allowlisted payload file that will be part of every runtime. */
 export interface RuntimePayloadRule {
@@ -29,7 +35,7 @@ export interface RuntimePayloadRule {
 /** The compiled payload allowlist. V1 keeps zero runtime npm dependencies. */
 export const RUNTIME_PAYLOAD_RULES: RuntimePayloadRule[] = [
   { path: "package.json" },
-  { directory: RUNTIME_PAYLOAD_DIRECTORY },
+  ...RUNTIME_PAYLOAD_DIRECTORIES.map((directory) => ({ directory })),
 ];
 
 export interface DeclaredFile {
@@ -246,12 +252,18 @@ async function hashDeclaredFiles(payloadRoot: string, declared: DeclaredFile[]):
     const absolute = path.join(root, ...entry.path.split("/"));
     let info;
     try {
-      info = await stat(absolute);
+      info = await lstat(absolute);
     } catch (error) {
       throw new ControllerRuntimeIntegrityError(`runtime payload file is not readable: ${entry.path}`);
     }
+    if (info.isSymbolicLink()) {
+      throw new ControllerRuntimeIntegrityError(`runtime payload must not contain symlinks: ${entry.path}`);
+    }
     if (!info.isFile()) {
       throw new ControllerRuntimeIntegrityError(`runtime payload entry is not a regular file: ${entry.path}`);
+    }
+    if (info.nlink > 1) {
+      throw new ControllerRuntimeIntegrityError(`runtime payload must not contain hardlinks: ${entry.path}`);
     }
     const digest = await hashFile(absolute);
     files.push({
@@ -290,12 +302,18 @@ export async function verifyRuntimePayload(payloadRoot: string, manifest: Contro
     const absolute = path.join(root, ...normalized.split("/"));
     let info;
     try {
-      info = await stat(absolute);
+      info = await lstat(absolute);
     } catch {
       throw new ControllerRuntimeIntegrityError(`runtime payload file is missing: ${file.path}`);
     }
+    if (info.isSymbolicLink()) {
+      throw new ControllerRuntimeIntegrityError(`runtime payload must not contain symlinks: ${file.path}`);
+    }
     if (!info.isFile()) {
       throw new ControllerRuntimeIntegrityError(`runtime payload entry is not a regular file: ${file.path}`);
+    }
+    if (info.nlink > 1) {
+      throw new ControllerRuntimeIntegrityError(`runtime payload must not contain hardlinks: ${file.path}`);
     }
     if (info.size !== file.size) {
       throw new ControllerRuntimeIntegrityError(`runtime payload size mismatch for ${file.path}: expected ${file.size}, got ${info.size}`);

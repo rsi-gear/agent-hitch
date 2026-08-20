@@ -122,6 +122,33 @@ test("timeout finalization emits a terminal aborted boundary with recorded work 
   validateTrajectoryInvariants(session.header, session.events);
 });
 
+test("an interrupted run with an open tool call closes a valid trajectory", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_99999999999999999999999999999999",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "normalized",
+  });
+  for (const event of [
+    { type: "session.created" as const, session_id: "s" },
+    { type: "tool.started" as const, call_id: "call_open", name: "bash" },
+  ]) projector.feed(event);
+  // finalize() must pair the open tool call with a failed/unknown result
+  // before closing the step, so the log validates (spec §5.4).
+  const session = projector.finalize("timed_out");
+  validateTrajectoryInvariants(session.header, session.events);
+  const results = session.events.filter((event) => event.type === "tool/result");
+  assert.equal(results.length, 1);
+  const resultData = results[0]?.data as { message: { source: { callId: string } }; error?: { code: string } };
+  assert.equal(resultData.message.source.callId, "call_open");
+  assert.equal(resultData.error?.code, "TOOL_OUTCOME_UNKNOWN");
+  // The turn closes with an aborted reason after the paired result.
+  const last = session.events.at(-1);
+  assert.equal(last?.type, "turn/end");
+  const reason = last?.data as { reason: { kind?: string } };
+  assert.equal(reason.reason.kind, "aborted");
+});
+
 test("empty interrupted runs still close a valid terminal boundary", () => {
   const projector = new TrajectoryProjector({
     runId: "run_55555555555555555555555555555555",

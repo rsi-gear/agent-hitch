@@ -10,14 +10,16 @@ import { forceRemove } from "../test-support/helpers.js";
 import { validateControllerRuntimeManifest } from "../src/domain/validate.js";
 import type { ControllerRuntimeManifest } from "../src/domain/types.js";
 
-/** Build a tiny fake payload root that matches the allowlist shape (package.json + dist/). */
+/** Build a tiny fake payload root that matches the allowlist shape (package.json + dist/bin + dist/src + dist/scripts). */
 async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-runtime-payload-"));
   await mkdir(path.join(root, "dist", "bin"), { recursive: true });
   await mkdir(path.join(root, "dist", "src"), { recursive: true });
+  await mkdir(path.join(root, "dist", "scripts"), { recursive: true });
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ name: "fake-hitch", version: "0.2.0" })}\n`);
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
+  await writeFile(path.join(root, "dist", "scripts", "check.js"), "export const check = () => {};\n");
   return {
     root,
     cleanup: () => forceRemove(root),
@@ -30,7 +32,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 3);
+  assert.equal(first.fileCount, 4);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -222,10 +224,12 @@ test("verification rejects an undeclared file inside the staged payload tree", a
   const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-staged-"));
   await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
   await mkdir(path.join(staged, "dist", "src"), { recursive: true });
+  await mkdir(path.join(staged, "dist", "scripts"), { recursive: true });
   await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
   await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
   await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
   await writeFile(path.join(staged, "dist", "src", "cli.js"), await readFile(path.join(fixture.root, "dist", "src", "cli.js")));
+  await writeFile(path.join(staged, "dist", "scripts", "check.js"), await readFile(path.join(fixture.root, "dist", "scripts", "check.js")));
   await writeFile(path.join(staged, "dist", "stray.txt"), "stray\n");
   await assert.rejects(
     verifyRuntimePayload(staged, result.manifest),
@@ -238,11 +242,122 @@ test("verification rejects an undeclared file inside the staged payload tree", a
 test("hash rejects symlinks and special files inside the payload", async () => {
   const fixture = await payloadFixture();
   const { symlink } = await import("node:fs/promises");
-  await symlink(path.join(fixture.root, "package.json"), path.join(fixture.root, "dist", "link.json"));
+  // The symlink sits inside a declared tree (dist/src), so enumeration must
+  // reject it (spec §4.4.2).
+  await symlink(path.join(fixture.root, "package.json"), path.join(fixture.root, "dist", "src", "link.json"));
   await assert.rejects(
     hashRuntimePayload({ payloadRoot: fixture.root }),
     /symlinks/,
   );
+  await fixture.cleanup();
+});
+
+test("verification rejects a declared path that is a symlink", async () => {
+  const fixture = await payloadFixture();
+  const result = await hashRuntimePayload({ payloadRoot: fixture.root });
+  // Rebuild the payload with the same declared file set, then replace one
+  // declared file with a symlink: verification must reject it (spec §4.4.2).
+  const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-symlink-"));
+  await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
+  await mkdir(path.join(staged, "dist", "src"), { recursive: true });
+  await mkdir(path.join(staged, "dist", "scripts"), { recursive: true });
+  await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
+  await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
+  await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
+  await writeFile(path.join(staged, "dist", "scripts", "check.js"), await readFile(path.join(fixture.root, "dist", "scripts", "check.js")));
+  const { symlink } = await import("node:fs/promises");
+  await symlink(path.join(staged, "package.json"), path.join(staged, "dist", "src", "cli.js"));
+  await assert.rejects(
+    verifyRuntimePayload(staged, result.manifest),
+    /symlinks/,
+  );
+  await forceRemove(staged);
+  await fixture.cleanup();
+});
+
+test("verification rejects a hardlinked payload file", async () => {
+  const fixture = await payloadFixture();
+  const result = await hashRuntimePayload({ payloadRoot: fixture.root });
+  // Rebuild the payload, then replace one declared file with a hardlink to
+  // another declared file: verification must reject it (spec §4.4.2).
+  const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-hardlink-"));
+  await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
+  await mkdir(path.join(staged, "dist", "src"), { recursive: true });
+  await mkdir(path.join(staged, "dist", "scripts"), { recursive: true });
+  await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
+  await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
+  await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
+  await writeFile(path.join(staged, "dist", "scripts", "check.js"), await readFile(path.join(fixture.root, "dist", "scripts", "check.js")));
+  const { link } = await import("node:fs/promises");
+  await link(path.join(staged, "dist", "scripts", "check.js"), path.join(staged, "dist", "src", "cli.js"));
+  await assert.rejects(
+    verifyRuntimePayload(staged, result.manifest),
+    /hardlinks/,
+  );
+  await forceRemove(staged);
+  await fixture.cleanup();
+});
+
+test("a corrupt same-id runtime is quarantined and re-promoted from the staged bundle", async (t) => {
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-runtime-quarantine-"));
+  const fixture = await payloadFixture();
+  t.after(async () => {
+    await fixture.cleanup();
+    await forceRemove(state);
+  });
+  const first = await ensureControllerRuntime({ root: state, payloadRoot: fixture.root });
+  // Corrupt the promoted payload so the bundle fails verification.
+  const { chmod: chmodFile } = await import("node:fs/promises");
+  const payloadFile = path.join(first.directory, "payload", "dist", "src", "cli.js");
+  await chmodFile(payloadFile, 0o644);
+  await writeFile(payloadFile, "corrupted;\n");
+  await assert.rejects(
+    useControllerRuntimeById(statePaths(state), first.runtime_id.replace("sha256:", "")),
+    (error: unknown) => (error as { code?: string }).code === "controller_runtime_integrity_mismatch",
+  );
+  // A fresh ensure must quarantine the corrupt bundle and promote a valid one
+  // with the same runtime id (spec §4.5).
+  const repaired = await ensureControllerRuntime({ root: state, payloadRoot: fixture.root });
+  assert.equal(repaired.runtime_id, first.runtime_id);
+  assert.equal(repaired.cache_hit, false);
+  const verified = await useControllerRuntimeById(statePaths(state), first.runtime_id.replace("sha256:", ""));
+  assert.equal(verified.runtime_id, first.runtime_id);
+});
+
+test("bundle payload layout matches the Harbor bridge expectations", async (t) => {
+  // The Python bridge uploads <bundle>/payload to /opt/hitch and executes
+  // /opt/hitch/dist/bin/hitch.js (spec §4.2, §8.5). The bundle root therefore
+  // must contain manifest.json + payload/, and payload/ must be a package root
+  // with dist/bin/hitch.js and package.json.
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-runtime-layout-"));
+  const fixture = await payloadFixture();
+  t.after(async () => {
+    await fixture.cleanup();
+    await forceRemove(state);
+  });
+  const use = await ensureControllerRuntime({ root: state, payloadRoot: fixture.root });
+  const { stat: statFile } = await import("node:fs/promises");
+  assert.ok((await statFile(path.join(use.directory, "manifest.json"))).isFile());
+  const entry = path.join(use.directory, "payload", "dist", "bin", "hitch.js");
+  assert.ok((await statFile(entry)).isFile());
+  assert.ok((await statFile(path.join(use.directory, "payload", "package.json"))).isFile());
+  assert.ok((await statFile(path.join(use.directory, "payload", "dist", "src"))).isDirectory());
+});
+
+test("runtime allowlist excludes dev/test artifacts under dist/", async () => {
+  const fixture = await payloadFixture();
+  // dist/test and dist/test-support are build-time artifacts of the checkout;
+  // they must not be part of the runtime payload (spec §4.4, §11.1), so a
+  // checkout runtime and an npm-installed runtime share one id.
+  await mkdir(path.join(fixture.root, "dist", "test"), { recursive: true });
+  await mkdir(path.join(fixture.root, "dist", "test-support"), { recursive: true });
+  await writeFile(path.join(fixture.root, "dist", "test", "x.test.js"), "// test\n");
+  await writeFile(path.join(fixture.root, "dist", "test-support", "helpers.js"), "// helpers\n");
+  const result = await hashRuntimePayload({ payloadRoot: fixture.root });
+  assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
+  assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
+  // The allowlist mirrors the published files: no dist/test entries.
+  assert.equal(result.fileCount, 4);
   await fixture.cleanup();
 });
 
