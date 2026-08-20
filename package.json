@@ -1,12 +1,13 @@
 {
   "name": "agent-hitch",
-  "version": "0.1.1",
-  "description": "A local runtime and daemon for coding agents",
+  "version": "0.2.0",
+  "description": "Content-addressed version control and evidence storage for agent harnesses",
   "keywords": [
     "ai-agents",
     "cli",
     "coding-agents",
-    "daemon"
+    "daemon",
+    "version-control"
   ],
   "homepage": "https://github.com/rsi-gear/agent-hitch#readme",
   "bugs": {
@@ -18,18 +19,21 @@
   },
   "type": "module",
   "bin": {
-    "hitch": "bin/hitch.js"
+    "hitch": "dist/bin/hitch.js"
   },
   "files": [
-    "bin/",
-    "src/",
-    "integrations/harbor/hitch_harbor_agent.py",
-    "docs/schemas/"
+    "dist/bin/",
+    "dist/src/",
+    "dist/scripts/",
+    "docs/schemas/",
+    "integrations/harbor/hitch_harbor_agent.py"
   ],
   "scripts": {
-    "test": "node --test",
-    "coverage": "node --experimental-test-coverage --test-coverage-include=src/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test",
-    "check": "node scripts/check-syntax.js && node --test",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test dist/test/",
+    "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test dist/test/",
+    "check": "npm run typecheck && npm run build && node dist/scripts/check-syntax.js && node --test dist/test/",
     "prepublishOnly": "npm run check"
   },
   "engines": {
@@ -37,6 +41,10 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
   },
   "license": "Apache-2.0"
 }

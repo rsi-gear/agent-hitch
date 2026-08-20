@@ -226,6 +226,7 @@ cancellation, and event behavior do not drift.
 
 ## Documentation
 
+- [Hitch 0.2 development spec](docs/hitch-0.2-development-spec.md)
 - [Design document](docs/design.md)
 - [Agent daemon analysis and port](docs/daemon.md)
 - [Workspace isolation](docs/workspaces.md)
