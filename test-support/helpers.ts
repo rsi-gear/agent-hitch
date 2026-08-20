@@ -141,6 +141,68 @@ process.exit(2);
   return file;
 }
 
+export async function writeFakeDeepseekNpm(directory: string, {
+  version = "0.1.0-rc.7",
+}: { version?: string } = {}): Promise<string> {
+  const file = path.join(directory, "fake-dsh-npm");
+  const installedDsh = `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write(${JSON.stringify(version)} + "\\n");
+  process.exit(0);
+}
+process.stdout.write("reply:hello\\n");
+`;
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(path.join(directory, "fake-dsh-npm.log"))}, JSON.stringify(args) + "\\n");
+if (args[0] === "--version") {
+  process.stdout.write("10.9.0\\n");
+  process.exit(0);
+}
+if (args[0] === "view") {
+  process.stdout.write(JSON.stringify({
+    version: ${JSON.stringify(version)},
+    dist: {
+      integrity: "sha512-fake-integrity",
+      tarball: "https://registry.example.test/dsh-${version}.tgz"
+    }
+  }));
+  process.exit(0);
+}
+if (args[0] === "pack") {
+  const destination = args[args.indexOf("--pack-destination") + 1];
+  const filename = "deepseek-ai-dsh-${version}.tgz";
+  fs.writeFileSync(path.join(destination, filename), "fake archive");
+  process.stdout.write(JSON.stringify([{
+    name: "@deepseek-ai/dsh",
+    version: ${JSON.stringify(version)},
+    integrity: "sha512-fake-integrity",
+    filename
+  }]));
+  process.exit(0);
+}
+if (args[0] === "install" && args.includes("--global")) {
+  const prefix = args[args.indexOf("--prefix") + 1];
+  const packageRoot = path.join(prefix, "lib", "node_modules", "@deepseek-ai", "dsh");
+  fs.mkdirSync(path.join(packageRoot, "lib"), {recursive:true});
+  fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
+    name: "@deepseek-ai/dsh",
+    version: ${JSON.stringify(version)},
+    bin: {dsh: "lib/bin.js"}
+  }));
+  fs.writeFileSync(path.join(packageRoot, "lib", "bin.js"), ${JSON.stringify(installedDsh)}, {mode:0o755});
+  process.exit(0);
+}
+process.stderr.write("unsupported fake npm invocation: " + args.join(" ") + "\\n");
+process.exit(2);
+`;
+  await writeFile(file, source, { mode: 0o755 });
+  await chmod(file, 0o755);
+  return file;
+}
+
 export async function writeFakeHarbor(directory: string): Promise<string> {
   const file = path.join(directory, "fake-harbor");
   const source = `#!/usr/bin/env node

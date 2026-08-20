@@ -60,6 +60,7 @@ export interface RevisionSourceDefinition {
   package?: string;
   packages?: string[];
   bin?: string;
+  install_mode?: "project" | "global";
   url?: string;
   commands?: Array<{ executable: string; args: string[]; cwd?: string }>;
   entrypoint?: string;
@@ -389,7 +390,7 @@ const definitions: Record<string, AdapterDefinition> = {
     path_env: "HITCH_DEEPSEEK_PATH",
     version_args: ["--version"],
     revision_sources: {
-      version: { type: "npm", package: "@deepseek-ai/dsh", bin: "dsh" },
+      version: { type: "npm", package: "@deepseek-ai/dsh", bin: "dsh", install_mode: "global" },
       commit: {
         type: "git",
         url: "https://github.com/deepseek-ai/deepseek-harness.git",

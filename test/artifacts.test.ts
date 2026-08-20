@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +10,7 @@ import { listPreparedArtifacts, prepareHarness, resolveHarness } from "../src/ar
 import { executeRun, newRunId } from "../src/engine.js";
 import { readJSON } from "../src/fs.js";
 import { parseHarnessReference } from "../src/harness-reference.js";
-import { fakePiSource, writeFakeNpm } from "../test-support/helpers.js";
+import { fakePiSource, writeFakeDeepseekNpm, writeFakeNpm } from "../test-support/helpers.js";
 import type { RunRequestInput } from "../src/engine.js";
 
 const exec = promisify(execFile);
@@ -80,6 +80,27 @@ test("exact package versions resolve by integrity, prepare once, and run from th
   const manifest = await readJSON<Record<string, unknown>>(path.join(root, "runs", runId, "manifest.json"));
   assert.equal(manifest.artifact_id, first.artifact_id);
   assert.equal((manifest.resolved_revision as { source: { type: string } }).source.type, "npm");
+});
+
+test("DeepSeek versions use an integrity-checked isolated global npm prefix", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-version-"));
+  const fakeNpm = await writeFakeDeepseekNpm(root);
+  const previous = process.env.HITCH_NPM_PATH;
+  process.env.HITCH_NPM_PATH = fakeNpm;
+  t.after(() => restoreEnv("HITCH_NPM_PATH", previous));
+
+  const resolved = await resolveHarness("deepseek@version:0.1.0-rc.7", { root });
+  const artifact = await prepareHarness(resolved, { root });
+
+  assert.equal(artifact.observed_version, "0.1.0-rc.7");
+  assert.match(artifact.entrypoint, /^lib\/node_modules\/@deepseek-ai\/dsh\/lib\/bin\.js$/);
+  const invocations = (await readFile(path.join(root, "fake-dsh-npm.log"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  assert.equal(invocations.some((args) => args[0] === "pack"), true);
+  assert.equal(invocations.some((args) => args[0] === "install" && args.includes("--global") && args.includes("--prefix")), true);
+  assert.equal(invocations.some((args) => args[0] === "install" && args.includes("--save-exact")), false);
 });
 
 test("a clean local Git commit expands to a full SHA and produces an immutable runnable artifact", async () => {

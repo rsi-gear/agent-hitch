@@ -404,26 +404,50 @@ async function prepareNpmArtifact(
 ): Promise<PreparedArtifact> {
   const staging = await newStagingDirectory(paths, resolved.harness_id);
   try {
-    await writeFile(path.join(staging, "package.json"), `${JSON.stringify({ private: true })}\n`, { mode: 0o600 });
     const npm = commandExecutable("npm", env);
     const tarball = resolved.source.tarball;
     if (!tarball) throw new HitchError("npm resolution is missing its tarball", { code: "prepare_failed", exitCode: 5 });
-    await runCommand(npm, ["install", "--no-audit", "--no-fund", "--save-exact", tarball], {
-      cwd: staging,
-      env,
-      signal,
-      failureCode: "prepare_failed",
-      failureExitCode: 5,
-    });
-    await assertNpmResolution(staging, resolved);
+    const installMode = source.install_mode || "project";
+    let nodeModulesDirectory = "node_modules";
+    let lockIdentity: string | null;
+    if (installMode === "global") {
+      const packedTarball = await packResolvedNpmTarball(npm, staging, resolved, env, signal);
+      try {
+        await runCommand(npm, ["install", "--global", "--prefix", staging, "--no-audit", "--no-fund", packedTarball], {
+          env,
+          signal,
+          failureCode: "prepare_failed",
+          failureExitCode: 5,
+        });
+      } finally {
+        await rm(packedTarball, { force: true });
+      }
+      nodeModulesDirectory = path.join("lib", "node_modules");
+      await assertGlobalNpmResolution(staging, resolved);
+      lockIdentity = digest({
+        package: resolved.source.package,
+        version: resolved.revision.version,
+        integrity: resolved.source.integrity,
+      });
+    } else {
+      await writeFile(path.join(staging, "package.json"), `${JSON.stringify({ private: true })}\n`, { mode: 0o600 });
+      await runCommand(npm, ["install", "--no-audit", "--no-fund", "--save-exact", tarball], {
+        cwd: staging,
+        env,
+        signal,
+        failureCode: "prepare_failed",
+        failureExitCode: 5,
+      });
+      await assertNpmResolution(staging, resolved);
+      lockIdentity = await optionalFileDigest(path.join(staging, "package-lock.json"));
+    }
     const packageName = resolved.source.package;
     if (!packageName) throw new HitchError("npm resolution is missing its package name", { code: "prepare_failed", exitCode: 5 });
     const binName = source.bin;
     if (!binName) throw new HitchError("npm revision source is missing its bin name", { code: "prepare_failed", exitCode: 5 });
-    const entrypoint = await npmPackageEntrypoint(staging, packageName, binName);
+    const entrypoint = await npmPackageEntrypoint(staging, packageName, binName, nodeModulesDirectory);
     const stagedExecutable = path.join(staging, entrypoint);
     await assertEntrypoint(stagedExecutable, entrypointLauncher(entrypoint), resolved.canonical_ref);
-    const lockIdentity = await optionalFileDigest(path.join(staging, "package-lock.json"));
     const toolchain: Record<string, string> = { node: process.version, npm: await commandVersion(npm, env, signal) };
     const launcher = entrypointLauncher(entrypoint);
     const invocation = artifactInvocation({ entrypoint, launcher }, staging);
@@ -873,6 +897,7 @@ function recipeIdentity(source: RevisionSourceDefinition): Record<string, unknow
     package: source.package,
     packages: source.packages,
     bin: source.bin,
+    install_mode: source.install_mode,
     url: source.url,
     commands: source.commands,
     entrypoint: source.entrypoint,
@@ -917,8 +942,13 @@ async function newStagingDirectory(paths: StatePaths, harnessId: string): Promis
   return directory;
 }
 
-async function npmPackageEntrypoint(directory: string, packageName: string, binName: string): Promise<string> {
-  const packageDirectory = path.join(directory, "node_modules", ...packageName.split("/"));
+async function npmPackageEntrypoint(
+  directory: string,
+  packageName: string,
+  binName: string,
+  nodeModulesDirectory = "node_modules",
+): Promise<string> {
+  const packageDirectory = path.join(directory, nodeModulesDirectory, ...packageName.split("/"));
   let metadata: { bin?: string | Record<string, unknown> };
   try {
     metadata = JSON.parse(await readFile(path.join(packageDirectory, "package.json"), "utf8")) as { bin?: string | Record<string, unknown> };
@@ -995,6 +1025,88 @@ async function assertNpmResolution(directory: string, resolved: ResolvedRevision
   const installed = packageName ? lock.packages?.[`node_modules/${packageName}`] : undefined;
   if (installed?.version !== resolved.revision.version || installed?.integrity !== resolved.source.integrity) {
     throw new HitchError(`installed package integrity does not match the resolution for ${resolved.canonical_ref}`, {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
+}
+
+interface NpmPackResult {
+  name?: string;
+  version?: string;
+  integrity?: string;
+  filename?: string;
+}
+
+async function packResolvedNpmTarball(
+  npm: string,
+  directory: string,
+  resolved: ResolvedRevision,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  const tarball = resolved.source.tarball;
+  if (!tarball) throw new HitchError("npm resolution is missing its tarball", { code: "prepare_failed", exitCode: 5 });
+  const result = await runCommand(npm, ["pack", "--json", "--pack-destination", directory, tarball], {
+    env,
+    signal,
+    failureCode: "prepare_failed",
+    failureExitCode: 5,
+  });
+  let packed: NpmPackResult | undefined;
+  try {
+    const records = JSON.parse(result.stdout) as NpmPackResult[];
+    if (Array.isArray(records) && records.length === 1) packed = records[0];
+  } catch {
+    // The validation error below includes the resolved reference without exposing npm output.
+  }
+  const filename = packed?.filename;
+  if (
+    packed?.name !== resolved.source.package
+    || packed?.version !== resolved.revision.version
+    || packed?.integrity !== resolved.source.integrity
+    || typeof filename !== "string"
+    || !filename
+    || path.basename(filename) !== filename
+  ) {
+    throw new HitchError(`packed package integrity does not match the resolution for ${resolved.canonical_ref}`, {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
+  const archive = path.join(directory, filename);
+  try {
+    if (!(await lstat(archive)).isFile()) throw new Error("packed archive is not a file");
+  } catch (error) {
+    throw new HitchError(`npm did not produce a readable package archive for ${resolved.canonical_ref}`, {
+      code: "artifact_invalid",
+      exitCode: 5,
+      cause: error,
+    });
+  }
+  return archive;
+}
+
+async function assertGlobalNpmResolution(directory: string, resolved: ResolvedRevision): Promise<void> {
+  const packageName = resolved.source.package;
+  let metadata: { name?: string; version?: string };
+  try {
+    metadata = JSON.parse(await readFile(path.join(
+      directory,
+      "lib",
+      "node_modules",
+      ...(packageName || "").split("/"),
+      "package.json",
+    ), "utf8")) as typeof metadata;
+  } catch (error) {
+    throw new HitchError(`npm did not produce a readable global package for ${resolved.canonical_ref}`, {
+      code: "artifact_invalid",
+      exitCode: 5,
+      cause: error,
+    });
+  }
+  if (metadata.name !== packageName || metadata.version !== resolved.revision.version) {
+    throw new HitchError(`installed package version does not match the resolution for ${resolved.canonical_ref}`, {
       code: "artifact_integrity_mismatch",
       exitCode: 5,
     });
