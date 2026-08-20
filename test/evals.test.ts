@@ -102,13 +102,32 @@ test("Harbor bridge source is valid Python", () => {
   assert.equal(result.status, 0, result.stderr || undefined);
 });
 
-test("Harbor bridge uploads the cached bundle payload as /opt/hitch and runs the compiled entrypoint", async () => {
-  // The bridge must not execute a non-existent /opt/hitch/bin/hitch.js; it
-  // uploads <bundle>/payload (the package root with dist/) and runs
-  // /opt/hitch/dist/bin/hitch.js (spec §4.2, §8.5).
+test("Harbor bridge reads the manifest entrypoint and validates it against the file set", async () => {
+  // The bridge must not hardcode the TypeScript build layout: it reads the
+  // manifest, requires schema v2 with a node launcher, and refuses entrypoints
+  // that are absolute, traverse, or are not declared files (spec §4.3).
   const source = await readFile("integrations/harbor/hitch_harbor_agent.py", "utf8");
+  assert.match(source, /CONTROLLER_RUNTIME_MANIFEST_VERSION = "2"/);
   assert.match(source, /upload_dir\(payload_dir, "\/opt\/hitch"\)/);
-  assert.match(source, /node \/opt\/hitch\/dist\/bin\/hitch\.js/);
+  assert.match(source, /_validate_entrypoint/);
   assert.doesNotMatch(source, /node \/opt\/hitch\/bin\/hitch\.js/);
-  assert.match(source, /hitch_runtime_dir \/ "payload"/);
+  assert.doesNotMatch(source, /dist\/bin\/hitch\.js/);
+  assert.match(source, /entrypoint not in declared/);
+});
+
+test("Harbor bridge setup() and run() behave against a real bundle", async (t) => {
+  // Behavioral smoke test: drive setup() and run() with a fake Harbor
+  // environment against an actual controller runtime bundle and assert the
+  // upload source, the manifest-declared remote entrypoint, the three CLI
+  // invocations, and the recorded runtime id.
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-smoke-"));
+  const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
+  const use = await ensureControllerRuntime({ root: state });
+  t.after(() => forceRemove(state));
+  const smoke = path.resolve("test-support", "bridge_smoke.py");
+  const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
+  const logs = path.join(state, "logs");
+  const result = spawnSync("python3", [smoke, bridge, use.directory, logs], { encoding: "utf8" });
+  assert.equal(result.status, 0, `bridge smoke failed:\n${result.stderr || result.stdout}`);
+  assert.match(result.stdout, /bridge smoke OK/);
 });

@@ -52,6 +52,7 @@ export class TrajectoryProjector {
   private assistantOpen = false;
   private assistantText = "";
   private assistantUsage: Record<string, unknown> | undefined;
+  private lastAssistantEvent: SessionEvent | undefined;
   private readonly openCalls = new Map<string, OpenToolCall>();
   private finalOutput = "";
   private providerSessionId: string | undefined;
@@ -155,7 +156,15 @@ export class TrajectoryProjector {
         break;
       }
       case "usage.updated":
-        if (this.assistantOpen) this.assistantUsage = event.usage;
+        if (this.assistantOpen) {
+          this.assistantUsage = event.usage;
+        } else if (this.lastAssistantEvent && this.lastAssistantEvent.type === "assistant/message") {
+          // Some adapters (Pi, OpenCode) emit usage after `message.completed`
+          // closed the assistant message. Attach it to the just-closed
+          // assistant/message so the canonical record carries the accounting.
+          const data = this.lastAssistantEvent.data as Record<string, unknown>;
+          if (!("usage" in data)) data.usage = event.usage;
+        }
         break;
       case "diagnostic":
         this.append({
@@ -200,11 +209,15 @@ export class TrajectoryProjector {
     if (this.events.length === 0 && status !== "succeeded") this.ensureSessionOpen();
     if (this.assistantOpen && this.assistantText) this.closeAssistantMessage(true);
     if (this.stepOpen) {
-      // Any tool call still open when the run ended must be paired with a
-      // failed/unknown-outcome result before the step closes (spec §5.4:
-      // "A tool result pairs with exactly one tool call in the same step" and
-      // a completed run has no open call). The DSH crash-recovery contract
-      // synthesizes TOOL_OUTCOME_UNKNOWN-style results for interrupted calls.
+      // A successful run may not end with open tool calls: the harness claimed
+      // to finish cleanly, so an unpaired call is evidence of a broken
+      // trajectory, not an interruption. Only failed/timed_out/cancelled runs
+      // may synthesize unknown-outcome results for interrupted calls (spec
+      // §5.4: a completed run has no open call).
+      if (status === "succeeded" && this.openCalls.size > 0) {
+        const open = [...this.openCalls.values()].map((call) => call.callId).join(", ");
+        throw new Error(`trajectory finalization failed: run succeeded with open tool calls: ${open}`);
+      }
       for (const open of [...this.openCalls.values()]) {
         this.openCalls.delete(open.callId);
         this.append({
@@ -271,7 +284,7 @@ export class TrajectoryProjector {
     if (!this.assistantOpen) return;
     const text = this.assistantText;
     if (text) this.finalOutput = text;
-    this.append({
+    this.lastAssistantEvent = this.append({
       type: "assistant/message",
       data: {
         turn: this.turn,
@@ -293,7 +306,7 @@ export class TrajectoryProjector {
     this.assistantUsage = undefined;
   }
 
-  private append(event: Omit<SessionEvent, "seq" | "time">): void {
+  private append(event: Omit<SessionEvent, "seq" | "time">): SessionEvent {
     const framed: SessionEvent = {
       ...event,
       seq: this.seq,
@@ -301,6 +314,7 @@ export class TrajectoryProjector {
     };
     this.seq += 1;
     this.events.push(framed);
+    return framed;
   }
 
   private project(): ProjectedSession {

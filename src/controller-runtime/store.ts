@@ -273,7 +273,7 @@ async function loadManifest(directory: string): Promise<ControllerRuntimeManifes
 }
 
 function manifestDigest(manifest: ControllerRuntimeManifest): string {
-  const encoding = canonicalEncodeManifest(manifest.files);
+  const encoding = canonicalEncodeManifest({ entrypoints: manifest.entrypoints, files: manifest.files });
   return `sha256:${createHash("sha256").update(encoding).digest("hex")}`;
 }
 
@@ -281,6 +281,12 @@ function manifestDigest(manifest: ControllerRuntimeManifest): string {
  * Verify and return a controller runtime bundle by id. A missing or corrupt
  * expected runtime must not silently fall back to the installed Hitch version
  * (spec §4.6) — it fails with `controller_runtime_integrity_mismatch`.
+ *
+ * The canonical manifest digest must equal BOTH the manifest's declared
+ * `runtime_id` and the directory id, so a runtime id can never be rebound to a
+ * different payload: editing the payload and rewriting the manifest's digest
+ * field is rejected because the recomputed digest no longer matches the
+ * declared `runtime_id` (spec §4.4, §11.1).
  */
 export async function useControllerRuntimeById(paths: StatePaths, runtimeId: string): Promise<ControllerRuntimeUseResult> {
   const directory = path.join(paths.controllerRuntimes, runtimeId);
@@ -290,11 +296,13 @@ export async function useControllerRuntimeById(paths: StatePaths, runtimeId: str
       exitCode: 5,
     });
   });
-  if (manifest.runtime_id !== `sha256:${runtimeId}`) {
-    throw new HitchError(`controller runtime integrity mismatch for ${runtimeId}`, {
-      code: "controller_runtime_integrity_mismatch",
-      exitCode: 5,
-    });
+  const expectedId = `sha256:${runtimeId}`;
+  const recomputedDigest = manifestDigest(manifest);
+  if (manifest.runtime_id !== expectedId || recomputedDigest !== expectedId || recomputedDigest !== manifest.runtime_id) {
+    throw new HitchError(
+      `controller runtime integrity mismatch for ${runtimeId}: manifest runtime_id ${manifest.runtime_id} does not match the recomputed identity ${recomputedDigest}`,
+      { code: "controller_runtime_integrity_mismatch", exitCode: 5 },
+    );
   }
   try {
     await verifyRuntimePayload(path.join(directory, "payload"), manifest);

@@ -189,11 +189,18 @@ export function validateMessageFeedbackRow(value: unknown): MessageFeedbackRow {
 
 export function validateControllerRuntimeManifest(value: unknown): ControllerRuntimeManifest {
   const record = asRecord(value, "controller runtime manifest");
-  if (record.schema_version !== "1") throw new TypeError("controller runtime manifest schema_version must be '1'");
+  if (record.schema_version !== "2") throw new TypeError("controller runtime manifest schema_version must be '2'");
   const runtimeId = asString(record.runtime_id, "runtime_id");
   if (!/^sha256:[0-9a-f]{64}$/.test(runtimeId)) throw new TypeError("runtime_id must be a sha256 digest");
   if (record.node_range !== ">=22") throw new TypeError("node_range must be '>=22'");
   const createdAt = asString(record.created_at, "created_at");
+  const entrypoints = asRecord(record.entrypoints, "entrypoints");
+  const cli = asRecord(entrypoints.cli, "entrypoints.cli");
+  const cliPath = asString(cli.path, "entrypoints.cli.path");
+  if (!cliPath || cliPath.includes("\\") || cliPath.startsWith("/") || cliPath.startsWith("..")) {
+    throw new TypeError(`invalid entrypoint path: ${cliPath}`);
+  }
+  if (cli.launcher !== "node") throw new TypeError("entrypoints.cli.launcher must be 'node'");
   const files = asArray(record.files, "files").map((entry) => {
     const file = asRecord(entry, "runtime file");
     const pathValue = asString(file.path, "file path");
@@ -210,9 +217,10 @@ export function validateControllerRuntimeManifest(value: unknown): ControllerRun
     };
   });
   return {
-    schema_version: "1",
+    schema_version: "2",
     runtime_id: runtimeId as `sha256:${string}`,
     node_range: ">=22",
+    entrypoints: { cli: { path: cliPath, launcher: "node" } },
     files,
     created_at: createdAt,
   };

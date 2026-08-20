@@ -35,23 +35,45 @@ Deterministic fixtures live under `test-support/`:
 
 ## 4. Controller runtime payload layout
 
-The runtime allowlist mirrors the published package `files` list exactly:
+The runtime allowlist is the execution closure the Harbor bridge actually
+runs — `dist/` is a TypeScript build detail, not a public ABI. The manifest
+(schema `"2"`) declares the CLI entrypoint, which participates in the identity
+hash and is executed relative to the upload root:
 
 ```text
 package.json
 dist/bin/   (compiled CLI entrypoint)
 dist/src/   (compiled modules)
-dist/scripts/ (compiled tooling scripts)
 ```
 
-Build-time-only directories (`dist/test/`, `dist/test-support/`) are excluded,
-so a checkout runtime and an npm-installed runtime hash to the same
-`runtime_id` (spec §4.4, §11.1).
+`dist/scripts/` (release tooling), `dist/test/`, and `dist/test-support/`
+(build-time artifacts) are excluded, so editing a release checker never changes
+a controller `runtime_id`, and a checkout runtime and an npm-installed runtime
+hash to the same `runtime_id` (spec §4.4, §11.1).
 
-The Harbor Python bridge uploads `<bundle>/payload` (a package root with
-`dist/`) to `/opt/hitch` and executes `/opt/hitch/dist/bin/hitch.js`; the
-bundle root's `manifest.json` and the host cache path are host-side bookkeeping
-and are not identity (spec §4.2).
+The manifest shape (schema v2):
+
+```text
+{
+  schema_version: "2",
+  runtime_id: <sha256 of canonical { schema_version, node_range, entrypoints, files }>,
+  node_range: ">=22",
+  entrypoints: { cli: { path: "dist/bin/hitch.js", launcher: "node" } },
+  files: [...],
+  created_at: <descriptive, excluded from identity>
+}
+```
+
+The Harbor Python bridge reads `manifest.json`, validates that the declared CLI
+entrypoint is a non-absolute, non-traversing file in the declared `files` set,
+uploads `<bundle>/payload` (a package root with `dist/`) to `/opt/hitch`, and
+executes `/opt/hitch/<entrypoint>`. The bundle root's `manifest.json` and the
+host cache path are host-side bookkeeping and are not identity (spec §4.2).
+
+Verification enforces the content-addressed binding: the recomputed canonical
+manifest digest must equal both the manifest's declared `runtime_id` and the
+cache directory id, so a runtime id can never be rebound to a different
+payload (spec §4.4, §11.1).
 
 Planned-but-blocked fixtures (spec §10 Phase 0 / §12):
 

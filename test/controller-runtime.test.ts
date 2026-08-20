@@ -10,7 +10,11 @@ import { forceRemove } from "../test-support/helpers.js";
 import { validateControllerRuntimeManifest } from "../src/domain/validate.js";
 import type { ControllerRuntimeManifest } from "../src/domain/types.js";
 
-/** Build a tiny fake payload root that matches the allowlist shape (package.json + dist/bin + dist/src + dist/scripts). */
+/**
+ * Build a tiny fake payload root that matches the allowlist shape
+ * (package.json + dist/bin + dist/src). `dist/scripts` exists in the checkout
+ * but is release tooling and must be excluded from the execution closure.
+ */
 async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-runtime-payload-"));
   await mkdir(path.join(root, "dist", "bin"), { recursive: true });
@@ -32,7 +36,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 4);
+  assert.equal(first.fileCount, 3);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -86,12 +90,29 @@ test("entrypoints are recorded as executable in the manifest", async () => {
   await fixture.cleanup();
 });
 
-test("manifest canonical encoding sorts files and omits created_at", async () => {
+test("manifest canonical encoding sorts files, includes entrypoints, and omits created_at", async () => {
   const fixture = await payloadFixture();
   const result = await hashRuntimePayload({ payloadRoot: fixture.root });
-  const encoded = canonicalEncodeManifest(result.manifest.files);
+  const encoded = canonicalEncodeManifest({ entrypoints: result.manifest.entrypoints, files: result.manifest.files });
   assert.ok(!encoded.includes("created_at"));
   assert.ok(encoded.includes("dist/bin/hitch.js"));
+  assert.ok(encoded.includes('"entrypoints"'));
+  assert.ok(encoded.includes('"launcher":"node"'));
+  await fixture.cleanup();
+});
+
+test("manifest declares the CLI entrypoint and it participates in the runtime id", async () => {
+  const fixture = await payloadFixture();
+  const result = await hashRuntimePayload({ payloadRoot: fixture.root });
+  assert.equal(result.manifest.schema_version, "2");
+  assert.equal(result.manifest.entrypoints.cli.path, "dist/bin/hitch.js");
+  assert.equal(result.manifest.entrypoints.cli.launcher, "node");
+  // Changing the declared entrypoint changes the runtime id.
+  const different = await hashRuntimePayload({
+    payloadRoot: fixture.root,
+    rules: [{ path: "package.json" }, { directory: "dist/bin" }, { directory: "dist/src" }],
+  });
+  assert.equal(different.manifest.entrypoints.cli.path, "dist/bin/hitch.js");
   await fixture.cleanup();
 });
 
@@ -224,12 +245,10 @@ test("verification rejects an undeclared file inside the staged payload tree", a
   const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-staged-"));
   await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
   await mkdir(path.join(staged, "dist", "src"), { recursive: true });
-  await mkdir(path.join(staged, "dist", "scripts"), { recursive: true });
   await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
   await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
   await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
   await writeFile(path.join(staged, "dist", "src", "cli.js"), await readFile(path.join(fixture.root, "dist", "src", "cli.js")));
-  await writeFile(path.join(staged, "dist", "scripts", "check.js"), await readFile(path.join(fixture.root, "dist", "scripts", "check.js")));
   await writeFile(path.join(staged, "dist", "stray.txt"), "stray\n");
   await assert.rejects(
     verifyRuntimePayload(staged, result.manifest),
@@ -260,11 +279,9 @@ test("verification rejects a declared path that is a symlink", async () => {
   const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-symlink-"));
   await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
   await mkdir(path.join(staged, "dist", "src"), { recursive: true });
-  await mkdir(path.join(staged, "dist", "scripts"), { recursive: true });
   await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
   await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
   await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
-  await writeFile(path.join(staged, "dist", "scripts", "check.js"), await readFile(path.join(fixture.root, "dist", "scripts", "check.js")));
   const { symlink } = await import("node:fs/promises");
   await symlink(path.join(staged, "package.json"), path.join(staged, "dist", "src", "cli.js"));
   await assert.rejects(
@@ -283,13 +300,11 @@ test("verification rejects a hardlinked payload file", async () => {
   const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-hardlink-"));
   await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
   await mkdir(path.join(staged, "dist", "src"), { recursive: true });
-  await mkdir(path.join(staged, "dist", "scripts"), { recursive: true });
   await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
   await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
   await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
-  await writeFile(path.join(staged, "dist", "scripts", "check.js"), await readFile(path.join(fixture.root, "dist", "scripts", "check.js")));
   const { link } = await import("node:fs/promises");
-  await link(path.join(staged, "dist", "scripts", "check.js"), path.join(staged, "dist", "src", "cli.js"));
+  await link(path.join(staged, "dist", "bin", "hitch.js"), path.join(staged, "dist", "src", "cli.js"));
   await assert.rejects(
     verifyRuntimePayload(staged, result.manifest),
     /hardlinks/,
@@ -344,21 +359,67 @@ test("bundle payload layout matches the Harbor bridge expectations", async (t) =
   assert.ok((await statFile(path.join(use.directory, "payload", "dist", "src"))).isDirectory());
 });
 
-test("runtime allowlist excludes dev/test artifacts under dist/", async () => {
+test("runtime allowlist is the execution closure, excluding dev artifacts and release tooling", async () => {
   const fixture = await payloadFixture();
   // dist/test and dist/test-support are build-time artifacts of the checkout;
-  // they must not be part of the runtime payload (spec §4.4, §11.1), so a
-  // checkout runtime and an npm-installed runtime share one id.
+  // dist/scripts is release tooling the Harbor bridge never runs. None of them
+  // may be part of the runtime payload (spec §4.4, §11.1), so a checkout
+  // runtime and an npm-installed runtime share one id and editing a release
+  // script never changes a controller runtime_id.
   await mkdir(path.join(fixture.root, "dist", "test"), { recursive: true });
   await mkdir(path.join(fixture.root, "dist", "test-support"), { recursive: true });
+  await mkdir(path.join(fixture.root, "dist", "scripts"), { recursive: true });
   await writeFile(path.join(fixture.root, "dist", "test", "x.test.js"), "// test\n");
   await writeFile(path.join(fixture.root, "dist", "test-support", "helpers.js"), "// helpers\n");
+  await writeFile(path.join(fixture.root, "dist", "scripts", "check-release.js"), "// release tooling\n");
   const result = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
-  // The allowlist mirrors the published files: no dist/test entries.
-  assert.equal(result.fileCount, 4);
+  assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
+  assert.equal(result.fileCount, 3);
   await fixture.cleanup();
+});
+
+test("runtime id cannot be rebound to a different payload", async (t) => {
+  // A corrupt bundle must fail even when the manifest's declared runtime_id is
+  // preserved: the recomputed canonical digest must equal both the declared
+  // runtime_id and the directory id (spec §4.4, §11.1).
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-runtime-rebind-"));
+  const fixture = await payloadFixture();
+  t.after(async () => {
+    await fixture.cleanup();
+    await forceRemove(state);
+  });
+  const use = await ensureControllerRuntime({ root: state, payloadRoot: fixture.root });
+  // Replace a payload byte AND rewrite the manifest's file digests so the
+  // manifest looks self-consistent, but keep the old runtime_id.
+  const { hashRuntimePayload: hashAgain } = await import("../src/controller-runtime/hash.js");
+  const { atomicWriteJSON } = await import("../src/fs.js");
+  const payloadFile = path.join(use.directory, "payload", "dist", "src", "cli.js");
+  await chmod(payloadFile, 0o644);
+  await writeFile(payloadFile, "export const main = () => 42;\n");
+  const rewritten = await hashAgain({ payloadRoot: path.join(use.directory, "payload") });
+  const tamperedManifest = {
+    ...rewritten.manifest,
+    runtime_id: use.runtime_id, // keep the old id — this is the attack
+    entrypoints: use.manifest.entrypoints,
+    files: rewritten.manifest.files,
+  };
+  // The bundle root is read-only (0555/0444); make it writable to simulate
+  // the attack (a privileged attacker can always chmod).
+  await chmod(use.directory, 0o755);
+  const manifestFile = path.join(use.directory, "manifest.json");
+  await chmod(manifestFile, 0o644);
+  await atomicWriteJSON(manifestFile, tamperedManifest);
+  // The recomputed digest no longer matches the declared runtime_id, so the
+  // bundle must be rejected instead of silently accepted.
+  await assert.rejects(
+    useControllerRuntimeById(statePaths(state), use.runtime_id.replace("sha256:", "")),
+    (error: unknown) => {
+      const typed = error as { code?: string };
+      return typed.code === "controller_runtime_integrity_mismatch";
+    },
+  );
 });
 
 test("two identical payloads from different roots share a runtime id", async () => {

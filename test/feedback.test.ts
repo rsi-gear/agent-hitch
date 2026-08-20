@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { MessageFeedbackService, MessageFeedbackError } from "../src/feedback/service.js";
+import { MessageFeedbackService, MessageFeedbackError, FeedbackStorageError } from "../src/feedback/service.js";
 import type { FeedbackSessionIdentity } from "../src/feedback/service.js";
 import { forceRemove } from "../test-support/helpers.js";
 
@@ -340,4 +340,23 @@ test("feedback does not alter the underlying session row bytes", async (t) => {
   assert.equal(items.length, 1);
   assert.equal(items[0]?.rating, "positive");
   assert.equal(items[0]?.note, "note");
+});
+
+test("a corrupt feedback row is an infrastructure error, not session-not-found", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-feedback-corrupt-"));
+  const service = new MessageFeedbackService({ root, validateTarget: async () => true });
+  // Write a schema-corrupt row on disk.
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(path.join(root, "feedback"), { recursive: true });
+  await writeFile(
+    path.join(root, "feedback", "message-feedback.json"),
+    `${JSON.stringify({ session: "not-an-object", items: "nope" })}\n`,
+  );
+  // Storage corruption must surface as an infrastructure error, never as the
+  // business `session-not-found` variant (spec §6.3).
+  await assert.rejects(
+    service.list({ sessionId: identity.sessionId }, identity),
+    (error: unknown) => error instanceof FeedbackStorageError && !(error instanceof MessageFeedbackError),
+  );
+  await forceRemove(root);
 });

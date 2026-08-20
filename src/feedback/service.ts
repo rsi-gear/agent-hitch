@@ -40,6 +40,18 @@ export class MessageFeedbackError extends Error {
   }
 }
 
+/**
+ * Infrastructure error for sidecar storage corruption or I/O failures. Unlike
+ * the business failure variants, this is not a `MessageFeedbackError` and must
+ * not be reported as one (spec §6.3).
+ */
+export class FeedbackStorageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FeedbackStorageError";
+  }
+}
+
 export const DEFAULT_MAX_NOTE_BYTES = 8192;
 
 /** Lifecycle identity of one session, bound to the feedback row. */
@@ -203,7 +215,10 @@ export class MessageFeedbackService {
     try {
       row = validateMessageFeedbackRow(raw);
     } catch {
-      throw new MessageFeedbackError("session-not-found", "feedback row is corrupt");
+      // Storage corruption and I/O failures are infrastructure errors, not
+      // business failure variants (spec §6.3): a corrupt row must never be
+      // misreported as session-not-found.
+      throw new FeedbackStorageError("message feedback sidecar is corrupt");
     }
     if (!sameIdentity(row.session, identity)) return null;
     return row;

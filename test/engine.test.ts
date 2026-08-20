@@ -271,6 +271,43 @@ process.stdin.on("end", () => {
   assert.equal(resultData.error?.code, "TOOL_OUTCOME_UNKNOWN");
 });
 
+test("a successful process exit with an open tool call cannot yield a succeeded run", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-open-tool-success-"));
+  // Fake codex emits a tool start and then exits 0 without a tool result.
+  // The harness claimed success with an open tool call: trajectory
+  // finalization must fail, and the run must not be reported succeeded
+  // (spec §5.4: a completed run has no open call).
+  const executable = path.join(root, "open-tool-success-codex");
+  await writeFile(executable, `#!/usr/bin/env node
+if (process.argv.includes("--version")) { process.stdout.write("codex-cli 9.9.9\\n"); process.exit(0); }
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({type:"thread.started",thread_id:"thread_fake"}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"item.started",item:{id:"call_1",type:"command_execution"}}) + "\\n");
+  process.exit(0);
+});
+`, { mode: 0o755 });
+  await chmod(executable, 0o755);
+  const previous = process.env.HITCH_CODEX_PATH;
+  process.env.HITCH_CODEX_PATH = executable;
+  t.after(() => restoreEnv("HITCH_CODEX_PATH", previous));
+  const runId = newRunId();
+
+  const result = await executeRun({
+    runId,
+    request: request({ agent: "codex", cwd: root, prompt: "open tool success", timeout_ms: 5_000, agent_args: [] }),
+    runsRoot: path.join(root, "runs"),
+  });
+  assert.notEqual(result.status, "succeeded");
+  assert.equal((result.error as { code: string }).code, "trajectory_recording_failed");
+  assert.equal(result.exit_code, 12);
+  // No succeeded result.json is persisted.
+  const saved = await readJSON<{ status: string }>(path.join(root, "runs", runId, "result.json"));
+  assert.notEqual(saved.status, "succeeded");
+});
+
 test("run engine preserves the complete ordered final reply", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-output-"));
   const executable = await writeFakeCodex(root, { splitReply: true });

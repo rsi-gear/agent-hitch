@@ -11,17 +11,26 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { ControllerRuntimeFile, ControllerRuntimeManifest } from "../domain/types.js";
+import type { ControllerRuntimeEntrypoints, ControllerRuntimeFile, ControllerRuntimeManifest } from "../domain/types.js";
 
-export const RUNTIME_SCHEMA_VERSION = "1";
+export const RUNTIME_SCHEMA_VERSION = "2";
 export const RUNTIME_NODE_RANGE = ">=22";
 
 /**
- * Directories of the compiled payload that are part of every runtime. This
- * must mirror the published package's `files` list so a checkout runtime and
- * an npm-installed runtime hash to the same `runtime_id` (spec §4.4, §11.1).
+ * Directories of the compiled payload that are part of every runtime. This is
+ * the execution closure the Harbor bridge actually runs — not a mechanical
+ * copy of the published package. Runtime tooling (`dist/scripts`, release
+ * checkers) is deliberately excluded so editing a release script never changes
+ * a controller `runtime_id` (spec §4.4).
  */
-export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src", "dist/scripts"] as const;
+export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src"] as const;
+
+/**
+ * The declared CLI entrypoint, relative to the upload root (`/opt/hitch`).
+ * The bridge reads this from the manifest instead of hardcoding the TypeScript
+ * build layout (spec §4.3, §8.5).
+ */
+export const RUNTIME_CLI_ENTRYPOINT = "dist/bin/hitch.js";
 
 /** An explicitly allowlisted payload file that will be part of every runtime. */
 export interface RuntimePayloadRule {
@@ -73,7 +82,8 @@ export class ControllerRuntimeIntegrityError extends Error {
 /**
  * Compute the canonical runtime identity and manifest for a payload tree.
  * Validates the allowlist, rejects undeclared/special files, and hashes each
- * file's original bytes.
+ * file's original bytes. The `entrypoints` declaration participates in the
+ * canonical `runtime_id` hash (spec §4.4).
  */
 export async function hashRuntimePayload(input: RuntimeHashInput): Promise<RuntimeHashResult> {
   const rules = input.rules || RUNTIME_PAYLOAD_RULES;
@@ -87,13 +97,17 @@ export async function hashRuntimePayload(input: RuntimeHashInput): Promise<Runti
     if (isEntrypointPath(file.path)) file.executable = true;
   }
 
-  const canonical = canonicalEncodeManifest(files);
+  const entrypoints: ControllerRuntimeEntrypoints = {
+    cli: { path: RUNTIME_CLI_ENTRYPOINT, launcher: "node" },
+  };
+  const canonical = canonicalEncodeManifest({ entrypoints, files });
   const runtimeId = createHash("sha256").update(canonical).digest("hex");
   const created_at = new Date().toISOString();
   const manifest: ControllerRuntimeManifest = {
     schema_version: RUNTIME_SCHEMA_VERSION,
     runtime_id: `sha256:${runtimeId}`,
     node_range: RUNTIME_NODE_RANGE,
+    entrypoints,
     files,
     created_at,
   };
@@ -331,14 +345,25 @@ export async function verifyRuntimePayload(payloadRoot: string, manifest: Contro
 }
 
 /**
- * Canonically encode `{ schema_version, node_range, files }` with sorted
- * object keys and no insignificant whitespace (spec §4.4.6).
+ * Canonically encode the runtime identity `{ schema_version, node_range,
+ * entrypoints, files }` with sorted object keys and no insignificant
+ * whitespace (spec §4.4.6). The `entrypoints` declaration participates in the
+ * identity hash.
  */
-export function canonicalEncodeManifest(files: ControllerRuntimeFile[]): string {
-  const sortedFiles = [...files].sort((left, right) => compareUtf8(left.path, right.path));
+export function canonicalEncodeManifest(input: {
+  entrypoints: ControllerRuntimeEntrypoints;
+  files: ControllerRuntimeFile[];
+}): string {
+  const sortedFiles = [...input.files].sort((left, right) => compareUtf8(left.path, right.path));
   const payload = {
     schema_version: RUNTIME_SCHEMA_VERSION,
     node_range: RUNTIME_NODE_RANGE,
+    entrypoints: {
+      cli: {
+        path: input.entrypoints.cli.path,
+        launcher: input.entrypoints.cli.launcher,
+      },
+    },
     files: sortedFiles.map((file) => ({
       path: file.path,
       size: file.size,
@@ -347,6 +372,11 @@ export function canonicalEncodeManifest(files: ControllerRuntimeFile[]): string 
     })),
   };
   return canonicalStringify(payload);
+}
+
+/** Encode a full manifest (identity fields plus descriptive created_at) canonically. */
+export function canonicalEncodeManifestWithCreatedAt(manifest: ControllerRuntimeManifest): string {
+  return canonicalEncodeManifest({ entrypoints: manifest.entrypoints, files: manifest.files });
 }
 
 function canonicalStringify(value: unknown): string {

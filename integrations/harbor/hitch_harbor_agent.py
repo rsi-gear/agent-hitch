@@ -12,6 +12,8 @@ from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.agent.context import AgentContext
 
+CONTROLLER_RUNTIME_MANIFEST_VERSION = "2"
+
 
 class HitchHarborAgent(BaseAgent):
     """Upload Hitch into a Harbor environment and delegate the agent phase to it."""
@@ -39,6 +41,7 @@ class HitchHarborAgent(BaseAgent):
         self.agent_args = list(agent_args or [])
         self.workdir = workdir
         self._hitch_version: str | None = None
+        self._entrypoint: str | None = None
 
     @staticmethod
     def name() -> str:
@@ -48,29 +51,77 @@ class HitchHarborAgent(BaseAgent):
         return self._hitch_version
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        payload_dir = self.hitch_runtime_dir / "payload"
         if not self.hitch_runtime_dir.is_dir():
             raise RuntimeError(f"Hitch runtime directory does not exist: {self.hitch_runtime_dir}")
+        # The manifest declares the CLI entrypoint (relative to the upload
+        # root). The bridge must not hardcode the TypeScript build layout
+        # (spec §4.3): read the manifest and execute its declared entrypoint.
+        manifest_path = self.hitch_runtime_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise RuntimeError(f"Hitch runtime bundle has no manifest: {self.hitch_runtime_dir}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("schema_version") != CONTROLLER_RUNTIME_MANIFEST_VERSION:
+            raise RuntimeError(
+                f"unsupported controller runtime manifest schema {manifest.get('schema_version')!r}; "
+                f"expected {CONTROLLER_RUNTIME_MANIFEST_VERSION!r}"
+            )
+        entrypoint = self._validate_entrypoint(manifest)
+        self._entrypoint = entrypoint
+        payload_dir = self.hitch_runtime_dir / "payload"
         if not payload_dir.is_dir():
             raise RuntimeError(f"Hitch runtime bundle has no payload directory: {self.hitch_runtime_dir}")
         # Upload the cached bundle's payload (package.json + dist/) as the
-        # package root so /opt/hitch/dist/bin/hitch.js is the real entrypoint.
-        # The manifest.json and local cache path are host-side bookkeeping and
-        # are not identity (spec §4.2).
+        # package root under /opt/hitch; the local cache path is host-side
+        # bookkeeping and is not identity (spec §4.2).
         await environment.upload_dir(payload_dir, "/opt/hitch")
         await self._ensure_node(environment)
-        version = await self._exec(environment, f"{self._node_prefix()} node /opt/hitch/dist/bin/hitch.js --version")
+        entry = f"/opt/hitch/{entrypoint}"
+        version = await self._exec(environment, f"{self._node_prefix()} node {entry} --version")
         self._hitch_version = (version.stdout or "").strip() or None
         prepare = " ".join(
             [
                 self._node_prefix(),
                 "HITCH_ROOT=/tmp/hitch-state",
-                "node /opt/hitch/dist/bin/hitch.js prepare",
+                f"node {entry} prepare",
                 shlex.quote(self.harness_ref),
                 "--json",
             ]
         )
         await self._exec(environment, prepare)
+
+    @staticmethod
+    def _validate_entrypoint(manifest: dict[str, Any]) -> str:
+        """Return the declared CLI entrypoint, validated against the file set.
+
+        The path must be a declared regular file: not absolute, no traversal,
+        no backslashes (spec §4.3). It must be one of the manifest's files so a
+        manifest can never point execution outside the uploaded payload.
+        """
+        entrypoints = manifest.get("entrypoints")
+        if not isinstance(entrypoints, dict):
+            raise RuntimeError("controller runtime manifest is missing entrypoints")
+        cli = entrypoints.get("cli")
+        if not isinstance(cli, dict):
+            raise RuntimeError("controller runtime manifest is missing entrypoints.cli")
+        if cli.get("launcher") != "node":
+            raise RuntimeError("controller runtime CLI launcher must be 'node'")
+        entrypoint = cli.get("path")
+        if not isinstance(entrypoint, str) or not entrypoint:
+            raise RuntimeError("controller runtime manifest CLI entrypoint must be a non-empty path")
+        if (
+            entrypoint.startswith("/")
+            or "\\" in entrypoint
+            or entrypoint.startswith("..")
+            or "/../" in f"/{entrypoint}"
+        ):
+            raise RuntimeError(f"controller runtime manifest CLI entrypoint escapes the payload: {entrypoint}")
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            raise RuntimeError("controller runtime manifest is missing files")
+        declared = {file.get("path") for file in files if isinstance(file, dict)}
+        if entrypoint not in declared:
+            raise RuntimeError(f"controller runtime manifest CLI entrypoint is not a declared file: {entrypoint}")
+        return entrypoint
 
     async def run(
         self,
@@ -97,10 +148,13 @@ class HitchHarborAgent(BaseAgent):
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
+        if self._entrypoint is None:
+            raise RuntimeError("Hitch agent setup() must run before run() to resolve the runtime entrypoint")
+        entry = f"/opt/hitch/{self._entrypoint}"
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
-            "node /opt/hitch/dist/bin/hitch.js run",
+            f"node {entry} run",
             "--harness",
             shlex.quote(self.harness_ref),
             "--cwd",

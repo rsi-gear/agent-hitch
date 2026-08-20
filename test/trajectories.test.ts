@@ -161,6 +161,48 @@ test("empty interrupted runs still close a valid terminal boundary", () => {
   validateTrajectoryInvariants(session.header, session.events);
 });
 
+test("a successful run with an open tool call fails finalization", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "normalized",
+  });
+  for (const event of [
+    { type: "session.created" as const, session_id: "s" },
+    { type: "message.delta" as const, text: "done" },
+    { type: "tool.started" as const, call_id: "call_left_open", name: "bash" },
+  ]) projector.feed(event);
+  // Only failed/timed_out/cancelled runs may synthesize unknown-outcome
+  // results; a success with an open call is a broken trajectory and must
+  // fail finalization instead of being recorded as completed (spec §5.4).
+  assert.throws(
+    () => projector.finalize("succeeded"),
+    /run succeeded with open tool calls/,
+  );
+});
+
+test("late usage.updated after message.completed is attached to the assistant message", () => {
+  const projector = new TrajectoryProjector({
+    runId: "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    cwd: "/workspace",
+    prompt: "x",
+    fidelity: "normalized",
+  });
+  // Pi/OpenCode emit usage after the assistant message completes.
+  for (const event of [
+    { type: "session.created" as const, session_id: "s" },
+    { type: "message.delta" as const, text: "hello" },
+    { type: "message.completed" as const, text: "hello" },
+    { type: "usage.updated" as const, usage: { input_tokens: 7, output_tokens: 3 } },
+  ]) projector.feed(event);
+  const session = projector.finalize("succeeded");
+  const assistant = session.events.find((event) => event.type === "assistant/message");
+  assert.ok(assistant);
+  const data = assistant.data as { usage?: { input_tokens: number } };
+  assert.equal(data.usage?.input_tokens, 7);
+});
+
 test("writer persists a header plus events and reads them back with invariants", async () => {
   const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-store-"));
   try {
