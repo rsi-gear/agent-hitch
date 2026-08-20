@@ -34,6 +34,27 @@ test("eval requests require immutable container-portable harness revisions", asy
   } as never), "pi@commit:0123456789abcdef0123456789abcdef01234567");
 });
 
+test("Harbor eval enables native permission bypass for Codex and OpenCode", async () => {
+  const codex = await validateEvalRequest(evalRequest({
+    harness_ref: "codex@version:0.92.0",
+    agent_args: ["--reasoning-effort", "high"],
+  }));
+  assert.deepEqual(codex.agent_args, [
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--reasoning-effort",
+    "high",
+  ]);
+
+  const opencode = await validateEvalRequest(evalRequest({
+    harness_ref: "opencode@version:1.18.15",
+    agent_args: ["--dangerously-skip-permissions"],
+  }));
+  assert.deepEqual(opencode.agent_args, ["--dangerously-skip-permissions"]);
+
+  const pi = await validateEvalRequest(evalRequest({ agent_args: ["--extra-flag"] }));
+  assert.deepEqual(pi.agent_args, ["--extra-flag"]);
+});
+
 test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-"));
   t.after(() => forceRemove(root));

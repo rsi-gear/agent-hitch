@@ -17,6 +17,11 @@ import type { EvalId } from "./domain/types.js";
 export const DEFAULT_EVAL_TIMEOUT_MS = 15 * 60 * 1_000;
 export const DEFAULT_EVAL_SETUP_TIMEOUT_MS = 30 * 60 * 1_000;
 
+const HARBOR_EVAL_BYPASS_ARG: Readonly<Record<string, string>> = {
+  codex: "--dangerously-bypass-approvals-and-sandbox",
+  opencode: "--dangerously-skip-permissions",
+};
+
 export function newEvalId(): EvalId {
   return `eval_${randomUUID().replaceAll("-", "")}` as EvalId;
 }
@@ -79,6 +84,9 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   if (input.pass_env !== undefined && (!Array.isArray(input.pass_env) || input.pass_env.some((value) => typeof value !== "string"))) {
     throw invalidInput("pass_env must be an array of strings");
   }
+  const agentArgs = Array.isArray(input.agent_args) ? [...input.agent_args] as string[] : [];
+  const bypassArg = HARBOR_EVAL_BYPASS_ARG[reference.harness_id];
+  if (bypassArg && !agentArgs.includes(bypassArg)) agentArgs.unshift(bypassArg);
   return {
     schema_version: SCHEMA_VERSION,
     backend: "harbor",
@@ -89,7 +97,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     max_concurrent: maxConcurrent,
     timeout_ms: timeout,
     setup_timeout_ms: setupTimeout,
-    agent_args: Array.isArray(input.agent_args) ? [...input.agent_args] as string[] : [],
+    agent_args: agentArgs,
     pass_env: [...new Set(Array.isArray(input.pass_env) ? input.pass_env as string[] : [])],
   };
 }
