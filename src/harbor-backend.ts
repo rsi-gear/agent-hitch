@@ -12,6 +12,7 @@ import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./eval-tools.js";
 import { packageRoot } from "./package-root.js";
 import type { ResolvedRevision } from "./artifacts.js";
 import type { EvalRequest } from "./evals.js";
+import type { LocalGitTransportUse } from "./local-git-transport.js";
 
 const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
 
@@ -22,6 +23,7 @@ export interface RunHarborBackendOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string;
+  localTransport?: LocalGitTransportUse;
   env?: NodeJS.ProcessEnv;
   harborExecutable?: string;
   signal?: AbortSignal;
@@ -52,6 +54,7 @@ export async function runHarborBackend({
   resolvedRevision,
   runtimeDirectory,
   runtimeId,
+  localTransport,
   env = process.env,
   harborExecutable,
   signal,
@@ -70,6 +73,7 @@ export async function runHarborBackend({
     resolvedRevision,
     runtimeDirectory,
     runtimeId,
+    localTransport,
     backendDirectory,
     jobName,
     env,
@@ -136,6 +140,7 @@ export interface BuildHarborJobConfigOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string | undefined;
+  localTransport?: LocalGitTransportUse | undefined;
   backendDirectory: string;
   jobName?: string;
   env?: NodeJS.ProcessEnv;
@@ -146,6 +151,7 @@ export async function buildHarborJobConfig({
   resolvedRevision,
   runtimeDirectory,
   runtimeId,
+  localTransport,
   backendDirectory,
   jobName = "job",
   env = process.env,
@@ -164,6 +170,22 @@ export async function buildHarborJobConfig({
       // (spec §4.2); `runtime_id` records the exact execution payload.
       hitch_runtime_dir: runtimeDirectory,
       ...(runtimeId ? { controller_runtime_id: runtimeId } : {}),
+      ...(localTransport ? {
+        local_source_transport: {
+          kind: localTransport.manifest.kind,
+          manifest_path: localTransport.manifestPath,
+          payload_path: localTransport.payloadPath,
+          locked_resolution_path: localTransport.resolutionPath,
+          harness_id: localTransport.manifest.harness_id,
+          resolution_identity: localTransport.manifest.resolution_identity,
+          commit: localTransport.manifest.commit,
+          tree: localTransport.manifest.tree,
+          payload_sha256: localTransport.manifest.payload_sha256,
+          payload_bytes: localTransport.manifest.payload_bytes,
+          object_count: localTransport.manifest.object_count,
+          file_count: localTransport.manifest.file_count,
+        },
+      } : {}),
       hitch_timeout_ms: request.timeout_ms,
       agent_args: request.agent_args,
       workdir: "/app",

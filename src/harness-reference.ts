@@ -59,6 +59,9 @@ export function parseHarnessReference(value: string): ParsedHarnessReference {
       throw invalidInput("explicit Git sources are limited to file:// URLs; use the registered source for remote commits");
     }
     const localPath = path.resolve(fileURLToPath(source));
+    if ([...localPath].some((character) => character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f)) {
+      throw invalidInput("explicit Git source paths cannot contain control characters");
+    }
     const sourceUrl = pathToFileURL(localPath).href;
     return canonicalReference(raw, harnessId as HarnessId, {
       type: "commit",
@@ -68,6 +71,17 @@ export function parseHarnessReference(value: string): ParsedHarnessReference {
   }
 
   throw invalidInput(`unsupported harness selector in ${raw}; use installed, version:<exact>, or commit:<sha>`);
+}
+
+/** Harbor can transport only an explicitly selected, exact object id. Local
+ * resolution remains intentionally more permissive for ordinary host runs. */
+export function assertExactLocalGitEvalReference(reference: ParsedHarnessReference): void {
+  const selector = reference.selector;
+  if (selector.type !== "commit" || !selector.source?.explicit) return;
+  const hash = reference.raw.slice(reference.raw.lastIndexOf("#") + 1);
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(hash)) {
+    throw invalidInput("Harbor local Git eval requires a full lowercase 40- or 64-character commit OID");
+  }
 }
 
 function canonicalReference(raw: string, harnessId: HarnessId, selector: RevisionSelector): ParsedHarnessReference {

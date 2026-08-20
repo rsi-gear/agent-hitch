@@ -25,6 +25,21 @@
       "additionalProperties": true
     },
     "summary": { "type": ["object", "null"] },
+    "local_source_transport": {
+      "type": "object",
+      "required": ["kind", "resolution_identity", "commit", "tree", "payload_sha256", "payload_bytes"],
+      "properties": {
+        "kind": { "const": "local-git-commit" },
+        "resolution_identity": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "commit": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "tree": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+        "payload_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "payload_bytes": { "type": "integer", "minimum": 0 },
+        "object_count": { "type": "integer", "minimum": 0 },
+        "file_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
     "error": {
       "type": "object",
       "required": ["code", "message"],

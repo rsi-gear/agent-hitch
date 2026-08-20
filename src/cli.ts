@@ -14,6 +14,10 @@ import { HitchError, invalidInput } from "./errors.js";
 import { delay } from "./process.js";
 import { ensureDir, readJSON } from "./fs.js";
 import { listPreparedArtifacts, prepareHarness, resolveHarness } from "./artifacts.js";
+import type { ResolvedRevision } from "./artifacts.js";
+import { validateLocalGitTransportManifest, verifyMaterializedLocalGitSource } from "./local-git-transport.js";
+import type { VerifiedLocalGitSource } from "./local-git-transport.js";
+import { parseHarnessReference } from "./harness-reference.js";
 import { inspectWorkspace, removeWorkspace, WORKSPACE_MODES } from "./workspaces.js";
 import { MessageFeedbackService, resolveFeedbackSession, trajectoryTargetValidator } from "./feedback/service.js";
 import type { MessageFeedbackRating } from "./domain/types.js";
@@ -93,11 +97,13 @@ async function resolveCommand(args: string[], root: string): Promise<void> {
 
 async function prepareCommand(args: string[], root: string): Promise<void> {
   const json = takeFlag(args, "--json");
+  const internalFlags = takeInternalLocalGitFlags(args);
   const reference = args.shift();
   if (!reference) throw invalidInput("prepare requires a harness reference");
   assertNoArgs(args);
-  const resolved = await resolveHarness(reference, { root });
-  const artifact = await prepareHarness(resolved, { root });
+  const internal = internalFlags ? await loadInternalLocalGitSource(internalFlags, reference) : null;
+  const resolved = internal?.resolution || await resolveHarness(reference, { root });
+  const artifact = await prepareHarness(resolved, { root, ...(internal ? { verifiedLocalGitSource: internal.source } : {}) });
   if (json) process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, resolved_revision: resolved, artifact }, null, 2)}\n`);
   else process.stdout.write(`${artifact.cache_hit ? "Cached" : "Prepared"} ${resolved.canonical_ref} as ${artifact.artifact_id}\n`);
 }
@@ -105,9 +111,12 @@ async function prepareCommand(args: string[], root: string): Promise<void> {
 async function runCommand(args: string[], root: string): Promise<void> {
   const useDaemon = takeFlag(args, "--daemon");
   const output = takeOption(args, "--output") || "jsonl";
+  const internalFlags = takeInternalLocalGitFlags(args);
   const request = await parseRunRequest(args);
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
+  if (internalFlags && useDaemon) throw invalidInput("internal Harbor locked resolution cannot use the daemon");
+  const internal = internalFlags ? await loadInternalLocalGitSource(internalFlags, request.harness_ref as string) : null;
 
   if (useDaemon) {
     const client = await daemonClient(root);
@@ -123,10 +132,55 @@ async function runCommand(args: string[], root: string): Promise<void> {
     request,
     runsRoot: statePaths(root).runs,
     root,
+    ...(internal ? { resolvedRevision: internal.resolution, verifiedLocalGitSource: internal.source } : {}),
     ...(output === "jsonl" ? { onEvent: (event) => process.stdout.write(`${JSON.stringify(event)}\n`) } : {}),
   });
   if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   process.exitCode = result.exit_code as number;
+}
+
+interface InternalLocalGitFlags {
+  resolutionPath: string;
+  manifestPath: string;
+  sourceDirectory: string;
+}
+
+function takeInternalLocalGitFlags(args: string[]): InternalLocalGitFlags | null {
+  const resolutionPath = takeOption(args, "--internal-locked-resolution");
+  const manifestPath = takeOption(args, "--internal-local-git-manifest");
+  const sourceDirectory = takeOption(args, "--internal-local-git-source");
+  if (resolutionPath === undefined && manifestPath === undefined && sourceDirectory === undefined) return null;
+  if (process.env.HITCH_HARBOR_INTERNAL !== "1") throw invalidInput("internal Harbor source options are unavailable outside the Harbor bridge");
+  if (!resolutionPath || !manifestPath || !sourceDirectory) throw invalidInput("internal Harbor source handoff is incomplete");
+  return { resolutionPath, manifestPath, sourceDirectory };
+}
+
+async function loadInternalLocalGitSource(
+  flags: InternalLocalGitFlags,
+  requestedReference: string,
+): Promise<{ resolution: ResolvedRevision; source: VerifiedLocalGitSource }> {
+  const resolution = await readJSON<ResolvedRevision>(path.resolve(flags.resolutionPath));
+  const reference = parseHarnessReference(requestedReference);
+  if (
+    !resolution || resolution.schema_version !== SCHEMA_VERSION
+    || resolution.harness_id !== reference.harness_id
+    || resolution.source?.type !== "git" || resolution.source.registered !== false
+    || resolution.revision?.type !== "commit"
+    || !/^sha256:[0-9a-f]{64}$/.test(resolution.identity || "")
+    || `${resolution.harness_id}@commit:${resolution.revision.commit || ""}` !== reference.canonical
+  ) {
+    throw new HitchError("internal Harbor locked resolution is invalid or does not match the command", {
+      code: "local_source_integrity_mismatch",
+      exitCode: 12,
+    });
+  }
+  const manifest = validateLocalGitTransportManifest(await readJSON(path.resolve(flags.manifestPath)));
+  const source = await verifyMaterializedLocalGitSource({
+    directory: path.resolve(flags.sourceDirectory),
+    manifest,
+    resolution,
+  });
+  return { resolution, source };
 }
 
 async function evalCommand(args: string[], root: string): Promise<void> {
@@ -651,7 +705,9 @@ Usage:
 Eval:
   Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.
   Use 'hitch eval setup harbor' for an isolated managed install and 'hitch eval doctor' to verify it.
-  Eval accepts exact version: or registered commit: refs. Use --pass-env NAME for extra credentials.
+  Eval accepts exact version:, registered commit:, or full lowercase local git+file commit refs.
+  Local Git evals transport only committed Git objects; the source repository must be clean.
+  Use --pass-env NAME for extra credentials.
   Every eval references a shared read-only controller runtime bundle by SHA-256 id
   (see 'hitch eval inspect' for the runtime storage kind).
 

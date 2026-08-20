@@ -15,6 +15,7 @@ import { detectVersion, fingerprintExecutable, inspectAgent } from "./registry.j
 import type { DiscoveredAgent } from "./registry.js";
 import { delay, terminateProcess } from "./process.js";
 import { reclaimStaleLock } from "./locks.js";
+import type { VerifiedLocalGitSource } from "./local-git-transport.js";
 
 const RECIPE_VERSION = "1";
 const COMMAND_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -100,7 +101,12 @@ export async function resolveHarness(
 
 export async function prepareHarness(
   resolved: ResolvedRevision,
-  { root, env = process.env, signal }: { root?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
+  { root, env = process.env, signal, verifiedLocalGitSource }: {
+    root?: string;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    verifiedLocalGitSource?: VerifiedLocalGitSource;
+  } = {},
 ): Promise<PreparedArtifact> {
   if (!resolved || typeof resolved !== "object" || !resolved.identity) {
     throw new HitchError("resolved revision is required", { code: "invalid_resolution", exitCode: 2 });
@@ -116,6 +122,7 @@ export async function prepareHarness(
     });
   }
   const paths = statePaths(root);
+  if (verifiedLocalGitSource) await assertVerifiedLocalGitSource(resolved, verifiedLocalGitSource, env, signal);
   const preparationKey = digest({
     revision_identity: resolved.identity,
     recipe_version: RECIPE_VERSION,
@@ -129,7 +136,7 @@ export async function prepareHarness(
     if (cached) return { ...cached, cache_hit: true };
     return resolved.source.type === "npm"
       ? prepareNpmArtifact(resolved, adapter, source, paths, preparationKey, env, signal)
-      : prepareGitArtifact(resolved, adapter, source, paths, preparationKey, env, signal);
+      : prepareGitArtifact(resolved, adapter, source, paths, preparationKey, env, signal, verifiedLocalGitSource?.directory);
   }, { ...(signal ? { signal } : {}) });
 }
 
@@ -485,13 +492,14 @@ async function prepareGitArtifact(
   preparationKey: string,
   env: NodeJS.ProcessEnv,
   signal: AbortSignal | undefined,
+  verifiedSourceDirectory?: string,
 ): Promise<PreparedArtifact> {
   const staging = await newStagingDirectory(paths, resolved.harness_id);
   const sourceDirectory = path.join(staging, "source");
   try {
     const git = commandExecutable("git", env);
-    const cacheDirectory = gitCacheDirectory(paths, resolved.source.url || "");
-    await runCommand(git, ["clone", "--no-hardlinks", "--no-checkout", cacheDirectory, sourceDirectory], {
+    const sourceRepository = verifiedSourceDirectory || gitCacheDirectory(paths, resolved.source.url || "");
+    await runCommand(git, ["clone", "--no-hardlinks", "--no-checkout", sourceRepository, sourceDirectory], {
       env,
       signal,
       failureCode: "prepare_failed",
@@ -545,6 +553,40 @@ async function prepareGitArtifact(
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw normalizePreparationError(error, resolved.canonical_ref);
+  }
+}
+
+async function assertVerifiedLocalGitSource(
+  resolved: ResolvedRevision,
+  verified: VerifiedLocalGitSource,
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (resolved.source.type !== "git" || resolved.source.registered !== false || resolved.revision.type !== "commit") {
+    throw new HitchError("verified local Git source cannot be used with this resolution", { code: "local_source_integrity_mismatch", exitCode: 12 });
+  }
+  if (verified.resolutionIdentity !== resolved.identity || verified.commit !== resolved.revision.commit) {
+    throw new HitchError("verified local Git source does not match the locked resolution", { code: "local_source_integrity_mismatch", exitCode: 12 });
+  }
+  const info = await lstat(verified.directory).catch(() => null);
+  if (!info?.isDirectory() || info.isSymbolicLink()) {
+    throw new HitchError("verified local Git source is not a directory", { code: "local_source_integrity_mismatch", exitCode: 12 });
+  }
+  const git = commandExecutable("git", env);
+  const commitResult = await runCommand(git, ["-C", verified.directory, "rev-parse", "--verify", `${verified.commit}^{commit}`], {
+    env,
+    signal,
+    failureCode: "local_source_integrity_mismatch",
+    failureExitCode: 12,
+  });
+  const treeResult = await runCommand(git, ["-C", verified.directory, "rev-parse", "--verify", `${verified.commit}^{tree}`], {
+    env,
+    signal,
+    failureCode: "local_source_integrity_mismatch",
+    failureExitCode: 12,
+  });
+  if (commitResult.stdout.trim().toLowerCase() !== verified.commit || treeResult.stdout.trim().toLowerCase() !== verified.tree) {
+    throw new HitchError("verified local Git source commit or tree changed", { code: "local_source_integrity_mismatch", exitCode: 12 });
   }
 }
 

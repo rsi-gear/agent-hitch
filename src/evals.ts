@@ -8,11 +8,13 @@ import type { ResolvedRevision } from "./artifacts.js";
 import { SCHEMA_VERSION, statePaths } from "./config.js";
 import { HitchError, invalidInput } from "./errors.js";
 import { atomicWriteJSON, ensureDir, readJSON } from "./fs.js";
-import { parseHarnessReference } from "./harness-reference.js";
+import { assertExactLocalGitEvalReference, parseHarnessReference } from "./harness-reference.js";
 import { lockedHarnessRef, runHarborBackend } from "./harbor-backend.js";
 import { ensureControllerRuntime, writeRuntimeReference, inspectEvalRuntimeKind } from "./controller-runtime/store.js";
 import type { ControllerRuntimeUseResult } from "./controller-runtime/store.js";
 import type { EvalId } from "./domain/types.js";
+import { buildLocalGitTransport, verifyLocalGitTransport } from "./local-git-transport.js";
+import type { LocalGitTransportUse } from "./local-git-transport.js";
 
 export const DEFAULT_EVAL_TIMEOUT_MS = 15 * 60 * 1_000;
 export const DEFAULT_EVAL_SETUP_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -70,9 +72,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   if (reference.selector.type === "installed") {
     throw invalidInput("eval requires an immutable harness ref: version:<exact> or commit:<sha>");
   }
-  if (reference.selector.type === "commit" && reference.selector.source?.explicit) {
-    throw invalidInput("eval does not yet support local git+file harness refs; use a registered remote commit");
-  }
+  assertExactLocalGitEvalReference(reference);
   const attempts = positiveInteger(input.attempts ?? 1, "attempts");
   const maxConcurrent = positiveInteger(input.max_concurrent ?? 4, "max_concurrent");
   const timeout = nonNegativeNumber(input.timeout_ms ?? DEFAULT_EVAL_TIMEOUT_MS, "timeout_ms");
@@ -133,9 +133,30 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   let result: EvalResult;
   try {
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
+    const requestedReference = parseHarnessReference(normalized.harness_ref);
     const resolvedRevision = await resolveHarness(normalized.harness_ref, { root, env });
+    let localTransport: LocalGitTransportUse | undefined;
     if (resolvedRevision.source.type === "git" && resolvedRevision.source.registered !== true) {
-      throw invalidInput("eval requires a registered remote Git source");
+      const selector = requestedReference.selector;
+      if (selector.type !== "commit" || !selector.source?.explicit) throw invalidInput("Harbor local Git eval requires an explicit git+file source");
+      if (resolvedRevision.revision.commit !== selector.value) {
+        throw new HitchError("local Git exact commit resolved to a different object", { code: "local_source_integrity_mismatch", exitCode: 12 });
+      }
+      localTransport = await buildLocalGitTransport({
+        evalDirectory,
+        resolvedRevision,
+        sourceDirectory: selector.source.local_path,
+        env,
+        ...(signal ? { signal } : {}),
+      });
+      sink.emit({
+        type: "eval.local-source.prepared",
+        resolution_identity: localTransport.manifest.resolution_identity,
+        commit: localTransport.manifest.commit,
+        payload_sha256: localTransport.manifest.payload_sha256,
+        payload_bytes: localTransport.manifest.payload_bytes,
+        status: "verified",
+      });
     }
     // Phase 2: the shared, read-only, SHA-256-addressed controller runtime
     // cache replaces the per-eval Hitch runtime copy (spec §4).
@@ -166,6 +187,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtime_id: controllerRuntime.runtime_id,
         manifest_digest: controllerRuntime.manifest_digest,
       },
+      ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       created_at: new Date().toISOString(),
     };
     await atomicWriteJSON(path.join(evalDirectory, "resolution.json"), resolvedRevision);
@@ -176,6 +198,17 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       revision_identity: resolvedRevision.identity,
       attempts: normalized.attempts,
     });
+    if (localTransport) {
+      await verifyLocalGitTransport(localTransport, {
+        expected: {
+          harnessId: resolvedRevision.harness_id,
+          resolutionIdentity: resolvedRevision.identity,
+          commit: resolvedRevision.revision.commit as string,
+        },
+        env,
+        ...(signal ? { signal } : {}),
+      });
+    }
     const backendRun = await runHarborBackend({
       evalDirectory,
       request: normalized,
@@ -183,13 +216,15 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       resolvedRevision,
       runtimeDirectory: controllerRuntime.directory,
       runtimeId: controllerRuntime.runtime_id,
+      ...(localTransport ? { localTransport } : {}),
       env,
       ...(harborExecutable !== undefined ? { harborExecutable } : {}),
       ...(signal ? { signal } : {}),
       emit: (event) => sink.emit(event),
     });
     const cancelled = signal?.aborted;
-    const succeeded = !cancelled && backendRun.backend.process_exit_code === 0 && backendRun.rawResult !== null;
+    const localSourceFailure = localTransport ? localSourceBackendFailure(backendRun.rawResult) : false;
+    const succeeded = !cancelled && !localSourceFailure && backendRun.backend.process_exit_code === 0 && backendRun.rawResult !== null;
     result = {
       schema_version: SCHEMA_VERSION,
       eval_id: evalId,
@@ -199,11 +234,14 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       candidate: plan.candidate,
       dataset: normalized.dataset,
       summary: backendRun.summary,
+      ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       ...(succeeded ? {} : {
         error: {
-          code: cancelled ? "cancelled" : "harbor_failed",
+          code: cancelled ? "cancelled" : localSourceFailure ? "local_source_materialize_failed" : "harbor_failed",
           message: cancelled
             ? "eval was cancelled"
+            : localSourceFailure
+              ? "Harbor rejected the transported local Git source before candidate execution"
             : backendRun.rawResult === null
               ? `Harbor exited without a result (code ${backendRun.backend.process_exit_code ?? "null"})`
               : `Harbor exited with code ${backendRun.backend.process_exit_code ?? "null"}`,
@@ -231,6 +269,28 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   sink.emit({ type: result.status === "succeeded" ? "eval.completed" : "eval.failed", status: result.status, exit_code: result.exit_code, error: result.error });
   await sink.close();
   return result;
+}
+
+function localSourceBackendFailure(rawResult: Record<string, unknown> | null): boolean {
+  if (!rawResult) return false;
+  // The bridge uses this fixed, non-secret marker when setup cannot verify or
+  // materialize the uploaded source. Do not surface provider exception text in
+  // the durable Hitch error, because it may contain backend diagnostics.
+  return JSON.stringify(rawResult).includes("hitch-local-source-materialize:");
+}
+
+function transportSummary(transport: LocalGitTransportUse): Record<string, unknown> {
+  const manifest = transport.manifest;
+  return {
+    kind: manifest.kind,
+    resolution_identity: manifest.resolution_identity,
+    commit: manifest.commit,
+    tree: manifest.tree,
+    payload_sha256: manifest.payload_sha256,
+    payload_bytes: manifest.payload_bytes,
+    object_count: manifest.object_count,
+    file_count: manifest.file_count,
+  };
 }
 
 export interface ListedEval {

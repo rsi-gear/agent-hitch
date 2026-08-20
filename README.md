@@ -204,11 +204,14 @@ The resulting eval record links the request, resolved revision, controller
 runtime, backend configuration and logs, normalized result, reward summary, and
 trajectory evidence.
 
-Eval accepts exact `version:` refs and `commit:` refs backed by a registered
-remote source. Installed executables and local `git+file://` refs are rejected
-because they are not portable into Harbor containers. Common provider
-credentials are forwarded by environment-variable reference; use `--pass-env
-NAME` for an additional variable.
+Eval accepts exact `version:` refs, registered `commit:` refs, and explicit
+local `git+file:///absolute/repo#<full-lowercase-commit>` refs. For local Git,
+Hitch transports a verified exact-commit object pack into each Harbor trial;
+uncommitted files, Git config, credentials, and unrelated history are excluded.
+The local repository must be clean and abbreviated commits, branches, tags,
+`HEAD`, and installed executables are rejected. Common provider credentials are
+forwarded by environment-variable reference; use `--pass-env NAME` for an
+additional variable.
 
 See [Harbor-backed agent evals](docs/evals.md) for setup, portability rules, and
 the execution boundary.

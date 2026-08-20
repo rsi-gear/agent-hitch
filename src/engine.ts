@@ -13,6 +13,7 @@ import { SCHEMA_VERSION } from "./config.js";
 import { parseHarnessReference } from "./harness-reference.js";
 import { prepareHarness, resolveHarness } from "./artifacts.js";
 import type { ResolvedRevision, PreparedArtifact } from "./artifacts.js";
+import type { VerifiedLocalGitSource } from "./local-git-transport.js";
 import {
   abandonPlannedWorkspace,
   finalizeWorkspace,
@@ -142,6 +143,7 @@ export interface ExecuteRunOptions {
   runsRoot: string;
   root?: string;
   resolvedRevision?: ResolvedRevision;
+  verifiedLocalGitSource?: VerifiedLocalGitSource;
   workspacePlan?: WorkspacePlan;
   onEvent?: (event: Record<string, unknown>) => void;
   onProcess?: (control: { child?: import("node:child_process").ChildProcess } | null) => void;
@@ -154,6 +156,7 @@ export async function executeRun({
   runsRoot,
   root = path.dirname(runsRoot),
   resolvedRevision,
+  verifiedLocalGitSource,
   workspacePlan,
   onEvent,
   onProcess,
@@ -217,7 +220,7 @@ export async function executeRun({
     await atomicWriteJSON(manifestPath, manifest);
 
     stage = "preparation";
-    artifact = await prepareHarness(resolution, { root, ...(signal ? { signal } : {}) });
+    artifact = await prepareHarness(resolution, { root, ...(signal ? { signal } : {}), ...(verifiedLocalGitSource ? { verifiedLocalGitSource } : {}) });
 
     stage = "workspace_preparation";
     workspaceLease = await prepareWorkspace(workspacePlan, { recordPath: workspacePath, ...(signal ? { signal } : {}) });
