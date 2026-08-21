@@ -37,12 +37,16 @@ export async function importEvalTrialRuns(options: ImportEvalRunsOptions): Promi
   for (const [index, trial] of trials.entries()) {
     const taskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
     const trialId = nonEmpty(trial.trial_name) || `${taskId}__${index + 1}`;
-    const attempt = trialAttempt(trialId, index + 1);
+    const attempt = trialAttempt(trialId);
     const bundle = await findRunBundle(path.join(options.evalDirectory, "harbor", "job", trialId));
+    let published = false;
     try {
-      refs.push(bundle
-        ? await importRunBundle({ ...options, trial, taskId, trialId, attempt, bundle })
-        : await createDiagnosticRun({ ...options, trial, taskId, trialId, attempt }));
+      if (bundle) {
+        refs.push(await importRunBundle({ ...options, trial, taskId, trialId, attempt, bundle }));
+        published = true;
+      } else {
+        refs.push(await createDiagnosticRun({ ...options, trial, taskId, trialId, attempt }));
+      }
     } catch (error) {
       if (bundle) {
         await atomicWriteJSON(path.join(path.dirname(bundle), "hitch-run-import-error.json"), {
@@ -66,8 +70,9 @@ export async function importEvalTrialRuns(options: ImportEvalRunsOptions): Promi
       }));
     } finally {
       // The exported bundle is staging, not a second trajectory authority.
-      // Keep only a compact import diagnostic in eval logs after publication.
-      if (bundle && isWithin(options.evalDirectory, bundle)) {
+      // Delete it only after atomic publication. A failed import keeps the
+      // complete bundle beside its diagnostic so it can be inspected/retried.
+      if (bundle && published && isWithin(options.evalDirectory, bundle)) {
         await rm(bundle, { recursive: true, force: true });
       }
     }
@@ -322,10 +327,12 @@ async function validateBundleTree(root: string): Promise<void> {
   await walk(root);
 }
 
-function trialAttempt(trialId: string, fallback: number): number {
+function trialAttempt(trialId: string): number {
   const match = trialId.match(/__(\d+)$/);
   const value = Number(match?.[1]);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
+  // Modern Harbor trial ids carry a random suffix. Each such id identifies a
+  // distinct trial, whose execution attempt starts at one.
+  return Number.isInteger(value) && value > 0 ? value : 1;
 }
 
 function nonEmpty(value: unknown): string | null {

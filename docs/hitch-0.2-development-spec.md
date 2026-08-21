@@ -627,8 +627,11 @@ stops parsing top-level flags at the first app-owned flag.
 
 ### 7.5 DSH stdout NDJSON prerequisite
 
-DSH headless must add `--events jsonl` before Hitch can claim native trajectory
-fidelity. The wire contract is:
+DSH headless must add `--events jsonl` before Hitch can stream native events
+during execution. The direct `deepseek` adapter may still claim post-run native
+fidelity when a pinned DSH build flushes its complete isolated session before
+exit: Hitch configures raw/unpacked JSONL, validates and redacts that artifact,
+then imports it as canonical plus provider evidence. The live wire contract is:
 
 ```ts
 type DshHeadlessRecord =
@@ -957,8 +960,10 @@ implementation phase:
 
 1. **Registered overlay repository URL.** `dsh-evolving` cannot ship a commit
    recipe until the real overlay repository and build entrypoint are fixed.
-2. **Pinned DSH event PR.** Current DSH headless prints final plain text; native
-   trajectory support depends on an exact merged `--events jsonl` commit.
+2. **Pinned DSH live-event PR.** Current DSH headless prints final plain text;
+   live native event streaming and stdout/session parity still depend on an
+   exact merged `--events jsonl` commit. Post-run provider-native import is not
+   blocked because rc.7 flushes its isolated durable session before exit.
 3. **Executable candidate Harbor transport.** Select registered remote,
    validated offline bundle, or host-prepared artifact transfer before
    executable candidates enter Harbor.
