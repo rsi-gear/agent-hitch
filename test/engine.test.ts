@@ -173,6 +173,72 @@ test("DeepSeek plain-text trajectory records minimal fidelity with preserved out
   assert.ok(assistant);
   const data = assistant.data as { message: { content: Array<{ text?: string }> } };
   assert.equal(data.message.content.map((block) => block.text ?? "").join(""), "reply:hello");
+  assert.equal((assistant.data as Record<string, unknown>).interrupted, undefined);
+});
+
+test("DeepSeek imports its native session with tool events, usage, and original timing", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-native-"));
+  const executable = await writeFakeDeepseek(root, {
+    output: "stdout fallback",
+    nativeSession: true,
+    nativeChildSession: true,
+  });
+  const previous = process.env.HITCH_DEEPSEEK_PATH;
+  process.env.HITCH_DEEPSEEK_PATH = executable;
+  t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
+  const runId = newRunId();
+  const runDirectory = path.join(root, "runs", runId);
+
+  const result = await executeRun({
+    runId,
+    request: request({
+      agent: "deepseek",
+      model: "deepseek/deepseek-v4-flash",
+      cwd: root,
+      prompt: "hello",
+      timeout_ms: 5_000,
+      agent_args: [],
+    }),
+    runsRoot: path.join(root, "runs"),
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.output, "native final");
+  assert.equal(result.effective_model, "deepseek-v4-flash");
+  const ref = await loadTrajectoryRef(runDirectory);
+  assert.ok(ref);
+  assert.equal(ref.fidelity, "provider_native");
+  assert.equal(ref.provider_session_id, "session-native");
+  const rawRef = await readJSON<{ files: Array<{ role: string; path: string }> }>(path.join(runDirectory, "trajectory.ref.json"));
+  assert.ok(rawRef.files.some((file) => file.role === "provider_events" && file.path === "trajectory/provider/deepseek-session.jsonl"));
+  assert.ok(rawRef.files.some((file) => file.role === "provider_events" && file.path === "trajectory/provider/deepseek-child-session-1.jsonl"));
+  assert.ok(rawRef.files.some((file) => file.role === "provider_transcript"));
+
+  const { header, events } = await readTrajectory(ref.path);
+  assert.equal(header.id, runId);
+  assert.equal(events.length, 14);
+  assert.deepEqual(events.map((event) => event.seq), Array.from({ length: 14 }, (_, index) => index));
+  assert.ok((events.at(-1)?.time ?? 0) - (events[0]?.time ?? 0) > 800);
+  assert.equal(events[0]?.type, "permission/preset");
+  assert.equal(events[0]?.ignorable, true);
+  assert.ok(events.some((event) => event.type === "tool/call"));
+  assert.ok(events.some((event) => event.type === "tool/result"));
+  const assistant = events.findLast((event) => event.type === "assistant/message");
+  assert.ok(assistant);
+  const assistantData = assistant.data as Record<string, unknown>;
+  assert.equal(assistantData.interrupted, undefined);
+  assert.deepEqual(assistantData.usage, {
+    inputTokens: 21,
+    outputTokens: 5,
+    cacheReadTokens: 4,
+    reasoningTokens: 2,
+  });
+
+  const providerRows = await readJSONLines(path.join(runDirectory, "trajectory/provider/deepseek-session.jsonl"));
+  assert.equal(providerRows[1]?.type, "permission/preset");
+  assert.equal(providerRows[1]?.ignorable, undefined);
+  const manifest = await readJSON<{ model: { effective_id: string } }>(path.join(runDirectory, "manifest.json"));
+  assert.equal(manifest.model.effective_id, "deepseek-v4-flash");
 });
 
 test("run request validation returns typed invalid input for malformed cwd", async () => {

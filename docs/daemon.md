@@ -155,9 +155,10 @@ test profiles and isolated callers possible.
 - Exact npm versions are available for all five harnesses. Codex, Pi, and
   DeepSeek Harness also support registered or clean local Git commits;
   source-build support for Claude Code and OpenCode is not currently declared.
-- DeepSeek Harness's official headless profile exposes final plain text rather
-  than a native event stream, so its adapter cannot normalize tool lifecycle,
-  session ID, or usage events.
+- DeepSeek Harness's official headless profile exposes only final plain text on
+  stdout, so DeepSeek events are not available live. Hitch imports the complete
+  per-run native DSH session after process exit, including tool lifecycle,
+  session identity, usage, reasoning, and original event timestamps.
 - Event translation is intentionally additive. Native events that do not have a
   stable common meaning are preserved as `provider.event`.
 - Run-history/artifact/workspace GC, durable queue replay policy, and push-based

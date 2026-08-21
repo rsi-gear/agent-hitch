@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { inspectEval, listEvals, newEvalId, runEval, validateEvalRequest } from "../src/evals.js";
+import { importEvalTrialRuns } from "../src/eval-runs.js";
 import { readJSON } from "../src/fs.js";
 import { lockedHarnessRef } from "../src/harbor-backend.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
@@ -179,6 +180,44 @@ test("Harbor bridge setup() and run() behave against a real bundle", async (t) =
   const result = spawnSync("python3", [smoke, bridge, use.directory, logs], { encoding: "utf8" });
   assert.equal(result.status, 0, `bridge smoke failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge smoke OK/);
+});
+
+test("failed Harbor bundle imports retain canonical staging evidence", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-import-failure-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "regex-log__YNRyNX7";
+  const bundle = path.join(evalDirectory, "harbor", "job", trialId, "agent", "hitch-run-bundle");
+  await mkdir(bundle, { recursive: true });
+  await writeFile(path.join(bundle, "manifest.json"), "{}\n", "utf8");
+
+  const refs = await importEvalTrialRuns({
+    root,
+    evalId,
+    evalDirectory,
+    request: {
+      harness_ref: "pi@version:1.2.3",
+      model: "deepseek/deepseek-v4-flash",
+      timeout_ms: 5_000,
+      agent_args: [],
+    } as never,
+    resolvedRevision: {
+      harness_id: "pi",
+      identity: `sha256:${"a".repeat(64)}`,
+    } as never,
+    benchmarkId: "benchmark",
+    benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: {
+      trial_results: [{ task_name: "regex-log", trial_name: trialId }],
+    },
+  });
+
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.task_id, "regex-log");
+  assert.equal(refs[0]?.attempt, 1);
+  assert.ok((await stat(bundle)).isDirectory(), "failed staging bundle should remain available");
+  assert.ok((await stat(path.join(path.dirname(bundle), "hitch-run-import-error.json"))).isFile());
 });
 
 test("Harbor bridge rejects a job-pinned controller_runtime_id mismatch before uploading", async (t) => {

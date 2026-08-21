@@ -580,13 +580,34 @@ done
             )
 
     def _trial_identity(self) -> tuple[str, str, int]:
-        """Derive Harbor's stable trial/task identity from the persisted log path."""
-        candidate = self.logs_dir.parent.name if self.logs_dir.name == "agent" else self.logs_dir.name
-        trial_id = candidate or "trial__1"
+        """Read Harbor's stable trial/task identity from the persisted trial state."""
+        trial_dir = self.logs_dir.parent if self.logs_dir.name == "agent" else self.logs_dir
+        trial_id = trial_dir.name or "trial__1"
+        task_id = self._locked_task_id(trial_dir)
         match = re.fullmatch(r"(.+)__(\d+)", trial_id)
         if match:
-            return trial_id, match.group(1), max(1, int(match.group(2)))
-        return trial_id, trial_id, 1
+            return trial_id, task_id or match.group(1), max(1, int(match.group(2)))
+        # Harbor 0.21 uses a random seven-character suffix and truncates the
+        # task portion of trial_name. It therefore cannot be used to recover
+        # task identity; the trial lock above is authoritative. Keep the split
+        # only as a compatibility fallback for older/fake Harbor runtimes.
+        fallback_task_id = trial_id.rsplit("__", 1)[0] if "__" in trial_id else trial_id
+        return trial_id, task_id or fallback_task_id, 1
+
+    @staticmethod
+    def _locked_task_id(trial_dir: Path) -> str | None:
+        lock_path = trial_dir / "lock.json"
+        if not lock_path.is_file():
+            return None
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Harbor trial lock is unreadable: {lock_path}") from error
+        task = lock.get("task") if isinstance(lock, dict) else None
+        task_id = task.get("name") if isinstance(task, dict) else None
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise RuntimeError(f"Harbor trial lock has no task.name: {lock_path}")
+        return task_id.strip()
 
     def _temporary_json(self, prefix: str, value: dict[str, Any]) -> Path:
         with tempfile.NamedTemporaryFile(

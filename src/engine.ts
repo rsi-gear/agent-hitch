@@ -36,6 +36,7 @@ import {
   trajectoryRefV2,
 } from "./trajectories/store.js";
 import { ProviderCaptureWriter, redactProviderText } from "./trajectories/native.js";
+import { importDeepseekNativeSession } from "./trajectories/deepseek-native.js";
 import type { EvalRunParentV1, ModelIdentityV1, ProtocolIdentityV1, RunContextV1, RunId, Sha256 } from "./domain/types.js";
 import type { TrajectoryFidelity } from "./domain/types.js";
 import { asBoolean, asOptionalString, asRecord, asSha256, asString, validateEvalRunParent, validateRunContext } from "./domain/validate.js";
@@ -349,6 +350,7 @@ export async function executeRun({
   const normalized = await validateRunRequest(request);
   workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const runDirectory = path.join(runsRoot, runId);
+  const runtimeHome = path.join(runDirectory, "runtime-home");
   const priorManifest = await readJSON<Record<string, unknown> | null>(path.join(runDirectory, "manifest.json"), null);
   if (priorManifest && ["succeeded", "failed", "timed_out", "cancelled"].includes(String(priorManifest.status))) {
     throw new HitchError(`run ${runId} is sealed and cannot be overwritten`, { code: "run_sealed", exitCode: 11 });
@@ -474,7 +476,7 @@ export async function executeRun({
       observed_version: artifact.observed_version ?? undefined,
       resolution,
       run_directory: runDirectory,
-      runtime_home: path.join(runDirectory, "runtime-home"),
+      runtime_home: runtimeHome,
     });
     if (artifact.entrypoint_args?.length) specification.args.unshift(...artifact.entrypoint_args);
     if (signal?.aborted) {
@@ -663,7 +665,21 @@ export async function executeRun({
   // Seal the provider-native evidence together with its canonical projection.
   try {
     const status = (result as { status: string }).status;
-    const projected = projector.finalize(status === "cancelled" ? "cancelled" : status === "timed_out" ? "timed_out" : status === "succeeded" ? "succeeded" : "failed");
+    const captured = providerCapture ? await providerCapture.close() : null;
+    providerCapture = undefined;
+    const deepseekNative = reference.harness_id === "deepseek"
+      ? await importDeepseekNativeSession({ runtimeHome, runDirectory, runId })
+      : null;
+    const projected = deepseekNative
+      ? {
+          header: deepseekNative.header,
+          events: deepseekNative.events,
+          finalOutput: deepseekNative.finalOutput,
+          providerSessionId: deepseekNative.providerSessionId,
+          fidelity: "provider_native" as const,
+        }
+      : projector.finalize(status === "cancelled" ? "cancelled" : status === "timed_out" ? "timed_out" : status === "succeeded" ? "succeeded" : "failed");
+    observedEffectiveModel ||= deepseekNative?.effectiveModel;
     trajectoryWriter = await TrajectoryWriter.open({
       runDirectory,
       cwd: normalized.cwd,
@@ -674,20 +690,25 @@ export async function executeRun({
     for (const event of projected.events) trajectoryWriter.append(event);
     trajectoryPathValue = await trajectoryWriter.close();
     const canonicalFile = await canonicalTrajectoryFileRef(runDirectory, trajectoryPathValue);
-    const captured = providerCapture ? await providerCapture.close() : null;
-    providerCapture = undefined;
-    const fidelity = captured && adapter.translate
+    const fidelity = deepseekNative
+      ? "provider_native" as const
+      : captured && adapter.translate
       ? "provider_native" as const
       : projected.fidelity === "native" || projected.fidelity === "provider_native"
         ? "normalized" as const
         : projected.fidelity;
+    const redactions = mergeRedactions(captured?.redactions, deepseekNative?.redactions);
     const ref = trajectoryRefV2({
       runId,
       fidelity,
       provider: reference.harness_id,
       ...(projected.providerSessionId ? { providerSessionId: projected.providerSessionId } : {}),
-      files: [...(captured ? [captured.file] : []), canonicalFile],
-      ...(captured?.redactions.length ? { redactions: captured.redactions } : {}),
+      files: [
+        ...(captured ? [captured.file] : []),
+        ...(deepseekNative ? deepseekNative.providerFiles : []),
+        canonicalFile,
+      ],
+      ...(redactions.length ? { redactions } : {}),
     });
     await atomicWriteJSON(trajectoryRefPath(runDirectory), ref);
     (result as Record<string, unknown>).trajectory = {
@@ -838,8 +859,9 @@ function failureResult(
 
 function adapterFidelity(harnessRef: string): TrajectoryFidelity {
   const reference = parseHarnessReference(harnessRef);
-  // The DeepSeek headless adapter emits plain text until DSH `--events jsonl`
-  // lands (spec §7.5); every structured adapter projects normalized events.
+  // DeepSeek normally replaces this fallback with the native session imported
+  // after exit. Older builds that do not persist sessions still get an honest
+  // minimal stdout projection instead of fabricated structured events.
   return reference.harness_id === "deepseek" ? "minimal" : "normalized";
 }
 
@@ -854,6 +876,18 @@ function providerModelId(event: Record<string, unknown>): string | undefined {
     }
   }
   return undefined;
+}
+
+function mergeRedactions(
+  ...groups: Array<Array<{ rule_id: string; count: number }> | undefined>
+): Array<{ rule_id: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const group of groups) {
+    for (const item of group || []) counts.set(item.rule_id, (counts.get(item.rule_id) || 0) + item.count);
+  }
+  return [...counts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([rule_id, count]) => ({ rule_id, count }));
 }
 
 export type { NormalizedEvent };

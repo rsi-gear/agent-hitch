@@ -404,19 +404,20 @@ const definitions: Record<string, AdapterDefinition> = {
     capabilities: {
       non_interactive: true,
       streaming: false,
-      structured_messages: false,
-      structured_tool_events: false,
-      sessions: false,
+      // Headless stdout is only the final text, but DSH persists the complete
+      // structured session before the process exits. The engine imports that
+      // native session after exit rather than treating stdout as the trace.
+      structured_messages: true,
+      structured_tool_events: true,
+      sessions: true,
       resume: false,
       model_selection: true,
       graceful_cancel: true,
     },
     async process(request, executable, runtime = {}) {
       const args = ["--profile", "headless", ...request.agent_args];
-      if (request.model) {
-        const patchFile = await writeDeepseekModelPatch(request.model, runtime.run_directory);
-        args.push("--patch", patchFile);
-      }
+      const patchFile = await writeDeepseekRuntimePatch(request.model, runtime.run_directory, runtime.runtime_home);
+      args.push("--patch", patchFile);
       args.push(request.prompt);
       return {
         executable,
@@ -474,28 +475,47 @@ function openCodeErrorMessage(error: unknown): string {
   return error == null ? "OpenCode error" : JSON.stringify(error);
 }
 
-async function writeDeepseekModelPatch(value: string, runDirectory: string | undefined): Promise<string> {
-  if (!runDirectory) {
-    throw new HitchError("DeepSeek model selection requires an isolated run directory", {
+async function writeDeepseekRuntimePatch(
+  value: string,
+  runDirectory: string | undefined,
+  runtimeHome: string | undefined,
+): Promise<string> {
+  if (!runDirectory || !runtimeHome) {
+    throw new HitchError("DeepSeek session capture requires an isolated run directory", {
       code: "adapter_setup_failed",
       exitCode: 6,
     });
   }
-  const separator = value.indexOf("/");
-  const provider = separator < 0 ? "deepseek-official" : value.slice(0, separator);
-  const model = separator < 0 ? value : value.slice(separator + 1);
-  if (!provider || !model) {
-    throw new HitchError(`invalid DeepSeek model selector: ${value}`, {
-      code: "invalid_input",
-      exitCode: 2,
+  const rows: Array<Record<string, unknown>> = [{
+    id: "session-persistence-jsonl",
+    config: {
+      // A DSH patch replaces the complete row config, so the required root
+      // must be restated alongside the two encoding overrides.
+      root: path.join(runtimeHome, "sessions"),
+      // Hitch needs a portable, single-frame artifact that can be validated,
+      // redacted, and bundled without depending on an external zstd binary.
+      compression: "none",
+      packChunks: false,
+    },
+  }];
+  if (value) {
+    const separator = value.indexOf("/");
+    const provider = separator < 0 ? "deepseek-official" : value.slice(0, separator);
+    const model = separator < 0 ? value : value.slice(separator + 1);
+    if (!provider || !model) {
+      throw new HitchError(`invalid DeepSeek model selector: ${value}`, {
+        code: "invalid_input",
+        exitCode: 2,
+      });
+    }
+    rows.push({
+      id: "agent-default-model",
+      config: { provider, model },
     });
   }
-  const file = path.join(runDirectory, "config", "deepseek-model.json");
+  const file = path.join(runDirectory, "config", "deepseek-runtime.json");
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify([{
-    id: "agent-default-model",
-    config: { provider, model },
-  }], null, 2)}\n`, { mode: 0o600 });
+  await writeFile(file, `${JSON.stringify(rows, null, 2)}\n`, { mode: 0o600 });
   return file;
 }
 

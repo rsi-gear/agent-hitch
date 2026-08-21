@@ -194,12 +194,22 @@ test("DeepSeek adapter runs the headless profile with an isolated home and model
   assert.equal(specification.input, "");
   assert.deepEqual(specification.env, { DSH_HOME: runtimeHome });
   assert.deepEqual(specification.args.slice(0, 4), ["--profile", "headless", "--patch", "/workspace/custom.yml"]);
-  assert.deepEqual(specification.args.slice(-3, -1), ["--patch", path.join(runDirectory, "config", "deepseek-model.json")]);
+  assert.deepEqual(specification.args.slice(-3, -1), ["--patch", path.join(runDirectory, "config", "deepseek-runtime.json")]);
   assert.equal(specification.args.at(-1), "fix the tests");
-  assert.deepEqual(JSON.parse(await readFile(specification.args.at(-2) as string, "utf8")), [{
-    id: "agent-default-model",
-    config: { provider: "deepseek-official", model: "deepseek-v4-pro" },
-  }]);
+  assert.deepEqual(JSON.parse(await readFile(specification.args.at(-2) as string, "utf8")), [
+    {
+      id: "session-persistence-jsonl",
+      config: {
+        root: path.join(runtimeHome, "sessions"),
+        compression: "none",
+        packChunks: false,
+      },
+    },
+    {
+      id: "agent-default-model",
+      config: { provider: "deepseek-official", model: "deepseek-v4-pro" },
+    },
+  ]);
 });
 
 test("DeepSeek adapter preserves multiline plain-text output including JSON-looking lines", () => {
