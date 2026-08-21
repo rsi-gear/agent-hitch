@@ -209,6 +209,44 @@ test("Harbor bridge verifies, uploads, and reuses the same locked local source",
   assert.match(result.stdout, /local transport bridge smoke OK/);
 });
 
+test("Git commands without input do not receive a writable stdin pipe", async (t) => {
+  const fixture = await localRepository("hitch-local-stdin-");
+  t.after(() => forceRemove(fixture.root));
+  const fakeGit = path.join(fixture.root, "fake-git-no-stdin");
+  await writeFile(fakeGit, `#!/usr/bin/env node
+const fs = require("node:fs");
+if (!fs.fstatSync(0).isCharacterDevice()) {
+  process.stderr.write("unexpected writable stdin pipe\\n");
+  process.exit(91);
+}
+const revision = process.argv.at(-1) || "";
+if (revision.endsWith("^{commit}")) process.stdout.write("${fixture.commit}\\n");
+else if (revision.endsWith("^{tree}")) process.stdout.write("${fixture.tree}\\n");
+else process.exit(92);
+`, { mode: 0o755 });
+
+  const verified = await verifyMaterializedLocalGitSource({
+    directory: fixture.source,
+    manifest: {
+      schema_version: "1",
+      kind: "local-git-commit",
+      harness_id: fixture.resolution.harness_id,
+      resolution_identity: fixture.resolution.identity,
+      commit: fixture.commit,
+      tree: fixture.tree,
+      payload_sha256: `sha256:${"0".repeat(64)}`,
+      payload_bytes: 0,
+      object_count: 0,
+      file_count: 0,
+      created_at: new Date().toISOString(),
+    },
+    resolution: fixture.resolution,
+    env: { ...process.env, HITCH_GIT_PATH: fakeGit },
+  });
+  assert.equal(verified.commit, fixture.commit);
+  assert.equal(verified.tree, fixture.tree);
+});
+
 async function localRepository(prefix: string): Promise<{
   root: string;
   source: string;
