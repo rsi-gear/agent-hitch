@@ -372,13 +372,26 @@ async function runGit(
 ): Promise<string> {
   throwIfAborted(signal);
   return new Promise((resolve, reject) => {
-    const child = spawn(git, ["-C", repository, ...args], { env: safeGitEnv(env), stdio: ["pipe", "pipe", "pipe"] });
+    const hasInput = input !== undefined;
+    const child = spawn(git, ["-C", repository, ...args], {
+      env: safeGitEnv(env),
+      stdio: [hasInput ? "pipe" : "ignore", "pipe", "pipe"],
+    });
     let stdout = Buffer.alloc(0);
     let stderr = "";
     let exceeded = false;
+    let inputError: Error | undefined;
+    let settled = false;
     const abort = () => terminateProcess(child).catch(() => {});
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(stdout.toString("utf8"));
+    };
     signal?.addEventListener("abort", abort, { once: true });
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout!.on("data", (chunk: Buffer) => {
       if (stdout.length + chunk.length > maxOutput) {
         exceeded = true;
         terminateProcess(child).catch(() => {});
@@ -386,19 +399,26 @@ async function runGit(
         stdout = Buffer.concat([stdout, chunk]);
       }
     });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8192); });
+    child.stderr!.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8192); });
     child.once("error", (error) => {
-      signal?.removeEventListener("abort", abort);
-      reject(transportError(`failed to start Git: ${error.message}`, error));
+      finish(transportError(`failed to start Git: ${error.message}`, error));
     });
     child.once("close", (code) => {
-      signal?.removeEventListener("abort", abort);
-      if (signal?.aborted) return reject(new HitchError("local Git transport was cancelled", { code: "cancelled", exitCode: 9 }));
-      if (exceeded) return reject(transportError(`Git output exceeded ${maxOutput} bytes`));
-      if (code !== 0) return reject(transportError(`Git ${args[0]} failed${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
-      resolve(stdout.toString("utf8"));
+      if (signal?.aborted) return finish(new HitchError("local Git transport was cancelled", { code: "cancelled", exitCode: 9 }));
+      if (exceeded) return finish(transportError(`Git output exceeded ${maxOutput} bytes`));
+      if (code !== 0) return finish(transportError(`Git ${args[0]} failed${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
+      if (inputError) return finish(transportError(`failed to write Git input: ${inputError.message}`, inputError));
+      finish();
     });
-    child.stdin.end(input || "");
+    if (hasInput) {
+      if (!child.stdin) {
+        terminateProcess(child).catch(() => {});
+        finish(transportError("failed to open Git input"));
+        return;
+      }
+      child.stdin.once("error", (error) => { inputError = error; });
+      child.stdin.end(input);
+    }
   });
 }
 
@@ -408,16 +428,30 @@ async function runGitFromFile(git: string, repository: string, args: string[], i
     const child = spawn(git, ["-C", repository, ...args], { env: safeGitEnv(env), stdio: ["pipe", "ignore", "pipe"] });
     const input = createReadStream(inputFile);
     let stderr = "";
+    let inputError: Error | undefined;
+    let settled = false;
     const abort = () => terminateProcess(child).catch(() => {});
-    signal?.addEventListener("abort", abort, { once: true });
-    input.once("error", reject);
-    child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8192); });
-    child.once("error", reject);
-    child.once("close", (code) => {
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
       signal?.removeEventListener("abort", abort);
-      if (signal?.aborted) return reject(new HitchError("local Git transport was cancelled", { code: "cancelled", exitCode: 9 }));
-      if (code !== 0) return reject(integrityError(`Git pack verification failed${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
-      resolve();
+      input.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    input.once("error", (error) => {
+      inputError = error;
+      terminateProcess(child).catch(() => {});
+    });
+    child.stdin.once("error", (error) => { inputError = error; });
+    child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8192); });
+    child.once("error", (error) => finish(integrityError(`failed to start Git pack verification: ${error.message}`, error)));
+    child.once("close", (code) => {
+      if (signal?.aborted) return finish(new HitchError("local Git transport was cancelled", { code: "cancelled", exitCode: 9 }));
+      if (code !== 0) return finish(integrityError(`Git pack verification failed${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
+      if (inputError) return finish(integrityError(`failed to stream Git pack input: ${inputError.message}`, inputError));
+      finish();
     });
     input.pipe(child.stdin);
   });
