@@ -27,6 +27,7 @@ export interface StatePaths {
   controllerRuntimes: string;
   workspaces: string;
   temporary: string;
+  indexes: string;
 }
 
 export function defaultRoot(): string {
@@ -73,5 +74,6 @@ export function statePaths(root: string): StatePaths {
     controllerRuntimes: path.join(root, "store", "controller-runtimes", "sha256"),
     workspaces: path.join(root, "workspaces"),
     temporary: path.join(root, "tmp"),
+    indexes: path.join(root, "indexes"),
   };
 }

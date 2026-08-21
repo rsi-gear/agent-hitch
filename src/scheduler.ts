@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { createQueuedRun, executeRun } from "./engine.js";
+import { createQueuedRun, executeRun, sealTerminalManifest } from "./engine.js";
 import type { QueuedRun, RunRequestInput } from "./engine.js";
 import { atomicWriteJSON, ensureDir, readJSON } from "./fs.js";
 import { SCHEMA_VERSION } from "./config.js";
@@ -77,7 +77,7 @@ export class Scheduler {
       };
       await atomicWriteJSON(path.join(entry.directory, "result.json"), result);
       const manifest = await readJSON<Record<string, unknown>>(path.join(entry.directory, "manifest.json"));
-      await atomicWriteJSON(path.join(entry.directory, "manifest.json"), { ...manifest, status: "cancelled", completed_at: now });
+      await atomicWriteJSON(path.join(entry.directory, "manifest.json"), sealTerminalManifest(manifest, "cancelled", now));
       await cancelPlannedWorkspace({ root: this.root, runId });
       return true;
     }
@@ -158,7 +158,7 @@ export class Scheduler {
     await atomicWriteJSON(resultPath, result);
     const manifestPath = path.join(entry.directory, "manifest.json");
     const manifest = await readJSON<Record<string, unknown>>(manifestPath, { schema_version: SCHEMA_VERSION, run_id: entry.runId });
-    await atomicWriteJSON(manifestPath, { ...manifest, status: "failed", completed_at: now });
+    await atomicWriteJSON(manifestPath, sealTerminalManifest(manifest, "failed", now));
   }
 
   async recoverInterruptedRuns(): Promise<void> {
@@ -180,7 +180,7 @@ export class Scheduler {
         completed_at: now,
       };
       await atomicWriteJSON(path.join(directory, "result.json"), recovered);
-      await atomicWriteJSON(manifestPath, { ...manifest, status: "failed", completed_at: now });
+      await atomicWriteJSON(manifestPath, sealTerminalManifest(manifest, "failed", now));
       await recoverInterruptedWorkspace({ root: this.root, runId: entry.name as RunId });
     }
   }

@@ -74,7 +74,12 @@ test("run engine records a canonical trajectory with a trajectory ref", async (t
   const ref = await loadTrajectoryRef(runDirectory);
   assert.ok(ref, "trajectory.ref.json must exist");
   assert.equal(ref.run_id, runId);
-  assert.equal(ref.fidelity, "normalized");
+  assert.equal(ref.fidelity, "provider_native");
+  assert.equal(ref.schema_version, "2");
+  if (ref.schema_version === "2") {
+    assert.ok(ref.files.some((file) => file.role === "provider_events"));
+    assert.ok(ref.files.every((file) => !path.isAbsolute(file.path)));
+  }
   assert.ok(ref.sha256?.startsWith("sha256:"));
   const { events, header } = await readTrajectory(ref.path);
   assert.equal(events.length > 0, true);

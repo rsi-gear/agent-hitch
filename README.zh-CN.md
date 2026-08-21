@@ -142,14 +142,17 @@ Hitch 将生命周期事件与智能体轨迹保存为两类相关但相互独�
 
 - 规范化 JSONL 事件描述 Hitch 的控制平面，包括解析、准备、进程生命周期、
   取消和最终状态；
-- 兼容 DSH 的规范化轨迹以明确的保真度记录智能体会话、消息、工具调用与
-  工具结果；
-- `trajectory.ref.json` 将运行与规范化轨迹及其 SHA-256 摘要绑定；
+- 支持结构化输出的 adapter 会先保存经过显式脱敏的 provider-native 事件，
+  兼容 DSH 的规范化轨迹则作为派生视图继续提供；
+- `trajectory.ref.json` V2 通过相对路径、文件角色、字节数与 SHA-256 摘要
+  绑定完整轨迹文件集；
 - 反馈 sidecar 可以为助手消息附加带版本的正向或负向评分与备注，而无需
   改写不可变轨迹。
 
 ```bash
 hitch trajectory inspect RUN_ID
+hitch runs list --context-kind benchmark_task --json
+hitch compare model --benchmark BENCHMARK --task TASK --json
 hitch feedback list RUN_ID --json
 hitch feedback put RUN_ID \
   --message MESSAGE_ID \
@@ -288,7 +291,7 @@ hitch daemon cancel RUN_ID
 
 ## 计划中的工作
 
-- [ ] Harness 版本及其证据的比较原语
+- [x] 基于 run 证据的严格模型/Harness 比较原语
 - [ ] 命名的候选与 champion 引用
 - [ ] 不内嵌晋级策略的晋级与回滚记录
 - [ ] 远端制品与证据同步

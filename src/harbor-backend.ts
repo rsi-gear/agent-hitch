@@ -13,10 +13,12 @@ import { packageRoot } from "./package-root.js";
 import type { ResolvedRevision } from "./artifacts.js";
 import type { EvalRequest } from "./evals.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
+import { benchmarkVerifierIdentity } from "./run-records.js";
 
 const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
 
 export interface RunHarborBackendOptions {
+  evalId: string;
   evalDirectory: string;
   request: EvalRequest;
   root: string;
@@ -42,12 +44,14 @@ export interface HarborBackendResult {
     stderr_path: string;
     process_exit_code: number | null;
     signal: NodeJS.Signals | null;
+    job_directory: string;
   };
   rawResult: Record<string, unknown> | null;
   summary: Record<string, unknown> | null;
 }
 
 export async function runHarborBackend({
+  evalId,
   evalDirectory,
   request,
   root,
@@ -69,6 +73,7 @@ export async function runHarborBackend({
   const jobDirectory = path.join(backendDirectory, jobName);
   const resultPath = path.join(jobDirectory, "result.json");
   const config = await buildHarborJobConfig({
+    evalId,
     request,
     resolvedRevision,
     runtimeDirectory,
@@ -105,12 +110,13 @@ export async function runHarborBackend({
       executable,
       version: version || null,
       identity,
-      config_path: configPath,
-      result_path: rawResult ? resultPath : null,
-      stdout_path: path.join(backendDirectory, "stdout.log"),
-      stderr_path: path.join(backendDirectory, "stderr.log"),
+      config_path: path.relative(evalDirectory, configPath).split(path.sep).join("/"),
+      result_path: rawResult ? path.relative(evalDirectory, resultPath).split(path.sep).join("/") : null,
+      stdout_path: path.relative(evalDirectory, path.join(backendDirectory, "stdout.log")).split(path.sep).join("/"),
+      stderr_path: path.relative(evalDirectory, path.join(backendDirectory, "stderr.log")).split(path.sep).join("/"),
       process_exit_code: invocation.code,
       signal: invocation.signal,
+      job_directory: path.relative(evalDirectory, jobDirectory).split(path.sep).join("/"),
     },
     rawResult,
     summary: rawResult ? normalizeHarborResult(rawResult) : null,
@@ -136,6 +142,7 @@ async function attachTrialResults(jobDirectory: string, jobResult: Record<string
 }
 
 export interface BuildHarborJobConfigOptions {
+  evalId?: string;
   request: EvalRequest;
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
@@ -147,6 +154,7 @@ export interface BuildHarborJobConfigOptions {
 }
 
 export async function buildHarborJobConfig({
+  evalId,
   request,
   resolvedRevision,
   runtimeDirectory,
@@ -163,6 +171,12 @@ export async function buildHarborJobConfig({
     model_name: request.model || null,
     kwargs: {
       candidate_id: "candidate-1",
+      ...(evalId ? {
+        eval_id: evalId,
+        benchmark_id: request.benchmark_id,
+        benchmark_revision: request.benchmark_revision,
+        verifier_identity: benchmarkVerifierIdentity(request.benchmark_id, request.benchmark_revision),
+      } : {}),
       harness_ref: lockedHarnessRef(resolvedRevision),
       revision_identity: resolvedRevision.identity,
       // The bridge consumes the shared compiled runtime cache. The local

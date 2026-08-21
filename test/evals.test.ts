@@ -93,8 +93,19 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(result.status, "succeeded");
   const summary = result.summary as Record<string, unknown>;
   assert.equal(summary.n_trials, 2);
-  assert.equal(summary.primary_reward, 0.75);
-  assert.deepEqual((summary.rewards as Record<string, unknown>).reward, { count: 2, mean: 0.75, min: 0.5, max: 1 });
+  assert.equal(summary.primary_reward, null);
+  assert.equal(summary.n_invalid, 2);
+  const backendSummary = result.backend_summary as Record<string, unknown>;
+  assert.equal(backendSummary.primary_reward, 0.75);
+  const trials = result.trials as Array<{ run_id: string; observation_status: string; invalid_reason: string }>;
+  assert.equal(trials.length, 2);
+  assert.ok(trials.every((trial) => /^run_[a-f0-9]{32}$/.test(trial.run_id)));
+  assert.ok(trials.every((trial) => trial.observation_status === "invalid" && trial.invalid_reason === "trajectory_missing_or_corrupt"));
+  for (const trial of trials) {
+    const manifest = await readJSON<Record<string, unknown>>(path.join(root, "runs", trial.run_id, "manifest.json"));
+    assert.equal((manifest.context as Record<string, unknown>).kind, "benchmark_task");
+    assert.equal((manifest.parent as Record<string, unknown>).eval_id, evalId);
+  }
   const directory = path.join(root, "evals", evalId);
   const config = await readJSON<Record<string, unknown>>(path.join(directory, "harbor", "job.json"));
   const agent = (config.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
@@ -116,7 +127,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const listed = await listEvals({ root });
   assert.equal(listed.length, 1);
   assert.equal(listed[0]?.eval_id, evalId);
-  assert.equal(listed[0]?.primary_reward, 0.75);
+  assert.equal(listed[0]?.primary_reward, null);
   const inspected = await inspectEval(evalId, { root });
   assert.equal((inspected.plan as { candidate: { revision_identity: string } }).candidate.revision_identity, (result.candidate as { revision_identity: string }).revision_identity);
   assert.equal(inspected.result?.status, "succeeded");

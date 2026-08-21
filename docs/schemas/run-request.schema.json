@@ -51,6 +51,21 @@
       "items": {
         "type": "string"
       }
-    }
+    },
+    "context": { "$ref": "run-context.schema.json" },
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "eval_id", "trial_id", "attempt"],
+      "properties": {
+        "kind": { "const": "eval" },
+        "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+        "trial_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "model_identity": { "type": "object" },
+    "protocol_identity": { "type": "object" },
+    "defer_benchmark_observation": { "type": "boolean" }
   }
 }

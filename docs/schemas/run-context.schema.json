@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/run-context.schema.json",
+  "title": "Hitch run context V1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": { "kind": { "const": "ad_hoc" } }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "seed_task_id", "seed_task_digest"],
+      "properties": {
+        "kind": { "const": "seed_task" },
+        "seed_task_id": { "type": "string", "minLength": 1 },
+        "seed_task_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "seed_set_id": { "type": "string", "minLength": 1 },
+        "seed_set_revision": { "type": "string", "minLength": 1 },
+        "iteration_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "benchmark_id", "benchmark_revision", "task_id", "task_digest", "verifier_identity"],
+      "properties": {
+        "kind": { "const": "benchmark_task" },
+        "benchmark_id": { "type": "string", "minLength": 1 },
+        "benchmark_revision": { "type": "string", "minLength": 1, "not": { "pattern": "^[Ll][Aa][Tt][Ee][Ss][Tt]$" } },
+        "task_id": { "type": "string", "minLength": 1 },
+        "task_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "verifier_identity": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    }
+  ]
+}

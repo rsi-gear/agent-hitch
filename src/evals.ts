@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolveHarness } from "./artifacts.js";
 import type { ResolvedRevision } from "./artifacts.js";
@@ -15,6 +15,8 @@ import type { ControllerRuntimeUseResult } from "./controller-runtime/store.js";
 import type { EvalId } from "./domain/types.js";
 import { buildLocalGitTransport, verifyLocalGitTransport } from "./local-git-transport.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
+import { workspaceDigest } from "./workspaces.js";
+import { importEvalTrialRuns, validateEvalTrialReferences } from "./eval-runs.js";
 
 export const DEFAULT_EVAL_TIMEOUT_MS = 15 * 60 * 1_000;
 export const DEFAULT_EVAL_SETUP_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -54,6 +56,8 @@ export interface EvalRequest {
   setup_timeout_ms: number;
   agent_args: string[];
   pass_env: string[];
+  benchmark_id: string;
+  benchmark_revision: string;
 }
 
 export async function validateEvalRequest(input: EvalRequestInput): Promise<EvalRequest> {
@@ -73,6 +77,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     throw invalidInput("eval requires an immutable harness ref: version:<exact> or commit:<sha>");
   }
   assertExactLocalGitEvalReference(reference);
+  const benchmark = await resolveBenchmarkReference(input.dataset.trim());
   const attempts = positiveInteger(input.attempts ?? 1, "attempts");
   const maxConcurrent = positiveInteger(input.max_concurrent ?? 4, "max_concurrent");
   const timeout = nonNegativeNumber(input.timeout_ms ?? DEFAULT_EVAL_TIMEOUT_MS, "timeout_ms");
@@ -99,7 +104,32 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     setup_timeout_ms: setupTimeout,
     agent_args: agentArgs,
     pass_env: [...new Set(Array.isArray(input.pass_env) ? input.pass_env as string[] : [])],
+    benchmark_id: benchmark.benchmark_id,
+    benchmark_revision: benchmark.benchmark_revision,
   };
+}
+
+export async function resolveBenchmarkReference(dataset: string): Promise<{ benchmark_id: string; benchmark_revision: string }> {
+  const raw = dataset.trim();
+  const local = path.resolve(raw);
+  try {
+    if ((await stat(local)).isDirectory()) {
+      return {
+        benchmark_id: `local:${path.basename(local)}`,
+        benchmark_revision: await workspaceDigest(local, { excludedTopLevel: new Set([".git"]) }),
+      };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const separator = raw.lastIndexOf("@");
+  if (separator <= 0 || separator === raw.length - 1) {
+    throw invalidInput("dataset must include an immutable revision (for example benchmark@1.0)");
+  }
+  const benchmarkId = raw.slice(0, separator);
+  const revision = raw.slice(separator + 1);
+  if (revision.toLowerCase() === "latest") throw invalidInput("dataset revision cannot be latest");
+  return { benchmark_id: benchmarkId, benchmark_revision: revision };
 }
 
 export interface RunEvalOptions {
@@ -131,6 +161,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   await sink.open();
   await atomicWriteJSON(path.join(evalDirectory, "request.json"), normalized);
   let result: EvalResult;
+  let trialRefs: import("./domain/types.js").EvalTrialRefV1[] = [];
   try {
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
     const requestedReference = parseHarnessReference(normalized.harness_ref);
@@ -181,6 +212,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         model: normalized.model || null,
       },
       dataset: normalized.dataset,
+      benchmark_id: normalized.benchmark_id,
+      benchmark_revision: normalized.benchmark_revision,
       attempts: normalized.attempts,
       max_concurrent: normalized.max_concurrent,
       controller_runtime: {
@@ -210,6 +243,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       });
     }
     const backendRun = await runHarborBackend({
+      evalId,
       evalDirectory,
       request: normalized,
       root,
@@ -222,6 +256,21 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(signal ? { signal } : {}),
       emit: (event) => sink.emit(event),
     });
+    trialRefs = await importEvalTrialRuns({
+      root,
+      evalId,
+      evalDirectory,
+      request: normalized,
+      resolvedRevision,
+      benchmarkId: normalized.benchmark_id,
+      benchmarkRevision: normalized.benchmark_revision,
+      runtimeId: controllerRuntime.runtime_id,
+      rawResult: backendRun.rawResult,
+    });
+    await validateEvalTrialReferences(root, evalId, trialRefs, {
+      benchmarkId: normalized.benchmark_id,
+      benchmarkRevision: normalized.benchmark_revision,
+    });
     const cancelled = signal?.aborted;
     const localSourceFailure = localTransport ? localSourceBackendFailure(backendRun.rawResult) : false;
     const succeeded = !cancelled && !localSourceFailure && backendRun.backend.process_exit_code === 0 && backendRun.rawResult !== null;
@@ -233,7 +282,11 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       backend: backendRun.backend,
       candidate: plan.candidate,
       dataset: normalized.dataset,
-      summary: backendRun.summary,
+      benchmark_id: normalized.benchmark_id,
+      benchmark_revision: normalized.benchmark_revision,
+      trials: trialRefs,
+      summary: summarizeTrialRefs(trialRefs),
+      backend_summary: backendRun.summary,
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       ...(succeeded ? {} : {
         error: {
@@ -261,6 +314,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         code: signal?.aborted ? "cancelled" : typed ? error.code : "internal_error",
         message: (error as Error)?.message || String(error),
       },
+      benchmark_id: normalized.benchmark_id,
+      benchmark_revision: normalized.benchmark_revision,
+      trials: trialRefs,
       started_at: startedAt.toISOString(),
       completed_at: new Date().toISOString(),
     };
@@ -269,6 +325,26 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   sink.emit({ type: result.status === "succeeded" ? "eval.completed" : "eval.failed", status: result.status, exit_code: result.exit_code, error: result.error });
   await sink.close();
   return result;
+}
+
+function summarizeTrialRefs(trials: import("./domain/types.js").EvalTrialRefV1[]): Record<string, unknown> {
+  const valid = trials.filter((trial) => trial.observation_status === "valid" && typeof trial.reward === "number");
+  const rewards = valid.map((trial) => trial.reward as number);
+  const aggregate = rewards.length
+    ? {
+        count: rewards.length,
+        mean: rewards.reduce((sum, reward) => sum + reward, 0) / rewards.length,
+        min: Math.min(...rewards),
+        max: Math.max(...rewards),
+      }
+    : null;
+  return {
+    n_trials: trials.length,
+    n_completed: valid.length,
+    n_invalid: trials.length - valid.length,
+    primary_reward: aggregate?.mean ?? null,
+    rewards: aggregate ? { reward: aggregate } : {},
+  };
 }
 
 function localSourceBackendFailure(rawResult: Record<string, unknown> | null): boolean {

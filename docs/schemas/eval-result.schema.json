@@ -4,7 +4,7 @@
   "title": "Hitch eval result",
   "type": "object",
   "additionalProperties": true,
-  "required": ["schema_version", "eval_id", "status", "exit_code", "started_at", "completed_at"],
+  "required": ["schema_version", "eval_id", "benchmark_id", "benchmark_revision", "status", "exit_code", "trials", "started_at", "completed_at"],
   "properties": {
     "schema_version": { "const": "1" },
     "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
@@ -25,6 +25,26 @@
       "additionalProperties": true
     },
     "summary": { "type": ["object", "null"] },
+    "benchmark_id": { "type": "string", "minLength": 1 },
+    "benchmark_revision": { "type": "string", "minLength": 1 },
+    "trials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["trial_id", "run_id", "task_id", "attempt", "observation_status"],
+        "properties": {
+          "trial_id": { "type": "string", "minLength": 1 },
+          "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+          "task_id": { "type": "string", "minLength": 1 },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "observation_status": { "enum": ["valid", "invalid"] },
+          "reward": { "type": "number" },
+          "verifier_result_ref": { "type": "string", "minLength": 1 },
+          "invalid_reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "local_source_transport": {
       "type": "object",
       "required": ["kind", "resolution_identity", "commit", "tree", "payload_sha256", "payload_bytes"],

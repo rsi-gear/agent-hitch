@@ -24,6 +24,8 @@ import type { MessageFeedbackRating } from "./domain/types.js";
 import { readTrajectory, loadTrajectoryRef } from "./trajectories/store.js";
 import { packageVersion as readPackageVersion } from "./package-root.js";
 import type { RunId } from "./domain/types.js";
+import { compareRuns, loadRunRecord, queryRuns, rebuildRunIndexes } from "./run-records.js";
+import type { ComparisonDimension, RunQuery } from "./run-records.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -38,6 +40,8 @@ export async function main(argv: string[]): Promise<void> {
     case "resolve": return resolveCommand(args, root);
     case "prepare": return prepareCommand(args, root);
     case "run": return runCommand(args, root);
+    case "runs": return runsCommand(args, root);
+    case "compare": return compareCommand(args, root);
     case "eval": return evalCommand(args, root);
     case "workspace": return workspaceCommand(args, root);
     case "trajectory": return trajectoryCommand(args, root);
@@ -56,6 +60,88 @@ export async function main(argv: string[]): Promise<void> {
     default:
       throw invalidInput(`unknown command: ${command}`);
   }
+}
+
+async function runsCommand(args: string[], root: string): Promise<void> {
+  const action = args.shift();
+  if (action === "inspect") {
+    const json = takeFlag(args, "--json");
+    const runId = args.shift();
+    if (!runId || !/^run_[a-f0-9]{32}$/.test(runId)) throw invalidInput("runs inspect requires a valid run ID");
+    assertNoArgs(args);
+    const loaded = await loadRunRecord(path.join(statePaths(root).runs, runId), { verifyTrajectory: true });
+    if (json) process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, ...loaded }, null, 2)}\n`);
+    else process.stdout.write(`${runId}: ${loaded.record.status} (${loaded.record.context.kind})\n  trajectory: ${loaded.trajectory_status}\n`);
+    return;
+  }
+  if (action === "list") {
+    const json = takeFlag(args, "--json");
+    const query = takeRunQuery(args);
+    assertNoArgs(args);
+    const records = await queryRuns({ root, query });
+    if (json) process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, runs: records.map(({ record }) => record) }, null, 2)}\n`);
+    else for (const { record } of records) process.stdout.write(`${record.run_id}  ${record.status.padEnd(9)}  ${record.context.kind}  ${record.harness.harness_id}  ${record.model.effective_id || "-"}\n`);
+    return;
+  }
+  if (action === "rebuild-index") {
+    const json = takeFlag(args, "--json");
+    assertNoArgs(args);
+    const index = await rebuildRunIndexes({ root });
+    if (json) process.stdout.write(`${JSON.stringify(index, null, 2)}\n`);
+    else process.stdout.write(`Indexed ${index.runs.length} runs\n`);
+    return;
+  }
+  throw invalidInput("runs requires list, inspect, or rebuild-index");
+}
+
+async function compareCommand(args: string[], root: string): Promise<void> {
+  const dimension = args.shift();
+  if (dimension !== "model" && dimension !== "harness") throw invalidInput("compare requires model or harness");
+  const json = takeFlag(args, "--json");
+  const referenceRunId = takeOption(args, "--reference-run");
+  const query = takeRunQuery(args);
+  assertNoArgs(args);
+  const comparison = await compareRuns({
+    root,
+    dimension: dimension as ComparisonDimension,
+    query,
+    ...(referenceRunId ? { referenceRunId } : {}),
+  });
+  if (json) {
+    process.stdout.write(`${JSON.stringify(comparison, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`Strict ${dimension} comparison: ${comparison.strict ? "yes" : "no"}\n`);
+  for (const group of comparison.groups) {
+    process.stdout.write(`  ${JSON.stringify(group.identity)}  valid=${group.valid_observations}  mean=${group.rewards.mean ?? "-"}  failures=${group.agent_failures}\n`);
+  }
+  if (comparison.excluded.length) process.stdout.write(`  excluded: ${comparison.excluded.length}\n`);
+}
+
+function takeRunQuery(args: string[]): RunQuery {
+  const query: RunQuery = {};
+  const assign = (field: keyof RunQuery, option: string): void => {
+    const value = takeOption(args, option);
+    if (value !== undefined) (query as Record<string, unknown>)[field] = value;
+  };
+  assign("context_kind", "--context-kind");
+  assign("benchmark_id", "--benchmark");
+  assign("benchmark_revision", "--benchmark-revision");
+  assign("task_id", "--task");
+  assign("task_digest", "--task-digest");
+  assign("seed_task_id", "--seed-task");
+  assign("seed_task_digest", "--seed-digest");
+  assign("iteration_id", "--iteration");
+  assign("harness_id", "--harness");
+  assign("revision_identity", "--harness-revision");
+  assign("model_provider", "--provider");
+  assign("requested_model", "--requested-model");
+  assign("effective_model", "--effective-model");
+  assign("eval_id", "--eval");
+  assign("status", "--status");
+  assign("created_from", "--from");
+  assign("created_to", "--to");
+  return query;
 }
 
 async function listCommand(args: string[]): Promise<void> {
@@ -112,7 +198,14 @@ async function runCommand(args: string[], root: string): Promise<void> {
   const useDaemon = takeFlag(args, "--daemon");
   const output = takeOption(args, "--output") || "jsonl";
   const internalFlags = takeInternalLocalGitFlags(args);
+  const internalRunId = takeOption(args, "--internal-run-id");
+  const deferBenchmarkObservation = takeFlag(args, "--internal-defer-benchmark-observation");
+  if ((internalRunId || deferBenchmarkObservation) && process.env.HITCH_HARBOR_INTERNAL !== "1") {
+    throw invalidInput("internal eval run options are unavailable outside the Harbor bridge");
+  }
+  if (internalRunId && !/^run_[a-f0-9]{32}$/.test(internalRunId)) throw invalidInput("invalid internal run ID");
   const request = await parseRunRequest(args);
+  if (deferBenchmarkObservation) request.defer_benchmark_observation = true;
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
   if (internalFlags && useDaemon) throw invalidInput("internal Harbor locked resolution cannot use the daemon");
@@ -126,7 +219,7 @@ async function runCommand(args: string[], root: string): Promise<void> {
     return;
   }
 
-  const runId = newRunId();
+  const runId = (internalRunId || newRunId()) as RunId;
   const result = await executeRun({
     runId,
     request,
@@ -564,6 +657,10 @@ async function parseRunRequest(args: string[]): Promise<RunRequestInput> {
   const promptFile = takeOption(args, "--prompt-file");
   const timeout = parseDuration(takeOption(args, "--timeout") || "0");
   const agentArgs = takeRepeatedOption(args, "--agent-arg");
+  const contextFile = takeOption(args, "--context-file");
+  const parentFile = takeOption(args, "--parent-file");
+  const modelIdentityFile = takeOption(args, "--model-identity-file");
+  const protocolIdentityFile = takeOption(args, "--protocol-identity-file");
   if (harness && agent) throw invalidInput("use only one of --harness and the legacy --agent option");
   if (!harness && !agent) throw invalidInput("--harness is required");
   if (!WORKSPACE_MODES.has(workspaceMode)) throw invalidInput(`--workspace-mode must be one of: ${[...WORKSPACE_MODES].join(", ")}`);
@@ -573,7 +670,31 @@ async function parseRunRequest(args: string[]): Promise<RunRequestInput> {
   if (promptFile) prompt = await readFile(path.resolve(promptFile), "utf8");
   if (prompt === undefined && !process.stdin.isTTY) prompt = readFileSync(0, "utf8");
   if (!prompt) throw invalidInput("provide --prompt, --prompt-file, or stdin");
-  return { harness_ref: harness || `${agent}@installed`, model, cwd, workspace_mode: workspaceMode, prompt, timeout_ms: timeout, agent_args: agentArgs };
+  const loadInputFile = async (file: string | undefined, label: string): Promise<unknown | undefined> => {
+    if (!file) return undefined;
+    try {
+      return JSON.parse(await readFile(path.resolve(file), "utf8")) as unknown;
+    } catch (error) {
+      throw invalidInput(`${label} is not readable JSON: ${(error as Error).message}`, { cause: error });
+    }
+  };
+  const context = await loadInputFile(contextFile, "--context-file");
+  const parent = await loadInputFile(parentFile, "--parent-file");
+  const modelIdentity = await loadInputFile(modelIdentityFile, "--model-identity-file");
+  const protocolIdentity = await loadInputFile(protocolIdentityFile, "--protocol-identity-file");
+  return {
+    harness_ref: harness || `${agent}@installed`,
+    model,
+    cwd,
+    workspace_mode: workspaceMode,
+    prompt,
+    timeout_ms: timeout,
+    agent_args: agentArgs,
+    ...(context !== undefined ? { context } : {}),
+    ...(parent !== undefined ? { parent } : {}),
+    ...(modelIdentity !== undefined ? { model_identity: modelIdentity } : {}),
+    ...(protocolIdentity !== undefined ? { protocol_identity: protocolIdentity } : {}),
+  };
 }
 
 function parseEvalRequest(args: string[]): Record<string, unknown> {
@@ -684,7 +805,11 @@ Usage:
   hitch inspect <harness> [--json]
   hitch resolve <harness-ref> [--json]
   hitch prepare <harness-ref> [--json]
-  hitch run --harness <ref> [--model <id>] [--workspace-mode <mode>] --prompt <text> [--daemon]
+  hitch run --harness <ref> [--model <id>] [--context-file <json>] [--workspace-mode <mode>] --prompt <text> [--daemon]
+  hitch runs list [filters] [--json]
+  hitch runs inspect <run-id> [--json]
+  hitch runs rebuild-index [--json]
+  hitch compare model|harness [filters] [--reference-run <run-id>] [--json]
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
   hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>]
@@ -712,8 +837,9 @@ Eval:
   (see 'hitch eval inspect' for the runtime storage kind).
 
 Trajectory and feedback:
-  Every run records a DSH-compatible canonical trajectory under runs/<run>/trajectory/
-  with a trajectory.ref.json pointer. Message feedback is a lifecycle-bound sidecar.
+  Structured adapters preserve provider-native events plus a DSH-compatible canonical view
+  under runs/<run>/trajectory/, bound by trajectory.ref.json V2 checksums.
+  Message feedback is a lifecycle-bound sidecar.
 
 Workspace modes:
   shared    Use the source directory directly (compatibility default)

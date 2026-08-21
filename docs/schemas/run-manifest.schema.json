@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/run-manifest.schema.json",
+  "title": "Hitch RunRecord manifest V1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "run_id", "context", "status", "harness", "model", "protocol", "request_ref", "resolution_ref", "created_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "context": { "$ref": "run-context.schema.json" },
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "eval_id", "trial_id", "attempt"],
+      "properties": {
+        "kind": { "const": "eval" },
+        "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+        "trial_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "status": { "enum": ["queued", "preparing", "running", "succeeded", "failed", "timed_out", "cancelled"] },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness_id", "requested_ref", "revision_identity"],
+      "properties": {
+        "harness_id": { "type": "string", "minLength": 1 },
+        "requested_ref": { "type": "string", "minLength": 1 },
+        "revision_identity": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "artifact_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "agent_args_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_id", "effective_id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "requested_id": { "type": "string" },
+        "effective_id": { "type": "string" },
+        "parameters_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "identity_resolved": { "type": "boolean" }
+      }
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_ms", "workspace_mode"],
+      "properties": {
+        "timeout_ms": { "type": "number", "minimum": 0 },
+        "workspace_mode": { "type": "string", "minLength": 1 },
+        "initial_workspace_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "environment_identity": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "tool_policy_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["valid", "invalid"] },
+        "reward": { "type": "number" },
+        "verifier_result_ref": { "$ref": "#/$defs/relativePath" },
+        "invalid_reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "request_ref": { "$ref": "#/$defs/relativePath" },
+    "resolution_ref": { "$ref": "#/$defs/relativePath" },
+    "result_ref": { "$ref": "#/$defs/relativePath" },
+    "trajectory_ref": { "$ref": "#/$defs/relativePath" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "relativePath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
+  }
+}

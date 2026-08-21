@@ -730,7 +730,7 @@ async function copyEntry(source: string, destination: string, { signal }: { sign
   });
 }
 
-async function workspaceDigest(directory: string, { signal, excludedTopLevel = new Set<string>() }: { signal?: AbortSignal | undefined; excludedTopLevel?: Set<string> } = {}): Promise<string> {
+export async function workspaceDigest(directory: string, { signal, excludedTopLevel = new Set<string>() }: { signal?: AbortSignal | undefined; excludedTopLevel?: Set<string> } = {}): Promise<string> {
   const hash = createHash("sha256");
   await digestDirectory(hash, directory, "", { signal, excludedTopLevel, topLevel: true });
   return `sha256:${hash.digest("hex")}`;
