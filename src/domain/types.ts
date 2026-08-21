@@ -18,6 +18,92 @@ export type SessionId = Brand<string, "SessionId">;
 export type MessageId = Brand<string, "MessageId">;
 export type ControllerRuntimeId = Brand<Sha256, "ControllerRuntimeId">;
 
+export type RunStatus =
+  | "queued"
+  | "preparing"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "timed_out"
+  | "cancelled";
+
+/** The task identity attached to one physical execution (run storage V1). */
+export type RunContextV1 =
+  | { kind: "ad_hoc" }
+  | {
+      kind: "seed_task";
+      seed_task_id: string;
+      seed_task_digest: Sha256;
+      seed_set_id?: string;
+      seed_set_revision?: string;
+      iteration_id?: string;
+    }
+  | {
+      kind: "benchmark_task";
+      benchmark_id: string;
+      benchmark_revision: string;
+      task_id: string;
+      task_digest: Sha256;
+      verifier_identity: Sha256;
+    };
+
+export interface EvalRunParentV1 {
+  kind: "eval";
+  eval_id: string;
+  trial_id: string;
+  attempt: number;
+}
+
+export interface RunObservationV1 {
+  status: "valid" | "invalid";
+  reward?: number;
+  verifier_result_ref?: string;
+  invalid_reason?: string;
+}
+
+export interface HarnessIdentityV1 {
+  harness_id: string;
+  requested_ref: string;
+  revision_identity: Sha256 | null;
+  artifact_id?: Sha256;
+  agent_args_sha256?: Sha256;
+}
+
+export interface ModelIdentityV1 {
+  provider?: string;
+  requested_id: string;
+  effective_id: string;
+  parameters_sha256?: Sha256;
+  /** False when effective_id is only a provider alias rather than a snapshot. */
+  identity_resolved?: boolean;
+}
+
+export interface ProtocolIdentityV1 {
+  timeout_ms: number;
+  workspace_mode: string;
+  initial_workspace_digest?: Sha256;
+  environment_identity?: Sha256;
+  tool_policy_sha256?: Sha256;
+}
+
+/** Logical projection of runs/<run-id>/{request,resolution,manifest,result,...}. */
+export interface RunRecordV1 {
+  run_id: string;
+  context: RunContextV1;
+  parent?: EvalRunParentV1;
+  status: RunStatus;
+  harness: HarnessIdentityV1;
+  model: ModelIdentityV1;
+  protocol: ProtocolIdentityV1;
+  observation?: RunObservationV1;
+  request_ref: string;
+  resolution_ref: string;
+  result_ref?: string;
+  trajectory_ref?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
 export type PlatformTriple = `${string}-${string}`;
 
 export interface RunRequest {
@@ -29,6 +115,10 @@ export interface RunRequest {
   prompt: string;
   timeout_ms: number;
   agent_args: string[];
+  context?: RunContextV1;
+  parent?: EvalRunParentV1;
+  model_identity?: ModelIdentityV1;
+  protocol_identity?: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256">;
 }
 
 export interface RunResult {
@@ -61,7 +151,8 @@ export interface RunResult {
   } | null;
 }
 
-export type TrajectoryFidelity = "native" | "normalized" | "minimal";
+/** `native` is retained only for trajectory.ref.json V1 compatibility. */
+export type TrajectoryFidelity = "native" | "provider_native" | "normalized" | "minimal";
 
 export interface TrajectoryFormatRef {
   family: "dsh-session";
@@ -71,7 +162,7 @@ export interface TrajectoryFormatRef {
   pack_chunks: false;
 }
 
-export interface TrajectoryRef {
+export interface TrajectoryRefV1 {
   schema_version: "1";
   run_id: string;
   session_id: string;
@@ -80,6 +171,54 @@ export interface TrajectoryRef {
   fidelity: TrajectoryFidelity;
   path: string;
   sha256?: Sha256;
+}
+
+export type TrajectoryFileRole =
+  | "provider_events"
+  | "provider_transcript"
+  | "provider_artifact"
+  | "canonical_session";
+
+export interface TrajectoryFileRefV1 {
+  role: TrajectoryFileRole;
+  path: string;
+  media_type: string;
+  sha256: Sha256;
+  bytes: number;
+}
+
+export interface TrajectoryRefV2 {
+  schema_version: "2";
+  run_id: string;
+  fidelity: "provider_native" | "normalized" | "minimal";
+  provider?: string;
+  provider_session_id?: string;
+  files: TrajectoryFileRefV1[];
+  redactions?: Array<{ rule_id: string; count: number }>;
+}
+
+export type TrajectoryRef = TrajectoryRefV1 | TrajectoryRefV2;
+
+export interface EvalTrialRefV1 {
+  trial_id: string;
+  run_id: string;
+  task_id: string;
+  attempt: number;
+  observation_status: "valid" | "invalid";
+  reward?: number;
+  verifier_result_ref?: string;
+  invalid_reason?: string;
+}
+
+export interface EvalResultV1 {
+  schema_version: "1";
+  eval_id: string;
+  benchmark_id: string;
+  benchmark_revision: string;
+  status: "succeeded" | "failed" | "cancelled";
+  trials: EvalTrialRefV1[];
+  started_at: string;
+  completed_at: string;
 }
 
 export interface SessionHeaderLine {

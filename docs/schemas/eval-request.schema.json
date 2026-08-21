@@ -9,6 +9,8 @@
     "schema_version": { "const": "1" },
     "backend": { "const": "harbor" },
     "dataset": { "type": "string", "minLength": 1 },
+    "benchmark_id": { "type": "string", "minLength": 1 },
+    "benchmark_revision": { "type": "string", "minLength": 1 },
     "harness_ref": { "type": "string", "minLength": 1 },
     "model": { "type": "string" },
     "attempts": { "type": "integer", "minimum": 1 },

@@ -13,7 +13,16 @@ import path from "node:path";
 import { ensureDir, readJSON } from "../fs.js";
 import { eventLine, headerLine, logPath, parseEventLine, parseHeaderLine } from "./format.js";
 import { TRAJECTORY_FORMAT } from "./contract.js";
-import type { SessionEvent, SessionHeaderLine, TrajectoryFidelity, TrajectoryRef } from "../domain/types.js";
+import type {
+  SessionEvent,
+  SessionHeaderLine,
+  TrajectoryFidelity,
+  TrajectoryFileRefV1,
+  TrajectoryRef,
+  TrajectoryRefV1,
+  TrajectoryRefV2,
+} from "../domain/types.js";
+import { validateTrajectoryRef } from "../domain/validate.js";
 
 export interface TrajectoryWriterOptions {
   runDirectory: string;
@@ -104,7 +113,7 @@ function closeStream(stream: WriteStream): Promise<void> {
 
 /** The `trajectory/--<normalized-cwd>--/<encoded-session-id>/session.jsonl` path under a run directory. */
 export function trajectoryLogPath(runDirectory: string, cwd: string | undefined, sessionId: string): string {
-  return logPath(path.join(runDirectory, "trajectory"), cwd, sessionId);
+  return logPath(path.join(runDirectory, "trajectory", "canonical"), cwd, sessionId);
 }
 
 export function trajectoryRefPath(runDirectory: string): string {
@@ -118,8 +127,8 @@ export function trajectoryRef(
   trajectoryPath: string,
   sha256: string,
   providerSessionId?: string,
-): TrajectoryRef {
-  const ref: TrajectoryRef = {
+): TrajectoryRefV1 {
+  const ref: TrajectoryRefV1 = {
     schema_version: "1",
     run_id: runId,
     session_id: sessionId,
@@ -130,6 +139,41 @@ export function trajectoryRef(
   };
   if (providerSessionId !== undefined) ref.provider_session_id = providerSessionId;
   return ref;
+}
+
+export async function canonicalTrajectoryFileRef(runDirectory: string, trajectoryPath: string): Promise<TrajectoryFileRefV1> {
+  const relative = path.relative(runDirectory, trajectoryPath).split(path.sep).join("/");
+  if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) {
+    throw new Error("canonical trajectory must be inside its run directory");
+  }
+  const info = await stat(trajectoryPath);
+  return {
+    role: "canonical_session",
+    path: relative,
+    media_type: "application/x-ndjson",
+    sha256: await trajectoryFileSha256(trajectoryPath) as `sha256:${string}`,
+    bytes: info.size,
+  };
+}
+
+export function trajectoryRefV2(options: {
+  runId: string;
+  fidelity: "provider_native" | "normalized" | "minimal";
+  provider?: string;
+  providerSessionId?: string;
+  files: TrajectoryFileRefV1[];
+  redactions?: Array<{ rule_id: string; count: number }>;
+}): TrajectoryRefV2 {
+  const ref: TrajectoryRefV2 = {
+    schema_version: "2",
+    run_id: options.runId,
+    fidelity: options.fidelity,
+    files: options.files,
+  };
+  if (options.provider) ref.provider = options.provider;
+  if (options.providerSessionId) ref.provider_session_id = options.providerSessionId;
+  if (options.redactions?.length) ref.redactions = options.redactions;
+  return validateTrajectoryRef(ref) as TrajectoryRefV2;
 }
 
 export interface TrajectoryReadResult {
@@ -238,10 +282,35 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
 }
 
 /** Locate the canonical trajectory for a run from its `trajectory.ref.json`. */
-export async function loadTrajectoryRef(runDirectory: string): Promise<TrajectoryRef | null> {
-  const ref = await readJSON<TrajectoryRef | null>(trajectoryRefPath(runDirectory), null);
-  if (!ref || ref.schema_version !== "1") return null;
-  return ref;
+export type LoadedTrajectoryRef = TrajectoryRef & {
+  /** Resolved canonical path, added in memory for V1 consumer compatibility. */
+  path: string;
+  session_id: string;
+  sha256?: `sha256:${string}`;
+};
+
+export async function loadTrajectoryRef(runDirectory: string): Promise<LoadedTrajectoryRef | null> {
+  const raw = await readJSON<unknown | null>(trajectoryRefPath(runDirectory), null);
+  if (!raw) return null;
+  const ref = validateTrajectoryRef(raw);
+  if (ref.schema_version === "1") return ref as LoadedTrajectoryRef;
+  const canonical = ref.files.find((file) => file.role === "canonical_session");
+  if (!canonical) return null;
+  const absolute = path.resolve(runDirectory, ...canonical.path.split("/"));
+  const relative = path.relative(path.resolve(runDirectory), absolute);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`trajectory path escapes run directory: ${canonical.path}`);
+  }
+  const content = await readFile(absolute, "utf8");
+  const first = content.split(/\r?\n/).find((line) => line.length > 0);
+  if (!first) throw new Error(`canonical trajectory is empty: ${canonical.path}`);
+  const header = parseHeaderLine(JSON.parse(first) as unknown);
+  return {
+    ...ref,
+    path: absolute,
+    session_id: header.id,
+    sha256: canonical.sha256,
+  };
 }
 
 export async function removeTrajectory(runDirectory: string): Promise<void> {
@@ -255,7 +324,8 @@ export async function trajectoryFileSha256(file: string): Promise<string> {
 }
 
 export async function listTrajectorySessions(runDirectory: string): Promise<string[]> {
-  const root = path.join(runDirectory, "trajectory");
+  const canonicalRoot = path.join(runDirectory, "trajectory", "canonical");
+  const root = await stat(canonicalRoot).then(() => canonicalRoot).catch(() => path.join(runDirectory, "trajectory"));
   let projects;
   try {
     projects = await readdir(root, { withFileTypes: true });

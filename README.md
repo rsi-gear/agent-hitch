@@ -154,15 +154,18 @@ records:
 
 - normalized JSONL events describe Hitch's control plane, including resolution,
   preparation, process lifecycle, cancellation, and terminal status;
-- a DSH-compatible canonical trajectory records the agent session, messages,
-  tool calls, and tool results with an explicit fidelity level;
-- `trajectory.ref.json` binds the run to the canonical trajectory and its
-  SHA-256 digest; and
+- supported adapters preserve redacted provider-native events before any
+  translation, while a DSH-compatible canonical trajectory remains available
+  as a derived view;
+- `trajectory.ref.json` V2 binds every trajectory file by relative path, byte
+  size, role, and SHA-256 digest; and
 - feedback sidecars attach versioned positive or negative ratings and notes to
   assistant messages without rewriting the immutable trajectory.
 
 ```bash
 hitch trajectory inspect RUN_ID
+hitch runs list --context-kind benchmark_task --json
+hitch compare model --benchmark BENCHMARK --task TASK --json
 hitch feedback list RUN_ID --json
 hitch feedback put RUN_ID \
   --message MESSAGE_ID \
@@ -307,7 +310,7 @@ Workspace isolation is not a process security sandbox.
 
 ## Planned work
 
-- [ ] Comparison primitives for harness revisions and their evidence
+- [x] Strict model/harness comparison primitives over run evidence
 - [ ] Named candidate and champion references
 - [ ] Promotion and rollback records without embedding promotion policy
 - [ ] Remote artifact and evidence synchronization

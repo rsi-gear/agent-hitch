@@ -57,8 +57,10 @@ Hitch eval engine
        -> upload, re-verify, and materialize the local Git pack when present
        -> Hitch prepare + Hitch run in /app (shared workspace)
        -> selected native harness edits the task filesystem
+       -> export the complete run bundle before container teardown
        -> Harbor verifier computes rewards
-  -> normalize Harbor result.json
+  -> verify and atomically publish each bundle under runs/<run-id>/
+  -> attach verifier output/observation and aggregate run_id references
 ```
 
 The bridge deliberately does not map `codex` to Harbor's built-in Codex agent.
@@ -111,7 +113,7 @@ Deployment policy may lower the defaults with
 positive integers; defaults are 512 MiB, 100,000 objects, 50,000 files, and
 64 MiB per blob respectively.
 
-Dataset values use Harbor conventions:
+Dataset values must select an immutable revision and use Harbor conventions:
 
 - `terminal-bench@2.0` selects a Harbor registry dataset;
 - `org/package@ref` selects a Harbor package dataset; and
@@ -129,7 +131,7 @@ Each eval is stored at `~/.hitch/evals/eval_<id>/` (or below `--root`):
 request.json
 resolution.json
 plan.json
-runtime/
+runtime.ref.json
 local-source/                 # present only for transported local Git commits
   manifest.json
   payload.pack
@@ -143,8 +145,19 @@ harbor/
   job/result.json
 ```
 
-`result.json` includes the Harbor executable identity, backend paths, trial
-counts, per-reward aggregates, a primary reward, and compact per-trial status.
+`result.json` includes the benchmark identity and one `run_id` reference per
+trial. Every referenced run is published through the ordinary
+`runs/<run-id>/` layout, including provider-native evidence, canonical
+trajectory, verifier output, and a valid/invalid observation. Invalid trials
+are reported separately and never converted into zero reward. `summary`
+aggregates only valid observations; `backend_summary` preserves Harbor's raw
+aggregate for diagnostics.
+
+The exported bundle below a Harbor trial is staging only. Hitch validates its
+identity and trajectory checksums, atomically publishes it to `runs/`, and then
+removes the staging copy so the eval directory never becomes a second
+trajectory authority.
+
 For a local Git eval, `plan.json` and `result.json` also record the commit, tree,
 host resolution identity, payload SHA-256, byte count, object count, and file
 count. These durable records never depend on the container's temporary path.
@@ -153,3 +166,6 @@ detail.
 
 Use `hitch eval list [--json]` to list records and
 `hitch eval inspect <eval-id> [--json]` to inspect the complete Hitch envelope.
+Run records can be queried with `hitch runs list`, and strict model or harness
+comparisons are available through `hitch compare model|harness` with benchmark,
+task, model, harness, eval, status, and time filters.

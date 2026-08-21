@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -6,7 +6,7 @@ import { getAdapter, normalizeRequest } from "./adapters.js";
 import type { AdapterRequest, NormalizedEvent } from "./adapters.js";
 import { EventSink } from "./events.js";
 import { HitchError, invalidInput } from "./errors.js";
-import { atomicWriteJSON, ensureDir } from "./fs.js";
+import { atomicWriteJSON, ensureDir, readJSON } from "./fs.js";
 import { consumeLines } from "./line-stream.js";
 import { terminateProcess } from "./process.js";
 import { SCHEMA_VERSION } from "./config.js";
@@ -25,12 +25,21 @@ import {
   WORKSPACE_MODES,
   workspaceManifestFields,
   workspaceRecordPath,
+  workspaceDigest,
 } from "./workspaces.js";
 import type { WorkspacePlan } from "./workspaces.js";
 import { TrajectoryProjector } from "./trajectories/projector.js";
-import { TrajectoryWriter, trajectoryRef, trajectoryRefPath, trajectoryFileSha256 } from "./trajectories/store.js";
-import type { RunId } from "./domain/types.js";
+import {
+  TrajectoryWriter,
+  canonicalTrajectoryFileRef,
+  trajectoryRefPath,
+  trajectoryRefV2,
+} from "./trajectories/store.js";
+import { ProviderCaptureWriter, redactProviderText } from "./trajectories/native.js";
+import type { EvalRunParentV1, ModelIdentityV1, ProtocolIdentityV1, RunContextV1, RunId, Sha256 } from "./domain/types.js";
 import type { TrajectoryFidelity } from "./domain/types.js";
+import { asBoolean, asOptionalString, asRecord, asSha256, asString, validateEvalRunParent, validateRunContext } from "./domain/validate.js";
+import { canonicalJSON, defaultModelIdentity, looksImmutableModelId, sha256JSON } from "./run-records.js";
 
 export interface RunRequestInput {
   schema_version?: unknown;
@@ -42,13 +51,30 @@ export interface RunRequestInput {
   prompt?: unknown;
   timeout_ms?: unknown;
   agent_args?: unknown;
+  context?: unknown;
+  parent?: unknown;
+  model_identity?: unknown;
+  protocol_identity?: unknown;
+  /** Internal eval handoff: the host verifier will seal the observation. */
+  defer_benchmark_observation?: unknown;
 }
 
-export async function validateRunRequest(input: RunRequestInput): Promise<AdapterRequest> {
+export interface ValidatedRunRequest extends AdapterRequest {
+  context: RunContextV1;
+  parent?: EvalRunParentV1;
+  model_identity: ModelIdentityV1;
+  protocol_identity: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256">;
+  defer_benchmark_observation: boolean;
+}
+
+export async function validateRunRequest(input: RunRequestInput): Promise<ValidatedRunRequest> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw invalidInput("run request must be a JSON object");
   }
-  const allowedFields = new Set(["schema_version", "harness_ref", "agent", "model", "cwd", "workspace_mode", "prompt", "timeout_ms", "agent_args"]);
+  const allowedFields = new Set([
+    "schema_version", "harness_ref", "agent", "model", "cwd", "workspace_mode", "prompt", "timeout_ms", "agent_args",
+    "context", "parent", "model_identity", "protocol_identity", "defer_benchmark_observation",
+  ]);
   const unexpectedField = Object.keys(input).find((field) => !allowedFields.has(field));
   if (unexpectedField) throw invalidInput(`unknown run request field: ${unexpectedField}`);
   if (input.schema_version !== undefined && input.schema_version !== SCHEMA_VERSION) {
@@ -88,11 +114,124 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Adapte
     throw invalidInput(`workspace does not exist: ${request.cwd}`, { cause: error });
   }
   if (!workspace.isDirectory()) throw invalidInput(`workspace is not a directory: ${request.cwd}`);
-  return request;
+  let parent: EvalRunParentV1 | undefined;
+  try {
+    if (input.parent !== undefined) parent = validateEvalRunParent(input.parent);
+  } catch (error) {
+    throw invalidInput((error as Error).message, { cause: error });
+  }
+  let context: RunContextV1;
+  try {
+    context = validateRunContext(input.context ?? { kind: "ad_hoc" });
+  } catch (error) {
+    throw invalidInput((error as Error).message, { cause: error });
+  }
+  if (parent && context.kind !== "benchmark_task") throw invalidInput("eval parent requires a benchmark_task context");
+  let deferObservation = false;
+  try {
+    if (input.defer_benchmark_observation !== undefined) {
+      deferObservation = asBoolean(input.defer_benchmark_observation, "defer_benchmark_observation");
+    }
+  } catch (error) {
+    throw invalidInput((error as Error).message, { cause: error });
+  }
+  if (deferObservation && (!parent || context.kind !== "benchmark_task")) {
+    throw invalidInput("defer_benchmark_observation is only valid for eval benchmark runs");
+  }
+  let modelIdentity: ModelIdentityV1;
+  let protocolIdentity: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256"> = {};
+  try {
+    modelIdentity = validateModelIdentity(input.model_identity, request.model, reference.harness_id, request.agent_args);
+    protocolIdentity = validateProtocolIdentityInput(input.protocol_identity);
+  } catch (error) {
+    throw invalidInput((error as Error).message, { cause: error });
+  }
+  return {
+    ...request,
+    context,
+    ...(parent ? { parent } : {}),
+    model_identity: modelIdentity,
+    protocol_identity: protocolIdentity,
+    defer_benchmark_observation: deferObservation,
+  };
+}
+
+function validateModelIdentity(value: unknown, requestedId: string, harnessId: string, agentArgs: string[]): ModelIdentityV1 {
+  const derivedParameters = modelParameterDigest(agentArgs);
+  if (value === undefined) return defaultModelIdentity(requestedId, harnessId, {
+    ...(derivedParameters ? { parametersSha256: derivedParameters } : {}),
+  });
+  const record = asRecord(value, "model_identity");
+  const allowed = new Set(["provider", "requested_id", "effective_id", "parameters_sha256", "identity_resolved"]);
+  const unexpected = Object.keys(record).find((field) => !allowed.has(field));
+  if (unexpected) throw new TypeError(`model_identity has unknown field: ${unexpected}`);
+  const declaredRequested = asString(record.requested_id ?? requestedId, "model_identity.requested_id");
+  if (declaredRequested !== requestedId) throw new TypeError("model_identity.requested_id must match model");
+  const effective = asString(record.effective_id ?? requestedId, "model_identity.effective_id");
+  const resolved = record.identity_resolved === undefined ? undefined : asBoolean(record.identity_resolved, "model_identity.identity_resolved");
+  const provider = asOptionalString(record.provider, "model_identity.provider");
+  const parameters = record.parameters_sha256 === undefined
+    ? derivedParameters
+    : asSha256(record.parameters_sha256, "model_identity.parameters_sha256");
+  return defaultModelIdentity(requestedId, harnessId, {
+    ...(provider ? { provider } : {}),
+    effectiveId: effective,
+    ...(parameters ? { parametersSha256: parameters } : {}),
+    ...(resolved !== undefined ? { resolved } : {}),
+  });
+}
+
+function modelParameterDigest(agentArgs: string[]): Sha256 | undefined {
+  const safeFlags = new Set([
+    "--temperature", "--top-p", "--max-tokens", "--max-output-tokens", "--reasoning-effort",
+  ]);
+  const parameters: Record<string, string> = {};
+  for (let index = 0; index < agentArgs.length; index += 1) {
+    const argument = agentArgs[index] as string;
+    const [flag, inline] = argument.split("=", 2);
+    if (!flag || !safeFlags.has(flag)) continue;
+    const value = inline ?? agentArgs[index + 1];
+    if (value === undefined || (!inline && value.startsWith("--"))) continue;
+    parameters[flag] = value;
+    if (inline === undefined) index += 1;
+  }
+  return Object.keys(parameters).length ? sha256JSON(parameters) : undefined;
+}
+
+function validateProtocolIdentityInput(value: unknown): Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256"> {
+  if (value === undefined) return {};
+  const record = asRecord(value, "protocol_identity");
+  const allowed = new Set(["environment_identity", "tool_policy_sha256"]);
+  const unexpected = Object.keys(record).find((field) => !allowed.has(field));
+  if (unexpected) throw new TypeError(`protocol_identity has unknown field: ${unexpected}`);
+  const result: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256"> = {};
+  if (record.environment_identity !== undefined) result.environment_identity = asSha256(record.environment_identity, "environment_identity");
+  if (record.tool_policy_sha256 !== undefined) result.tool_policy_sha256 = asSha256(record.tool_policy_sha256, "tool_policy_sha256");
+  return result;
 }
 
 export function newRunId(): RunId {
   return `run_${randomUUID().replaceAll("-", "")}` as RunId;
+}
+
+export function sealTerminalManifest(
+  manifest: Record<string, unknown>,
+  status: "succeeded" | "failed" | "cancelled" | "timed_out",
+  completedAt: string,
+): Record<string, unknown> {
+  const context = (() => {
+    try { return validateRunContext(manifest.context ?? { kind: "ad_hoc" }); } catch { return { kind: "ad_hoc" } as RunContextV1; }
+  })();
+  return {
+    ...manifest,
+    status,
+    result_ref: "result.json",
+    ...(context.kind === "benchmark_task" && manifest.observation === undefined
+      ? { observation: { status: "invalid", invalid_reason: status === "cancelled" ? "cancelled" : "infrastructure_failure" } }
+      : {}),
+    completed_at: completedAt,
+    sealed: true,
+  };
 }
 
 export interface RunManifest extends Record<string, unknown> {
@@ -111,10 +250,20 @@ export interface RunManifest extends Record<string, unknown> {
   agent_args_count: number;
   agent_args_sha256: string | null;
   created_at: string;
+  context: RunContextV1;
+  harness: Record<string, unknown>;
+  model: ModelIdentityV1;
+  protocol: ProtocolIdentityV1;
+  request_ref: string;
+  resolution_ref: string;
 }
 
-export function buildManifest(runId: RunId, request: AdapterRequest, workspacePlan: WorkspacePlan | null): RunManifest {
+export function buildManifest(runId: RunId, request: ValidatedRunRequest, workspacePlan: WorkspacePlan | null): RunManifest {
   const reference = parseHarnessReference(request.harness_ref);
+  const safeAgentArgs = safeAgentArgsForPersistence(request.agent_args);
+  const argsDigest = safeAgentArgs.length > 0 ? sha256JSON(safeAgentArgs) : undefined;
+  const environmentIdentity = request.protocol_identity.environment_identity
+    ?? sha256JSON({ platform: process.platform, arch: process.arch, node: process.versions.node });
   return {
     schema_version: SCHEMA_VERSION,
     run_id: runId,
@@ -130,11 +279,46 @@ export function buildManifest(runId: RunId, request: AdapterRequest, workspacePl
     ...workspaceManifestFields(workspacePlan),
     timeout_ms: request.timeout_ms,
     agent_args_count: request.agent_args.length,
-    agent_args_sha256: request.agent_args.length > 0
-      ? createHash("sha256").update(JSON.stringify(request.agent_args)).digest("hex")
-      : null,
+    agent_args_sha256: argsDigest ?? null,
+    context: request.context,
+    ...(request.parent ? { parent: request.parent } : {}),
+    harness: {
+      harness_id: reference.harness_id,
+      requested_ref: reference.raw,
+      revision_identity: null,
+      ...(argsDigest ? { agent_args_sha256: argsDigest } : {}),
+    },
+    model: request.model_identity,
+    protocol: {
+      timeout_ms: request.timeout_ms,
+      workspace_mode: request.workspace_mode,
+      environment_identity: environmentIdentity,
+      ...(request.protocol_identity.tool_policy_sha256 ? { tool_policy_sha256: request.protocol_identity.tool_policy_sha256 } : {}),
+    },
+    request_ref: "request.json",
+    resolution_ref: "resolution.json",
     created_at: new Date().toISOString(),
   };
+}
+
+export function safeAgentArgsForPersistence(agentArgs: string[]): string[] {
+  const sensitiveFlag = /(?:api[-_]?key|authorization|token|secret|password|credential|cookie)/i;
+  const result: string[] = [];
+  for (let index = 0; index < agentArgs.length; index += 1) {
+    const argument = agentArgs[index] as string;
+    const separator = argument.indexOf("=");
+    const flag = separator >= 0 ? argument.slice(0, separator) : argument;
+    if (sensitiveFlag.test(flag)) {
+      result.push(separator >= 0 ? `${flag}=[REDACTED]` : flag);
+      if (separator < 0 && agentArgs[index + 1] !== undefined && !String(agentArgs[index + 1]).startsWith("--")) {
+        result.push("[REDACTED]");
+        index += 1;
+      }
+      continue;
+    }
+    result.push(redactProviderText(argument));
+  }
+  return result;
 }
 
 export interface ExecuteRunOptions {
@@ -165,17 +349,24 @@ export async function executeRun({
   const normalized = await validateRunRequest(request);
   workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const runDirectory = path.join(runsRoot, runId);
+  const priorManifest = await readJSON<Record<string, unknown> | null>(path.join(runDirectory, "manifest.json"), null);
+  if (priorManifest && ["succeeded", "failed", "timed_out", "cancelled"].includes(String(priorManifest.status))) {
+    throw new HitchError(`run ${runId} is sealed and cannot be overwritten`, { code: "run_sealed", exitCode: 11 });
+  }
+  if (priorManifest) assertQueuedRunIdentity(priorManifest, buildManifest(runId, normalized, workspacePlan));
   await ensureDir(runDirectory);
   const workspacePath = workspaceRecordPath(root, runId);
   await atomicWriteJSON(workspacePath, workspacePlan);
   const manifestPath = path.join(runDirectory, "manifest.json");
   const resultPath = path.join(runDirectory, "result.json");
-  const existingManifest = buildManifest(runId, normalized, workspacePlan);
+  const existingManifest = priorManifest || buildManifest(runId, normalized, workspacePlan);
   let manifest: Record<string, unknown> = existingManifest;
   const startedAt = new Date();
   await atomicWriteJSON(path.join(runDirectory, "request.json"), {
     schema_version: SCHEMA_VERSION,
     ...normalized,
+    prompt: redactProviderText(normalized.prompt),
+    agent_args: safeAgentArgsForPersistence(normalized.agent_args),
   });
   await atomicWriteJSON(manifestPath, existingManifest);
 
@@ -186,6 +377,7 @@ export async function executeRun({
   let timedOut = false;
   let cancelled = false;
   let finalMessage: string | undefined;
+  let observedEffectiveModel: string | undefined;
   let abortHandler: (() => void) | undefined;
   let result: Record<string, unknown> | undefined;
   let stage = "event_setup";
@@ -195,20 +387,23 @@ export async function executeRun({
   const projector = new TrajectoryProjector({
     runId,
     cwd: normalized.cwd,
-    prompt: normalized.prompt,
+    prompt: redactProviderText(normalized.prompt),
     model: normalized.model,
     fidelity: adapterFidelity(normalized.harness_ref),
   });
   let trajectoryWriter: TrajectoryWriter | undefined;
   let trajectoryPathValue: string | undefined;
+  let providerCapture: ProviderCaptureWriter | undefined;
+  const reference = parseHarnessReference(normalized.harness_ref);
+  const adapter = getAdapter(reference.harness_id);
 
   try {
     sink = new EventSink(runDirectory, runId, onEvent);
     await sink.open();
     sinkOpened = true;
+    providerCapture = await ProviderCaptureWriter.open({ runDirectory, structured: Boolean(adapter.translate) });
 
     stage = "resolution";
-    const reference = parseHarnessReference(normalized.harness_ref);
     resolution ||= await resolveHarness(reference, { root });
     await atomicWriteJSON(path.join(runDirectory, "resolution.json"), resolution);
     manifest = {
@@ -216,6 +411,10 @@ export async function executeRun({
       status: "preparing",
       resolved_revision: resolution,
       revision_identity: resolution.identity,
+      harness: {
+        ...(existingManifest.harness as Record<string, unknown>),
+        revision_identity: resolution.identity,
+      },
     };
     await atomicWriteJSON(manifestPath, manifest);
 
@@ -234,9 +433,21 @@ export async function executeRun({
       artifact_entrypoint: artifact.entrypoint_args?.[0] || artifact.executable,
       agent_version: artifact.observed_version || resolution.revision.version || null,
       agent_identity: resolution.identity,
+      harness: {
+        ...(manifest.harness as Record<string, unknown>),
+        revision_identity: resolution.identity,
+        artifact_id: artifact.artifact_id,
+      },
       ...workspaceManifestFields(workspaceLease),
       started_at: startedAt.toISOString(),
     };
+    const initialWorkspaceDigest = workspaceLease.baseline_digest
+      || await workspaceDigest(workspaceLease.execution_workspace, { ...(signal ? { signal } : {}) });
+    manifest.protocol = {
+      ...(manifest.protocol as Record<string, unknown>),
+      initial_workspace_digest: initialWorkspaceDigest,
+    };
+    manifest.initial_workspace_digest = initialWorkspaceDigest;
     await atomicWriteJSON(manifestPath, manifest);
 
     sink.emit({
@@ -257,7 +468,6 @@ export async function executeRun({
     });
 
     stage = "adapter_setup";
-    const adapter = getAdapter(reference.harness_id);
     const adapterState: Record<string, unknown> = {};
     const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
     const specification = await adapter.process(executionRequest, artifact.executable, {
@@ -296,9 +506,10 @@ export async function executeRun({
       signal?.addEventListener("abort", abortHandler, { once: true });
 
       consumeLines(launched.stdout as import("node:stream").Readable, (line) => {
-        sink?.writeStdout(line);
         if (adapter.translateLine) {
-          for (const event of adapter.translateLine(line, adapterState)) {
+          const safeLine = providerCapture?.appendText(line) ?? redactProviderText(line);
+          sink?.writeStdout(safeLine);
+          for (const event of adapter.translateLine(safeLine, adapterState)) {
             if (event.type === "message.delta" && event.text) {
               finalMessage = (finalMessage ?? "") + event.text;
             }
@@ -312,13 +523,18 @@ export async function executeRun({
         try {
           native = JSON.parse(line);
         } catch {
-          sink?.emit({ type: "process.stdout", text: line });
-          projector.feedText(`${line}\n`);
+          const safeLine = providerCapture?.appendUnparsed(line) ?? redactProviderText(line);
+          sink?.writeStdout(safeLine);
+          sink?.emit({ type: "process.stdout", text: safeLine });
+          projector.feedText(`${safeLine}\n`);
           return;
         }
-        const record = typeof native === "object" && native !== null && !Array.isArray(native)
-          ? native as Record<string, unknown>
-          : { raw: native };
+        const safeNative = providerCapture?.appendJSON(native) ?? native;
+        sink?.writeStdout(JSON.stringify(safeNative));
+        const record = typeof safeNative === "object" && safeNative !== null && !Array.isArray(safeNative)
+          ? safeNative as Record<string, unknown>
+          : { raw: safeNative };
+        observedEffectiveModel ||= providerModelId(record);
         if (adapter.translate) {
           for (const event of adapter.translate(record, adapterState)) {
             if (event.type === "message.delta" && event.text) {
@@ -333,8 +549,9 @@ export async function executeRun({
         }
       });
       consumeLines(launched.stderr as import("node:stream").Readable, (line) => {
-        sink?.writeStderr(line);
-        sink?.emit({ type: "process.stderr", text: line });
+        const safeLine = redactProviderText(line);
+        sink?.writeStderr(safeLine);
+        sink?.emit({ type: "process.stderr", text: safeLine });
       });
 
       await new Promise<void>((resolve, reject) => {
@@ -443,7 +660,7 @@ export async function executeRun({
     manifest = { ...manifest, ...workspaceManifestFields(currentWorkspace) };
   }
 
-  // Persist the canonical trajectory and derive the final output (spec §5.2, §5.6).
+  // Seal the provider-native evidence together with its canonical projection.
   try {
     const status = (result as { status: string }).status;
     const projected = projector.finalize(status === "cancelled" ? "cancelled" : status === "timed_out" ? "timed_out" : status === "succeeded" ? "succeeded" : "failed");
@@ -456,29 +673,39 @@ export async function executeRun({
     });
     for (const event of projected.events) trajectoryWriter.append(event);
     trajectoryPathValue = await trajectoryWriter.close();
-    const sha256 = await trajectoryFileSha256(trajectoryPathValue);
-    const ref = trajectoryRef(
+    const canonicalFile = await canonicalTrajectoryFileRef(runDirectory, trajectoryPathValue);
+    const captured = providerCapture ? await providerCapture.close() : null;
+    providerCapture = undefined;
+    const fidelity = captured && adapter.translate
+      ? "provider_native" as const
+      : projected.fidelity === "native" || projected.fidelity === "provider_native"
+        ? "normalized" as const
+        : projected.fidelity;
+    const ref = trajectoryRefV2({
       runId,
-      projected.header.id,
-      projected.fidelity,
-      trajectoryPathValue,
-      sha256,
-      projected.providerSessionId,
-    );
+      fidelity,
+      provider: reference.harness_id,
+      ...(projected.providerSessionId ? { providerSessionId: projected.providerSessionId } : {}),
+      files: [...(captured ? [captured.file] : []), canonicalFile],
+      ...(captured?.redactions.length ? { redactions: captured.redactions } : {}),
+    });
     await atomicWriteJSON(trajectoryRefPath(runDirectory), ref);
     (result as Record<string, unknown>).trajectory = {
       session_id: projected.header.id,
-      path: trajectoryPathValue,
-      fidelity: projected.fidelity,
-      sha256,
+      path: canonicalFile.path,
+      fidelity,
+      sha256: canonicalFile.sha256,
     };
     if (status === "succeeded") {
       // §5.6: `result.output` is the text of the last non-empty assistant
       // message in the canonical trajectory.
       (result as Record<string, unknown>).output = projected.finalOutput || finalMessage || "";
     }
-    sink?.emit({ type: "trajectory.recorded", path: trajectoryPathValue, fidelity: projected.fidelity });
+    manifest = { ...manifest, trajectory_ref: "trajectory.ref.json" };
+    sink?.emit({ type: "trajectory.recorded", path: canonicalFile.path, fidelity });
   } catch (error) {
+    if (providerCapture) await providerCapture.close().catch(() => {});
+    providerCapture = undefined;
     result = failureResult(runId, startedAt, "trajectory_recording_failed", (error as Error)?.message || String(error), 12);
   }
 
@@ -490,14 +717,68 @@ export async function executeRun({
     }
   }
   if (!result) result = failureResult(runId, startedAt, "internal_error", "run ended without a result", 12);
+  if (!await readJSON<unknown | null>(path.join(runDirectory, "resolution.json"), null)) {
+    await atomicWriteJSON(path.join(runDirectory, "resolution.json"), {
+      schema_version: SCHEMA_VERSION,
+      status: "unresolved",
+      requested_harness_ref: normalized.harness_ref,
+      error_code: ((result as { error?: { code?: string } }).error?.code) || "resolution_unavailable",
+    });
+  }
+  if (observedEffectiveModel) {
+    const currentModel = (manifest.model || normalized.model_identity) as ModelIdentityV1;
+    manifest.model = {
+      ...currentModel,
+      effective_id: observedEffectiveModel,
+      identity_resolved: currentModel.identity_resolved === true || looksImmutableModelId(observedEffectiveModel),
+    };
+    (result as Record<string, unknown>).effective_model = observedEffectiveModel;
+  }
   await atomicWriteJSON(resultPath, result);
-  await atomicWriteJSON(manifestPath, { ...manifest, status: (result as { status: string }).status, completed_at: (result as { completed_at?: string }).completed_at });
+  const terminalStatus = (result as { status: string }).status;
+  const observation = normalized.context.kind === "benchmark_task" && !normalized.defer_benchmark_observation
+    ? {
+        status: "invalid",
+        invalid_reason: terminalStatus === "succeeded"
+          ? "verifier_result_missing"
+          : terminalStatus === "cancelled"
+            ? "cancelled"
+            : "infrastructure_failure",
+      }
+    : undefined;
+  await atomicWriteJSON(manifestPath, {
+    ...manifest,
+    status: terminalStatus,
+    result_ref: "result.json",
+    ...(observation ? { observation } : {}),
+    completed_at: (result as { completed_at?: string }).completed_at,
+    sealed: !normalized.defer_benchmark_observation,
+  });
   return result;
+}
+
+function assertQueuedRunIdentity(existing: Record<string, unknown>, requested: RunManifest): void {
+  const fields = ["context", "parent", "harness", "model", "protocol"] as const;
+  for (const field of fields) {
+    const left = existing[field];
+    const right = requested[field];
+    if (field === "harness") {
+      const leftHarness = { ...(left as Record<string, unknown>), revision_identity: null, artifact_id: undefined };
+      const rightHarness = { ...(right as Record<string, unknown>), revision_identity: null, artifact_id: undefined };
+      if (canonicalJSON(leftHarness) === canonicalJSON(rightHarness)) continue;
+    } else if (canonicalJSON(left) === canonicalJSON(right)) {
+      continue;
+    }
+    throw new HitchError(`queued run identity does not match the execution request (${field})`, {
+      code: "run_identity_mismatch",
+      exitCode: 11,
+    });
+  }
 }
 
 export interface QueuedRun {
   runId: RunId;
-  request: AdapterRequest;
+  request: ValidatedRunRequest;
   resolvedRevision: ResolvedRevision;
   workspacePlan: WorkspacePlan;
   directory: string;
@@ -514,12 +795,22 @@ export async function createQueuedRun({
   const workspacePlan = await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const directory = await ensureDir(path.join(runsRoot, runId));
   await atomicWriteJSON(workspaceRecordPath(root, runId), workspacePlan);
+  const manifest = buildManifest(runId, normalized, workspacePlan);
   await atomicWriteJSON(path.join(directory, "manifest.json"), {
-    ...buildManifest(runId, normalized, workspacePlan),
+    ...manifest,
     resolved_revision: resolvedRevision,
     revision_identity: resolvedRevision.identity,
+    harness: {
+      ...(manifest.harness as Record<string, unknown>),
+      revision_identity: resolvedRevision.identity,
+    },
   });
-  await atomicWriteJSON(path.join(directory, "request.json"), { ...normalized, schema_version: SCHEMA_VERSION });
+  await atomicWriteJSON(path.join(directory, "request.json"), {
+    ...normalized,
+    prompt: redactProviderText(normalized.prompt),
+    agent_args: safeAgentArgsForPersistence(normalized.agent_args),
+    schema_version: SCHEMA_VERSION,
+  });
   await atomicWriteJSON(path.join(directory, "resolution.json"), resolvedRevision);
   return { runId, request: normalized, resolvedRevision, workspacePlan, directory };
 }
@@ -550,6 +841,19 @@ function adapterFidelity(harnessRef: string): TrajectoryFidelity {
   // The DeepSeek headless adapter emits plain text until DSH `--events jsonl`
   // lands (spec §7.5); every structured adapter projects normalized events.
   return reference.harness_id === "deepseek" ? "minimal" : "normalized";
+}
+
+function providerModelId(event: Record<string, unknown>): string | undefined {
+  const direct = [event.model, event.model_id, event.modelId, event.model_snapshot, event.snapshot];
+  for (const value of direct) if (typeof value === "string" && value.trim()) return value.trim();
+  for (const container of [event.message, event.response, event.session]) {
+    if (!container || typeof container !== "object" || Array.isArray(container)) continue;
+    const record = container as Record<string, unknown>;
+    for (const value of [record.model, record.model_id, record.modelId, record.model_snapshot]) {
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  }
+  return undefined;
 }
 
 export type { NormalizedEvent };

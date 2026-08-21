@@ -8,6 +8,7 @@ import re
 import shlex
 import stat as stat_module
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,10 @@ class HitchHarborAgent(BaseAgent):
         hitch_timeout_ms: int = 900_000,
         agent_args: list[str] | None = None,
         workdir: str = "/app",
+        eval_id: str | None = None,
+        benchmark_id: str | None = None,
+        benchmark_revision: str | None = None,
+        verifier_identity: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, **kwargs)
@@ -49,6 +54,10 @@ class HitchHarborAgent(BaseAgent):
         self.hitch_timeout_ms = int(hitch_timeout_ms)
         self.agent_args = list(agent_args or [])
         self.workdir = workdir
+        self.eval_id = eval_id
+        self.benchmark_id = benchmark_id
+        self.benchmark_revision = benchmark_revision
+        self.verifier_identity = verifier_identity
         self._hitch_version: str | None = None
         self._entrypoint: str | None = None
         self._local_manifest: dict[str, Any] | None = None
@@ -403,7 +412,41 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         context: AgentContext,
     ) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        run_id = "run_" + uuid.uuid4().hex
+        trial_id, task_id, attempt = self._trial_identity()
+        context_payload: dict[str, Any] = {"kind": "ad_hoc"}
+        parent_payload: dict[str, Any] | None = None
+        if all((self.eval_id, self.benchmark_id, self.benchmark_revision, self.verifier_identity)):
+            workspace_digest = await self._workspace_digest(environment)
+            task_digest_input = json.dumps(
+                {
+                    "benchmark_id": self.benchmark_id,
+                    "benchmark_revision": self.benchmark_revision,
+                    "task_id": task_id,
+                    "instruction": instruction,
+                    "initial_workspace_digest": workspace_digest,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            context_payload = {
+                "kind": "benchmark_task",
+                "benchmark_id": self.benchmark_id,
+                "benchmark_revision": self.benchmark_revision,
+                "task_id": task_id,
+                "task_digest": "sha256:" + hashlib.sha256(task_digest_input).hexdigest(),
+                "verifier_identity": self.verifier_identity,
+            }
+            parent_payload = {
+                "kind": "eval",
+                "eval_id": self.eval_id,
+                "trial_id": trial_id,
+                "attempt": attempt,
+            }
         temporary: Path | None = None
+        context_temporary: Path | None = None
+        parent_temporary: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -417,9 +460,18 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
                 temporary = Path(handle.name)
             remote_instruction = "/tmp/hitch-instruction.txt"
             await environment.upload_file(temporary, remote_instruction)
+            context_temporary = self._temporary_json("hitch-context-", context_payload)
+            await environment.upload_file(context_temporary, "/tmp/hitch-context.json")
+            if parent_payload is not None:
+                parent_temporary = self._temporary_json("hitch-parent-", parent_payload)
+                await environment.upload_file(parent_temporary, "/tmp/hitch-parent.json")
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+            if context_temporary is not None:
+                context_temporary.unlink(missing_ok=True)
+            if parent_temporary is not None:
+                parent_temporary.unlink(missing_ok=True)
 
         if self._entrypoint is None:
             raise RuntimeError("Hitch agent setup() must run before run() to resolve the runtime entrypoint")
@@ -427,7 +479,7 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
-            *(["HITCH_HARBOR_INTERNAL=1"] if self._local_manifest is not None else []),
+            *(["HITCH_HARBOR_INTERNAL=1"] if self._local_manifest is not None or parent_payload is not None else []),
             f"node {entry} run",
             "--harness",
             shlex.quote(self.harness_ref),
@@ -438,11 +490,19 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             "shared",
             "--prompt-file",
             shlex.quote(remote_instruction),
+            "--context-file",
+            "/tmp/hitch-context.json",
             "--timeout",
             str(self.hitch_timeout_ms),
             "--output",
             "jsonl",
         ]
+        if parent_payload is not None:
+            arguments.extend([
+                "--parent-file", "/tmp/hitch-parent.json",
+                "--internal-run-id", run_id,
+                "--internal-defer-benchmark-observation",
+            ])
         if self.model_name:
             arguments.extend(["--model", shlex.quote(self.model_name)])
         for value in self.agent_args:
@@ -455,7 +515,9 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         )
         execution = await environment.exec(command, cwd=self.workdir)
         events = self._events(execution.stdout or "")
-        run_id = next((event.get("run_id") for event in events if event.get("run_id")), None)
+        observed_run_id = next((event.get("run_id") for event in events if event.get("run_id")), None)
+        if observed_run_id:
+            run_id = str(observed_run_id)
         hitch_result = None
         if run_id:
             result_path = f"/tmp/hitch-state/runs/{run_id}/result.json"
@@ -464,12 +526,31 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             )
             if result.return_code == 0 and result.stdout:
                 hitch_result = json.loads(result.stdout)
+            export = await environment.exec(
+                f"""
+set -eu
+source_dir={shlex.quote(f'/tmp/hitch-state/runs/{run_id}')}
+target_dir=/logs/agent/hitch-run-bundle
+rm -rf "$target_dir"
+mkdir -p "$target_dir"
+for name in request.json resolution.json manifest.json result.json events.jsonl stdout.log stderr.log trajectory.ref.json trajectory; do
+  if [ -e "$source_dir/$name" ]; then cp -a "$source_dir/$name" "$target_dir/$name"; fi
+done
+""".strip()
+            )
+            if export.return_code != 0:
+                raise RuntimeError("Hitch run bundle export failed before trial teardown")
         context.metadata = {
             "candidate_id": self.candidate_id,
             "harness_ref": self.harness_ref,
             "revision_identity": self.revision_identity,
             "controller_runtime_id": self.controller_runtime_id,
             "hitch_run_id": run_id,
+            "hitch_run_bundle": "hitch-run-bundle",
+            "eval_id": self.eval_id,
+            "trial_id": trial_id,
+            "task_id": task_id,
+            "attempt": attempt,
             "hitch_status": hitch_result.get("status") if hitch_result else None,
             "hitch_artifact_id": hitch_result.get("artifact_id") if hitch_result else None,
         }
@@ -497,6 +578,59 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
                 "Hitch resolved a different harness revision inside the trial container: "
                 f"expected {self.revision_identity}, got {hitch_result.get('revision_identity')}"
             )
+
+    def _trial_identity(self) -> tuple[str, str, int]:
+        """Derive Harbor's stable trial/task identity from the persisted log path."""
+        candidate = self.logs_dir.parent.name if self.logs_dir.name == "agent" else self.logs_dir.name
+        trial_id = candidate or "trial__1"
+        match = re.fullmatch(r"(.+)__(\d+)", trial_id)
+        if match:
+            return trial_id, match.group(1), max(1, int(match.group(2)))
+        return trial_id, trial_id, 1
+
+    def _temporary_json(self, prefix: str, value: dict[str, Any]) -> Path:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=prefix,
+            suffix=".json",
+            dir=self.logs_dir,
+            delete=False,
+        ) as handle:
+            json.dump(value, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            handle.write("\n")
+            return Path(handle.name)
+
+    async def _workspace_digest(self, environment: BaseEnvironment) -> str:
+        script = r"""
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const hash = crypto.createHash('sha256');
+function walk(root, relative = '') {
+  const directory = path.join(root, relative);
+  for (const name of fs.readdirSync(directory).sort()) {
+    const child = relative ? path.join(relative, name) : name;
+    const absolute = path.join(root, child);
+    const info = fs.lstatSync(absolute);
+    if (info.isDirectory()) { hash.update(`d\0${child}\0${info.mode & 0o7777}\0`); walk(root, child); }
+    else if (info.isFile()) { hash.update(`f\0${child}\0${info.mode & 0o7777}\0${info.size}\0`); hash.update(fs.readFileSync(absolute)); hash.update('\0'); }
+    else if (info.isSymbolicLink()) { hash.update(`l\0${child}\0${fs.readlinkSync(absolute)}\0`); }
+  }
+}
+walk(process.argv[1]);
+process.stdout.write('sha256:' + hash.digest('hex'));
+""".strip()
+        result = await environment.exec(
+            " ".join([self._node_prefix(), "node", "-e", shlex.quote(script), shlex.quote(self.workdir)]),
+            cwd=self.workdir,
+        )
+        digest = (result.stdout or "").strip()
+        if result.return_code == 0 and re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            return digest
+        # Older/fake Harbor environments may not expose a readable workspace
+        # during bridge tests. Keep a deterministic, visibly synthetic input.
+        return "sha256:" + hashlib.sha256(b"workspace-unavailable").hexdigest()
 
     async def _ensure_node(self, environment: BaseEnvironment) -> None:
         probe = await environment.exec(
