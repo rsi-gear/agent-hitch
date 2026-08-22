@@ -318,7 +318,15 @@ export async function writeFakeDeepseek(directory: string, {
   output = "reply:hello",
   nativeSession = false,
   nativeChildSession = false,
-}: { output?: string; nativeSession?: boolean; nativeChildSession?: boolean } = {}): Promise<string> {
+  nativeSessionState = "complete",
+  delayMs = 0,
+}: {
+  output?: string;
+  nativeSession?: boolean;
+  nativeChildSession?: boolean;
+  nativeSessionState?: "complete" | "open" | "invalid";
+  delayMs?: number;
+} = {}): Promise<string> {
   const file = path.join(directory, "fake-dsh");
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -331,7 +339,7 @@ if (${JSON.stringify(nativeSession)}) {
   const prompt = process.argv.at(-1);
   const base = 1700000000000;
   const header = {type:"session",version:0,id:"session-native",createdAt:base,cwd:process.cwd(),delegationDepth:0};
-  const events = [
+  const completeEvents = [
     {type:"permission/preset",seq:0,time:base + 1,data:{preset:"headless"}},
     {type:"turn/start",seq:1,time:base + 10,data:{turn:1}},
     {type:"step/start",seq:2,time:base + 20,data:{turn:1,step:1}},
@@ -347,6 +355,12 @@ if (${JSON.stringify(nativeSession)}) {
     {type:"step/end",seq:12,time:base + 810,data:{turn:1,step:2}},
     {type:"turn/end",seq:13,time:base + 820,data:{turn:1,reason:{kind:"completed"}}}
   ];
+  const sessionState = ${JSON.stringify(nativeSessionState)};
+  const events = sessionState === "open"
+    ? completeEvents.slice(0, 11)
+    : sessionState === "invalid"
+      ? [completeEvents[0], completeEvents[1], {...completeEvents[1], seq:2, time:base + 20}]
+      : completeEvents;
   const target = path.join(process.env.DSH_HOME, "sessions", "--fake--", "session-native", "session.jsonl");
   fs.mkdirSync(path.dirname(target), {recursive:true});
   fs.writeFileSync(target, [header, ...events].map((row) => JSON.stringify(row)).join("\\n") + "\\n");
@@ -364,7 +378,9 @@ if (${JSON.stringify(nativeSession)}) {
     fs.writeFileSync(childTarget, [childHeader, ...childEvents].map((row) => JSON.stringify(row)).join("\\n") + "\\n");
   }
 }
-process.stdout.write(${JSON.stringify(output)} + "\\n");
+const finish = () => process.stdout.write(${JSON.stringify(output)} + "\\n");
+if (${delayMs} > 0) setTimeout(finish, ${delayMs});
+else finish();
 `;
   await writeFile(file, source, { mode: 0o755 });
   await chmod(file, 0o755);

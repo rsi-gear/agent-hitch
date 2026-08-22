@@ -438,6 +438,10 @@ contract is not restricted to `deepseek` and `dsh-evolving`.
   finalization.
 - A trajectory recording failure changes the Hitch result to
   `trajectory_recording_failed` even if the harness process exited with zero.
+- An already-established `timed_out` result remains authoritative if
+  trajectory finalization also fails. Hitch records the secondary failure as
+  `trajectory_warning.code = trajectory_recording_failed` instead of masking
+  the timeout.
 
 ### 5.7 Compatibility transition
 
