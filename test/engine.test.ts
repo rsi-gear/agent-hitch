@@ -241,6 +241,80 @@ test("DeepSeek imports its native session with tool events, usage, and original 
   assert.equal(manifest.model.effective_id, "deepseek-v4-flash");
 });
 
+test("DeepSeek timeout seals an open native turn without masking timed_out", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-timeout-native-"));
+  const executable = await writeFakeDeepseek(root, {
+    nativeSession: true,
+    nativeSessionState: "open",
+    delayMs: 2_000,
+  });
+  const previous = process.env.HITCH_DEEPSEEK_PATH;
+  process.env.HITCH_DEEPSEEK_PATH = executable;
+  t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
+  const runId = newRunId();
+  const runDirectory = path.join(root, "runs", runId);
+
+  const result = await executeRun({
+    runId,
+    request: request({ agent: "deepseek", cwd: root, prompt: "slow", timeout_ms: 100, agent_args: [] }),
+    runsRoot: path.join(root, "runs"),
+  });
+
+  assert.equal(result.status, "timed_out");
+  assert.equal((result.error as { code: string }).code, "timed_out");
+  assert.equal(result.trajectory_warning, undefined);
+  const ref = await loadTrajectoryRef(runDirectory);
+  assert.ok(ref, "the interrupted native session must still produce a canonical trajectory");
+  assert.equal(ref.fidelity, "provider_native");
+  const { events } = await readTrajectory(ref.path);
+  assert.equal(events.at(-2)?.type, "step/end");
+  assert.equal(events.at(-1)?.type, "turn/end");
+  const terminal = events.at(-1)?.data as { reason?: { kind?: string; reason?: { reason?: string } } };
+  assert.equal(terminal.reason?.kind, "aborted");
+  assert.equal(terminal.reason?.reason?.reason, "timeout");
+
+  // Provider evidence remains the original open log; only the canonical copy
+  // receives Hitch's synthetic recovery boundary.
+  const providerRows = await readJSONLines(path.join(runDirectory, "trajectory/provider/deepseek-session.jsonl"));
+  assert.equal(providerRows.at(-1)?.type, "assistant/chunk");
+});
+
+test("trajectory recording failure remains secondary to an established timeout", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-timeout-trajectory-failure-"));
+  const executable = await writeFakeDeepseek(root, {
+    nativeSession: true,
+    nativeSessionState: "invalid",
+    delayMs: 2_000,
+  });
+  const previous = process.env.HITCH_DEEPSEEK_PATH;
+  process.env.HITCH_DEEPSEEK_PATH = executable;
+  t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
+  const runId = newRunId();
+  const runDirectory = path.join(root, "runs", runId);
+
+  const result = await executeRun({
+    runId,
+    request: request({ agent: "deepseek", cwd: root, prompt: "slow", timeout_ms: 100, agent_args: [] }),
+    runsRoot: path.join(root, "runs"),
+  });
+
+  assert.equal(result.status, "timed_out");
+  assert.equal(result.exit_code, 8);
+  assert.equal((result.error as { code: string }).code, "timed_out");
+  const warning = result.trajectory_warning as { code: string; message: string };
+  assert.equal(warning.code, "trajectory_recording_failed");
+  assert.match(warning.message, /nested turn\/start/);
+  const saved = await readJSON<Record<string, unknown>>(path.join(runDirectory, "result.json"));
+  assert.equal(saved.status, "timed_out");
+  assert.equal((saved.error as { code: string }).code, "timed_out");
+  const manifest = await readJSON<Record<string, unknown>>(path.join(runDirectory, "manifest.json"));
+  assert.equal(manifest.status, "timed_out");
+  assert.equal((manifest.trajectory_warning as { code: string }).code, "trajectory_recording_failed");
+  const controlEvents = await readJSONLines(path.join(runDirectory, "events.jsonl"));
+  assert.ok(controlEvents.some((event) => event.type === "run.failed" && event.status === "timed_out"));
+  assert.ok(controlEvents.some((event) => event.type === "trajectory.recording_failed"));
+});
+
 test("run request validation returns typed invalid input for malformed cwd", async () => {
   await assert.rejects(
     executeRun({

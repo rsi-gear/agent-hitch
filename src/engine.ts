@@ -668,7 +668,12 @@ export async function executeRun({
     const captured = providerCapture ? await providerCapture.close() : null;
     providerCapture = undefined;
     const deepseekNative = reference.harness_id === "deepseek"
-      ? await importDeepseekNativeSession({ runtimeHome, runDirectory, runId })
+      ? await importDeepseekNativeSession({
+          runtimeHome,
+          runDirectory,
+          runId,
+          status: status === "cancelled" ? "cancelled" : status === "timed_out" ? "timed_out" : status === "succeeded" ? "succeeded" : "failed",
+        })
       : null;
     const projected = deepseekNative
       ? {
@@ -727,7 +732,20 @@ export async function executeRun({
   } catch (error) {
     if (providerCapture) await providerCapture.close().catch(() => {});
     providerCapture = undefined;
-    result = failureResult(runId, startedAt, "trajectory_recording_failed", (error as Error)?.message || String(error), 12);
+    const warning = {
+      code: "trajectory_recording_failed",
+      message: (error as Error)?.message || String(error),
+    };
+    if ((result as { status?: string } | undefined)?.status === "timed_out") {
+      // The agent timeout is the authoritative terminal cause. Recording is a
+      // secondary failure and must not turn an attributable timeout into an
+      // infrastructure failure for downstream evaluators.
+      (result as Record<string, unknown>).trajectory_warning = warning;
+      manifest = { ...manifest, trajectory_warning: warning };
+      sink?.emit({ type: "trajectory.recording_failed", status: "timed_out", error: warning });
+    } else {
+      result = failureResult(runId, startedAt, warning.code, warning.message, 12);
+    }
   }
 
   if (sinkOpened) {

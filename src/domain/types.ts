@@ -149,6 +149,7 @@ export interface RunResult {
     fidelity: TrajectoryFidelity;
     sha256?: string | null;
   } | null;
+  trajectory_warning?: { code: string; message: string } | null;
 }
 
 /** `native` is retained only for trajectory.ref.json V1 compatibility. */

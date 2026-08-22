@@ -5,7 +5,7 @@
  * project/session directory shape.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
@@ -279,6 +279,101 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
   if (openCalls.size > 0) throw new Error("trajectory ends with open tool calls");
   if (openTurn !== null) throw new Error("trajectory ends with an open turn bracket");
   if (openStep !== null) throw new Error("trajectory ends with an open step bracket");
+}
+
+/**
+ * Seal the structurally valid prefix left by an interrupted native provider.
+ * Provider rows remain untouched; Hitch only appends canonical recovery
+ * events for calls whose outcome is unknown and for open step/turn brackets.
+ */
+export function finalizeInterruptedTrajectory(
+  header: SessionHeaderLine,
+  events: SessionEvent[],
+  status: "failed" | "cancelled" | "timed_out",
+): SessionEvent[] {
+  const finalized = [...events];
+  let openTurn: number | null = null;
+  let openStep: { turn: number; step: number } | null = null;
+  const openCalls = new Map<string, { name: string }>();
+
+  for (const event of finalized) {
+    const data = (event.data || {}) as Record<string, unknown>;
+    switch (event.type) {
+      case "turn/start":
+        openTurn = data.turn as number;
+        break;
+      case "turn/end":
+        openTurn = null;
+        break;
+      case "step/start":
+        openStep = { turn: data.turn as number, step: data.step as number };
+        break;
+      case "step/end":
+        openStep = null;
+        break;
+      case "tool/call": {
+        const callId = data.callId as string;
+        openCalls.set(callId, { name: typeof data.name === "string" ? data.name : "unknown" });
+        break;
+      }
+      case "tool/result": {
+        const message = (data.message || {}) as Record<string, unknown>;
+        const source = (message.source || {}) as Record<string, unknown>;
+        const content = Array.isArray(message.content) ? message.content as Array<Record<string, unknown>> : [];
+        const callId = (source.callId ?? content[0]?.toolCallId) as string | undefined;
+        if (callId) openCalls.delete(callId);
+        break;
+      }
+    }
+  }
+
+  let nextTime = Math.max(Date.now(), (finalized.at(-1)?.time ?? 0) + 1);
+  const append = (event: Omit<SessionEvent, "seq" | "time">): void => {
+    finalized.push({ ...event, seq: finalized.length, time: nextTime });
+    nextTime += 1;
+  };
+
+  if (finalized.length === 0) {
+    openTurn = 1;
+    append({ type: "turn/start", data: { turn: openTurn } });
+  }
+
+  for (const [callId, call] of openCalls) {
+    if (!openStep) break;
+    append({
+      type: "tool/result",
+      data: {
+        turn: openStep.turn,
+        step: openStep.step,
+        message: {
+          id: randomUUID(),
+          role: "user",
+          content: [{
+            type: "tool-result",
+            toolCallId: callId,
+            content: [{ type: "text", text: `tool call interrupted: ${call.name} outcome unknown` }],
+            isError: true,
+          }],
+          source: { kind: "tool", callId },
+        },
+        error: { name: call.name, code: "TOOL_OUTCOME_UNKNOWN" },
+      },
+      surfaceOp: "append",
+    });
+  }
+  if (openStep) append({ type: "step/end", data: { turn: openStep.turn, step: openStep.step } });
+  if (openTurn !== null) {
+    append({ type: "turn/end", data: { turn: openTurn, reason: interruptedTerminalReason(status) } });
+  }
+
+  validateTrajectoryInvariants(header, finalized);
+  return finalized;
+}
+
+function interruptedTerminalReason(status: "failed" | "cancelled" | "timed_out"): Record<string, unknown> {
+  if (status === "timed_out") return { kind: "aborted", reason: { kind: "hook", reason: "timeout" } };
+  if (status === "cancelled") return { kind: "aborted", reason: { kind: "user" } };
+  return { kind: "error", error: { message: "agent process failed", code: "UNKNOWN" } };
 }
 
 /** Locate the canonical trajectory for a run from its `trajectory.ref.json`. */

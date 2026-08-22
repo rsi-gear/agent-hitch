@@ -5,7 +5,7 @@ import type { SessionEvent, SessionHeaderLine, TrajectoryFileRefV1 } from "../do
 import { writePrivateFile } from "../fs.js";
 import { parseEventLine, parseHeaderLine } from "./format.js";
 import { redactProviderJSON } from "./native.js";
-import { validateTrajectoryInvariants } from "./store.js";
+import { finalizeInterruptedTrajectory, validateTrajectoryInvariants } from "./store.js";
 
 const CANONICAL_EVENT_TYPES = new Set([
   "turn/start", "turn/end", "step/start", "step/end",
@@ -33,6 +33,7 @@ export async function importDeepseekNativeSession(options: {
   runtimeHome: string;
   runDirectory: string;
   runId: string;
+  status: "succeeded" | "failed" | "cancelled" | "timed_out";
 }): Promise<DeepseekNativeSession | null> {
   const located = await findSessionFiles(path.join(options.runtimeHome, "sessions"));
   if (located.compressed.length > 0) {
@@ -46,8 +47,10 @@ export async function importDeepseekNativeSession(options: {
   }
   const primary = roots[0] as ParsedNativeSession;
   const header: SessionHeaderLine = { ...primary.header, id: options.runId };
-  const events = primary.events;
-  validateTrajectoryInvariants(header, events);
+  const events = options.status === "succeeded"
+    ? primary.events
+    : finalizeInterruptedTrajectory(header, primary.events, options.status);
+  if (options.status === "succeeded") validateTrajectoryInvariants(header, events);
 
   const ordered = [primary, ...sessions.filter((session) => session !== primary)];
   const providerFiles: TrajectoryFileRefV1[] = [];
