@@ -35,12 +35,20 @@ export async function importEvalTrialRuns(options: ImportEvalRunsOptions): Promi
     : [];
   const refs: EvalTrialRefV1[] = [];
   for (const [index, trial] of trials.entries()) {
-    const taskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
-    const trialId = nonEmpty(trial.trial_name) || `${taskId}__${index + 1}`;
+    // Harbor's result task_name may be display-qualified (for example,
+    // terminal-bench/regex-log), while the persisted trial lock contains the
+    // canonical task id used by the in-container bridge and exported run.
+    // Keep task_name only as a compatibility fallback for Harbor runtimes
+    // that do not persist a lock.json.
+    const fallbackTaskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
+    const trialId = nonEmpty(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
     const attempt = trialAttempt(trialId);
-    const bundle = await findRunBundle(path.join(options.evalDirectory, "harbor", "job", trialId));
+    const trialDirectory = path.join(options.evalDirectory, "harbor", "job", trialId);
+    const bundle = await findRunBundle(trialDirectory);
+    let taskId = fallbackTaskId;
     let published = false;
     try {
+      taskId = await lockedTaskId(trialDirectory) || fallbackTaskId;
       if (bundle) {
         refs.push(await importRunBundle({ ...options, trial, taskId, trialId, attempt, bundle }));
         published = true;
@@ -78,6 +86,27 @@ export async function importEvalTrialRuns(options: ImportEvalRunsOptions): Promi
     }
   }
   return refs;
+}
+
+async function lockedTaskId(trialDirectory: string): Promise<string | null> {
+  const lockPath = path.join(trialDirectory, "lock.json");
+  let lock: unknown;
+  try {
+    lock = await readJSON(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`Harbor trial lock is unreadable: ${lockPath}`, { cause: error });
+  }
+  if (!lock || typeof lock !== "object" || Array.isArray(lock)) {
+    throw new Error(`Harbor trial lock is invalid: ${lockPath}`);
+  }
+  const task = (lock as Record<string, unknown>).task;
+  if (!task || typeof task !== "object" || Array.isArray(task)) {
+    throw new Error(`Harbor trial lock has no task.name: ${lockPath}`);
+  }
+  const taskId = nonEmpty((task as Record<string, unknown>).name);
+  if (!taskId) throw new Error(`Harbor trial lock has no task.name: ${lockPath}`);
+  return taskId;
 }
 
 interface TrialInput extends ImportEvalRunsOptions {

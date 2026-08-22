@@ -4,12 +4,18 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { inspectEval, listEvals, newEvalId, runEval, validateEvalRequest } from "../src/evals.js";
 import { importEvalTrialRuns } from "../src/eval-runs.js";
-import { readJSON } from "../src/fs.js";
+import { atomicWriteJSON, readJSON } from "../src/fs.js";
 import { lockedHarnessRef } from "../src/harbor-backend.js";
+import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/run-records.js";
+import { TrajectoryProjector } from "../src/trajectories/projector.js";
+import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/store.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 import type { EvalRequestInput } from "../src/evals.js";
+
+const hitchExecutable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
 function evalRequest(overrides: Partial<EvalRequestInput> = {}): EvalRequestInput {
   return { dataset: "demo@1.0", harness_ref: "pi@version:1.2.3", ...overrides };
@@ -220,6 +226,78 @@ test("failed Harbor bundle imports retain canonical staging evidence", async (t)
   assert.ok((await stat(path.join(path.dirname(bundle), "hitch-run-import-error.json"))).isFile());
 });
 
+test("Harbor importer uses lock task id when result task_name is display-qualified", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-task-identity-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const trialId = "regex-log__YNRyNX7";
+  const runId = "run_44444444444444444444444444444444";
+  const exportedBundle = path.join(root, "exported-run-bundle");
+  await writeExportedEvalRunBundle({
+    bundle: exportedBundle,
+    runId,
+    evalId,
+    trialId,
+    taskId: "regex-log",
+    benchmarkId: "demo",
+    benchmarkRevision: "1.0",
+  });
+  const harbor = await writeTaskIdentityFakeHarbor(root, {
+    bundle: exportedBundle,
+    trialId,
+    canonicalTaskId: "regex-log",
+    displayTaskName: "terminal-bench/regex-log",
+  });
+  const npm = await writeFakeNpm(root);
+
+  const result = await runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    request: {
+      dataset: "demo@1.0",
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+    },
+  });
+
+  const trials = result.trials as Array<{
+    task_id: string;
+    run_id: string;
+    observation_status: string;
+    reward?: number;
+  }>;
+  assert.equal(trials.length, 1);
+  assert.equal(trials[0]?.task_id, "regex-log");
+  assert.equal(trials[0]?.observation_status, "valid");
+  assert.equal(trials[0]?.run_id, runId);
+  assert.equal(trials[0]?.reward, 1);
+  const summary = result.summary as Record<string, unknown>;
+  assert.equal(summary.n_completed, 1);
+  assert.equal(summary.n_invalid, 0);
+  assert.equal(summary.primary_reward, 1);
+
+  const published = path.join(root, "runs", runId);
+  assert.ok((await stat(published)).isDirectory());
+  const manifest = await readJSON<{ context: { task_id: string } }>(path.join(published, "manifest.json"));
+  assert.equal(manifest.context.task_id, "regex-log");
+  const importError = path.join(root, "evals", evalId, "harbor", "job", trialId, "agent", "hitch-run-import-error.json");
+  await assert.rejects(stat(importError), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
+
+  const inspect = spawnSync(process.execPath, [
+    hitchExecutable,
+    "--root", root,
+    "trajectory", "inspect", runId,
+    "--json",
+  ], { encoding: "utf8" });
+  assert.equal(inspect.status, 0, inspect.stderr || undefined);
+  const inspected = JSON.parse(inspect.stdout) as { run_id: string; events: unknown[] };
+  assert.equal(inspected.run_id, runId);
+  assert.ok(inspected.events.length > 0);
+});
+
 test("Harbor bridge rejects a job-pinned controller_runtime_id mismatch before uploading", async (t) => {
   // The bridge must compare the job-pinned controller_runtime_id with the
   // manifest's runtime_id and refuse to upload when they differ (spec §4.6).
@@ -234,3 +312,123 @@ test("Harbor bridge rejects a job-pinned controller_runtime_id mismatch before u
   assert.equal(result.status, 0, `bridge mismatch smoke failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge negative OK/);
 });
+
+async function writeExportedEvalRunBundle(options: {
+  bundle: string;
+  runId: string;
+  evalId: string;
+  trialId: string;
+  taskId: string;
+  benchmarkId: string;
+  benchmarkRevision: string;
+}): Promise<void> {
+  await mkdir(options.bundle, { recursive: true });
+  const projector = new TrajectoryProjector({
+    runId: options.runId,
+    cwd: "/app",
+    prompt: "complete the task",
+    model: "openai/test-model",
+    fidelity: "normalized",
+  });
+  projector.feed({ type: "message.completed", text: "done" });
+  const projected = projector.finalize("succeeded");
+  const writer = await TrajectoryWriter.open({
+    runDirectory: options.bundle,
+    cwd: "/app",
+    sessionId: projected.header.id,
+    fidelity: "normalized",
+    header: projected.header,
+  });
+  for (const event of projected.events) writer.append(event);
+  const trajectory = await writer.close();
+  const canonicalFile = await canonicalTrajectoryFileRef(options.bundle, trajectory);
+  await atomicWriteJSON(path.join(options.bundle, "trajectory.ref.json"), trajectoryRefV2({
+    runId: options.runId,
+    fidelity: "normalized",
+    files: [canonicalFile],
+  }));
+  await atomicWriteJSON(path.join(options.bundle, "request.json"), { cwd: "/app" });
+  await atomicWriteJSON(path.join(options.bundle, "resolution.json"), { schema_version: "1" });
+  await atomicWriteJSON(path.join(options.bundle, "result.json"), {
+    schema_version: "1",
+    run_id: options.runId,
+    status: "succeeded",
+    exit_code: 0,
+  });
+  await writeFile(path.join(options.bundle, "events.jsonl"), `${JSON.stringify({ type: "run.completed" })}\n`, "utf8");
+  const now = new Date().toISOString();
+  await atomicWriteJSON(path.join(options.bundle, "manifest.json"), {
+    schema_version: "1",
+    run_id: options.runId,
+    context: {
+      kind: "benchmark_task",
+      benchmark_id: options.benchmarkId,
+      benchmark_revision: options.benchmarkRevision,
+      task_id: options.taskId,
+      task_digest: benchmarkTaskDigest(options.benchmarkId, options.benchmarkRevision, options.taskId),
+      verifier_identity: benchmarkVerifierIdentity(options.benchmarkId, options.benchmarkRevision),
+    },
+    parent: { kind: "eval", eval_id: options.evalId, trial_id: options.trialId, attempt: 1 },
+    status: "succeeded",
+    harness: {
+      harness_id: "pi",
+      requested_ref: "pi@version:1.2.3",
+      revision_identity: `sha256:${"a".repeat(64)}`,
+    },
+    model: {
+      provider: "openai",
+      requested_id: "openai/test-model",
+      effective_id: "openai/test-model",
+      identity_resolved: false,
+    },
+    protocol: { timeout_ms: 5_000, workspace_mode: "shared" },
+    request_ref: "request.json",
+    resolution_ref: "resolution.json",
+    result_ref: "result.json",
+    trajectory_ref: "trajectory.ref.json",
+    created_at: now,
+    completed_at: now,
+    sealed: false,
+  });
+}
+
+async function writeTaskIdentityFakeHarbor(directory: string, options: {
+  bundle: string;
+  trialId: string;
+  canonicalTaskId: string;
+  displayTaskName: string;
+}): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-task-identity");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const output = path.join(config.jobs_dir, config.job_name);
+const trialDirectory = path.join(output, ${JSON.stringify(options.trialId)});
+const agentDirectory = path.join(trialDirectory, "agent");
+fs.mkdirSync(agentDirectory, {recursive:true});
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials: 1,
+  stats: {n_completed_trials: 1, n_errored_trials: 0, n_cancelled_trials: 0}
+}));
+fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({
+  task: {name: ${JSON.stringify(options.canonicalTaskId)}}
+}));
+fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+  task_name: ${JSON.stringify(options.displayTaskName)},
+  trial_name: ${JSON.stringify(options.trialId)},
+  verifier_result: {rewards: {reward: 1}}
+}));
+fs.cpSync(${JSON.stringify(options.bundle)}, path.join(agentDirectory, "hitch-run-bundle"), {recursive:true});
+process.stdout.write("Results written\\n");
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
