@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { executeRun, newRunId } from "../src/engine.js";
-import type { RunRequestInput } from "../src/engine.js";
-import { readJSON } from "../src/fs.js";
+import { executeRun, newRunId } from "../src/runs/index.js";
+import type { RunRequestInput } from "../src/runs/index.js";
+import { readJSON } from "../src/foundation/index.js";
 import { writeFakeCodex, writeFakeDeepseek, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
 import { loadTrajectoryRef, readTrajectory } from "../src/trajectories/store.js";
 

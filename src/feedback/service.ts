@@ -10,11 +10,10 @@
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { atomicWriteJSON, ensureDir, readJSON } from "../fs.js";
-import { validateMessageFeedbackRow } from "../domain/validate.js";
-import type { MessageFeedbackItem, MessageFeedbackRating, MessageFeedbackRow } from "../domain/types.js";
-import { loadTrajectoryRef, readTrajectory } from "../trajectories/store.js";
-import { decodeSegment, encodeSegment, sessionDir } from "../trajectories/format.js";
+import { atomicWriteJSON, ensureDir, readJSON } from "../foundation/index.js";
+import { validateMessageFeedbackRow } from "../domain/index.js";
+import type { MessageFeedbackItem, MessageFeedbackRating, MessageFeedbackRow } from "../domain/index.js";
+import { decodeSegment, encodeSegment, loadTrajectoryRef, readTrajectory, sessionDir } from "../trajectories/index.js";
 import { readFile, readdir } from "node:fs/promises";
 
 export type MessageFeedbackFailureCode =

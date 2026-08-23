@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { MessageFeedbackService, MessageFeedbackError, FeedbackStorageError } from "../src/feedback/service.js";
-import type { FeedbackSessionIdentity } from "../src/feedback/service.js";
+import { MessageFeedbackService, MessageFeedbackError, FeedbackStorageError } from "../src/feedback/index.js";
+import type { FeedbackSessionIdentity } from "../src/feedback/index.js";
 import { forceRemove } from "../test-support/helpers.js";
 
 const identity: FeedbackSessionIdentity = { sessionId: "session-1", createdAt: 1_700_000_000_000, cwd: "/workspace" };

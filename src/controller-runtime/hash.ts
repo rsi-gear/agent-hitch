@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { ControllerRuntimeEntrypoints, ControllerRuntimeFile, ControllerRuntimeManifest } from "../domain/types.js";
+import type { ControllerRuntimeEntrypoints, ControllerRuntimeFile, ControllerRuntimeManifest } from "../domain/index.js";
 
 export const RUNTIME_SCHEMA_VERSION = "2";
 export const RUNTIME_NODE_RANGE = ">=22";

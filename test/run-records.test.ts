@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { atomicWriteJSON, ensureDir } from "../src/fs.js";
-import { validateRunContext } from "../src/domain/validate.js";
+import { atomicWriteJSON, ensureDir } from "../src/foundation/index.js";
+import { validateRunContext } from "../src/domain/index.js";
 import {
   compareRuns,
   queryRuns,
   rebuildRunIndexes,
   sha256JSON,
-} from "../src/run-records.js";
+} from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/store.js";
 import { forceRemove } from "../test-support/helpers.js";

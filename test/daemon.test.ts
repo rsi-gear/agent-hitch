@@ -3,15 +3,16 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DaemonServer, daemonClient } from "../src/daemon.js";
-import { delay } from "../src/process.js";
+import { DaemonServer, daemonClient } from "../src/daemon/index.js";
+import { discoverAgents } from "../src/adapters/index.js";
+import { delay } from "../src/foundation/index.js";
 import { writeFakeCodex } from "../test-support/helpers.js";
-import { atomicWriteJSON, readJSON } from "../src/fs.js";
-import { statePaths } from "../src/config.js";
+import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
+import { statePaths } from "../src/foundation/index.js";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { removeWorkspace } from "../src/workspaces.js";
-import type { RunId } from "../src/domain/types.js";
+import { removeWorkspace } from "../src/workspaces/index.js";
+import type { RunId } from "../src/domain/index.js";
 
 const hitchExecutable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -38,7 +39,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   const executable = await writeFakeCodex(root);
   const previous = process.env.HITCH_CODEX_PATH;
   process.env.HITCH_CODEX_PATH = executable;
-  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} });
+  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents });
   await server.start();
   t.after(async () => {
     await server.close();
@@ -171,11 +172,11 @@ test("daemon root lock rejects a second instance and cleanup is owner-scoped", a
     else process.env.HITCH_CODEX_PATH = previous;
   });
 
-  const first = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} });
+  const first = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents });
   await first.start();
   t.after(() => first.close());
   const stateBefore = await readJSON<{ instance_id: string }>(statePaths(root).daemon);
-  const second = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} });
+  const second = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents });
   await assert.rejects(second.start(), (error: unknown) => {
     const typed = error as { code?: string; exitCode?: number };
     return typed.code === "already_running" && typed.exitCode === 2;
@@ -202,7 +203,7 @@ test("daemon reclaims a stale lock and releases it after startup failure", async
     instance_id: "stale",
     pid: 2_147_483_647,
   });
-  const server = new DaemonServer({ root, port: -1, maxConcurrent: 1, logger: () => {} });
+  const server = new DaemonServer({ root, port: -1, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents });
   await assert.rejects(server.start());
   assert.equal(await readJSON(statePaths(root).lock, null), null);
 });
@@ -216,8 +217,8 @@ test("concurrent stale-lock recovery elects exactly one daemon", async (t) => {
     pid: 2_147_483_647,
   });
   const candidates = [
-    new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }),
-    new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }),
+    new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents }),
+    new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents }),
   ];
 
   const settled = await Promise.allSettled(candidates.map((server) => server.start()));

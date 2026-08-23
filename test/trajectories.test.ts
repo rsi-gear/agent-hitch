@@ -7,10 +7,10 @@ import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, readTrajectory, validateTrajectoryInvariants, trajectoryRef, loadTrajectoryRef } from "../src/trajectories/store.js";
 import { encodeSegment, decodeSegment, projectKey, logPath } from "../src/trajectories/format.js";
 import { TRAJECTORY_FORMAT, CONTRACT_COMMIT } from "../src/trajectories/contract.js";
-import type { NormalizedEvent } from "../src/adapters.js";
-import type { SessionEvent } from "../src/domain/types.js";
+import type { NormalizedEvent } from "../src/adapters/index.js";
+import type { SessionEvent } from "../src/domain/index.js";
 import { forceRemove } from "../test-support/helpers.js";
-import { ProviderCaptureWriter } from "../src/trajectories/native.js";
+import { ProviderCaptureWriter } from "../src/trajectories/index.js";
 
 function normalizedEvents(overrides: NormalizedEvent[] = []): NormalizedEvent[] {
   return [

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { reclaimStaleLock } from "../src/locks.js";
+import { reclaimStaleLock } from "../src/foundation/index.js";
 
 test("stale-lock reclamation is serialized and rechecks under the guard", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-locks-"));

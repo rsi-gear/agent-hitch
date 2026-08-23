@@ -6,9 +6,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { NormalizedEvent } from "../adapters.js";
-import type { SessionEvent, SessionHeaderLine } from "../domain/types.js";
-import type { TrajectoryFidelity } from "../domain/types.js";
+import type { NormalizedEvent } from "../adapters/index.js";
+import type { SessionEvent, SessionHeaderLine, TrajectoryFidelity } from "../domain/index.js";
 
 export interface ProjectedSession {
   header: SessionHeaderLine;

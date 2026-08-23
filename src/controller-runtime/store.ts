@@ -11,13 +11,8 @@ import { randomBytes } from "node:crypto";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, readdir, rename, rm, stat, chmod, open } from "node:fs/promises";
 import path from "node:path";
-import { statePaths, SCHEMA_VERSION } from "../config.js";
-import type { StatePaths } from "../config.js";
-import { HitchError } from "../errors.js";
-import { atomicWriteJSON, ensureDir, readJSON, removeIfExists } from "../fs.js";
-import { delay } from "../process.js";
-import { reclaimStaleLock } from "../locks.js";
-import { packageRoot } from "../package-root.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, delay, ensureDir, packageRoot, readJSON, reclaimStaleLock, removeIfExists, statePaths } from "../foundation/index.js";
+import type { StatePaths } from "../foundation/index.js";
 import {
   ControllerRuntimeIntegrityError,
   RUNTIME_PAYLOAD_RULES,
@@ -26,8 +21,8 @@ import {
   verifyRuntimePayload,
 } from "./hash.js";
 import type { RuntimePayloadRule } from "./hash.js";
-import { validateControllerRuntimeManifest } from "../domain/validate.js";
-import type { ControllerRuntimeManifest } from "../domain/types.js";
+import { validateControllerRuntimeManifest } from "../domain/index.js";
+import type { ControllerRuntimeManifest } from "../domain/index.js";
 
 /** The Hitch package root whose compiled payload is packaged as a controller runtime. */
 export const PACKAGE_ROOT = packageRoot();

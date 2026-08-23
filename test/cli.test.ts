@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFakeDocker, writeFakeHarbor, writeFakeNpm, writeFakePython, forceRemove } from "../test-support/helpers.js";
-import { packageVersion } from "../src/package-root.js";
+import { packageVersion } from "../src/foundation/index.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 

@@ -242,6 +242,13 @@ documents and JSONL event streams.
 
 ## 8. High-level architecture
 
+The implementation is organized as a checked dependency DAG: pure `domain`
+contracts at the base, Node.js primitives in `foundation`, independently
+testable capabilities (`adapters`, `revisions`, `artifacts`, `workspaces`, and
+`trajectories`) above them, application orchestration in `runs` and `evals`,
+and `daemon`/`cli` at the interface edge. Each boundary exposes an `index.ts`
+facade; the build rejects cross-boundary deep imports and dependency cycles.
+
 ```text
                          +----------------------+
                          | Upper-level Agent    |

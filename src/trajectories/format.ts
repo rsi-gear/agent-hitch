@@ -8,8 +8,8 @@
 
 import { join } from "node:path";
 import { SESSION_FORMAT_VERSION, CONTRACT_COMMIT } from "./contract.js";
-import type { SessionEvent, SessionHeaderLine } from "../domain/types.js";
-import { validateSessionEvent, validateSessionHeaderLine } from "../domain/validate.js";
+import type { SessionEvent, SessionHeaderLine } from "../domain/index.js";
+import { validateSessionEvent, validateSessionHeaderLine } from "../domain/index.js";
 
 export type JsonlCompression = "none";
 

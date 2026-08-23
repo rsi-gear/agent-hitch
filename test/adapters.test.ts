@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAdapter } from "../src/adapters.js";
-import type { AdapterRequest } from "../src/adapters.js";
+import { getAdapter } from "../src/adapters/index.js";
+import type { AdapterRequest } from "../src/adapters/index.js";
 
 function request(overrides: Partial<AdapterRequest> = {}): AdapterRequest {
   return {

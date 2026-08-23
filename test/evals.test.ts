@@ -5,15 +5,15 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectEval, listEvals, newEvalId, runEval, validateEvalRequest } from "../src/evals.js";
-import { importEvalTrialRuns } from "../src/eval-runs.js";
-import { atomicWriteJSON, readJSON } from "../src/fs.js";
-import { lockedHarnessRef } from "../src/harbor-backend.js";
-import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/run-records.js";
+import { inspectEval, listEvals, newEvalId, runEval, validateEvalRequest } from "../src/evals/index.js";
+import { importEvalTrialRuns } from "../src/evals/index.js";
+import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
+import { lockedHarnessRef } from "../src/backends/harbor/index.js";
+import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/store.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
-import type { EvalRequestInput } from "../src/evals.js";
+import type { EvalRequestInput } from "../src/evals/index.js";
 
 const hitchExecutable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 

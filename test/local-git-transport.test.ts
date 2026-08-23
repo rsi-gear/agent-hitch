@@ -6,15 +6,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { resolveHarness } from "../src/artifacts.js";
-import { newEvalId, runEval } from "../src/evals.js";
-import { readJSON } from "../src/fs.js";
+import { resolveHarness } from "../src/artifacts/index.js";
+import { newEvalId, runEval } from "../src/evals/index.js";
+import { readJSON } from "../src/foundation/index.js";
 import {
   buildLocalGitTransport,
   validateLocalGitTransportManifest,
   verifyLocalGitTransport,
   verifyMaterializedLocalGitSource,
-} from "../src/local-git-transport.js";
+} from "../src/backends/harbor/index.js";
 import { forceRemove, writeFakeHarbor } from "../test-support/helpers.js";
 
 const exec = promisify(execFile);

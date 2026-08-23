@@ -10,7 +10,7 @@ import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { ensureDir, readJSON } from "../fs.js";
+import { ensureDir, readJSON } from "../foundation/index.js";
 import { eventLine, headerLine, logPath, parseEventLine, parseHeaderLine } from "./format.js";
 import { TRAJECTORY_FORMAT } from "./contract.js";
 import type {
@@ -21,8 +21,8 @@ import type {
   TrajectoryRef,
   TrajectoryRefV1,
   TrajectoryRefV2,
-} from "../domain/types.js";
-import { validateTrajectoryRef } from "../domain/validate.js";
+} from "../domain/index.js";
+import { validateTrajectoryRef } from "../domain/index.js";
 
 export interface TrajectoryWriterOptions {
   runDirectory: string;

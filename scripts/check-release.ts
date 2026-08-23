@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { packageVersion } from "../src/package-root.js";
+import { packageVersion } from "../src/foundation/index.js";
 
 const [tag, prereleaseValue] = process.argv.slice(2);
 const version = packageVersion();
