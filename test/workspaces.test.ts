@@ -5,18 +5,18 @@ import { promisify } from "node:util";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { executeRun } from "../src/engine.js";
-import { readJSON } from "../src/fs.js";
+import { executeRun } from "../src/runs/index.js";
+import { readJSON } from "../src/foundation/index.js";
 import {
   finalizeWorkspace,
   planWorkspace,
   prepareWorkspace,
   removeWorkspace,
   workspaceRecordPath,
-} from "../src/workspaces.js";
-import type { WorkspacePlan } from "../src/workspaces.js";
-import type { RunId } from "../src/domain/types.js";
-import type { RunRequestInput } from "../src/engine.js";
+} from "../src/workspaces/index.js";
+import type { WorkspacePlan } from "../src/workspaces/index.js";
+import type { RunId } from "../src/domain/index.js";
+import type { RunRequestInput } from "../src/runs/index.js";
 
 const executeFile = promisify(execFile);
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { doctorHarbor, managedHarborExecutable, setupHarbor } from "../src/eval-tools.js";
+import { doctorHarbor, managedHarborExecutable, setupHarbor } from "../src/backends/harbor/index.js";
 import { writeFakeDocker, writeFakePython } from "../test-support/helpers.js";
 
 test("managed Harbor setup is isolated, pinned, reusable, and discoverable", async (t) => {

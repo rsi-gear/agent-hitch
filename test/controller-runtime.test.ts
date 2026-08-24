@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashRuntimePayload, verifyRuntimePayload, canonicalEncodeManifest, isEntrypointPath } from "../src/controller-runtime/hash.js";
 import { ensureControllerRuntime, useControllerRuntimeById } from "../src/controller-runtime/store.js";
-import { statePaths } from "../src/config.js";
+import { statePaths } from "../src/foundation/index.js";
 import { forceRemove } from "../test-support/helpers.js";
-import { validateControllerRuntimeManifest } from "../src/domain/validate.js";
-import type { ControllerRuntimeManifest } from "../src/domain/types.js";
+import { validateControllerRuntimeManifest } from "../src/domain/index.js";
+import type { ControllerRuntimeManifest } from "../src/domain/index.js";
 
 /**
  * Build a tiny fake payload root that matches the allowlist shape
@@ -409,7 +409,7 @@ test("runtime id cannot be rebound to a different payload", async (t) => {
   // Replace a payload byte AND rewrite the manifest's file digests so the
   // manifest looks self-consistent, but keep the old runtime_id.
   const { hashRuntimePayload: hashAgain } = await import("../src/controller-runtime/hash.js");
-  const { atomicWriteJSON } = await import("../src/fs.js");
+  const { atomicWriteJSON } = await import("../src/foundation/index.js");
   const payloadFile = path.join(use.directory, "payload", "dist", "src", "cli.js");
   await chmod(payloadFile, 0o644);
   await writeFile(payloadFile, "export const main = () => 42;\n");

@@ -438,6 +438,10 @@ contract is not restricted to `deepseek` and `dsh-evolving`.
   finalization.
 - A trajectory recording failure changes the Hitch result to
   `trajectory_recording_failed` even if the harness process exited with zero.
+- An already-established `timed_out` result remains authoritative if
+  trajectory finalization also fails. Hitch records the secondary failure as
+  `trajectory_warning.code = trajectory_recording_failed` instead of masking
+  the timeout.
 
 ### 5.7 Compatibility transition
 
@@ -627,8 +631,11 @@ stops parsing top-level flags at the first app-owned flag.
 
 ### 7.5 DSH stdout NDJSON prerequisite
 
-DSH headless must add `--events jsonl` before Hitch can claim native trajectory
-fidelity. The wire contract is:
+DSH headless must add `--events jsonl` before Hitch can stream native events
+during execution. The direct `deepseek` adapter may still claim post-run native
+fidelity when a pinned DSH build flushes its complete isolated session before
+exit: Hitch configures raw/unpacked JSONL, validates and redacts that artifact,
+then imports it as canonical plus provider evidence. The live wire contract is:
 
 ```ts
 type DshHeadlessRecord =
@@ -756,11 +763,12 @@ dist/
 - `typescript` and `@types/node` are development dependencies.
 - `package-lock.json` is committed and CI uses `npm ci`.
 
-### 8.4 Proposed module boundaries
+### 8.4 Implemented module boundaries
 
 ```text
 src/
   domain/                 branded ids, wire types, runtime validators
+  foundation/             config, errors, filesystem, locks, process, hash
   revisions/              harness reference parsing and resolution
   artifacts/              prepared harness artifact store
   controller-runtime/     controller bundle hashing/cache/verification
@@ -775,9 +783,11 @@ src/
   cli/                    commands and rendering
 ```
 
-This is a dependency direction, not a requirement to create one file per
-folder. Domain types and pure validators must not import CLI, daemon, backend,
-or filesystem orchestration modules.
+Every boundary exposes an `index.ts` facade. Cross-boundary and published
+programmatic imports use those facades; root-level legacy source entries have
+been removed. `scripts/check-architecture.ts` enforces the dependency DAG,
+domain purity, facade-only imports, an empty `src/` root, and the 500-line
+implementation limit without a baseline or allowlist.
 
 ### 8.5 CI and release
 
@@ -787,6 +797,7 @@ CI runs on Node 22 and 24 on Linux and macOS:
 npm ci
 npm run typecheck
 npm run build
+npm run check:architecture
 npm test
 npm run coverage
 npm pack --dry-run
@@ -957,8 +968,10 @@ implementation phase:
 
 1. **Registered overlay repository URL.** `dsh-evolving` cannot ship a commit
    recipe until the real overlay repository and build entrypoint are fixed.
-2. **Pinned DSH event PR.** Current DSH headless prints final plain text; native
-   trajectory support depends on an exact merged `--events jsonl` commit.
+2. **Pinned DSH live-event PR.** Current DSH headless prints final plain text;
+   live native event streaming and stdout/session parity still depend on an
+   exact merged `--events jsonl` commit. Post-run provider-native import is not
+   blocked because rc.7 flushes its isolated durable session before exit.
 3. **Executable candidate Harbor transport.** Select registered remote,
    validated offline bundle, or host-prepared artifact transfer before
    executable candidates enter Harbor.

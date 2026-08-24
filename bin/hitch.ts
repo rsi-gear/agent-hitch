@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { main } from "../src/cli.js";
+import { main } from "../src/cli/index.js";
 
 main(process.argv.slice(2)).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);

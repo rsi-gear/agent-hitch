@@ -5,15 +5,24 @@
  * project/session directory shape.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { ensureDir, readJSON } from "../fs.js";
+import { ensureDir, readJSON } from "../foundation/index.js";
 import { eventLine, headerLine, logPath, parseEventLine, parseHeaderLine } from "./format.js";
 import { TRAJECTORY_FORMAT } from "./contract.js";
-import type { SessionEvent, SessionHeaderLine, TrajectoryFidelity, TrajectoryRef } from "../domain/types.js";
+import type {
+  SessionEvent,
+  SessionHeaderLine,
+  TrajectoryFidelity,
+  TrajectoryFileRefV1,
+  TrajectoryRef,
+  TrajectoryRefV1,
+  TrajectoryRefV2,
+} from "../domain/index.js";
+import { validateTrajectoryRef } from "../domain/index.js";
 
 export interface TrajectoryWriterOptions {
   runDirectory: string;
@@ -104,7 +113,7 @@ function closeStream(stream: WriteStream): Promise<void> {
 
 /** The `trajectory/--<normalized-cwd>--/<encoded-session-id>/session.jsonl` path under a run directory. */
 export function trajectoryLogPath(runDirectory: string, cwd: string | undefined, sessionId: string): string {
-  return logPath(path.join(runDirectory, "trajectory"), cwd, sessionId);
+  return logPath(path.join(runDirectory, "trajectory", "canonical"), cwd, sessionId);
 }
 
 export function trajectoryRefPath(runDirectory: string): string {
@@ -118,8 +127,8 @@ export function trajectoryRef(
   trajectoryPath: string,
   sha256: string,
   providerSessionId?: string,
-): TrajectoryRef {
-  const ref: TrajectoryRef = {
+): TrajectoryRefV1 {
+  const ref: TrajectoryRefV1 = {
     schema_version: "1",
     run_id: runId,
     session_id: sessionId,
@@ -130,6 +139,41 @@ export function trajectoryRef(
   };
   if (providerSessionId !== undefined) ref.provider_session_id = providerSessionId;
   return ref;
+}
+
+export async function canonicalTrajectoryFileRef(runDirectory: string, trajectoryPath: string): Promise<TrajectoryFileRefV1> {
+  const relative = path.relative(runDirectory, trajectoryPath).split(path.sep).join("/");
+  if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) {
+    throw new Error("canonical trajectory must be inside its run directory");
+  }
+  const info = await stat(trajectoryPath);
+  return {
+    role: "canonical_session",
+    path: relative,
+    media_type: "application/x-ndjson",
+    sha256: await trajectoryFileSha256(trajectoryPath) as `sha256:${string}`,
+    bytes: info.size,
+  };
+}
+
+export function trajectoryRefV2(options: {
+  runId: string;
+  fidelity: "provider_native" | "normalized" | "minimal";
+  provider?: string;
+  providerSessionId?: string;
+  files: TrajectoryFileRefV1[];
+  redactions?: Array<{ rule_id: string; count: number }>;
+}): TrajectoryRefV2 {
+  const ref: TrajectoryRefV2 = {
+    schema_version: "2",
+    run_id: options.runId,
+    fidelity: options.fidelity,
+    files: options.files,
+  };
+  if (options.provider) ref.provider = options.provider;
+  if (options.providerSessionId) ref.provider_session_id = options.providerSessionId;
+  if (options.redactions?.length) ref.redactions = options.redactions;
+  return validateTrajectoryRef(ref) as TrajectoryRefV2;
 }
 
 export interface TrajectoryReadResult {
@@ -237,11 +281,131 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
   if (openStep !== null) throw new Error("trajectory ends with an open step bracket");
 }
 
+/**
+ * Seal the structurally valid prefix left by an interrupted native provider.
+ * Provider rows remain untouched; Hitch only appends canonical recovery
+ * events for calls whose outcome is unknown and for open step/turn brackets.
+ */
+export function finalizeInterruptedTrajectory(
+  header: SessionHeaderLine,
+  events: SessionEvent[],
+  status: "failed" | "cancelled" | "timed_out",
+): SessionEvent[] {
+  const finalized = [...events];
+  let openTurn: number | null = null;
+  let openStep: { turn: number; step: number } | null = null;
+  const openCalls = new Map<string, { name: string }>();
+
+  for (const event of finalized) {
+    const data = (event.data || {}) as Record<string, unknown>;
+    switch (event.type) {
+      case "turn/start":
+        openTurn = data.turn as number;
+        break;
+      case "turn/end":
+        openTurn = null;
+        break;
+      case "step/start":
+        openStep = { turn: data.turn as number, step: data.step as number };
+        break;
+      case "step/end":
+        openStep = null;
+        break;
+      case "tool/call": {
+        const callId = data.callId as string;
+        openCalls.set(callId, { name: typeof data.name === "string" ? data.name : "unknown" });
+        break;
+      }
+      case "tool/result": {
+        const message = (data.message || {}) as Record<string, unknown>;
+        const source = (message.source || {}) as Record<string, unknown>;
+        const content = Array.isArray(message.content) ? message.content as Array<Record<string, unknown>> : [];
+        const callId = (source.callId ?? content[0]?.toolCallId) as string | undefined;
+        if (callId) openCalls.delete(callId);
+        break;
+      }
+    }
+  }
+
+  let nextTime = Math.max(Date.now(), (finalized.at(-1)?.time ?? 0) + 1);
+  const append = (event: Omit<SessionEvent, "seq" | "time">): void => {
+    finalized.push({ ...event, seq: finalized.length, time: nextTime });
+    nextTime += 1;
+  };
+
+  if (finalized.length === 0) {
+    openTurn = 1;
+    append({ type: "turn/start", data: { turn: openTurn } });
+  }
+
+  for (const [callId, call] of openCalls) {
+    if (!openStep) break;
+    append({
+      type: "tool/result",
+      data: {
+        turn: openStep.turn,
+        step: openStep.step,
+        message: {
+          id: randomUUID(),
+          role: "user",
+          content: [{
+            type: "tool-result",
+            toolCallId: callId,
+            content: [{ type: "text", text: `tool call interrupted: ${call.name} outcome unknown` }],
+            isError: true,
+          }],
+          source: { kind: "tool", callId },
+        },
+        error: { name: call.name, code: "TOOL_OUTCOME_UNKNOWN" },
+      },
+      surfaceOp: "append",
+    });
+  }
+  if (openStep) append({ type: "step/end", data: { turn: openStep.turn, step: openStep.step } });
+  if (openTurn !== null) {
+    append({ type: "turn/end", data: { turn: openTurn, reason: interruptedTerminalReason(status) } });
+  }
+
+  validateTrajectoryInvariants(header, finalized);
+  return finalized;
+}
+
+function interruptedTerminalReason(status: "failed" | "cancelled" | "timed_out"): Record<string, unknown> {
+  if (status === "timed_out") return { kind: "aborted", reason: { kind: "hook", reason: "timeout" } };
+  if (status === "cancelled") return { kind: "aborted", reason: { kind: "user" } };
+  return { kind: "error", error: { message: "agent process failed", code: "UNKNOWN" } };
+}
+
 /** Locate the canonical trajectory for a run from its `trajectory.ref.json`. */
-export async function loadTrajectoryRef(runDirectory: string): Promise<TrajectoryRef | null> {
-  const ref = await readJSON<TrajectoryRef | null>(trajectoryRefPath(runDirectory), null);
-  if (!ref || ref.schema_version !== "1") return null;
-  return ref;
+export type LoadedTrajectoryRef = TrajectoryRef & {
+  /** Resolved canonical path, added in memory for V1 consumer compatibility. */
+  path: string;
+  session_id: string;
+  sha256?: `sha256:${string}`;
+};
+
+export async function loadTrajectoryRef(runDirectory: string): Promise<LoadedTrajectoryRef | null> {
+  const raw = await readJSON<unknown | null>(trajectoryRefPath(runDirectory), null);
+  if (!raw) return null;
+  const ref = validateTrajectoryRef(raw);
+  if (ref.schema_version === "1") return ref as LoadedTrajectoryRef;
+  const canonical = ref.files.find((file) => file.role === "canonical_session");
+  if (!canonical) return null;
+  const absolute = path.resolve(runDirectory, ...canonical.path.split("/"));
+  const relative = path.relative(path.resolve(runDirectory), absolute);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`trajectory path escapes run directory: ${canonical.path}`);
+  }
+  const content = await readFile(absolute, "utf8");
+  const first = content.split(/\r?\n/).find((line) => line.length > 0);
+  if (!first) throw new Error(`canonical trajectory is empty: ${canonical.path}`);
+  const header = parseHeaderLine(JSON.parse(first) as unknown);
+  return {
+    ...ref,
+    path: absolute,
+    session_id: header.id,
+    sha256: canonical.sha256,
+  };
 }
 
 export async function removeTrajectory(runDirectory: string): Promise<void> {
@@ -255,7 +419,8 @@ export async function trajectoryFileSha256(file: string): Promise<string> {
 }
 
 export async function listTrajectorySessions(runDirectory: string): Promise<string[]> {
-  const root = path.join(runDirectory, "trajectory");
+  const canonicalRoot = path.join(runDirectory, "trajectory", "canonical");
+  const root = await stat(canonicalRoot).then(() => canonicalRoot).catch(() => path.join(runDirectory, "trajectory"));
   let projects;
   try {
     projects = await readdir(root, { withFileTypes: true });

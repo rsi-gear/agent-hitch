@@ -1,0 +1,11 @@
+export { CONTRACT_COMMIT, SESSION_FORMAT_VERSION, TRAJECTORY_FORMAT } from "./contract.js";
+export type { TrajectoryFormatRef } from "./contract.js";
+export { decodeSegment, encodeSegment, eventLine, headerLine, logPath, logSuffix, parseEventLine, parseHeaderLine, projectDir, projectKey, sessionDir } from "./format.js";
+export type { JsonlCompression } from "./format.js";
+export { EVENT_TYPE_KEYS, TrajectoryProjector } from "./projector.js";
+export type { ProjectedSession, ProjectionOptions } from "./projector.js";
+export { ProviderCaptureWriter, redactProviderJSON, redactProviderText } from "./provider-capture.js";
+export type { ProviderCaptureOptions, RedactionResult } from "./provider-capture.js";
+export { TrajectoryWriter, canonicalTrajectoryFileRef, finalizeInterruptedTrajectory, listTrajectorySessions, loadTrajectoryRef, readTrajectory, removeTrajectory, trajectoryFileSha256, trajectoryLogPath, trajectoryRef, trajectoryRefPath, trajectoryRefV2, validateTrajectoryInvariants } from "./store.js";
+export type { LoadedTrajectoryRef, TrajectoryReadResult, TrajectoryWriterOptions } from "./store.js";
+export { importDeepseekNativeSession } from "./providers/deepseek.js";

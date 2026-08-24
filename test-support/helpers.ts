@@ -314,14 +314,73 @@ process.stdin.on("end", () => {
   return file;
 }
 
-export async function writeFakeDeepseek(directory: string, { output = "reply:hello" }: { output?: string } = {}): Promise<string> {
+export async function writeFakeDeepseek(directory: string, {
+  output = "reply:hello",
+  nativeSession = false,
+  nativeChildSession = false,
+  nativeSessionState = "complete",
+  delayMs = 0,
+}: {
+  output?: string;
+  nativeSession?: boolean;
+  nativeChildSession?: boolean;
+  nativeSessionState?: "complete" | "open" | "invalid";
+  delayMs?: number;
+} = {}): Promise<string> {
   const file = path.join(directory, "fake-dsh");
   const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
 if (process.argv.includes("--version")) {
   process.stdout.write("0.1.0-rc.6\\n");
   process.exit(0);
 }
-process.stdout.write(${JSON.stringify(output)} + "\\n");
+if (${JSON.stringify(nativeSession)}) {
+  const prompt = process.argv.at(-1);
+  const base = 1700000000000;
+  const header = {type:"session",version:0,id:"session-native",createdAt:base,cwd:process.cwd(),delegationDepth:0};
+  const completeEvents = [
+    {type:"permission/preset",seq:0,time:base + 1,data:{preset:"headless"}},
+    {type:"turn/start",seq:1,time:base + 10,data:{turn:1}},
+    {type:"step/start",seq:2,time:base + 20,data:{turn:1,step:1}},
+    {type:"user/message",seq:3,time:base + 30,data:{id:"user-1",role:"user",content:[{type:"text",text:prompt}],source:{kind:"user"}},surfaceOp:"append"},
+    {type:"request/header",seq:4,time:base + 40,data:{header:{config:{provider:"deepseek-official",model:"deepseek-v4-flash"}},reason:"initial"}},
+    {type:"assistant/message",seq:5,time:base + 100,data:{turn:1,step:1,message:{id:"assistant-tool",role:"assistant",content:[{type:"tool-call",id:"call-1",name:"bash",arguments:"{\\\"command\\\":\\\"pwd\\\"}"}],source:{kind:"model",provider:"deepseek-official",model:"deepseek-v4-flash"}},usage:{inputTokens:11,outputTokens:3,cacheReadTokens:2,reasoningTokens:1}},surfaceOp:"append"},
+    {type:"tool/call",seq:6,time:base + 110,data:{turn:1,step:1,callId:"call-1",name:"bash",arguments:"{\\\"command\\\":\\\"pwd\\\"}"}},
+    {type:"tool/result",seq:7,time:base + 500,data:{turn:1,step:1,message:{id:"tool-1",role:"user",content:[{type:"tool-result",toolCallId:"call-1",content:[{type:"text",text:process.cwd()}],isError:false}],source:{kind:"tool",callId:"call-1"}}},surfaceOp:"append",sourceEventSeqs:[6]},
+    {type:"step/end",seq:8,time:base + 510,data:{turn:1,step:1}},
+    {type:"step/start",seq:9,time:base + 520,data:{turn:1,step:2}},
+    {type:"assistant/chunk",seq:10,time:base + 700,data:{turn:1,step:2,chunk:{type:"usage",usage:{inputTokens:21,outputTokens:5,cacheReadTokens:4,reasoningTokens:2}}}},
+    {type:"assistant/message",seq:11,time:base + 800,data:{turn:1,step:2,message:{id:"assistant-final",role:"assistant",content:[{type:"reasoning",text:"native reasoning"},{type:"text",text:"native final"}],source:{kind:"model",provider:"deepseek-official",model:"deepseek-v4-flash"}},usage:{inputTokens:21,outputTokens:5,cacheReadTokens:4,reasoningTokens:2}},sourceEventSeqs:[10],surfaceOp:"append"},
+    {type:"step/end",seq:12,time:base + 810,data:{turn:1,step:2}},
+    {type:"turn/end",seq:13,time:base + 820,data:{turn:1,reason:{kind:"completed"}}}
+  ];
+  const sessionState = ${JSON.stringify(nativeSessionState)};
+  const events = sessionState === "open"
+    ? completeEvents.slice(0, 11)
+    : sessionState === "invalid"
+      ? [completeEvents[0], completeEvents[1], {...completeEvents[1], seq:2, time:base + 20}]
+      : completeEvents;
+  const target = path.join(process.env.DSH_HOME, "sessions", "--fake--", "session-native", "session.jsonl");
+  fs.mkdirSync(path.dirname(target), {recursive:true});
+  fs.writeFileSync(target, [header, ...events].map((row) => JSON.stringify(row)).join("\\n") + "\\n");
+  if (${JSON.stringify(nativeChildSession)}) {
+    const childHeader = {type:"session",version:0,id:"session-child",createdAt:base + 200,parentSession:"session-native",origin:"subagent",delegationDepth:1};
+    const childEvents = [
+      {type:"turn/start",seq:0,time:base + 210,data:{turn:1}},
+      {type:"step/start",seq:1,time:base + 220,data:{turn:1,step:1}},
+      {type:"assistant/message",seq:2,time:base + 230,data:{turn:1,step:1,message:{id:"child-final",role:"assistant",content:[{type:"text",text:"child final"}],source:{kind:"model",provider:"deepseek-official",model:"deepseek-v4-flash"}}}},
+      {type:"step/end",seq:3,time:base + 240,data:{turn:1,step:1}},
+      {type:"turn/end",seq:4,time:base + 250,data:{turn:1,reason:{kind:"completed"}}}
+    ];
+    const childTarget = path.join(process.env.DSH_HOME, "sessions", "--fake--", "session-child", "session.jsonl");
+    fs.mkdirSync(path.dirname(childTarget), {recursive:true});
+    fs.writeFileSync(childTarget, [childHeader, ...childEvents].map((row) => JSON.stringify(row)).join("\\n") + "\\n");
+  }
+}
+const finish = () => process.stdout.write(${JSON.stringify(output)} + "\\n");
+if (${delayMs} > 0) setTimeout(finish, ${delayMs});
+else finish();
 `;
   await writeFile(file, source, { mode: 0o755 });
   await chmod(file, 0o755);

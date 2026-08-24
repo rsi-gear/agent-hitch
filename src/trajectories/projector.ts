@@ -6,9 +6,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { NormalizedEvent } from "../adapters.js";
-import type { SessionEvent, SessionHeaderLine } from "../domain/types.js";
-import type { TrajectoryFidelity } from "../domain/types.js";
+import type { NormalizedEvent } from "../adapters/index.js";
+import type { SessionEvent, SessionHeaderLine, TrajectoryFidelity } from "../domain/index.js";
 
 export interface ProjectedSession {
   header: SessionHeaderLine;
@@ -220,7 +219,7 @@ export class TrajectoryProjector {
     // terminal boundary (spec §5.4): open and close the session so the log is
     // structurally complete even when nothing was emitted.
     if (this.events.length === 0 && status !== "succeeded") this.ensureSessionOpen();
-    if (this.assistantOpen && this.assistantText) this.closeAssistantMessage(true);
+    if (this.assistantOpen && this.assistantText) this.closeAssistantMessage(status !== "succeeded");
     if (this.stepOpen) {
       // A successful run may not end with open tool calls: the harness claimed
       // to finish cleanly, so an unpaired call is evidence of a broken

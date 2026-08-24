@@ -7,9 +7,10 @@ import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, readTrajectory, validateTrajectoryInvariants, trajectoryRef, loadTrajectoryRef } from "../src/trajectories/store.js";
 import { encodeSegment, decodeSegment, projectKey, logPath } from "../src/trajectories/format.js";
 import { TRAJECTORY_FORMAT, CONTRACT_COMMIT } from "../src/trajectories/contract.js";
-import type { NormalizedEvent } from "../src/adapters.js";
-import type { SessionEvent } from "../src/domain/types.js";
+import type { NormalizedEvent } from "../src/adapters/index.js";
+import type { SessionEvent } from "../src/domain/index.js";
 import { forceRemove } from "../test-support/helpers.js";
+import { ProviderCaptureWriter } from "../src/trajectories/index.js";
 
 function normalizedEvents(overrides: NormalizedEvent[] = []): NormalizedEvent[] {
   return [
@@ -302,6 +303,28 @@ test("loadTrajectoryRef returns null when no ref exists", async () => {
   const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-noref-"));
   try {
     assert.equal(await loadTrajectoryRef(runDirectory), null);
+  } finally {
+    await forceRemove(runDirectory);
+  }
+});
+
+test("provider capture preserves native event shape while recording explicit redactions", async () => {
+  const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-provider-capture-"));
+  try {
+    const writer = await ProviderCaptureWriter.open({ runDirectory, structured: true });
+    writer.appendJSON({ type: "response.created", id: "evt-1", access_token: "secret-value", text: "Bearer abcdefghijklmnop" });
+    const captured = await writer.close();
+    assert.equal(captured.file.role, "provider_events");
+    assert.equal(path.isAbsolute(captured.file.path), false);
+    assert.deepEqual(captured.redactions, [
+      { rule_id: "authorization-bearer-v1", count: 1 },
+      { rule_id: "sensitive-field-v1", count: 1 },
+    ]);
+    const event = JSON.parse(await readFile(path.join(runDirectory, ...captured.file.path.split("/")), "utf8")) as Record<string, unknown>;
+    assert.equal(event.type, "response.created");
+    assert.equal(event.id, "evt-1");
+    assert.equal(event.access_token, "[REDACTED]");
+    assert.equal(event.text, "Bearer [REDACTED]");
   } finally {
     await forceRemove(runDirectory);
   }

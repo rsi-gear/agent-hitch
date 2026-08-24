@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { listPreparedArtifacts, prepareHarness, resolveHarness } from "../src/artifacts.js";
-import { executeRun, newRunId } from "../src/engine.js";
-import { readJSON } from "../src/fs.js";
-import { parseHarnessReference } from "../src/harness-reference.js";
+import { listPreparedArtifacts, prepareHarness, resolveHarness } from "../src/artifacts/index.js";
+import { executeRun, newRunId } from "../src/runs/index.js";
+import { readJSON } from "../src/foundation/index.js";
+import { parseHarnessReference } from "../src/revisions/index.js";
 import { fakePiSource, writeFakeDeepseekNpm, writeFakeNpm } from "../test-support/helpers.js";
-import type { RunRequestInput } from "../src/engine.js";
+import type { RunRequestInput } from "../src/runs/index.js";
 
 const exec = promisify(execFile);
 

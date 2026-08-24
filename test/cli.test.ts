@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFakeDocker, writeFakeHarbor, writeFakeNpm, writeFakePython, forceRemove } from "../test-support/helpers.js";
-import { packageVersion } from "../src/package-root.js";
+import { packageVersion } from "../src/foundation/index.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -158,7 +158,8 @@ test("CLI runs, lists, and inspects Harbor evals", async (t) => {
 
   const inspect = spawnSync(process.execPath, [executable, "--root", root, "eval", "inspect", result.eval_id, "--json"], { encoding: "utf8" });
   assert.equal(inspect.status, 0, inspect.stderr || undefined);
-  const inspected = JSON.parse(inspect.stdout) as { result: { summary: { primary_reward: number } }; runtime_storage: string };
-  assert.equal(inspected.result.summary.primary_reward, 0.75);
+  const inspected = JSON.parse(inspect.stdout) as { result: { summary: { primary_reward: number | null }; backend_summary: { primary_reward: number } }; runtime_storage: string };
+  assert.equal(inspected.result.summary.primary_reward, null);
+  assert.equal(inspected.result.backend_summary.primary_reward, 0.75);
   assert.equal(inspected.runtime_storage, "controller-runtime-ref-v1");
 });

@@ -28,7 +28,7 @@ Deterministic fixtures live under `test-support/`:
 | `writeFakeCodex` | Deterministic Codex-like adapter with configurable delay/exit/split-reply; used by engine, scheduler, daemon, registry tests. |
 | `writeFakePi` / `fakePiSource` | Deterministic Pi adapter (structured JSON, session id, usage, tool events); used by artifacts and engine tests. |
 | `writeFakeOpenCode` | Deterministic OpenCode adapter (text + step_finish usage). |
-| `writeFakeDeepseek` | Deterministic plain-text DSH headless output for the minimal-fidelity trajectory. |
+| `writeFakeDeepseek` | Deterministic DSH headless stdout plus optional root/child native session JSONL; covers both old-build minimal fallback and provider-native import. |
 | `writeFakeNpm` | Fake npm registry view/install for version resolution and artifact preparation. |
 | `writeFakeHarbor` / `writeFakePython` / `writeFakeDocker` | Fake Harbor backend, Python venv, and Docker for eval tooling tests. |
 | `forceRemove` | Removes trees containing read-only controller runtime bundles (promoted payloads are 0555/0444). |
@@ -84,13 +84,13 @@ sibling files such as `.map` sources stay `0444` (spec §4.5). The Python
 canonical encoder mirrors the TypeScript `canonicalEncodeManifest`
 byte-for-byte (verified against a real bundle).
 
-Planned-but-blocked fixtures (spec §10 Phase 0 / §12):
+Fixture status (spec §10 Phase 0 / §12):
 
-- **Deterministic mock model**: a fake model endpoint for DSH headless is only
-  meaningful once DSH `--events jsonl` lands (blocker §12.2). The plain-text
-  fixture (`writeFakeDeepseek`) covers today's wire contract.
-- **Known tool-call fixture**: structured tool-call fixture exists via the
-  Codex/Pi fake adapters; a native DSH tool-call fixture awaits the DSH event PR.
+- **Deterministic DSH native session**: `writeFakeDeepseek` writes the same raw,
+  unpacked session contract used by DSH rc.7, including tool calls/results,
+  usage, reasoning, root/child identity, and non-collapsed timestamps.
+- **Plain-text compatibility fixture**: the same fixture can omit the native
+  session to prove older DSH builds retain an honest `minimal` fallback.
 - **Minimal overlay repository fixture**: a `dsh-evolving` overlay repo fixture
   is blocked on the registered overlay repository decision (§12.1).
 
@@ -101,4 +101,5 @@ Every spec §13 reference was verified resolvable at the pinned DSH commit:
 - `packages/core/session/src/types.ts` — session event types ✓
 - `packages/session/session-persistence-jsonl/README.md` — JSONL persistence ✓
 - `packages/feedback/message-feedback/README.md` — message feedback ✓
-- `packages/bundle/headless/src/index.ts` — headless runner (plain text output; no `--events jsonl` yet, confirming blocker §12.2) ✓
+- `packages/bundle/headless/src/index.ts` — headless runner (final-text stdout,
+  with the complete session flushed through persistence before exit) ✓

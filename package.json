@@ -1,6 +1,6 @@
 {
   "name": "agent-hitch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Content-addressed version control and evidence storage for agent harnesses",
   "keywords": [
     "ai-agents",
@@ -18,6 +18,23 @@
     "url": "git+https://github.com/rsi-gear/agent-hitch.git"
   },
   "type": "module",
+  "exports": {
+    "./adapters": "./dist/src/adapters/index.js",
+    "./artifacts": "./dist/src/artifacts/index.js",
+    "./backends": "./dist/src/backends/index.js",
+    "./controller-runtime": "./dist/src/controller-runtime/index.js",
+    "./daemon": "./dist/src/daemon/index.js",
+    "./domain": "./dist/src/domain/index.js",
+    "./evals": "./dist/src/evals/index.js",
+    "./feedback": "./dist/src/feedback/index.js",
+    "./foundation": "./dist/src/foundation/index.js",
+    "./revisions": "./dist/src/revisions/index.js",
+    "./runs": "./dist/src/runs/index.js",
+    "./trajectories": "./dist/src/trajectories/index.js",
+    "./workspaces": "./dist/src/workspaces/index.js",
+    "./cli": "./dist/src/cli/index.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "hitch": "dist/bin/hitch.js"
   },
@@ -30,10 +47,11 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "test": "node --test \"dist/test/*.test.js\"",
     "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test \"dist/test/*.test.js\"",
-    "check": "npm run typecheck && npm run build && node dist/scripts/check-syntax.js && node --test \"dist/test/*.test.js\"",
+    "check:architecture": "node dist/scripts/check-architecture.js",
+    "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && node --test \"dist/test/*.test.js\"",
     "prepublishOnly": "npm run check"
   },
   "engines": {

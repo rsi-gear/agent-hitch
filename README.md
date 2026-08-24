@@ -154,15 +154,18 @@ records:
 
 - normalized JSONL events describe Hitch's control plane, including resolution,
   preparation, process lifecycle, cancellation, and terminal status;
-- a DSH-compatible canonical trajectory records the agent session, messages,
-  tool calls, and tool results with an explicit fidelity level;
-- `trajectory.ref.json` binds the run to the canonical trajectory and its
-  SHA-256 digest; and
+- supported adapters preserve redacted provider-native events before any
+  translation, while a DSH-compatible canonical trajectory remains available
+  as a derived view;
+- `trajectory.ref.json` V2 binds every trajectory file by relative path, byte
+  size, role, and SHA-256 digest; and
 - feedback sidecars attach versioned positive or negative ratings and notes to
   assistant messages without rewriting the immutable trajectory.
 
 ```bash
 hitch trajectory inspect RUN_ID
+hitch runs list --context-kind benchmark_task --json
+hitch compare model --benchmark BENCHMARK --task TASK --json
 hitch feedback list RUN_ID --json
 hitch feedback put RUN_ID \
   --message MESSAGE_ID \
@@ -204,11 +207,14 @@ The resulting eval record links the request, resolved revision, controller
 runtime, backend configuration and logs, normalized result, reward summary, and
 trajectory evidence.
 
-Eval accepts exact `version:` refs and `commit:` refs backed by a registered
-remote source. Installed executables and local `git+file://` refs are rejected
-because they are not portable into Harbor containers. Common provider
-credentials are forwarded by environment-variable reference; use `--pass-env
-NAME` for an additional variable.
+Eval accepts exact `version:` refs, registered `commit:` refs, and explicit
+local `git+file:///absolute/repo#<full-lowercase-commit>` refs. For local Git,
+Hitch transports a verified exact-commit object pack into each Harbor trial;
+uncommitted files, Git config, credentials, and unrelated history are excluded.
+The local repository must be clean and abbreviated commits, branches, tags,
+`HEAD`, and installed executables are rejected. Common provider credentials are
+forwarded by environment-variable reference; use `--pass-env NAME` for an
+additional variable.
 
 See [Harbor-backed agent evals](docs/evals.md) for setup, portability rules, and
 the execution boundary.
@@ -304,7 +310,7 @@ Workspace isolation is not a process security sandbox.
 
 ## Planned work
 
-- [ ] Comparison primitives for harness revisions and their evidence
+- [x] Strict model/harness comparison primitives over run evidence
 - [ ] Named candidate and champion references
 - [ ] Promotion and rollback records without embedding promotion policy
 - [ ] Remote artifact and evidence synchronization

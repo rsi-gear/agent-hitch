@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fingerprintExecutable, inspectAgent, selectVersionLine } from "../src/registry.js";
+import { fingerprintExecutable, inspectAgent, selectVersionLine } from "../src/adapters/index.js";
 import { writeFakeCodex } from "../test-support/helpers.js";
 
 test("agent discovery resolves a pinned executable and fingerprints it", async () => {

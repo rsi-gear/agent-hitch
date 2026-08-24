@@ -124,6 +124,16 @@ def main() -> int:
     install_harbor_stubs()
     bridge = load_bridge(bridge_path)
 
+    trial_id = "regex-log__YNRyNX7"
+    task_id = "regex-log"
+    trial_dir = Path(logs_dir) / trial_id
+    agent_logs_dir = trial_dir / "agent"
+    agent_logs_dir.mkdir(parents=True, exist_ok=True)
+    (trial_dir / "lock.json").write_text(
+        json.dumps({"schema_version": 2, "task": {"name": task_id}}),
+        encoding="utf-8",
+    )
+
     manifest = json.loads((Path(bundle_root) / "manifest.json").read_text(encoding="utf-8"))
     entrypoint = manifest["entrypoints"]["cli"]["path"]
     revision_identity = "sha256:" + "a" * 64
@@ -132,7 +142,7 @@ def main() -> int:
     env = BaseEnvironment(revision_identity=revision_identity)
     context = AgentContext()
     agent = bridge.HitchHarborAgent(
-        logs_dir=Path(logs_dir),
+        logs_dir=agent_logs_dir,
         harness_ref="pi@version:1.2.3",
         revision_identity=revision_identity,
         hitch_runtime_dir=bundle_root,
@@ -142,6 +152,10 @@ def main() -> int:
         agent_args=[],
         workdir="/app",
         model_name="openai/test-model",
+        eval_id="eval_bridge_smoke",
+        benchmark_id="benchmark",
+        benchmark_revision="sha256:" + "b" * 64,
+        verifier_identity="sha256:" + "c" * 64,
     )
 
     import asyncio
@@ -181,6 +195,12 @@ def main() -> int:
         errors.append(f"controller_runtime_id was {context.metadata.get('controller_runtime_id')!r}, expected {runtime_id}")
     if context.metadata.get("hitch_status") != "succeeded":
         errors.append(f"hitch_status was {context.metadata.get('hitch_status')!r}")
+    if context.metadata.get("trial_id") != trial_id:
+        errors.append(f"trial_id was {context.metadata.get('trial_id')!r}, expected {trial_id!r}")
+    if context.metadata.get("task_id") != task_id:
+        errors.append(f"task_id was {context.metadata.get('task_id')!r}, expected {task_id!r}")
+    if context.metadata.get("attempt") != 1:
+        errors.append(f"attempt was {context.metadata.get('attempt')!r}, expected 1")
 
     if errors:
         for error in errors:

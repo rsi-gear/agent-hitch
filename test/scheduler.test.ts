@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Scheduler } from "../src/scheduler.js";
-import { atomicWriteJSON, readJSON } from "../src/fs.js";
+import { Scheduler } from "../src/daemon/index.js";
+import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { writeFakeCodex } from "../test-support/helpers.js";
-import { delay } from "../src/process.js";
-import type { RunId } from "../src/domain/types.js";
-import type { RunRequestInput } from "../src/engine.js";
+import { delay } from "../src/foundation/index.js";
+import type { RunId } from "../src/domain/index.js";
+import type { RunRequestInput } from "../src/runs/index.js";
 
 function request(overrides: Partial<RunRequestInput> = {}): RunRequestInput {
   return { agent: "codex", cwd: "/tmp", prompt: "work", timeout_ms: 5_000, agent_args: [], ...overrides };
