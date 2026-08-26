@@ -27,6 +27,20 @@
     "summary": { "type": ["object", "null"] },
     "benchmark_id": { "type": "string", "minLength": 1 },
     "benchmark_revision": { "type": "string", "minLength": 1 },
+    "prepared_artifact": {
+      "type": "object",
+      "required": ["artifact_id", "artifact_integrity", "entrypoint_integrity", "harness_id", "revision_identity", "platform", "source_type"],
+      "properties": {
+        "artifact_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "artifact_integrity": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "entrypoint_integrity": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "harness_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "revision_identity": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "platform": { "type": "string", "pattern": "^(?:linux|darwin|win32)-[a-z0-9_]+$" },
+        "source_type": { "enum": ["npm", "git"] }
+      },
+      "additionalProperties": false
+    },
     "trials": {
       "type": "array",
       "items": {

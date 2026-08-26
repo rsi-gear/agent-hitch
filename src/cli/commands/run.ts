@@ -2,6 +2,8 @@ import path from "node:path";
 import { daemonClient } from "../../daemon/index.js";
 import type { RunId } from "../../domain/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput, readJSON, statePaths } from "../../foundation/index.js";
+import { loadPreparedArtifact } from "../../artifacts/index.js";
+import type { PreparedArtifact } from "../../artifacts/index.js";
 import { executeRun, newRunId } from "../../runs/index.js";
 import { parseHarnessReference } from "../../revisions/index.js";
 import type { ResolvedRevision, VerifiedLocalGitSource } from "../../revisions/index.js";
@@ -13,6 +15,7 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   const useDaemon = takeFlag(args, "--daemon");
   const output = takeOption(args, "--output") || "jsonl";
   const internalFlags = takeInternalLocalGitFlags(args);
+  const internalArtifactFlags = takeInternalPreparedArtifactFlags(args);
   const internalRunId = takeOption(args, "--internal-run-id");
   const deferBenchmarkObservation = takeFlag(args, "--internal-defer-benchmark-observation");
   if ((internalRunId || deferBenchmarkObservation) && process.env.HITCH_HARBOR_INTERNAL !== "1") {
@@ -23,8 +26,17 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   if (deferBenchmarkObservation) request.defer_benchmark_observation = true;
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
-  if (internalFlags && useDaemon) throw invalidInput("internal Harbor locked resolution cannot use the daemon");
+  if ((internalFlags || internalArtifactFlags) && useDaemon) throw invalidInput("internal Harbor handoffs cannot use the daemon");
   const internal = internalFlags ? await loadInternalLocalGitSource(internalFlags, request.harness_ref as string) : null;
+  const internalArtifact = internalArtifactFlags
+    ? await loadInternalPreparedArtifact(internalArtifactFlags, request.harness_ref as string)
+    : null;
+  if (internal && internalArtifact && internal.resolution.identity !== internalArtifact.resolution.identity) {
+    throw new HitchError("internal Harbor source and artifact handoffs identify different revisions", {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
 
   if (useDaemon) {
     const client = await daemonClient(root);
@@ -35,16 +47,79 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   }
 
   const runId = (internalRunId || newRunId()) as RunId;
+  const handedOffResolution = internalArtifact?.resolution || internal?.resolution;
   const result = await executeRun({
     runId,
     request,
     runsRoot: statePaths(root).runs,
     root,
-    ...(internal ? { resolvedRevision: internal.resolution, verifiedLocalGitSource: internal.source } : {}),
+    ...(handedOffResolution ? { resolvedRevision: handedOffResolution } : {}),
+    ...(internalArtifact ? { preparedArtifact: internalArtifact.artifact } : {}),
+    ...(internal ? { verifiedLocalGitSource: internal.source } : {}),
     ...(output === "jsonl" ? { onEvent: (event) => process.stdout.write(`${JSON.stringify(event)}\n`) } : {}),
   });
   if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   process.exitCode = result.exit_code as number;
+}
+
+interface InternalPreparedArtifactFlags {
+  directory: string;
+  artifactId: string;
+  artifactIntegrity: string;
+  entrypointIntegrity: string;
+  revisionIdentity: string;
+  platform: string;
+}
+
+export function takeInternalPreparedArtifactFlags(args: string[]): InternalPreparedArtifactFlags | null {
+  const directory = takeOption(args, "--internal-prepared-artifact");
+  const artifactId = takeOption(args, "--internal-artifact-id");
+  const artifactIntegrity = takeOption(args, "--internal-artifact-integrity");
+  const entrypointIntegrity = takeOption(args, "--internal-artifact-entrypoint-integrity");
+  const revisionIdentity = takeOption(args, "--internal-artifact-revision-identity");
+  const platform = takeOption(args, "--internal-artifact-platform");
+  const values = [directory, artifactId, artifactIntegrity, entrypointIntegrity, revisionIdentity, platform];
+  if (values.every((value) => value === undefined)) return null;
+  if (process.env.HITCH_HARBOR_INTERNAL !== "1") {
+    throw invalidInput("internal Harbor artifact options are unavailable outside the Harbor bridge");
+  }
+  if (values.some((value) => !value)) throw invalidInput("internal Harbor artifact handoff is incomplete");
+  return {
+    directory: directory as string,
+    artifactId: artifactId as string,
+    artifactIntegrity: artifactIntegrity as string,
+    entrypointIntegrity: entrypointIntegrity as string,
+    revisionIdentity: revisionIdentity as string,
+    platform: platform as string,
+  };
+}
+
+export async function loadInternalPreparedArtifact(
+  flags: InternalPreparedArtifactFlags,
+  requestedReference: string,
+): Promise<{ resolution: ResolvedRevision; artifact: PreparedArtifact }> {
+  const reference = parseHarnessReference(requestedReference);
+  const artifact = await loadPreparedArtifact(path.resolve(flags.directory), {
+    artifact_id: flags.artifactId,
+    artifact_integrity: flags.artifactIntegrity,
+    entrypoint_integrity: flags.entrypointIntegrity,
+    harness_id: reference.harness_id,
+    revision_identity: flags.revisionIdentity,
+    platform: flags.platform,
+  });
+  const resolution = artifact.resolved_revision;
+  const selectorMatches = reference.selector.type === "version"
+    ? resolution.revision?.type === "version" && resolution.revision.version === reference.selector.value
+    : reference.selector.type === "commit"
+      ? resolution.revision?.type === "commit" && resolution.revision.commit === reference.selector.value
+      : false;
+  if (!selectorMatches) {
+    throw new HitchError("internal Harbor artifact does not match the requested immutable harness ref", {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
+  return { resolution, artifact };
 }
 
 interface InternalLocalGitFlags {

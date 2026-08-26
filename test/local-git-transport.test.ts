@@ -15,7 +15,7 @@ import {
   verifyLocalGitTransport,
   verifyMaterializedLocalGitSource,
 } from "../src/backends/harbor/index.js";
-import { forceRemove, writeFakeHarbor } from "../test-support/helpers.js";
+import { fakePiSource, forceRemove, writeFakeHarbor } from "../test-support/helpers.js";
 
 const exec = promisify(execFile);
 
@@ -35,7 +35,7 @@ test("local Git transport contains only exact commit objects and preserves its p
   assert.equal(transport.manifest.tree, fixture.tree);
   assert.match(transport.manifest.payload_sha256, /^sha256:[0-9a-f]{64}$/);
   assert.ok(transport.manifest.object_count >= 3);
-  assert.equal(transport.manifest.file_count, 3);
+  assert.equal(transport.manifest.file_count, 6);
   const payload = await readFile(transport.payloadPath);
   assert.equal(payload.includes(Buffer.from("must-not-enter-transport")), false);
   assert.equal(payload.includes(Buffer.from("host-secret-helper")), false);
@@ -110,7 +110,7 @@ test("local Git transport fails closed on payload, manifest, commit, tree, and s
       evalDirectory: limitedEval,
       resolvedRevision: fixture.resolution,
       sourceDirectory: fixture.source,
-      limits: { maxPayloadBytes: 1, maxObjects: 100, maxFiles: 100, maxFileBytes: 1024 },
+      limits: { maxPayloadBytes: 1, maxObjects: 100, maxFiles: 100, maxFileBytes: 16 * 1024 },
     }),
     /payload limit/,
   );
@@ -274,6 +274,26 @@ async function localRepository(prefix: string): Promise<{
   await writeFile(path.join(source, "regular.txt"), "committed bytes\n");
   await writeFile(path.join(source, "executable.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   await symlink("regular.txt", path.join(source, "link.txt"));
+  await writeFile(path.join(source, "package.json"), `${JSON.stringify({
+    name: "local-transport-pi",
+    version: "1.0.0",
+    private: true,
+    scripts: { build: "node build.js" },
+  })}\n`);
+  await writeFile(path.join(source, "package-lock.json"), `${JSON.stringify({
+    name: "local-transport-pi",
+    version: "1.0.0",
+    lockfileVersion: 3,
+    requires: true,
+    packages: { "": { name: "local-transport-pi", version: "1.0.0" } },
+  })}\n`);
+  await writeFile(path.join(source, "build.js"), `
+const fs = require("node:fs");
+const path = require("node:path");
+const output = path.join(process.cwd(), "packages", "coding-agent", "dist", "cli.js");
+fs.mkdirSync(path.dirname(output), { recursive: true });
+fs.writeFileSync(output, ${JSON.stringify(fakePiSource("1.0.0"))}, { mode: 0o755 });
+`);
   await exec("git", ["-C", source, "add", "-A"]);
   await exec("git", ["-C", source, "commit", "-m", "transport fixture"]);
   const commit = (await exec("git", ["-C", source, "rev-parse", "HEAD"])).stdout.trim();
