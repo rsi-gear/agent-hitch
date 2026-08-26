@@ -696,8 +696,14 @@ Executable candidates require a complete, identity-pinned Harbor transport.
 The current eval path implements host-prepared artifact transfer for every
 supported immutable harness: Hitch prepares the artifact once, Harbor uploads
 it into every compatible trial, and container-side Hitch re-verifies the
-pinned content and entrypoint digests before execution. An OS/architecture
-mismatch falls back to the existing in-container preparation path.
+pinned content and entrypoint digests before execution. Compatibility includes
+OS, architecture, and the exact Node.js runtime version. On a mismatch, the
+bridge uses a persistent target-platform artifact cache under the Hitch state
+root. A host file lock elects one trial to prepare the missing artifact and
+download it atomically; concurrent and later trials upload that verified cache
+entry and do not invoke the package manager again. Ephemeral trial deletion
+does not delete this host cache, and the cache is not mounted writable into
+trial containers.
 
 The supported transport designs are:
 
@@ -707,7 +713,8 @@ The supported transport designs are:
    identities and platform compatibility; or
 3. Have the Harbor agent receive a host-prepared artifact rather than resolving
    and preparing the candidate again inside the container (implemented for all
-   supported immutable harnesses when the platform matches).
+   supported immutable harnesses, with a one-builder target-platform host cache
+   when the initial host artifact is incompatible).
 
 Removing the `git+file` input guard alone is insufficient because the
 container still cannot access the host repository.

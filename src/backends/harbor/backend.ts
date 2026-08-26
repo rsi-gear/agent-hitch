@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { HitchError, atomicWriteJSON, consumeLines, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, terminateProcess } from "../../foundation/index.js";
+import { HitchError, atomicWriteJSON, consumeLines, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths, terminateProcess } from "../../foundation/index.js";
 import type { EvalRequest, ResolvedRevision } from "../../domain/index.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
@@ -33,7 +33,10 @@ export interface HarborPreparedArtifactUse {
   entrypoint_integrity: string;
   harness_id: string;
   revision_identity: string;
+  adapter_version: string;
+  recipe_version: string;
   platform: string;
+  node_version: string;
   source_type: string;
 }
 
@@ -71,6 +74,7 @@ export async function runHarborBackend({
   emit = () => {},
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(path.join(evalDirectory, "harbor"));
+  const harnessArtifactCacheDirectory = await ensureDir(path.join(statePaths(root).store, "harbor-artifacts"));
   const executable = await discoverHarbor(harborExecutable, root, env);
   const version = await detectVersion(executable, ["--version"]);
   const identity = await fingerprintExecutable(executable);
@@ -85,6 +89,7 @@ export async function runHarborBackend({
     runtimeDirectory,
     runtimeId,
     preparedArtifact,
+    harnessArtifactCacheDirectory,
     localTransport,
     backendDirectory,
     jobName,
@@ -155,6 +160,7 @@ export interface BuildHarborJobConfigOptions {
   runtimeDirectory: string;
   runtimeId?: string | undefined;
   preparedArtifact?: HarborPreparedArtifactUse | undefined;
+  harnessArtifactCacheDirectory?: string | undefined;
   localTransport?: LocalGitTransportUse | undefined;
   backendDirectory: string;
   jobName?: string;
@@ -168,6 +174,7 @@ export async function buildHarborJobConfig({
   runtimeDirectory,
   runtimeId,
   preparedArtifact,
+  harnessArtifactCacheDirectory,
   localTransport,
   backendDirectory,
   jobName = "job",
@@ -198,6 +205,7 @@ export async function buildHarborJobConfig({
       // (spec §4.2); `runtime_id` records the exact execution payload.
       hitch_runtime_dir: runtimeDirectory,
       ...(runtimeId ? { controller_runtime_id: runtimeId } : {}),
+      ...(harnessArtifactCacheDirectory ? { harness_artifact_cache_dir: harnessArtifactCacheDirectory } : {}),
       ...(preparedArtifact ? {
         harness_artifact: {
           directory: preparedArtifact.directory,
@@ -206,7 +214,10 @@ export async function buildHarborJobConfig({
           entrypoint_integrity: preparedArtifact.entrypoint_integrity,
           harness_id: preparedArtifact.harness_id,
           revision_identity: preparedArtifact.revision_identity,
+          adapter_version: preparedArtifact.adapter_version,
+          recipe_version: preparedArtifact.recipe_version,
           platform: preparedArtifact.platform,
+          node_version: preparedArtifact.node_version,
           source_type: preparedArtifact.source_type,
         },
       } : {}),
