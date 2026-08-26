@@ -164,6 +164,7 @@ local-source/                 # present only for transported local Git commits
   payload.pack
   resolution.json
 events.jsonl
+progress.json                 # running, atomically replaced after each published trial
 result.json
 harbor/
   job.json
@@ -184,6 +185,48 @@ The exported bundle below a Harbor trial is staging only. Hitch validates its
 identity and trajectory checksums, atomically publishes it to `runs/`, and then
 removes the staging copy so the eval directory never becomes a second
 trajectory authority.
+
+While an eval is running, `progress.json` is the authoritative partial trial
+membership. Hitch publishes a sealed `runs/<run-id>/` directory before it
+atomically replaces progress, so readers never need to inspect Harbor job
+directories or run-bundle staging. Terminal `result.json` supersedes progress
+and contains the exact same trial set after the final drain, except while an
+explicit task rerun is active as described below.
+
+If Harbor records a terminal trial without an exported run bundle, Hitch gives
+the atomic bundle marker a two-second readiness grace. Once that grace expires,
+it publishes a sealed diagnostic run and advances progress instead of delaying
+the invalid trial until the rest of the benchmark finishes.
+
+For a local Harbor dataset, Hitch resolves the canonical top-level task
+directories containing `task.toml` before backend launch. `plan.json` records
+those task IDs, and the initial `progress.json` records exact `planned_tasks`
+and `planned_trials` counts, so partial consumers can render `1/N` coverage as
+soon as the first trial settles. Registry-backed datasets leave the counts
+`null` until their task membership can be established authoritatively.
+
+## Rerunning invalid tasks
+
+An eval with a frozen local task plan and `--attempts 1` can rerun either every
+invalid/missing task or an explicit list of invalid task names:
+
+```bash
+hitch eval rerun <eval-id> --invalid --output json
+hitch eval rerun <eval-id> --task task-a --task task-b --output json
+```
+
+The rerun keeps the original eval, benchmark, candidate, model, timeout, and
+task identities. Valid tasks are never selected or overwritten. Each newly
+valid task first publishes its sealed run and then atomically replaces only the
+matching invalid/missing slot in `progress.json`; its reward is the verifier's
+ordinary reward and receives no retry penalty. A named task that is already
+valid is rejected.
+
+Rerun audit state is written below `reruns/rerun_<id>/`. While its `state.json`
+is `running`, `progress.json` is the current membership and the prior
+`result.json` may be stale. When the invocation ends, Hitch regenerates the
+top-level result from progress. The eval succeeds only when every planned task
+is valid; otherwise the CLI envelope reports the remaining invalid tasks.
 
 For a local Git eval, `plan.json` and `result.json` also record the commit, tree,
 host resolution identity, payload SHA-256, byte count, object count, and file

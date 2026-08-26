@@ -13,7 +13,7 @@ import shutil
 import stat as stat_module
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -931,16 +931,28 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             )
             if result.return_code == 0 and result.stdout:
                 hitch_result = json.loads(result.stdout)
+            bundle_stage = f"/logs/agent/.hitch-run-bundle.{uuid.uuid4().hex}"
+            bundle_marker = json.dumps({
+                "schema_version": "1",
+                "run_id": run_id,
+                "eval_id": self.eval_id,
+                "trial_id": trial_id,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }, separators=(",", ":"))
             export = await environment.exec(
                 f"""
 set -eu
 source_dir={shlex.quote(f'/tmp/hitch-state/runs/{run_id}')}
 target_dir=/logs/agent/hitch-run-bundle
-rm -rf "$target_dir"
-mkdir -p "$target_dir"
+stage_dir={shlex.quote(bundle_stage)}
+rm -rf "$stage_dir"
+mkdir -p "$stage_dir"
 for name in request.json resolution.json manifest.json result.json events.jsonl stdout.log stderr.log trajectory.ref.json trajectory; do
-  if [ -e "$source_dir/$name" ]; then cp -a "$source_dir/$name" "$target_dir/$name"; fi
+  if [ -e "$source_dir/$name" ]; then cp -a "$source_dir/$name" "$stage_dir/$name"; fi
 done
+printf '%s\n' {shlex.quote(bundle_marker)} > "$stage_dir/bundle.complete.json"
+rm -rf "$target_dir"
+mv "$stage_dir" "$target_dir"
 """.strip()
             )
             if export.return_code != 0:

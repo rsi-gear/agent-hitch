@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectEval, listEvals, newEvalId, runEval, validateEvalRequest } from "../src/evals/index.js";
+import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval, selectRerunTasks, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { lockedHarnessRef } from "../src/backends/harbor/index.js";
@@ -48,6 +48,118 @@ test("eval requests require immutable container-portable harness revisions", asy
     revision: { type: "commit", commit: "0123456789abcdef0123456789abcdef01234567" },
     source: { type: "git", url: "https://example.test/pi.git", registered: true },
   } as never), "pi@commit:0123456789abcdef0123456789abcdef01234567");
+});
+
+test("eval progress is canonical, monotonic, and rejects conflicting trial identities", () => {
+  const evalId = newEvalId();
+  const progress = createEvalProgress({
+    evalId,
+    benchmarkId: "demo",
+    benchmarkRevision: "1.0",
+    plannedTasks: 2,
+    plannedTrials: 2,
+    startedAt: "2026-08-26T00:00:00.000Z",
+  });
+  assert.equal(progress.planned_tasks, 2);
+  assert.equal(progress.planned_trials, 2);
+  const second = mergeEvalProgressTrial(progress, {
+    trial_id: "task-b__1",
+    run_id: "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    task_id: "task-b",
+    attempt: 1,
+    observation_status: "valid",
+    reward: 1,
+  }, "2026-08-26T00:00:01.000Z");
+  const third = mergeEvalProgressTrial(second, {
+    trial_id: "task-a__1",
+    run_id: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    task_id: "task-a",
+    attempt: 1,
+    observation_status: "invalid",
+    invalid_reason: "infrastructure_failure",
+  }, "2026-08-26T00:00:02.000Z");
+  assert.equal(third.generation, 2);
+  assert.deepEqual(third.trials.map((trial) => trial.task_id), ["task-a", "task-b"]);
+  assert.deepEqual(third.summary, { settled_trials: 2, valid_trials: 1, invalid_trials: 1 });
+  assert.throws(() => mergeEvalProgressTrial(third, {
+    ...third.trials[0]!,
+    run_id: "run_cccccccccccccccccccccccccccccccc",
+  }), /trial identity conflict/);
+});
+
+test("eval rerun selects only invalid tasks and replaces no valid reward", () => {
+  const evalId = newEvalId();
+  let progress = createEvalProgress({
+    evalId,
+    benchmarkId: "demo",
+    benchmarkRevision: "1.0",
+    plannedTasks: 3,
+    plannedTrials: 3,
+    startedAt: "2026-08-27T00:00:00.000Z",
+  });
+  progress = mergeEvalProgressTrial(progress, {
+    trial_id: "task-a__1",
+    run_id: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    task_id: "task-a",
+    attempt: 1,
+    observation_status: "valid",
+    reward: 0,
+  });
+  progress = mergeEvalProgressTrial(progress, {
+    trial_id: "task-b__1",
+    run_id: "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    task_id: "task-b",
+    attempt: 1,
+    observation_status: "invalid",
+    invalid_reason: "infrastructure_failure",
+  });
+  assert.deepEqual(selectRerunTasks(["task-a", "task-b", "task-c"], progress, { mode: "invalid" }), ["task-b", "task-c"]);
+  assert.deepEqual(selectRerunTasks(["task-a", "task-b", "task-c"], progress, { mode: "tasks", taskNames: ["task-c", "task-b", "task-b"] }), ["task-b", "task-c"]);
+  assert.throws(
+    () => selectRerunTasks(["task-a", "task-b", "task-c"], progress, { mode: "tasks", taskNames: ["task-a"] }),
+    (error: unknown) => (error as { code?: string }).code === "eval_task_already_valid",
+  );
+  const repaired = replaceInvalidEvalProgressTrial(progress, {
+    trial_id: "task-b__rerun-1",
+    run_id: "run_cccccccccccccccccccccccccccccccc",
+    task_id: "task-b",
+    attempt: 1,
+    observation_status: "valid",
+    reward: 0.75,
+  });
+  assert.equal(repaired.trials.find((trial) => trial.task_id === "task-a")?.reward, 0);
+  assert.equal(repaired.trials.find((trial) => trial.task_id === "task-a")?.run_id, "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  assert.equal(repaired.trials.find((trial) => trial.task_id === "task-b")?.reward, 0.75);
+  assert.deepEqual(selectRerunTasks(["task-a", "task-b", "task-c"], repaired, { mode: "invalid" }), ["task-c"]);
+});
+
+test("local eval datasets expose a deterministic immutable task plan", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-local-dataset-plan-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "task-b"), { recursive: true });
+  await mkdir(path.join(dataset, "task-a"), { recursive: true });
+  await mkdir(path.join(dataset, "ignored"), { recursive: true });
+  await writeFile(path.join(dataset, "task-b", "task.toml"), "", "utf8");
+  await writeFile(path.join(dataset, "task-a", "task.toml"), "", "utf8");
+  assert.deepEqual(await resolveLocalDatasetTaskIds(dataset), ["task-a", "task-b"]);
+  assert.equal(await resolveLocalDatasetTaskIds("demo@1.0"), null);
+
+  const singleTask = path.join(root, "single-task");
+  await mkdir(singleTask);
+  await writeFile(path.join(singleTask, "task.toml"), "", "utf8");
+  assert.deepEqual(await resolveLocalDatasetTaskIds(singleTask), ["single-task"]);
+});
+
+test("runEval refuses to reuse an explicitly reserved eval id", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-id-conflict-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  await mkdir(path.join(root, "evals", evalId), { recursive: true });
+  await assert.rejects(runEval({ evalId, root, request: evalRequest() }), (error: unknown) => {
+    assert.equal((error as { code?: string }).code, "eval_id_conflict");
+    return true;
+  });
 });
 
 test("Harbor eval enables native permission bypass for Codex and OpenCode", async () => {
@@ -430,6 +542,205 @@ test("Harbor importer uses lock task id when result task_name is display-qualifi
   assert.ok(inspected.events.length > 0);
 });
 
+test("Harbor eval publishes a completed trial before the aggregate benchmark result", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-incremental-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  for (const taskId of ["task-one", "task-two"]) {
+    await mkdir(path.join(dataset, taskId), { recursive: true });
+    await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  }
+  const normalized = await validateEvalRequest(evalRequest({ dataset }));
+  const first = {
+    trialId: "task-one__1",
+    taskId: "task-one",
+    runId: "run_11111111111111111111111111111111",
+    bundle: path.join(root, "first-run-bundle"),
+  };
+  const second = {
+    trialId: "task-two__1",
+    taskId: "task-two",
+    runId: "run_22222222222222222222222222222222",
+    bundle: path.join(root, "second-run-bundle"),
+  };
+  for (const trial of [first, second]) {
+    await writeExportedEvalRunBundle({
+      bundle: trial.bundle,
+      runId: trial.runId,
+      evalId,
+      trialId: trial.trialId,
+      taskId: trial.taskId,
+      benchmarkId: normalized.benchmark_id,
+      benchmarkRevision: normalized.benchmark_revision,
+    });
+  }
+  const harbor = await writeIncrementalFakeHarbor(root, { first, second });
+  const npm = await writeFakeNpm(root);
+  const running = runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+    },
+  });
+
+  const evalDirectory = path.join(root, "evals", evalId);
+  type ObservedProgress = {
+    status: string;
+    generation: number;
+    planned_tasks: number | null;
+    planned_trials: number | null;
+    trials: Array<{ run_id: string }>;
+  };
+  let observed: ObservedProgress | null = null;
+  for (let index = 0; index < 200; index += 1) {
+    observed = await readJSON<ObservedProgress | null>(path.join(evalDirectory, "progress.json"), null).catch(() => null);
+    if (observed?.trials.length === 1) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(observed?.status, "running");
+  assert.equal(observed?.generation, 1);
+  assert.equal(observed?.planned_tasks, 2);
+  assert.equal(observed?.planned_trials, 2);
+  assert.deepEqual(observed?.trials.map((trial) => trial.run_id), [first.runId]);
+  await assert.rejects(stat(path.join(evalDirectory, "result.json")), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
+
+  const result = await running;
+  assert.equal(result.status, "succeeded");
+  const finalProgress = await readJSON<ObservedProgress>(path.join(evalDirectory, "progress.json"));
+  assert.equal(finalProgress.generation, 2);
+  assert.equal(finalProgress.planned_tasks, 2);
+  assert.equal(finalProgress.planned_trials, 2);
+  assert.deepEqual(finalProgress.trials.map((trial) => trial.run_id), [first.runId, second.runId]);
+});
+
+test("Harbor eval publishes a diagnostic trial after the bundle readiness grace", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-diagnostic-progress-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "task-timeout"), { recursive: true });
+  await writeFile(path.join(dataset, "task-timeout", "task.toml"), "", "utf8");
+  const harbor = await writeMissingBundleFakeHarbor(root);
+  const npm = await writeFakeNpm(root);
+  const running = runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    trialBundleGraceMs: 100,
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+    },
+  });
+
+  const evalDirectory = path.join(root, "evals", evalId);
+  type DiagnosticProgress = {
+    planned_tasks: number | null;
+    planned_trials: number | null;
+    trials: Array<{ task_id: string; observation_status: string; invalid_reason?: string }>;
+  };
+  let observed: DiagnosticProgress | null = null;
+  for (let index = 0; index < 200; index += 1) {
+    observed = await readJSON<DiagnosticProgress | null>(path.join(evalDirectory, "progress.json"), null).catch(() => null);
+    if (observed?.trials.length === 1) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(observed?.planned_tasks, 1);
+  assert.equal(observed?.planned_trials, 1);
+  assert.deepEqual(observed?.trials.map(({ task_id, observation_status, invalid_reason }) => ({
+    task_id,
+    observation_status,
+    invalid_reason,
+  })), [{
+    task_id: "task-timeout",
+    observation_status: "invalid",
+    invalid_reason: "infrastructure_failure",
+  }]);
+  await assert.rejects(stat(path.join(evalDirectory, "result.json")), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
+
+  const result = await running;
+  assert.equal(result.status, "succeeded");
+  assert.equal((result.trials as Array<{ observation_status: string }>)[0]?.observation_status, "invalid");
+});
+
+test("eval rerun executes only invalid tasks and preserves valid rewards", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-rerun-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  for (const taskId of ["task-a", "task-b"]) {
+    await mkdir(path.join(dataset, taskId), { recursive: true });
+    await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  }
+  const normalized = await validateEvalRequest(evalRequest({ dataset }));
+  const taskA = {
+    trialId: "task-a__1",
+    taskId: "task-a",
+    runId: "run_33333333333333333333333333333333",
+    bundle: path.join(root, "task-a-bundle"),
+  };
+  const taskB = {
+    trialId: "task-b__1",
+    taskId: "task-b",
+    runId: "run_44444444444444444444444444444444",
+    bundle: path.join(root, "task-b-bundle"),
+  };
+  for (const trial of [taskA, taskB]) {
+    await writeExportedEvalRunBundle({
+      bundle: trial.bundle,
+      runId: trial.runId,
+      evalId,
+      trialId: trial.trialId,
+      taskId: trial.taskId,
+      benchmarkId: normalized.benchmark_id,
+      benchmarkRevision: normalized.benchmark_revision,
+    });
+  }
+  const harbor = await writeTaskRerunFakeHarbor(root, { taskA, taskB });
+  const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  const initial = await runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env,
+    request: { dataset, harness_ref: "pi@version:1.2.3", model: "openai/test-model", timeout_ms: 5_000 },
+  });
+  const initialTrials = initial.trials as Array<{ task_id: string; run_id: string; reward?: number; observation_status: string }>;
+  assert.equal(initialTrials.find((trial) => trial.task_id === "task-a")?.observation_status, "valid");
+  assert.equal(initialTrials.find((trial) => trial.task_id === "task-b")?.observation_status, "invalid");
+
+  const rerun = await rerunEval({
+    evalId,
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    env,
+  });
+  assert.deepEqual(rerun.selected_tasks, ["task-b"]);
+  assert.deepEqual(rerun.repaired_tasks, ["task-b"]);
+  assert.deepEqual(rerun.remaining_invalid_tasks, []);
+  assert.equal(rerun.eval_status, "succeeded");
+  const result = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "result.json"));
+  const trials = result.trials as Array<{ task_id: string; run_id: string; reward: number; observation_status: string }>;
+  assert.equal(trials.find((trial) => trial.task_id === "task-a")?.run_id, taskA.runId);
+  assert.equal(trials.find((trial) => trial.task_id === "task-a")?.reward, 0.25);
+  assert.equal(trials.find((trial) => trial.task_id === "task-b")?.run_id, taskB.runId);
+  assert.equal(trials.find((trial) => trial.task_id === "task-b")?.reward, 0.75);
+  const rerunConfig = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "reruns", rerun.rerun_id, "harbor", "job.json"));
+  assert.deepEqual(rerunConfig.datasets, [{ path: dataset, task_names: ["task-b"] }]);
+});
+
 test("Harbor bridge rejects a job-pinned controller_runtime_id mismatch before uploading", async (t) => {
   // The bridge must compare the job-pinned controller_runtime_id with the
   // manifest's runtime_id and refuse to upload when they differ (spec §4.6).
@@ -522,6 +833,146 @@ async function writeExportedEvalRunBundle(options: {
     completed_at: now,
     sealed: false,
   });
+  await atomicWriteJSON(path.join(options.bundle, "bundle.complete.json"), {
+    schema_version: "1",
+    run_id: options.runId,
+    eval_id: options.evalId,
+    trial_id: options.trialId,
+    completed_at: now,
+  });
+}
+
+async function writeIncrementalFakeHarbor(directory: string, options: {
+  first: { bundle: string; trialId: string; taskId: string };
+  second: { bundle: string; trialId: string; taskId: string };
+}): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-incremental");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const output = path.join(config.jobs_dir, config.job_name);
+function publish(trial, reward) {
+  const trialDirectory = path.join(output, trial.trialId);
+  const agentDirectory = path.join(trialDirectory, "agent");
+  fs.mkdirSync(agentDirectory, {recursive:true});
+  fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:trial.taskId}}));
+  fs.cpSync(trial.bundle, path.join(agentDirectory, "hitch-run-bundle"), {recursive:true});
+  fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+    task_name: trial.taskId,
+    trial_name: trial.trialId,
+    verifier_result: {rewards:{reward}}
+  }));
+}
+const first = ${JSON.stringify(options.first)};
+const second = ${JSON.stringify(options.second)};
+publish(first, 1);
+setTimeout(() => {
+  publish(second, 0.5);
+  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+    n_total_trials: 2,
+    stats: {n_completed_trials:2,n_errored_trials:0,n_cancelled_trials:0}
+  }));
+  process.stdout.write("Results written\\n");
+}, 1000);
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeMissingBundleFakeHarbor(directory: string): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-missing-bundle");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const output = path.join(config.jobs_dir, config.job_name);
+const trialDirectory = path.join(output, "task-timeout__1");
+fs.mkdirSync(trialDirectory, {recursive:true});
+fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:"task-timeout"}}));
+fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+  task_name: "task-timeout",
+  trial_name: "task-timeout__1",
+  exception_info: {exception_type:"AgentTimeoutError"},
+  verifier_result: {rewards:{reward:0}}
+}));
+setTimeout(() => {
+  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+    n_total_trials: 1,
+    stats: {n_completed_trials:0,n_errored_trials:1,n_cancelled_trials:0}
+  }));
+  process.stdout.write("Results written\\n");
+}, 1000);
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeTaskRerunFakeHarbor(directory: string, options: {
+  taskA: { bundle: string; trialId: string; taskId: string };
+  taskB: { bundle: string; trialId: string; taskId: string };
+}): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-rerun");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const output = path.join(config.jobs_dir, config.job_name);
+const taskA = ${JSON.stringify(options.taskA)};
+const taskB = ${JSON.stringify(options.taskB)};
+const selected = config.datasets[0].task_names;
+function publish(trial, reward, withBundle) {
+  const trialDirectory = path.join(output, trial.trialId);
+  fs.mkdirSync(path.join(trialDirectory, "agent"), {recursive:true});
+  fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:trial.taskId}}));
+  if (withBundle) fs.cpSync(trial.bundle, path.join(trialDirectory, "agent", "hitch-run-bundle"), {recursive:true});
+  fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+    task_name: trial.taskId,
+    trial_name: trial.trialId,
+    ...(withBundle ? {} : {exception_info:{exception_type:"InfraError"}}),
+    verifier_result: {rewards:{reward}}
+  }));
+}
+if (Array.isArray(selected)) {
+  if (JSON.stringify(selected) !== JSON.stringify(["task-b"])) process.exit(4);
+  publish(taskB, 0.75, true);
+  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+    n_total_trials: 1,
+    stats: {n_completed_trials:1,n_errored_trials:0,n_cancelled_trials:0}
+  }));
+} else {
+  publish(taskA, 0.25, true);
+  publish(taskB, 0, false);
+  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+    n_total_trials: 2,
+    stats: {n_completed_trials:1,n_errored_trials:1,n_cancelled_trials:0}
+  }));
+}
+process.stdout.write("Results written\\n");
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
 }
 
 async function writeTaskIdentityFakeHarbor(directory: string, options: {

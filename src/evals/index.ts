@@ -1,9 +1,12 @@
-export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, newEvalId, resolveBenchmarkReference, validateEvalRequest } from "./request.js";
+export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, newEvalId, resolveBenchmarkReference, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 export type { EvalRequestInput } from "./request.js";
 export type { EvalRequest } from "../domain/index.js";
 export { runEval } from "./service.js";
 export type { EvalResult, RunEvalOptions } from "./service.js";
 export { inspectEval, listEvals } from "./records.js";
 export type { InspectedEval, ListedEval } from "./records.js";
-export { importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";
+export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";
 export type { ImportEvalRunsOptions } from "./trial-import.js";
+export { createEvalProgress, evalTrialKey, mergeEvalProgressTrial, readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
+export { rerunEval, selectRerunTasks } from "./rerun.js";
+export type { EvalRerunResult, RerunEvalOptions, RerunSelector } from "./rerun.js";

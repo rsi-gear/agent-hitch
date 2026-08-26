@@ -1,17 +1,48 @@
 import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "../../backends/index.js";
-import { inspectEval, listEvals, runEval } from "../../evals/index.js";
+import { inspectEval, listEvals, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
 import { SCHEMA_VERSION, invalidInput } from "../../foundation/index.js";
-import { assertNoArgs, parseEvalRequest, takeFlag, takeOption } from "../arguments.js";
+import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
 
 export async function evalCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();
   switch (action) {
     case "run": return evalRunCommand(args, root);
+    case "rerun": return evalRerunCommand(args, root);
     case "list": return evalListCommand(args, root);
     case "inspect": return evalInspectCommand(args, root);
     case "setup": return evalSetupCommand(args, root);
     case "doctor": return evalDoctorCommand(args, root);
-    default: throw invalidInput("eval requires run, list, inspect, setup, or doctor");
+    default: throw invalidInput("eval requires run, rerun, list, inspect, setup, or doctor");
+  }
+}
+
+async function evalRerunCommand(args: string[], root: string): Promise<void> {
+  const evalIdValue = args.shift();
+  if (!evalIdValue) throw invalidInput("eval rerun requires an eval ID");
+  const evalId = validateEvalId(evalIdValue);
+  const invalid = takeFlag(args, "--invalid");
+  const taskNames = takeRepeatedOption(args, "--task");
+  const output = takeOption(args, "--output") || "json";
+  const harborExecutable = takeOption(args, "--harbor");
+  assertNoArgs(args);
+  if (output !== "json") throw invalidInput("eval rerun --output must be json");
+  if (invalid === (taskNames.length > 0)) throw invalidInput("eval rerun requires exactly one of --invalid or --task");
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
+  try {
+    const result = await rerunEval({
+      evalId,
+      root,
+      selector: invalid ? { mode: "invalid" } : { mode: "tasks", taskNames },
+      ...(harborExecutable === undefined ? {} : { harborExecutable }),
+      signal: controller.signal,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } finally {
+    process.removeListener("SIGINT", cancel);
+    process.removeListener("SIGTERM", cancel);
   }
 }
 
@@ -61,6 +92,7 @@ async function evalDoctorCommand(args: string[], root: string): Promise<void> {
 async function evalRunCommand(args: string[], root: string): Promise<void> {
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
+  const requestedEvalId = takeOption(args, "--eval-id");
   const request = parseEvalRequest(args);
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
@@ -70,6 +102,7 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
   process.once("SIGTERM", cancel);
   try {
     const result = await runEval({
+      ...(requestedEvalId !== undefined ? { evalId: validateEvalId(requestedEvalId) } : {}),
       request,
       root,
       ...(harborExecutable !== undefined ? { harborExecutable } : {}),

@@ -36,6 +36,7 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /--workspace-mode <mode>/);
   assert.match(help.stdout, /hitch workspace inspect <run-id>/);
   assert.match(help.stdout, /hitch eval run \[--backend harbor\] --dataset <ref>/);
+  assert.match(help.stdout, /hitch eval rerun <eval-id> \(--invalid \| --task <name>/);
   assert.match(help.stdout, /hitch eval setup harbor/);
   assert.match(help.stdout, /hitch eval doctor/);
 
@@ -68,6 +69,14 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   ], { encoding: "utf8" });
   assert.equal(mutableEval.status, 2);
   assert.match(mutableEval.stderr, /eval requires an immutable harness ref/);
+
+  const mixedRerunSelector = spawnSync(process.execPath, [
+    executable,
+    "eval", "rerun", "eval_77777777777777777777777777777777",
+    "--invalid", "--task", "task-a",
+  ], { encoding: "utf8" });
+  assert.equal(mixedRerunSelector.status, 2);
+  assert.match(mixedRerunSelector.stderr, /exactly one of --invalid or --task/);
 });
 
 test("CLI sets up and diagnoses a managed Harbor backend", async (t) => {
@@ -137,10 +146,12 @@ test("CLI runs, lists, and inspects Harbor evals", async (t) => {
   const harbor = await writeFakeHarbor(root);
   const npm = await writeFakeNpm(root);
   const env = { ...process.env, HITCH_NPM_PATH: npm };
+  const evalId = "eval_77777777777777777777777777777777";
   const run = spawnSync(process.execPath, [
     executable,
     "--root", root,
     "eval", "run",
+    "--eval-id", evalId,
     "--dataset", "demo@1.0",
     "--harness", "pi@version:1.2.3",
     "--model", "openai/test-model",
@@ -150,6 +161,7 @@ test("CLI runs, lists, and inspects Harbor evals", async (t) => {
   assert.equal(run.status, 0, run.stderr || undefined);
   const result = JSON.parse(run.stdout) as { status: string; eval_id: string };
   assert.equal(result.status, "succeeded");
+  assert.equal(result.eval_id, evalId);
 
   const list = spawnSync(process.execPath, [executable, "--root", root, "eval", "list", "--json"], { encoding: "utf8" });
   assert.equal(list.status, 0, list.stderr || undefined);
