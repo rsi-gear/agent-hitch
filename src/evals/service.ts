@@ -1,9 +1,9 @@
 import path from "node:path";
-import { resolveHarness } from "../artifacts/index.js";
+import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../artifacts/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
-import type { LocalGitTransportUse } from "../backends/index.js";
+import type { HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import { ensureControllerRuntime, writeRuntimeReference } from "../controller-runtime/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
 import type { EvalId } from "../domain/index.js";
@@ -69,6 +69,45 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         status: "verified",
       });
     }
+    const selector = requestedReference.selector;
+    const verifiedLocalGitSource = localTransport && selector.type === "commit" && selector.source?.explicit
+      ? {
+          directory: selector.source.local_path,
+          commit: localTransport.manifest.commit,
+          tree: localTransport.manifest.tree,
+          resolutionIdentity: localTransport.manifest.resolution_identity,
+          payloadSha256: localTransport.manifest.payload_sha256,
+        }
+      : undefined;
+    const artifact = await prepareHarness(resolvedRevision, {
+      root,
+      env,
+      ...(signal ? { signal } : {}),
+      ...(verifiedLocalGitSource ? { verifiedLocalGitSource } : {}),
+    });
+    if (!artifact.artifact_integrity || !artifact.entrypoint_integrity) {
+      throw new HitchError("host-prepared harness artifact has no complete integrity metadata", {
+        code: "artifact_integrity_mismatch",
+        exitCode: 5,
+      });
+    }
+    const preparedArtifact: HarborPreparedArtifactUse = {
+      directory: preparedArtifactDirectory(root, artifact.artifact_id),
+      artifact_id: artifact.artifact_id,
+      artifact_integrity: artifact.artifact_integrity,
+      entrypoint_integrity: artifact.entrypoint_integrity,
+      harness_id: artifact.harness_id,
+      revision_identity: artifact.revision_identity,
+      platform: artifact.platform,
+      source_type: artifact.source_type,
+    };
+    sink.emit({
+      type: "eval.harness-artifact.prepared",
+      harness: artifact.harness_id,
+      artifact_id: artifact.artifact_id,
+      platform: artifact.platform,
+      cache_hit: artifact.cache_hit,
+    });
     // Phase 2: the shared, read-only, SHA-256-addressed controller runtime
     // cache replaces the per-eval Hitch runtime copy (spec §4).
     const controllerRuntime: ControllerRuntimeUseResult = await ensureControllerRuntime({ root });
@@ -100,6 +139,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtime_id: controllerRuntime.runtime_id,
         manifest_digest: controllerRuntime.manifest_digest,
       },
+      prepared_artifact: preparedArtifactSummary(preparedArtifact),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       created_at: new Date().toISOString(),
     };
@@ -130,6 +170,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       resolvedRevision,
       runtimeDirectory: controllerRuntime.directory,
       runtimeId: controllerRuntime.runtime_id,
+      preparedArtifact,
       ...(localTransport ? { localTransport } : {}),
       env,
       ...(harborExecutable !== undefined ? { harborExecutable } : {}),
@@ -167,6 +208,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       trials: trialRefs,
       summary: summarizeTrialRefs(trialRefs),
       backend_summary: backendRun.summary,
+      prepared_artifact: preparedArtifactSummary(preparedArtifact),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       ...(succeeded ? {} : {
         error: {
@@ -246,5 +288,17 @@ function transportSummary(transport: LocalGitTransportUse): Record<string, unkno
     payload_bytes: manifest.payload_bytes,
     object_count: manifest.object_count,
     file_count: manifest.file_count,
+  };
+}
+
+function preparedArtifactSummary(artifact: HarborPreparedArtifactUse): Record<string, unknown> {
+  return {
+    artifact_id: artifact.artifact_id,
+    artifact_integrity: artifact.artifact_integrity,
+    entrypoint_integrity: artifact.entrypoint_integrity,
+    harness_id: artifact.harness_id,
+    revision_identity: artifact.revision_identity,
+    platform: artifact.platform,
+    source_type: artifact.source_type,
   };
 }

@@ -9,10 +9,11 @@ import { inspectEval, listEvals, newEvalId, runEval, validateEvalRequest } from 
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { lockedHarnessRef } from "../src/backends/harbor/index.js";
+import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
 import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/store.js";
-import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { forceRemove, writeFakeDeepseekNpm, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 import type { EvalRequestInput } from "../src/evals/index.js";
 
 const hitchExecutable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
@@ -120,6 +121,9 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(agent.import_path, "hitch_harbor_agent:HitchHarborAgent");
   assert.equal(kwargs.harness_ref, "pi@version:1.2.3");
   assert.equal(kwargs.workdir, "/app");
+  const piArtifact = kwargs.harness_artifact as { harness_id: string; artifact_id: string };
+  assert.equal(piArtifact.harness_id, "pi");
+  assert.match(piArtifact.artifact_id, /^sha256:[0-9a-f]{64}$/);
   assert.equal((agent.env as Record<string, unknown>).DEEPSEEK_API_KEY, "${DEEPSEEK_API_KEY}");
   assert.equal((agent.env as Record<string, unknown>).OPENAI_API_KEY, "${OPENAI_API_KEY}");
   assert.doesNotMatch(await readFile(path.join(directory, "harbor", "job.json"), "utf8"), /(?:deepseek-)?must-not-be-written/);
@@ -139,6 +143,89 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal((inspected.plan as { candidate: { revision_identity: string } }).candidate.revision_identity, (result.candidate as { revision_identity: string }).revision_identity);
   assert.equal(inspected.result?.status, "succeeded");
   assert.equal(inspected.runtime_storage, "controller-runtime-ref-v1");
+});
+
+test("every project-installed version harness is host-prepared and handed to Harbor", async (t) => {
+  const harnesses = [
+    { id: "codex", version: "0.92.0", packageName: "@openai/codex", binName: "codex" },
+    { id: "claude", version: "2.1.25", packageName: "@anthropic-ai/claude-code", binName: "claude" },
+    { id: "pi", version: "1.2.3", packageName: "@earendil-works/pi-coding-agent", binName: "pi" },
+    { id: "opencode", version: "1.18.15", packageName: "opencode-ai", binName: "opencode" },
+  ];
+  for (const harness of harnesses) {
+    const root = await mkdtemp(path.join(tmpdir(), `hitch-eval-${harness.id}-artifact-`));
+    t.after(() => forceRemove(root));
+    const fakeNpm = await writeFakeNpm(root, {
+      version: harness.version,
+      packageName: harness.packageName,
+      binName: harness.binName,
+    });
+    const fakeHarbor = await writeFakeHarbor(root);
+    const evalId = newEvalId();
+    const result = await runEval({
+      evalId,
+      root,
+      harborExecutable: fakeHarbor,
+      env: { ...process.env, HITCH_NPM_PATH: fakeNpm },
+      request: {
+        dataset: "demo@1.0",
+        harness_ref: `${harness.id}@version:${harness.version}`,
+        timeout_ms: 5_000,
+      },
+    });
+    assert.equal(result.status, "succeeded", `${harness.id} eval failed`);
+    const prepared = result.prepared_artifact as { artifact_id: string; harness_id: string };
+    assert.equal(prepared.harness_id, harness.id);
+    assert.ok((await stat(preparedArtifactDirectory(root, prepared.artifact_id))).isDirectory());
+    const config = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "harbor", "job.json"));
+    const agent = (config.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
+    const handoff = (agent.kwargs as { harness_artifact: { artifact_id: string; harness_id: string } }).harness_artifact;
+    assert.equal(handoff.harness_id, harness.id);
+    assert.equal(handoff.artifact_id, prepared.artifact_id);
+  }
+});
+
+test("DeepSeek eval prepares one host artifact and pins it for every Harbor trial", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-dsh-artifact-"));
+  t.after(() => forceRemove(root));
+  const fakeNpm = await writeFakeDeepseekNpm(root);
+  const fakeHarbor = await writeFakeHarbor(root);
+  const evalId = newEvalId();
+  const result = await runEval({
+    evalId,
+    root,
+    harborExecutable: fakeHarbor,
+    env: { ...process.env, HITCH_NPM_PATH: fakeNpm },
+    request: {
+      dataset: "demo@1.0",
+      harness_ref: "deepseek@version:0.1.0-rc.7",
+      model: "deepseek/deepseek-v4-flash",
+      attempts: 3,
+      max_concurrent: 3,
+      timeout_ms: 5_000,
+    },
+  });
+
+  assert.equal(result.status, "succeeded");
+  const prepared = result.prepared_artifact as {
+    artifact_id: string;
+    harness_id: string;
+    revision_identity: string;
+  };
+  assert.match(prepared.artifact_id, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(prepared.harness_id, "deepseek");
+  const config = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "harbor", "job.json"));
+  const agent = (config.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
+  const handoff = ((agent.kwargs as Record<string, unknown>).harness_artifact) as Record<string, string>;
+  assert.equal(handoff.artifact_id, prepared.artifact_id);
+  assert.equal(handoff.revision_identity, prepared.revision_identity);
+  assert.equal(handoff.directory, preparedArtifactDirectory(root, prepared.artifact_id));
+  const invocations = (await readFile(path.join(root, "fake-dsh-npm.log"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as string[]);
+  assert.equal(invocations.filter((args) => args[0] === "pack").length, 1);
+  assert.equal(invocations.filter((args) => args[0] === "install" && args.includes("--global")).length, 1);
 });
 
 test("Harbor bridge source is valid Python", () => {
@@ -186,6 +273,48 @@ test("Harbor bridge setup() and run() behave against a real bundle", async (t) =
   const result = spawnSync("python3", [smoke, bridge, use.directory, logs], { encoding: "utf8" });
   assert.equal(result.status, 0, `bridge smoke failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge smoke OK/);
+});
+
+test("Harbor bridge uploads and directly uses a compatible host-prepared harness artifact", async (t) => {
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-artifact-"));
+  const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
+  const use = await ensureControllerRuntime({ root: state });
+  const fakeNpm = await writeFakeNpm(state);
+  const resolved = await resolveHarness("pi@version:1.2.3", {
+    root: state,
+    env: { ...process.env, HITCH_NPM_PATH: fakeNpm },
+  });
+  const artifact = await prepareHarness(resolved, {
+    root: state,
+    env: { ...process.env, HITCH_NPM_PATH: fakeNpm },
+  });
+  t.after(() => forceRemove(state));
+  const smoke = path.resolve("test-support", "bridge_smoke.py");
+  const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
+  const logs = path.join(state, "logs");
+  const result = spawnSync("python3", [
+    smoke,
+    bridge,
+    use.directory,
+    logs,
+    "--artifact",
+    preparedArtifactDirectory(state, artifact.artifact_id),
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 0, `bridge artifact smoke failed:\n${result.stderr || result.stdout}`);
+  assert.match(result.stdout, /bridge smoke OK/);
+
+  const fallbackLogs = path.join(state, "fallback-logs");
+  const fallback = spawnSync("python3", [
+    smoke,
+    bridge,
+    use.directory,
+    fallbackLogs,
+    "--artifact",
+    preparedArtifactDirectory(state, artifact.artifact_id),
+    "--incompatible",
+  ], { encoding: "utf8" });
+  assert.equal(fallback.status, 0, `bridge artifact fallback smoke failed:\n${fallback.stderr || fallback.stdout}`);
+  assert.match(fallback.stdout, /bridge smoke OK/);
 });
 
 test("failed Harbor bundle imports retain canonical staging evidence", async (t) => {

@@ -5,7 +5,7 @@ import type { NormalizedEvent } from "../adapters/index.js";
 import { EventSink } from "./events.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, consumeLines, ensureDir, readJSON, terminateProcess } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
-import { prepareHarness, resolveHarness } from "../artifacts/index.js";
+import { assertPreparedArtifactRevision, prepareHarness, resolveHarness } from "../artifacts/index.js";
 import type { PreparedArtifact, ResolvedRevision } from "../artifacts/index.js";
 import type { VerifiedLocalGitSource } from "../revisions/index.js";
 import {
@@ -22,12 +22,7 @@ import {
 } from "../workspaces/index.js";
 import type { WorkspacePlan } from "../workspaces/index.js";
 import { TrajectoryProjector, importDeepseekNativeSession } from "../trajectories/index.js";
-import {
-  TrajectoryWriter,
-  canonicalTrajectoryFileRef,
-  trajectoryRefPath,
-  trajectoryRefV2,
-} from "../trajectories/index.js";
+import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefPath, trajectoryRefV2 } from "../trajectories/index.js";
 import { ProviderCaptureWriter, redactProviderText } from "../trajectories/index.js";
 import type { ModelIdentityV1, RunId } from "../domain/index.js";
 import { looksImmutableModelId } from "./identity.js";
@@ -42,6 +37,7 @@ export interface ExecuteRunOptions {
   runsRoot: string;
   root?: string;
   resolvedRevision?: ResolvedRevision;
+  preparedArtifact?: PreparedArtifact;
   verifiedLocalGitSource?: VerifiedLocalGitSource;
   workspacePlan?: WorkspacePlan;
   onEvent?: (event: Record<string, unknown>) => void;
@@ -54,6 +50,7 @@ export async function executeRun({
   runsRoot,
   root = path.dirname(runsRoot),
   resolvedRevision,
+  preparedArtifact,
   verifiedLocalGitSource,
   workspacePlan,
   onEvent,
@@ -130,7 +127,12 @@ export async function executeRun({
     };
     await atomicWriteJSON(manifestPath, manifest);
     stage = "preparation";
-    artifact = await prepareHarness(resolution, { root, ...(signal ? { signal } : {}), ...(verifiedLocalGitSource ? { verifiedLocalGitSource } : {}) });
+    if (preparedArtifact) {
+      assertPreparedArtifactRevision(preparedArtifact, resolution);
+      artifact = preparedArtifact;
+    } else {
+      artifact = await prepareHarness(resolution, { root, ...(signal ? { signal } : {}), ...(verifiedLocalGitSource ? { verifiedLocalGitSource } : {}) });
+    }
     stage = "workspace_preparation";
     workspaceLease = await prepareWorkspace(workspacePlan, { recordPath: workspacePath, ...(signal ? { signal } : {}) });
     manifest = {

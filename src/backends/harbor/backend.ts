@@ -18,11 +18,23 @@ export interface RunHarborBackendOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string;
+  preparedArtifact?: HarborPreparedArtifactUse;
   localTransport?: LocalGitTransportUse;
   env?: NodeJS.ProcessEnv;
   harborExecutable?: string;
   signal?: AbortSignal;
   emit?: (event: Record<string, unknown>) => void;
+}
+
+export interface HarborPreparedArtifactUse {
+  directory: string;
+  artifact_id: string;
+  artifact_integrity: string;
+  entrypoint_integrity: string;
+  harness_id: string;
+  revision_identity: string;
+  platform: string;
+  source_type: string;
 }
 
 export interface HarborBackendResult {
@@ -51,6 +63,7 @@ export async function runHarborBackend({
   resolvedRevision,
   runtimeDirectory,
   runtimeId,
+  preparedArtifact,
   localTransport,
   env = process.env,
   harborExecutable,
@@ -71,6 +84,7 @@ export async function runHarborBackend({
     resolvedRevision,
     runtimeDirectory,
     runtimeId,
+    preparedArtifact,
     localTransport,
     backendDirectory,
     jobName,
@@ -140,6 +154,7 @@ export interface BuildHarborJobConfigOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string | undefined;
+  preparedArtifact?: HarborPreparedArtifactUse | undefined;
   localTransport?: LocalGitTransportUse | undefined;
   backendDirectory: string;
   jobName?: string;
@@ -152,6 +167,7 @@ export async function buildHarborJobConfig({
   resolvedRevision,
   runtimeDirectory,
   runtimeId,
+  preparedArtifact,
   localTransport,
   backendDirectory,
   jobName = "job",
@@ -182,6 +198,18 @@ export async function buildHarborJobConfig({
       // (spec §4.2); `runtime_id` records the exact execution payload.
       hitch_runtime_dir: runtimeDirectory,
       ...(runtimeId ? { controller_runtime_id: runtimeId } : {}),
+      ...(preparedArtifact ? {
+        harness_artifact: {
+          directory: preparedArtifact.directory,
+          artifact_id: preparedArtifact.artifact_id,
+          artifact_integrity: preparedArtifact.artifact_integrity,
+          entrypoint_integrity: preparedArtifact.entrypoint_integrity,
+          harness_id: preparedArtifact.harness_id,
+          revision_identity: preparedArtifact.revision_identity,
+          platform: preparedArtifact.platform,
+          source_type: preparedArtifact.source_type,
+        },
+      } : {}),
       ...(localTransport ? {
         local_source_transport: {
           kind: localTransport.manifest.kind,

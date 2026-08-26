@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { listPreparedArtifacts, prepareHarness, resolveHarness } from "../src/artifacts/index.js";
+import { listPreparedArtifacts, loadPreparedArtifact, prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
 import { executeRun, newRunId } from "../src/runs/index.js";
 import { readJSON } from "../src/foundation/index.js";
 import { parseHarnessReference } from "../src/revisions/index.js";
@@ -101,6 +101,43 @@ test("DeepSeek versions use an integrity-checked isolated global npm prefix", as
   assert.equal(invocations.some((args) => args[0] === "pack"), true);
   assert.equal(invocations.some((args) => args[0] === "install" && args.includes("--global") && args.includes("--prefix")), true);
   assert.equal(invocations.some((args) => args[0] === "install" && args.includes("--save-exact")), false);
+
+  const handedOff = await loadPreparedArtifact(preparedArtifactDirectory(root, artifact.artifact_id), {
+    artifact_id: artifact.artifact_id,
+    artifact_integrity: artifact.artifact_integrity as string,
+    entrypoint_integrity: artifact.entrypoint_integrity as string,
+    harness_id: artifact.harness_id,
+    revision_identity: artifact.revision_identity,
+    platform: artifact.platform,
+  });
+  assert.equal(handedOff.artifact_id, artifact.artifact_id);
+  assert.equal(handedOff.cache_hit, true);
+  const transportedRoot = path.join(root, "transported-state");
+  const transportedRun = await executeRun({
+    runId: newRunId(),
+    root: transportedRoot,
+    runsRoot: path.join(transportedRoot, "runs"),
+    resolvedRevision: resolved,
+    preparedArtifact: handedOff,
+    request: request({
+      harness_ref: "deepseek@version:0.1.0-rc.7",
+      cwd: root,
+      prompt: "transported",
+      timeout_ms: 5_000,
+    }),
+  });
+  assert.equal(transportedRun.status, "succeeded");
+  await assert.rejects(
+    loadPreparedArtifact(preparedArtifactDirectory(root, artifact.artifact_id), {
+      artifact_id: artifact.artifact_id,
+      artifact_integrity: `sha256:${"f".repeat(64)}`,
+      entrypoint_integrity: artifact.entrypoint_integrity as string,
+      harness_id: artifact.harness_id,
+      revision_identity: artifact.revision_identity,
+      platform: artifact.platform,
+    }),
+    (error: unknown) => (error as { code?: string }).code === "artifact_integrity_mismatch",
+  );
 });
 
 test("a clean local Git commit expands to a full SHA and produces an immutable runnable artifact", async () => {

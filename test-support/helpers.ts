@@ -91,9 +91,25 @@ export async function writeFakeNpm(directory: string, {
   version = "1.2.3",
   installedIntegrity = "sha512-fake-integrity",
   installDelayMs = 0,
-}: { version?: string; installedIntegrity?: string; installDelayMs?: number } = {}): Promise<string> {
+  packageName = "@earendil-works/pi-coding-agent",
+  binName = "pi",
+}: {
+  version?: string;
+  installedIntegrity?: string;
+  installDelayMs?: number;
+  packageName?: string;
+  binName?: string;
+} = {}): Promise<string> {
   const file = path.join(directory, "fake-npm");
-  const installedPi = fakePiSource(version);
+  const installedHarness = packageName === "@earendil-works/pi-coding-agent" && binName === "pi"
+    ? fakePiSource(version)
+    : `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  process.stdout.write(${JSON.stringify(binName)} + " " + ${JSON.stringify(version)} + "\\n");
+  process.exit(0);
+}
+process.stdout.write("{}\\n");
+`;
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
@@ -115,15 +131,19 @@ if (args[0] === "view") {
 if (args[0] === "install") {
   setTimeout(() => {
     const bin = path.join(process.cwd(), "node_modules", ".bin");
-    const packageRoot = path.join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent");
+    const packageRoot = path.join(process.cwd(), "node_modules", ...${JSON.stringify(packageName.split("/"))});
     fs.mkdirSync(bin, {recursive:true});
     fs.mkdirSync(path.join(packageRoot, "dist"), {recursive:true});
-    fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({name:"@earendil-works/pi-coding-agent",version:${JSON.stringify(version)},bin:{pi:"dist/cli.js"}}));
-    fs.writeFileSync(path.join(packageRoot, "dist", "cli.js"), ${JSON.stringify(installedPi)}, {mode:0o755});
+    fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
+      name:${JSON.stringify(packageName)},
+      version:${JSON.stringify(version)},
+      bin:{[${JSON.stringify(binName)}]:"dist/cli.js"}
+    }));
+    fs.writeFileSync(path.join(packageRoot, "dist", "cli.js"), ${JSON.stringify(installedHarness)}, {mode:0o755});
     fs.writeFileSync(path.join(process.cwd(), "package-lock.json"), JSON.stringify({
       lockfileVersion:3,
       packages:{
-        "node_modules/@earendil-works/pi-coding-agent":{
+        [${JSON.stringify(`node_modules/${packageName}`)}]:{
           version:${JSON.stringify(version)},
           integrity:${JSON.stringify(installedIntegrity)}
         }

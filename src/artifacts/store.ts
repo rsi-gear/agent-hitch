@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { access, rename, rm } from "node:fs/promises";
+import { access, lstat, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { AdapterDefinition } from "../adapters/index.js";
-import { SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON, withFileLock } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON, statePaths, withFileLock } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
 import type { ResolvedRevision } from "../revisions/index.js";
 import { artifactInvocation, artifactMatches } from "./integrity.js";
-import type { ArtifactManifest, PreparedArtifact } from "./types.js";
+import type { ArtifactManifest, PreparedArtifact, PreparedArtifactExpectation } from "./types.js";
 
 const RECIPE_VERSION = "1";
 
@@ -87,6 +87,82 @@ export async function readCachedArtifact(paths: StatePaths, preparationKey: stri
     return null;
   }
   return { ...manifest, ...artifactInvocation(manifest, directory), cache_hit: true };
+}
+
+export function preparedArtifactDirectory(root: string, artifactId: string): string {
+  if (!/^sha256:[0-9a-f]{64}$/.test(artifactId)) {
+    throw new HitchError(`invalid artifact ID: ${artifactId}`, { code: "artifact_invalid", exitCode: 5 });
+  }
+  return path.join(statePaths(root).artifacts, artifactId.slice("sha256:".length));
+}
+
+/**
+ * Load an artifact handed across an isolation boundary. The caller supplies
+ * independently pinned identity and integrity values (from Harbor's job
+ * configuration); the uploaded manifest is never allowed to redefine them.
+ */
+export async function loadPreparedArtifact(
+  directory: string,
+  expected: PreparedArtifactExpectation,
+): Promise<PreparedArtifact> {
+  const absolute = path.resolve(directory);
+  const info = await lstat(absolute).catch(() => null);
+  if (!info?.isDirectory() || info.isSymbolicLink()) {
+    throw new HitchError("prepared artifact handoff is not a regular directory", {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
+  const manifestPath = path.join(absolute, "artifact.json");
+  const manifestInfo = await lstat(manifestPath).catch(() => null);
+  if (!manifestInfo?.isFile() || manifestInfo.isSymbolicLink()) {
+    throw new HitchError("prepared artifact handoff has no regular manifest", {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
+  let manifest: ArtifactManifest | null;
+  try {
+    manifest = await readJSON<ArtifactManifest | null>(manifestPath, null);
+  } catch (error) {
+    throw new HitchError("prepared artifact manifest is unreadable", {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+      cause: error,
+    });
+  }
+  if (
+    !manifest
+    || manifest.artifact_id !== expected.artifact_id
+    || manifest.artifact_integrity !== expected.artifact_integrity
+    || manifest.entrypoint_integrity !== expected.entrypoint_integrity
+    || manifest.harness_id !== expected.harness_id
+    || manifest.revision_identity !== expected.revision_identity
+    || manifest.platform !== expected.platform
+    || manifest.resolved_revision?.harness_id !== expected.harness_id
+    || manifest.resolved_revision?.identity !== expected.revision_identity
+  ) {
+    throw new HitchError("prepared artifact handoff does not match its job-pinned identity", {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
+  const currentPlatform = `${process.platform}-${process.arch}`;
+  if (manifest.platform !== currentPlatform) {
+    throw new HitchError(`prepared artifact platform ${manifest.platform} is incompatible with ${currentPlatform}`, {
+      code: "artifact_platform_mismatch",
+      exitCode: 5,
+    });
+  }
+  if (manifest.source_type === "installed" || !await artifactMatches(absolute, manifest)) {
+    throw new HitchError("prepared artifact handoff failed content verification", {
+      code: "artifact_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
+  const invocation = artifactInvocation(manifest, absolute);
+  await access(invocation.entrypoint_args[0] || invocation.executable, manifest.launcher === "node" ? constants.R_OK : constants.X_OK);
+  return { ...manifest, ...invocation, cache_hit: true };
 }
 
 export async function withArtifactLock(

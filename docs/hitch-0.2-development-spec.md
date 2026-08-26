@@ -692,15 +692,22 @@ verifier execution, score, held-out evidence, and promotion decision.
 
 ### 7.7 Executable candidate evaluation
 
-An executable candidate does not enter Harbor until one complete transport
-path is implemented and pinned:
+Executable candidates require a complete, identity-pinned Harbor transport.
+The current eval path implements host-prepared artifact transfer for every
+supported immutable harness: Hitch prepares the artifact once, Harbor uploads
+it into every compatible trial, and container-side Hitch re-verifies the
+pinned content and entrypoint digests before execution. An OS/architecture
+mismatch falls back to the existing in-container preparation path.
+
+The supported transport designs are:
 
 1. Push the candidate to the adapter's registered remote and resolve the exact
    remote commit inside each trial container; or
 2. Upload a validated offline source/artifact/controller bundle with exact
    identities and platform compatibility; or
-3. Extend the Harbor agent to receive a host-prepared artifact rather than
-   resolving and preparing the candidate again inside the container.
+3. Have the Harbor agent receive a host-prepared artifact rather than resolving
+   and preparing the candidate again inside the container (implemented for all
+   supported immutable harnesses when the platform matches).
 
 Removing the `git+file` input guard alone is insufficient because the
 container still cannot access the host repository.

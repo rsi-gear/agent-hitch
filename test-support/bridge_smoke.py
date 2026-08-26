@@ -5,8 +5,8 @@ Stubs the Harbor Python API and drives `HitchHarborAgent.setup()` and
 
 - the payload directory (not the bundle root) is uploaded to /opt/hitch;
 - the CLI entrypoint is read from the manifest (no hardcoded dist/ path);
-- the three CLI invocations (--version, prepare, run) use the declared
-  entrypoint; and
+- the fallback CLI invocations (--version, prepare, run), or the prepared
+  artifact path (--version, run), use the declared entrypoint; and
 - the controller runtime id is recorded in context metadata.
 
 Run from Node via the test suite:
@@ -39,10 +39,11 @@ class ExecResult:
 class BaseEnvironment:
     """Records uploads and execs instead of touching a real container."""
 
-    def __init__(self, revision_identity: str) -> None:
+    def __init__(self, revision_identity: str, platform_identity: str = "linux-x64") -> None:
         self.uploads: list[tuple[str, str, str]] = []
         self.execs: list[str] = []
         self.revision_identity = revision_identity
+        self.platform_identity = platform_identity
 
     async def upload_dir(self, source: Path, target: str) -> None:
         self.uploads.append(("dir", str(source), target))
@@ -52,6 +53,8 @@ class BaseEnvironment:
 
     async def exec(self, command: str, cwd: str | None = None, user: str | int | None = None) -> ExecResult:
         self.execs.append(command)
+        if "process.platform" in command and "process.arch" in command:
+            return ExecResult(stdout=self.platform_identity + "\n", return_code=0)
         if "node -e" in command:
             return ExecResult(stdout="", return_code=0)
         if "command -v git" in command:
@@ -121,6 +124,10 @@ def load_bridge(bridge_path: str) -> Any:
 
 def main() -> int:
     bridge_path, bundle_root, logs_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+    artifact_dir: Path | None = None
+    incompatible_artifact = "--incompatible" in sys.argv[4:]
+    if len(sys.argv) > 5 and sys.argv[4] == "--artifact":
+        artifact_dir = Path(sys.argv[5])
     install_harbor_stubs()
     bridge = load_bridge(bridge_path)
 
@@ -136,18 +143,45 @@ def main() -> int:
 
     manifest = json.loads((Path(bundle_root) / "manifest.json").read_text(encoding="utf-8"))
     entrypoint = manifest["entrypoints"]["cli"]["path"]
-    revision_identity = "sha256:" + "a" * 64
+    artifact_manifest = (
+        json.loads((artifact_dir / "artifact.json").read_text(encoding="utf-8"))
+        if artifact_dir is not None else None
+    )
+    revision_identity = artifact_manifest["revision_identity"] if artifact_manifest else "sha256:" + "a" * 64
+    if artifact_manifest:
+        artifact_revision = artifact_manifest["resolved_revision"]["revision"]
+        selector = artifact_revision["type"]
+        value = artifact_revision["version"] if selector == "version" else artifact_revision["commit"]
+        harness_ref = f'{artifact_manifest["harness_id"]}@{selector}:{value}'
+    else:
+        harness_ref = "pi@version:1.2.3"
     runtime_id = manifest["runtime_id"]
 
-    env = BaseEnvironment(revision_identity=revision_identity)
+    container_platform = artifact_manifest["platform"] if artifact_manifest else "linux-x64"
+    if artifact_manifest and incompatible_artifact:
+        container_platform = "darwin-arm64" if container_platform != "darwin-arm64" else "linux-x64"
+    env = BaseEnvironment(
+        revision_identity=revision_identity,
+        platform_identity=container_platform,
+    )
     context = AgentContext()
     agent = bridge.HitchHarborAgent(
         logs_dir=agent_logs_dir,
-        harness_ref="pi@version:1.2.3",
+        harness_ref=harness_ref,
         revision_identity=revision_identity,
         hitch_runtime_dir=bundle_root,
         candidate_id="candidate-1",
         controller_runtime_id=runtime_id,
+        harness_artifact={
+            "directory": str(artifact_dir),
+            "artifact_id": artifact_manifest["artifact_id"],
+            "artifact_integrity": artifact_manifest["artifact_integrity"],
+            "entrypoint_integrity": artifact_manifest["entrypoint_integrity"],
+            "harness_id": artifact_manifest["harness_id"],
+            "revision_identity": artifact_manifest["revision_identity"],
+            "platform": artifact_manifest["platform"],
+            "source_type": artifact_manifest["source_type"],
+        } if artifact_manifest else None,
         hitch_timeout_ms=5_000,
         agent_args=[],
         workdir="/app",
@@ -170,12 +204,16 @@ def main() -> int:
 
     # 1. The payload directory is uploaded as /opt/hitch, not the bundle root.
     dir_uploads = [u for u in env.uploads if u[0] == "dir"]
-    if len(dir_uploads) != 1:
-        errors.append(f"expected exactly one dir upload, got {len(dir_uploads)}")
-    elif dir_uploads[0][2] != "/opt/hitch":
-        errors.append(f"payload must upload to /opt/hitch, got {dir_uploads[0][2]}")
-    elif not Path(dir_uploads[0][1]).name == "payload":
-        errors.append(f"upload source must be the payload directory, got {dir_uploads[0][1]}")
+    expected_uploads = 2 if artifact_manifest and not incompatible_artifact else 1
+    if len(dir_uploads) != expected_uploads:
+        errors.append(f"expected exactly {expected_uploads} dir uploads, got {len(dir_uploads)}")
+    runtime_uploads = [u for u in dir_uploads if u[2] == "/opt/hitch"]
+    if len(runtime_uploads) != 1 or Path(runtime_uploads[0][1]).name != "payload":
+        errors.append(f"runtime payload upload was invalid: {runtime_uploads!r}")
+    if artifact_manifest and not incompatible_artifact:
+        artifact_uploads = [u for u in dir_uploads if u[2] == "/opt/hitch-harness-artifact"]
+        if len(artifact_uploads) != 1 or Path(artifact_uploads[0][1]) != artifact_dir:
+            errors.append(f"prepared artifact upload was invalid: {artifact_uploads!r}")
 
     # 2. The CLI entrypoint comes from the manifest, and the exec commands use
     #    the shell-quoted /opt/hitch/<entrypoint> — never a hardcoded dist path.
@@ -183,7 +221,12 @@ def main() -> int:
     quoted_entry = shlex.quote(f"/opt/hitch/{entrypoint}")
     if f"node {quoted_entry} --version" not in " ".join(env.execs):
         errors.append(f"--version must use the manifest entrypoint {quoted_entry}")
-    if f"node {quoted_entry} prepare" not in " ".join(env.execs):
+    if artifact_manifest and not incompatible_artifact:
+        if f"node {quoted_entry} prepare" in " ".join(env.execs):
+            errors.append("container-local prepare ran despite a compatible uploaded artifact")
+        if "--internal-prepared-artifact /opt/hitch-harness-artifact" not in " ".join(env.execs):
+            errors.append("run did not receive the prepared artifact handoff")
+    elif f"node {quoted_entry} prepare" not in " ".join(env.execs):
         errors.append(f"prepare must use the manifest entrypoint {quoted_entry}")
     if f"node {quoted_entry} run" not in " ".join(env.execs):
         errors.append(f"run must use the manifest entrypoint {quoted_entry}")
@@ -201,6 +244,10 @@ def main() -> int:
         errors.append(f"task_id was {context.metadata.get('task_id')!r}, expected {task_id!r}")
     if context.metadata.get("attempt") != 1:
         errors.append(f"attempt was {context.metadata.get('attempt')!r}, expected 1")
+    if artifact_manifest:
+        expected_status = "incompatible_platform_fallback" if incompatible_artifact else "uploaded"
+        if context.metadata.get("harness_artifact_transport", {}).get("status") != expected_status:
+            errors.append(f"artifact transport metadata was {context.metadata.get('harness_artifact_transport')!r}")
 
     if errors:
         for error in errors:

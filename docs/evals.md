@@ -48,14 +48,16 @@ discovery.
 ```text
 Hitch eval engine
   -> resolve immutable harness revision
+  -> prepare/verify one host artifact for the selected harness
   -> for local Git, build and verify an exact-commit object pack
   -> generate Harbor JobConfig
   -> harbor run --config ... --yes
        -> create one Docker task environment per trial
        -> load HitchHarborAgent in the Harbor process
        -> upload the minimal Hitch runtime into the task container
-       -> upload, re-verify, and materialize the local Git pack when present
-       -> Hitch prepare + Hitch run in /app (shared workspace)
+       -> when platform-compatible, upload and re-verify the prepared harness artifact
+       -> otherwise upload/materialize local Git and prepare inside the container
+       -> Hitch run in /app (shared workspace)
        -> selected native harness edits the task filesystem
        -> export the complete run bundle before container teardown
        -> Harbor verifier computes rewards
@@ -79,6 +81,20 @@ preserved, and an explicitly supplied bypass flag is not duplicated.
 The outer Harbor agent timeout is the Hitch timeout plus a 30-second cleanup
 window. Harbor's agent setup timeout is configured separately because it may
 need to install Node.js 22 and prepare the selected harness revision.
+
+Every eval prepares the selected immutable harness once in Hitch's host-side
+content-addressed artifact store. The Harbor job pins its artifact ID,
+revision identity, entrypoint/content digests, source type, and platform; each
+compatible trial receives the same verified directory and runs it directly
+instead of contacting a package registry or rebuilding the source. The
+container recomputes the uploaded artifact integrity before execution.
+
+Prepared artifacts are not assumed to be cross-platform `node_modules`
+trees. The bridge probes the trial's Node platform (`process.platform` and
+`process.arch`) before upload. If it differs from the host artifact platform,
+the bridge safely falls back to the original per-container prepare path. This
+keeps macOS-hosted Docker evals correct; a future target-platform builder can
+remove that fallback cost without weakening artifact identity checks.
 
 ## Inputs and portability
 
@@ -161,6 +177,9 @@ trajectory authority.
 For a local Git eval, `plan.json` and `result.json` also record the commit, tree,
 host resolution identity, payload SHA-256, byte count, object count, and file
 count. These durable records never depend on the container's temporary path.
+Eval records additionally include `prepared_artifact` with the
+artifact/revision identities, integrity digests, source type, and platform;
+the machine-local artifact directory appears only in Harbor's `job.json`.
 The untouched Harbor `result.json` remains authoritative for backend-specific
 detail.
 

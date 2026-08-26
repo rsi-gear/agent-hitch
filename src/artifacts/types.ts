@@ -30,6 +30,15 @@ export interface PreparedArtifact extends ArtifactManifest, ArtifactInvocation {
   cache_hit: boolean;
 }
 
+export interface PreparedArtifactExpectation {
+  artifact_id: string;
+  artifact_integrity: string;
+  entrypoint_integrity: string;
+  harness_id: string;
+  revision_identity: string;
+  platform: string;
+}
+
 export interface ListedArtifact extends ArtifactManifest {
   status: "ready" | "invalid";
 }
