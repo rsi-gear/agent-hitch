@@ -24,67 +24,105 @@ export interface ImportEvalRunsOptions {
   benchmarkId: string;
   benchmarkRevision: string;
   runtimeId?: string;
+  harborJobDirectory?: string;
   rawResult: Record<string, unknown> | null;
 }
 
+export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
+  requireCompleteMarker?: boolean;
+  allowMissingBundleDiagnostic?: boolean;
+}
+
 /** Import every Harbor trial into the authoritative runs/ store. */
-export async function importEvalTrialRuns(options: ImportEvalRunsOptions): Promise<EvalTrialRefV1[]> {
+export async function importEvalTrialRuns(
+  options: ImportEvalRunsOptions,
+  existingRefs: readonly EvalTrialRefV1[] = [],
+): Promise<EvalTrialRefV1[]> {
   const trials = Array.isArray(options.rawResult?.trial_results)
     ? options.rawResult.trial_results as Record<string, unknown>[]
     : [];
-  const refs: EvalTrialRefV1[] = [];
+  const refs: EvalTrialRefV1[] = [...existingRefs];
   for (const [index, trial] of trials.entries()) {
-    // Harbor's result task_name may be display-qualified (for example,
-    // terminal-bench/regex-log), while the persisted trial lock contains the
-    // canonical task id used by the in-container bridge and exported run.
-    // Keep task_name only as a compatibility fallback for Harbor runtimes
-    // that do not persist a lock.json.
-    const fallbackTaskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
-    const trialId = nonEmpty(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
-    const attempt = trialAttempt(trialId);
-    const trialDirectory = path.join(options.evalDirectory, "harbor", "job", trialId);
-    const bundle = await findRunBundle(trialDirectory);
-    let taskId = fallbackTaskId;
-    let published = false;
-    try {
-      taskId = await lockedTaskId(trialDirectory) || fallbackTaskId;
-      if (bundle) {
-        refs.push(await importRunBundle({ ...options, trial, taskId, trialId, attempt, bundle }));
-        published = true;
-      } else {
-        refs.push(await createDiagnosticRun({ ...options, trial, taskId, trialId, attempt }));
-      }
-    } catch (error) {
-      if (bundle) {
-        await atomicWriteJSON(path.join(path.dirname(bundle), "hitch-run-import-error.json"), {
-          schema_version: "1",
-          trial_id: trialId,
-          code: "run_bundle_import_failed",
-          message: (error as Error).message,
-          recorded_at: new Date().toISOString(),
-        }).catch(() => {});
-      }
-      refs.push(await createDiagnosticRun({
-        ...options,
-        trial: {
-          ...trial,
-          exception_info: "hitch-run-bundle-import-failed",
-          hitch_import_error: (error as Error).message,
-        },
-        taskId,
-        trialId,
-        attempt,
-      }));
-    } finally {
-      // The exported bundle is staging, not a second trajectory authority.
-      // Delete it only after atomic publication. A failed import keeps the
-      // complete bundle beside its diagnostic so it can be inspected/retried.
-      if (bundle && published && isWithin(options.evalDirectory, bundle)) {
-        await rm(bundle, { recursive: true, force: true });
-      }
-    }
+    const ref = await importEvalTrialRun(options, trial, index, refs);
+    if (!refs.some((current) => current.trial_id === ref.trial_id)) refs.push(ref);
   }
   return refs;
+}
+
+/** Import one settled Harbor trial, reusing an already-published ref idempotently. */
+export async function importEvalTrialRun(
+  options: ImportEvalRunOptions,
+  trial: Record<string, unknown>,
+  index = 0,
+  existingRefs: readonly EvalTrialRefV1[] = [],
+): Promise<EvalTrialRefV1> {
+  // Harbor's result task_name may be display-qualified (for example,
+  // terminal-bench/regex-log), while the persisted trial lock contains the
+  // canonical task id used by the in-container bridge and exported run.
+  const fallbackTaskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
+  const trialId = nonEmpty(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
+  const attempt = trialAttempt(trialId);
+  const trialDirectory = path.join(options.harborJobDirectory ?? path.join(options.evalDirectory, "harbor", "job"), trialId);
+  const taskId = await lockedTaskId(trialDirectory) || fallbackTaskId;
+  const existing = existingRefs.find((ref) => ref.trial_id === trialId);
+  if (existing !== undefined) {
+    if (existing.task_id !== taskId || existing.attempt !== attempt) throw new TrialIdentityConflictError(`existing eval trial identity changed: ${trialId}`);
+    await validateEvalTrialReferences(options.root, options.evalId, [existing], {
+      benchmarkId: options.benchmarkId,
+      benchmarkRevision: options.benchmarkRevision,
+    });
+    return existing;
+  }
+  const bundle = await findRunBundle(trialDirectory, 0, options.requireCompleteMarker === true);
+  let published = false;
+  try {
+    if (options.requireCompleteMarker && !bundle && !options.allowMissingBundleDiagnostic) throw new TrialBundlePendingError(trialId);
+    const ref = bundle
+      ? await importRunBundle({ ...options, trial, taskId, trialId, attempt, bundle })
+      : await createDiagnosticRun({ ...options, trial, taskId, trialId, attempt });
+    published = bundle !== null;
+    return ref;
+  } catch (error) {
+    if (error instanceof TrialBundlePendingError || error instanceof TrialIdentityConflictError) throw error;
+    if (bundle) {
+      await atomicWriteJSON(path.join(path.dirname(bundle), "hitch-run-import-error.json"), {
+        schema_version: "1",
+        trial_id: trialId,
+        code: "run_bundle_import_failed",
+        message: (error as Error).message,
+        recorded_at: new Date().toISOString(),
+      }).catch(() => {});
+    }
+    return createDiagnosticRun({
+      ...options,
+      trial: {
+        ...trial,
+        exception_info: "hitch-run-bundle-import-failed",
+        hitch_import_error: (error as Error).message,
+      },
+      taskId,
+      trialId,
+      attempt,
+    });
+  } finally {
+    if (bundle && published && isWithin(options.evalDirectory, bundle)) {
+      await rm(bundle, { recursive: true, force: true });
+    }
+  }
+}
+
+export class TrialBundlePendingError extends Error {
+  constructor(readonly trialId: string) {
+    super(`Harbor trial bundle is not ready: ${trialId}`);
+    this.name = "TrialBundlePendingError";
+  }
+}
+
+export class TrialIdentityConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TrialIdentityConflictError";
+  }
 }
 
 async function lockedTaskId(trialDirectory: string): Promise<string | null> {
@@ -108,7 +146,7 @@ async function lockedTaskId(trialDirectory: string): Promise<string | null> {
   return taskId;
 }
 
-interface TrialInput extends ImportEvalRunsOptions {
+interface TrialInput extends ImportEvalRunOptions {
   trial: Record<string, unknown>;
   taskId: string;
   trialId: string;
@@ -120,6 +158,11 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
   const manifestValue = await readJSON(path.join(input.bundle, "manifest.json"));
   const record = projectRunRecord(manifestValue);
   if (!/^run_[a-f0-9]{32}$/.test(record.run_id)) throw new Error(`invalid exported run_id: ${record.run_id}`);
+  const marker = await readJSON<Record<string, unknown> | null>(path.join(input.bundle, "bundle.complete.json"), null).catch(() => null);
+  if (marker !== null && (marker.schema_version !== "1" || marker.run_id !== record.run_id
+    || marker.eval_id !== input.evalId || marker.trial_id !== input.trialId)) {
+    throw new Error(`exported run ${record.run_id} has a mismatched completion marker`);
+  }
   const context = validateRunContext(record.context);
   if (
     context.kind !== "benchmark_task"
@@ -139,10 +182,28 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     throw new Error(`exported run ${record.run_id} has a mismatched eval parent`);
   }
 
+  const destination = path.join(statePaths(input.root).runs, record.run_id);
+  try {
+    await stat(destination);
+    const existing = await loadRunRecord(destination, { verifyTrajectory: true });
+    if (existing.record.parent?.eval_id !== input.evalId
+      || existing.record.parent.trial_id !== input.trialId
+      || existing.record.parent.attempt !== input.attempt
+      || existing.record.context.kind !== "benchmark_task"
+      || existing.record.context.benchmark_id !== input.benchmarkId
+      || existing.record.context.benchmark_revision !== input.benchmarkRevision
+      || existing.record.context.task_id !== input.taskId
+      || existing.record.observation === undefined) throw new TrialIdentityConflictError(`existing run destination conflicts: ${record.run_id}`);
+    return evalTrialRef(input, record.run_id, existing.record.observation);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
   const stagingParent = await mkdtemp(path.join(await ensureDir(statePaths(input.root).temporary), "eval-run-import-"));
   const staging = path.join(stagingParent, record.run_id);
   try {
     await cp(input.bundle, staging, { recursive: true, errorOnExist: true, force: false });
+    await rm(path.join(staging, "bundle.complete.json"), { force: true });
     await readJSON(path.join(staging, "resolution.json"));
     await validateJSONLines(path.join(staging, "events.jsonl"));
     const verifier = verifierResult(input.trial);
@@ -174,11 +235,10 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     });
     const verified = await loadRunRecord(staging, { verifyTrajectory: true });
     if (verified.record.observation?.status !== observation.status) throw new Error(`failed to seal observation for ${record.run_id}`);
-    const destination = path.join(statePaths(input.root).runs, record.run_id);
     await ensureDir(path.dirname(destination));
     try {
       await stat(destination);
-      throw new Error(`run destination already exists: ${record.run_id}`);
+      throw new TrialIdentityConflictError(`run destination already exists: ${record.run_id}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -317,17 +377,21 @@ function primaryReward(trial: Record<string, unknown>): number | undefined {
   return Object.values(rewards).find((value): value is number => typeof value === "number" && Number.isFinite(value));
 }
 
-async function findRunBundle(root: string, depth = 0): Promise<string | null> {
+async function findRunBundle(root: string, depth = 0, requireCompleteMarker = false): Promise<string | null> {
   if (depth > 5) return null;
   try {
     const manifest = path.join(root, "manifest.json");
-    if ((await lstat(manifest)).isFile() && path.basename(root) === "hitch-run-bundle") return root;
+    if ((await lstat(manifest)).isFile() && path.basename(root) === "hitch-run-bundle") {
+      if (!requireCompleteMarker) return root;
+      const marker = await readJSON<Record<string, unknown> | null>(path.join(root, "bundle.complete.json"), null).catch(() => null);
+      return marker?.schema_version === "1" && typeof marker.run_id === "string" ? root : null;
+    }
   } catch { /* Continue scanning. */ }
   let entries;
   try { entries = await readdir(root, { withFileTypes: true }); } catch { return null; }
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) continue;
-    const found = await findRunBundle(path.join(root, entry.name), depth + 1);
+    const found = await findRunBundle(path.join(root, entry.name), depth + 1, requireCompleteMarker);
     if (found) return found;
   }
   return null;

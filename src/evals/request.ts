@@ -10,6 +10,11 @@ export function newEvalId(): EvalId {
   return `eval_${randomUUID().replaceAll("-", "")}` as EvalId;
 }
 
+export function validateEvalId(value: string): EvalId {
+  if (!/^eval_[a-f0-9]{32}$/.test(value)) throw invalidInput(`invalid eval ID: ${value}`);
+  return value as EvalId;
+}
+
 export interface EvalRequestInput {
   schema_version?: unknown;
   backend?: unknown;
@@ -96,6 +101,32 @@ export async function resolveBenchmarkReference(dataset: string): Promise<{ benc
   return { benchmark_id: benchmarkId, benchmark_revision: revision };
 }
 
+export async function resolveLocalDatasetTaskIds(dataset: string): Promise<string[] | null> {
+  const local = path.resolve(dataset.trim());
+  try {
+    if (!(await stat(local)).isDirectory()) return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (await isRegularFile(path.join(local, "task.toml"))) return [path.basename(local)];
+  const entries = await readdir(local, { withFileTypes: true });
+  const tasks: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (entry.isDirectory() && await isRegularFile(path.join(local, entry.name, "task.toml"))) tasks.push(entry.name);
+  }
+  return tasks;
+}
+
+async function isRegularFile(file: string): Promise<boolean> {
+  try {
+    return (await stat(file)).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function positiveInteger(value: unknown, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw invalidInput(`${name} must be a positive integer`);
@@ -108,7 +139,7 @@ function nonNegativeNumber(value: unknown, name: string): number {
   return parsed;
 }
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { EvalId, EvalRequest } from "../domain/index.js";
 import { SCHEMA_VERSION, invalidInput } from "../foundation/index.js";

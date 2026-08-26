@@ -1,18 +1,26 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { HitchError, atomicWriteJSON, consumeLines, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths, terminateProcess } from "../../foundation/index.js";
 import type { EvalRequest, ResolvedRevision } from "../../domain/index.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
+import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 
 const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
+export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
+
+export interface HarborSettledTrialContext {
+  bundleWaitExpired: boolean;
+}
 
 export interface RunHarborBackendOptions {
   evalId: string;
   evalDirectory: string;
+  backendDirectory?: string;
+  taskNames?: readonly string[];
   request: EvalRequest;
   root: string;
   resolvedRevision: ResolvedRevision;
@@ -24,6 +32,8 @@ export interface RunHarborBackendOptions {
   harborExecutable?: string;
   signal?: AbortSignal;
   emit?: (event: Record<string, unknown>) => void;
+  onTrialSettled?: (trial: Record<string, unknown>, context: HarborSettledTrialContext) => Promise<boolean>;
+  trialBundleGraceMs?: number;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -61,6 +71,8 @@ export interface HarborBackendResult {
 export async function runHarborBackend({
   evalId,
   evalDirectory,
+  backendDirectory: requestedBackendDirectory,
+  taskNames,
   request,
   root,
   resolvedRevision,
@@ -72,8 +84,10 @@ export async function runHarborBackend({
   harborExecutable,
   signal,
   emit = () => {},
+  onTrialSettled,
+  trialBundleGraceMs = DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
-  const backendDirectory = await ensureDir(path.join(evalDirectory, "harbor"));
+  const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   const harnessArtifactCacheDirectory = await ensureDir(path.join(statePaths(root).store, "harbor-artifacts"));
   const executable = await discoverHarbor(harborExecutable, root, env);
   const version = await detectVersion(executable, ["--version"]);
@@ -92,20 +106,30 @@ export async function runHarborBackend({
     harnessArtifactCacheDirectory,
     localTransport,
     backendDirectory,
+    ...(taskNames === undefined ? {} : { taskNames }),
     jobName,
     env,
   });
   await atomicWriteJSON(configPath, config);
   emit({ type: "eval.backend.started", backend: "harbor", executable, version: version || null });
 
-  const invocation = await invokeHarbor(executable, ["run", "--config", configPath, "--yes"], {
-    cwd: evalDirectory,
-    env: withBridgePythonPath(env),
-    stdoutPath: path.join(backendDirectory, "stdout.log"),
-    stderrPath: path.join(backendDirectory, "stderr.log"),
-    ...(signal ? { signal } : {}),
-    emit,
-  });
+  if (!Number.isSafeInteger(trialBundleGraceMs) || trialBundleGraceMs < 0) throw invalidInput("Harbor trial bundle grace must be a non-negative integer");
+  const monitor = onTrialSettled === undefined
+    ? null
+    : monitorHarborTrials(jobDirectory, onTrialSettled, trialBundleGraceMs, signal);
+  let invocation: { code: number | null; signal: NodeJS.Signals | null };
+  try {
+    invocation = await invokeHarbor(executable, ["run", "--config", configPath, "--yes"], {
+      cwd: evalDirectory,
+      env: withBridgePythonPath(env),
+      stdoutPath: path.join(backendDirectory, "stdout.log"),
+      stderrPath: path.join(backendDirectory, "stderr.log"),
+      ...(signal ? { signal } : {}),
+      emit,
+    });
+  } finally {
+    await monitor?.stop();
+  }
   const jobResult = await readJSON<Record<string, unknown> | null>(resultPath, null);
   const rawResult = jobResult ? await attachTrialResults(jobDirectory, jobResult) : null;
   emit({
@@ -132,6 +156,57 @@ export async function runHarborBackend({
     },
     rawResult,
     summary: rawResult ? normalizeHarborResult(rawResult) : null,
+  };
+}
+
+function monitorHarborTrials(
+  jobDirectory: string,
+  onTrialSettled: (trial: Record<string, unknown>, context: HarborSettledTrialContext) => Promise<boolean>,
+  trialBundleGraceMs: number,
+  signal?: AbortSignal,
+): { stop: () => Promise<void> } {
+  let stopped = false;
+  let failure: unknown;
+  const delivered = new Set<string>();
+  const firstSeenAt = new Map<string, number>();
+  const scan = async (): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(jobDirectory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory() || delivered.has(entry.name)) continue;
+      let trial: Record<string, unknown> | null;
+      try {
+        trial = await readJSON<Record<string, unknown> | null>(path.join(jobDirectory, entry.name, "result.json"), null);
+      } catch {
+        continue;
+      }
+      if (!trial || typeof trial.trial_name !== "string" || typeof trial.task_name !== "string") continue;
+      const now = Date.now();
+      const firstSeen = firstSeenAt.get(entry.name) ?? now;
+      firstSeenAt.set(entry.name, firstSeen);
+      if (await onTrialSettled(trial, { bundleWaitExpired: now - firstSeen >= trialBundleGraceMs })) {
+        delivered.add(entry.name);
+        firstSeenAt.delete(entry.name);
+      }
+    }
+  };
+  const loop = (async () => {
+    while (!stopped && !signal?.aborted) {
+      try { await scan(); } catch (error) { failure = error; break; }
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    }
+  })();
+  return {
+    stop: async (): Promise<void> => {
+      stopped = true;
+      await loop;
+      if (failure !== undefined) throw failure;
+    },
   };
 }
 
@@ -163,6 +238,7 @@ export interface BuildHarborJobConfigOptions {
   harnessArtifactCacheDirectory?: string | undefined;
   localTransport?: LocalGitTransportUse | undefined;
   backendDirectory: string;
+  taskNames?: readonly string[];
   jobName?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -177,6 +253,7 @@ export async function buildHarborJobConfig({
   harnessArtifactCacheDirectory,
   localTransport,
   backendDirectory,
+  taskNames,
   jobName = "job",
   env = process.env,
 }: BuildHarborJobConfigOptions): Promise<Record<string, unknown>> {
@@ -254,7 +331,7 @@ export async function buildHarborJobConfig({
     n_concurrent_trials: request.max_concurrent,
     environment: { type: "docker", delete: true },
     agents: [agent],
-    datasets: [await datasetConfig(request.dataset)],
+    datasets: [await harborDatasetConfig(request.dataset, taskNames)],
     tasks: [],
   });
 }
@@ -318,24 +395,6 @@ async function discoverHarbor(explicit: string | undefined, root: string, env: N
     });
   }
   return located.executable;
-}
-
-async function datasetConfig(value: string): Promise<Record<string, unknown>> {
-  if (typeof value !== "string" || !value.trim()) throw invalidInput("dataset must be a non-empty string");
-  const raw = value.trim();
-  const localPath = path.resolve(raw);
-  try {
-    if ((await stat(localPath)).isDirectory()) return { path: localPath };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
-  }
-  const separator = raw.lastIndexOf("@");
-  const name = separator > 0 ? raw.slice(0, separator) : raw;
-  const version = separator > 0 ? raw.slice(separator + 1) : "";
-  if (!name) throw invalidInput(`invalid Harbor dataset: ${value}`);
-  return name.includes("/")
-    ? { name, ref: version || "latest" }
-    : compact({ name, version: version || undefined });
 }
 
 function credentialEnvironment(explicitNames: string[], env: NodeJS.ProcessEnv): Record<string, string> {
