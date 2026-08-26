@@ -98,7 +98,10 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       entrypoint_integrity: artifact.entrypoint_integrity,
       harness_id: artifact.harness_id,
       revision_identity: artifact.revision_identity,
+      adapter_version: artifact.adapter_version,
+      recipe_version: artifact.recipe_version,
       platform: artifact.platform,
+      node_version: artifact.toolchain.node || process.version,
       source_type: artifact.source_type,
     };
     sink.emit({

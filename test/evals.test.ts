@@ -121,9 +121,12 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(agent.import_path, "hitch_harbor_agent:HitchHarborAgent");
   assert.equal(kwargs.harness_ref, "pi@version:1.2.3");
   assert.equal(kwargs.workdir, "/app");
-  const piArtifact = kwargs.harness_artifact as { harness_id: string; artifact_id: string };
+  assert.equal(kwargs.harness_artifact_cache_dir, path.join(root, "store", "harbor-artifacts"));
+  assert.ok((await stat(kwargs.harness_artifact_cache_dir as string)).isDirectory());
+  const piArtifact = kwargs.harness_artifact as { harness_id: string; artifact_id: string; node_version: string };
   assert.equal(piArtifact.harness_id, "pi");
   assert.match(piArtifact.artifact_id, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(piArtifact.node_version, process.version);
   assert.equal((agent.env as Record<string, unknown>).DEEPSEEK_API_KEY, "${DEEPSEEK_API_KEY}");
   assert.equal((agent.env as Record<string, unknown>).OPENAI_API_KEY, "${OPENAI_API_KEY}");
   assert.doesNotMatch(await readFile(path.join(directory, "harbor", "job.json"), "utf8"), /(?:deepseek-)?must-not-be-written/);
@@ -275,7 +278,7 @@ test("Harbor bridge setup() and run() behave against a real bundle", async (t) =
   assert.match(result.stdout, /bridge smoke OK/);
 });
 
-test("Harbor bridge uploads and directly uses a compatible host-prepared harness artifact", async (t) => {
+test("Harbor bridge uploads compatible artifacts and host-caches one target-platform build across concurrent trials", async (t) => {
   const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-artifact-"));
   const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
   const use = await ensureControllerRuntime({ root: state });

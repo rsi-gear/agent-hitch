@@ -56,7 +56,8 @@ Hitch eval engine
        -> load HitchHarborAgent in the Harbor process
        -> upload the minimal Hitch runtime into the task container
        -> when platform-compatible, upload and re-verify the prepared harness artifact
-       -> otherwise upload/materialize local Git and prepare inside the container
+       -> otherwise lock/look up the target-platform artifact in the host cache
+       -> on a miss, one trial prepares and downloads it; other trials then upload it
        -> Hitch run in /app (shared workspace)
        -> selected native harness edits the task filesystem
        -> export the complete run bundle before container teardown
@@ -90,11 +91,21 @@ instead of contacting a package registry or rebuilding the source. The
 container recomputes the uploaded artifact integrity before execution.
 
 Prepared artifacts are not assumed to be cross-platform `node_modules`
-trees. The bridge probes the trial's Node platform (`process.platform` and
-`process.arch`) before upload. If it differs from the host artifact platform,
-the bridge safely falls back to the original per-container prepare path. This
-keeps macOS-hosted Docker evals correct; a future target-platform builder can
-remove that fallback cost without weakening artifact identity checks.
+trees. The bridge probes the trial's Node platform, architecture, and exact
+Node.js version before upload. If the host-prepared artifact is incompatible,
+the bridge looks in `<HITCH_ROOT>/store/harbor-artifacts` for a verified artifact
+with the same revision, recipe, target platform, and Node.js version. A host
+file lock elects one trial as the builder on a cache miss. That trial prepares
+inside its target container, downloads the completed content-addressed artifact
+to an atomic host cache entry, and keeps running from its container-local copy.
+Concurrent and later trials wait for the entry and upload it directly instead
+of running the package manager again.
+
+The target-platform cache is explicit host state, so Harbor may still use
+`environment.delete: true`; deleting a trial container does not delete the
+cached artifact. Hitch does not expose the cache as a shared writable container
+mount. This avoids cross-container mutation and relies on Harbor's upload and
+download boundary plus Hitch's entrypoint/content digest verification.
 
 ## Inputs and portability
 

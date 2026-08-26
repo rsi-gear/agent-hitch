@@ -1,6 +1,6 @@
 {
   "name": "agent-hitch",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Content-addressed version control and evidence storage for agent harnesses",
   "keywords": [
     "ai-agents",
