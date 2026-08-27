@@ -390,6 +390,19 @@ test("Harbor bridge setup() and run() behave against a real bundle", async (t) =
   assert.match(result.stdout, /bridge smoke OK/);
 });
 
+test("Harbor bridge classifies persisted-result failures without masking process evidence", async (t) => {
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-result-matrix-"));
+  const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
+  const use = await ensureControllerRuntime({ root: state });
+  t.after(() => forceRemove(state));
+  const smoke = path.resolve("test-support", "bridge_smoke.py");
+  const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
+  const logs = path.join(state, "logs");
+  const result = spawnSync("python3", [smoke, bridge, use.directory, logs, "--result-matrix"], { encoding: "utf8" });
+  assert.equal(result.status, 0, `bridge result matrix failed:\n${result.stderr || result.stdout}`);
+  assert.match(result.stdout, /bridge result matrix OK/);
+});
+
 test("Harbor bridge uploads compatible artifacts and host-caches one target-platform build across concurrent trials", async (t) => {
   const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-artifact-"));
   const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
@@ -468,6 +481,134 @@ test("failed Harbor bundle imports retain canonical staging evidence", async (t)
   assert.equal(refs[0]?.attempt, 1);
   assert.ok((await stat(bundle)).isDirectory(), "failed staging bundle should remain available");
   assert.ok((await stat(path.join(path.dirname(bundle), "hitch-run-import-error.json"))).isFile());
+});
+
+test("Harbor diagnostic runs retain a validated bridge error without trusting its identity", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-bridge-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "canonical-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  const agentDirectory = path.join(trialDirectory, "agent");
+  await mkdir(agentDirectory, { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "lock.json"), {
+    schema_version: 2,
+    task: { name: "canonical-task" },
+  });
+  await atomicWriteJSON(path.join(agentDirectory, "hitch-bridge-error.json"), {
+    schema_version: "1",
+    code: "hitch_result_missing",
+    message: "Hitch result file is missing",
+    eval_id: "eval_forged",
+    trial_id: "forged-trial",
+    task_id: "forged-task",
+    assigned_run_id: "run_ffffffffffffffffffffffffffffffff",
+  });
+
+  const refs = await importEvalTrialRuns({
+    root,
+    evalId,
+    evalDirectory,
+    request: {
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+      agent_args: [],
+    } as never,
+    resolvedRevision: {
+      harness_id: "pi",
+      identity: `sha256:${"a".repeat(64)}`,
+    } as never,
+    benchmarkId: "benchmark",
+    benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: {
+      trial_results: [{
+        task_name: "terminal-bench/display-task",
+        trial_name: trialId,
+        exception_info: { exception_type: "HitchBridgeError" },
+      }],
+    },
+  });
+
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.task_id, "canonical-task");
+  assert.equal(refs[0]?.observation_status, "invalid");
+  assert.equal(refs[0]?.invalid_reason, "infrastructure_failure");
+  const runDirectory = path.join(root, "runs", refs[0]!.run_id);
+  const result = await readJSON<{ run_id: string; error: { code: string; message: string } }>(path.join(runDirectory, "result.json"));
+  assert.equal(result.run_id, refs[0]?.run_id);
+  assert.deepEqual(result.error, {
+    code: "hitch_result_missing",
+    message: "Hitch result file is missing",
+  });
+  const manifest = await readJSON<{
+    context: { task_id: string };
+    parent: { eval_id: string; trial_id: string };
+    diagnostics: { harbor_bridge_error_ref: string };
+  }>(path.join(runDirectory, "manifest.json"));
+  assert.equal(manifest.context.task_id, "canonical-task");
+  assert.equal(manifest.parent.eval_id, evalId);
+  assert.equal(manifest.parent.trial_id, trialId);
+  assert.equal(manifest.diagnostics.harbor_bridge_error_ref, "diagnostics/harbor-bridge-error.json");
+  const diagnostic = await readJSON<{ code: string; eval_id: string }>(
+    path.join(runDirectory, "diagnostics", "harbor-bridge-error.json"),
+  );
+  assert.equal(diagnostic.code, "hitch_result_missing");
+  assert.equal(diagnostic.eval_id, "eval_forged", "artifact identity is evidence only");
+});
+
+test("Harbor diagnostic runs safely ignore an invalid bridge error artifact", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-invalid-bridge-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "safe-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  const agentDirectory = path.join(trialDirectory, "agent");
+  await mkdir(agentDirectory, { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "lock.json"), {
+    schema_version: 2,
+    task: { name: "safe-task" },
+  });
+  await atomicWriteJSON(path.join(agentDirectory, "hitch-bridge-error.json"), {
+    schema_version: "1",
+    code: "attacker_controlled_code",
+    message: "do not trust this",
+  });
+
+  const refs = await importEvalTrialRuns({
+    root,
+    evalId,
+    evalDirectory,
+    request: {
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+      agent_args: [],
+    } as never,
+    resolvedRevision: {
+      harness_id: "pi",
+      identity: `sha256:${"a".repeat(64)}`,
+    } as never,
+    benchmarkId: "benchmark",
+    benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: {
+      trial_results: [{
+        task_name: "safe-task",
+        trial_name: trialId,
+        exception_info: { exception_type: "InfraError" },
+      }],
+    },
+  });
+
+  const runDirectory = path.join(root, "runs", refs[0]!.run_id);
+  const result = await readJSON<{ error: { code: string } }>(path.join(runDirectory, "result.json"));
+  assert.equal(result.error.code, "infrastructure_failure");
+  await assert.rejects(
+    stat(path.join(runDirectory, "diagnostics", "harbor-bridge-error.json")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
 });
 
 test("Harbor importer uses lock task id when result task_name is display-qualified", async (t) => {

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import shlex
 import shutil
 import sys
 import types
@@ -47,6 +48,7 @@ class BaseEnvironment:
         platform_identity: str = "linux-x64",
         node_version: str = "v22.0.0",
         prepared_artifact_dir: Path | None = None,
+        result_case: str = "valid",
     ) -> None:
         self.uploads: list[tuple[str, str, str]] = []
         self.downloads: list[tuple[str, str]] = []
@@ -55,6 +57,8 @@ class BaseEnvironment:
         self.platform_identity = platform_identity
         self.node_version = node_version
         self.prepared_artifact_dir = prepared_artifact_dir
+        self.result_case = result_case
+        self.bridge_errors: list[dict[str, Any]] = []
 
     async def upload_dir(self, source: Path, target: str) -> None:
         self.uploads.append(("dir", str(source), target))
@@ -86,17 +90,64 @@ class BaseEnvironment:
                 artifact = json.loads((self.prepared_artifact_dir / "artifact.json").read_text(encoding="utf-8"))
                 return ExecResult(stdout=json.dumps({"schema_version": "1", "artifact": artifact}) + "\n", return_code=0)
             return ExecResult(stdout='{"status":"ok"}\n', return_code=0)
-        if " run " in command:
+        if " run " in command and "hitch-events.jsonl" in command:
             # The bridge parses run events for a run id, then cats result.json.
-            return ExecResult(stdout='{"type":"run.completed","run_id":"run_abc"}\n', return_code=0)
-        if "result.json" in command:
-            payload = {
-                "status": "succeeded",
-                "revision_identity": self.revision_identity,
-                "artifact_id": "sha256:artifact",
-            }
+            event = '{"type":"run.completed","run_id":"run_' + "a" * 32 + '"}\n'
+            if self.result_case == "process-failure-missing":
+                return ExecResult(
+                    stdout=event,
+                    stderr="x" * 20_000 + "original process failure",
+                    return_code=1,
+                )
+            return ExecResult(stdout=event, return_code=0)
+        if "hitch-bridge-error.json" in command:
+            for token in shlex.split(command):
+                if token.startswith("{"):
+                    self.bridge_errors.append(json.loads(token))
+                    break
+            return ExecResult(stdout="", return_code=0)
+        if "stage_dir=" in command and "hitch-run-bundle" in command:
+            if self.result_case == "bundle-failure":
+                return ExecResult(stderr="bundle export failed", return_code=1)
+            return ExecResult(stdout="", return_code=0)
+        if "cp --" in command and "hitch-result.json" in command:
+            if self.result_case == "copy-failure":
+                return ExecResult(stderr="result copy failed", return_code=1)
+            return ExecResult(stdout="", return_code=0)
+        if "cat --" in command and "/result.json" in command:
+            if self.result_case in {"missing", "process-failure-missing"}:
+                return ExecResult(stderr="missing", return_code=44)
+            if self.result_case == "not-file":
+                return ExecResult(stderr="not a regular file", return_code=45)
+            if self.result_case == "read-failure":
+                return ExecResult(stderr="permission denied", return_code=13)
+            if self.result_case == "empty":
+                return ExecResult(stdout="", return_code=0)
+            if self.result_case == "whitespace":
+                return ExecResult(stdout=" \n", return_code=0)
+            if self.result_case == "invalid-json":
+                return ExecResult(stdout='{"status":', return_code=0)
+            if self.result_case == "non-object":
+                return ExecResult(stdout="[]\n", return_code=0)
+            if self.result_case == "incomplete":
+                return ExecResult(stdout='{"schema_version":"1"}\n', return_code=0)
+            if self.result_case == "mismatch":
+                payload = self._valid_result("run_" + "b" * 32)
+                return ExecResult(stdout=json.dumps(payload) + "\n", return_code=0)
+            payload = self._valid_result("run_" + "a" * 32)
             return ExecResult(stdout=json.dumps(payload) + "\n", return_code=0)
         return ExecResult(stdout="ok\n", return_code=0)
+
+    def _valid_result(self, run_id: str) -> dict[str, Any]:
+        return {
+            "schema_version": "1",
+            "run_id": run_id,
+            "status": "succeeded",
+            "exit_code": 0,
+            "completed_at": "2026-08-27T00:00:00+00:00",
+            "revision_identity": self.revision_identity,
+            "artifact_id": "sha256:artifact",
+        }
 
 
 class AgentContext:
@@ -386,7 +437,118 @@ def negative_main() -> int:
     return 1
 
 
+def result_matrix_main() -> int:
+    """Exercise result read/parse failures and stable error evidence."""
+    bridge_path, bundle_root, logs_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+    install_harbor_stubs()
+    bridge = load_bridge(bridge_path)
+    manifest = json.loads((Path(bundle_root) / "manifest.json").read_text(encoding="utf-8"))
+    runtime_id = manifest["runtime_id"]
+    revision_identity = "sha256:" + "a" * 64
+    cases = {
+        "missing": "hitch_result_missing",
+        "not-file": "hitch_result_not_file",
+        "read-failure": "hitch_result_read_failed",
+        "empty": "hitch_result_empty",
+        "whitespace": "hitch_result_empty",
+        "invalid-json": "hitch_result_invalid_json",
+        "non-object": "hitch_result_schema_invalid",
+        "incomplete": "hitch_result_schema_invalid",
+        "mismatch": "hitch_result_run_id_mismatch",
+        "process-failure-missing": "hitch_process_failed",
+        "bundle-failure": "hitch_run_bundle_export_failed",
+        "copy-failure": "hitch_result_artifact_copy_failed",
+    }
+    errors: list[str] = []
+
+    async def drive_case(case: str, expected_code: str) -> None:
+        trial_id = f"result-{case}__1"
+        trial_dir = Path(logs_dir) / trial_id
+        agent_logs_dir = trial_dir / "agent"
+        agent_logs_dir.mkdir(parents=True, exist_ok=True)
+        (trial_dir / "lock.json").write_text(
+            json.dumps({"schema_version": 2, "task": {"name": f"result-{case}"}}),
+            encoding="utf-8",
+        )
+        env = BaseEnvironment(revision_identity=revision_identity, result_case=case)
+        context = AgentContext()
+        agent = bridge.HitchHarborAgent(
+            logs_dir=agent_logs_dir,
+            harness_ref="pi@version:1.2.3",
+            revision_identity=revision_identity,
+            hitch_runtime_dir=bundle_root,
+            candidate_id="candidate-1",
+            controller_runtime_id=runtime_id,
+            hitch_timeout_ms=5_000,
+            agent_args=[],
+            workdir="/app",
+            model_name="openai/test-model",
+            eval_id="eval_bridge_result_matrix",
+            benchmark_id="benchmark",
+            benchmark_revision="sha256:" + "b" * 64,
+            verifier_identity="sha256:" + "c" * 64,
+        )
+        await agent.setup(env)
+        try:
+            await agent.run("do the task", env, context)
+            errors.append(f"{case}: run unexpectedly succeeded")
+            return
+        except Exception as error:
+            if not isinstance(error, bridge.HitchBridgeError):
+                errors.append(f"{case}: unexpected exception type {type(error).__name__}: {error}")
+                return
+            if error.code != expected_code:
+                errors.append(f"{case}: code was {error.code!r}, expected {expected_code!r}")
+            if "JSONDecodeError" in str(error):
+                errors.append(f"{case}: leaked JSONDecodeError")
+        if context.metadata.get("hitch_bridge_error_code") != expected_code:
+            errors.append(f"{case}: metadata code was {context.metadata.get('hitch_bridge_error_code')!r}")
+        if context.metadata.get("hitch_bridge_error_artifact") != "hitch-bridge-error.json":
+            errors.append(f"{case}: metadata error artifact was not recorded")
+        if len(env.bridge_errors) != 1:
+            errors.append(f"{case}: expected one bridge error artifact, got {len(env.bridge_errors)}")
+        else:
+            evidence = env.bridge_errors[0]
+            if evidence.get("code") != expected_code:
+                errors.append(f"{case}: evidence code was {evidence.get('code')!r}")
+            if len(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 64 * 1024:
+                errors.append(f"{case}: bridge error artifact exceeded 64 KiB")
+            if evidence.get("trial_id") != trial_id or evidence.get("eval_id") != "eval_bridge_result_matrix":
+                errors.append(f"{case}: evidence identity was incomplete")
+            for section in [evidence.get("process", {}), evidence.get("result_read", {})]:
+                for key in ["stdout_tail", "stderr_tail"]:
+                    if len(str(section.get(key, "")).encode("utf-8")) > 8192:
+                        errors.append(f"{case}: {key} exceeded the evidence bound")
+            if case == "process-failure-missing":
+                if evidence.get("result_diagnostic") != "hitch_result_missing":
+                    errors.append(f"{case}: missing result was not retained as a secondary diagnostic")
+                stderr_tail = str(evidence.get("process", {}).get("stderr_tail", ""))
+                if "[truncated " not in stderr_tail or not stderr_tail.endswith("original process failure"):
+                    errors.append(f"{case}: process stderr was not tail-bounded correctly")
+        read_commands = [command for command in env.execs if "cat --" in command and "/result.json" in command]
+        if len(read_commands) != 1 or "| tee" in read_commands[0]:
+            errors.append(f"{case}: result read still uses a masking pipeline")
+        bundle_indexes = [index for index, command in enumerate(env.execs) if "stage_dir=" in command and "hitch-run-bundle" in command]
+        error_indexes = [index for index, command in enumerate(env.execs) if "hitch-bridge-error.json" in command]
+        if not bundle_indexes or not error_indexes or bundle_indexes[-1] > error_indexes[-1]:
+            errors.append(f"{case}: run bundle was not exported before the bridge error")
+
+    async def drive() -> None:
+        for case, expected_code in cases.items():
+            await drive_case(case, expected_code)
+
+    asyncio.run(drive())
+    if errors:
+        for error in errors:
+            print(f"bridge result matrix failure: {error}", file=sys.stderr)
+        return 1
+    print("bridge result matrix OK")
+    return 0
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 4 and sys.argv[4] == "--expect-mismatch":
         sys.exit(negative_main())
+    if len(sys.argv) > 4 and sys.argv[4] == "--result-matrix":
+        sys.exit(result_matrix_main())
     sys.exit(main())

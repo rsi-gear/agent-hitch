@@ -340,12 +340,14 @@ export async function writeFakeDeepseek(directory: string, {
   nativeChildSession = false,
   nativeSessionState = "complete",
   delayMs = 0,
+  argvLog,
 }: {
   output?: string;
   nativeSession?: boolean;
   nativeChildSession?: boolean;
   nativeSessionState?: "complete" | "open" | "invalid";
   delayMs?: number;
+  argvLog?: string;
 } = {}): Promise<string> {
   const file = path.join(directory, "fake-dsh");
   const source = `#!/usr/bin/env node
@@ -354,6 +356,9 @@ const path = require("node:path");
 if (process.argv.includes("--version")) {
   process.stdout.write("0.1.0-rc.6\\n");
   process.exit(0);
+}
+if (${JSON.stringify(argvLog)} !== undefined) {
+  fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 }
 if (${JSON.stringify(nativeSession)}) {
   const prompt = process.argv.at(-1);

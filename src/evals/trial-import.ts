@@ -14,6 +14,7 @@ import {
   projectRunRecord,
   sha256JSON,
 } from "../runs/index.js";
+import { readHarborBridgeError } from "./harbor-bridge-error.js";
 
 export interface ImportEvalRunsOptions {
   root: string;
@@ -78,8 +79,8 @@ export async function importEvalTrialRun(
   try {
     if (options.requireCompleteMarker && !bundle && !options.allowMissingBundleDiagnostic) throw new TrialBundlePendingError(trialId);
     const ref = bundle
-      ? await importRunBundle({ ...options, trial, taskId, trialId, attempt, bundle })
-      : await createDiagnosticRun({ ...options, trial, taskId, trialId, attempt });
+      ? await importRunBundle({ ...options, trial, taskId, trialId, attempt, trialDirectory, bundle })
+      : await createDiagnosticRun({ ...options, trial, taskId, trialId, attempt, trialDirectory });
     published = bundle !== null;
     return ref;
   } catch (error) {
@@ -103,6 +104,7 @@ export async function importEvalTrialRun(
       taskId,
       trialId,
       attempt,
+      trialDirectory,
     });
   } finally {
     if (bundle && published && isWithin(options.evalDirectory, bundle)) {
@@ -151,6 +153,7 @@ interface TrialInput extends ImportEvalRunOptions {
   taskId: string;
   trialId: string;
   attempt: number;
+  trialDirectory: string;
 }
 
 async function importRunBundle(input: TrialInput & { bundle: string }): Promise<EvalTrialRefV1> {
@@ -256,6 +259,17 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   const verifier = verifierResult(input.trial);
   const verifierRef = verifier ? "verifier/result.json" : undefined;
   if (verifier) await atomicWriteJSON(path.join(runDirectory, verifierRef as string), verifier);
+  const bridgeError = input.trial.exception_info
+    ? await readHarborBridgeError(input.trialDirectory)
+    : null;
+  const bridgeErrorRef = bridgeError ? "diagnostics/harbor-bridge-error.json" : undefined;
+  if (bridgeError && bridgeErrorRef) {
+    await ensureDir(path.dirname(path.join(runDirectory, bridgeErrorRef)));
+    await writePrivateFile(
+      path.join(runDirectory, bridgeErrorRef),
+      bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
+    );
+  }
   const reason = input.trial.exception_info
     ? "infrastructure_failure"
     : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
@@ -293,13 +307,16 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     run_id: runId,
     type: "eval.trial.import_failed",
     reason,
+    ...(bridgeError ? { bridge_error_code: bridgeError.code } : {}),
   })}\n`);
   await atomicWriteJSON(path.join(runDirectory, "result.json"), {
     schema_version: "1",
     run_id: runId,
     status: "failed",
     exit_code: 12,
-    error: { code: reason, message: "Harbor trial completed without an importable Hitch run bundle" },
+    error: bridgeError
+      ? { code: bridgeError.code, message: bridgeError.message }
+      : { code: reason, message: "Harbor trial completed without an importable Hitch run bundle" },
     completed_at: now,
   });
   await atomicWriteJSON(path.join(runDirectory, "manifest.json"), {
@@ -330,6 +347,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     created_at: now,
     completed_at: now,
     sealed: true,
+    ...(bridgeErrorRef ? { diagnostics: { harbor_bridge_error_ref: bridgeErrorRef } } : {}),
   });
   return evalTrialRef(input, runId, observation);
 }

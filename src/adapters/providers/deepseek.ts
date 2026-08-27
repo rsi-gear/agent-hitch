@@ -36,7 +36,7 @@ export const deepseekAdapter: AdapterDefinition = {
       const args = ["--profile", "headless", ...request.agent_args];
       const patchFile = await writeDeepseekRuntimePatch(request.model, runtime.run_directory, runtime.runtime_home);
       args.push("--patch", patchFile);
-      args.push(request.prompt);
+      args.push("--", request.prompt);
       return {
         executable,
         args,

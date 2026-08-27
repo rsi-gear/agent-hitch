@@ -149,6 +149,27 @@ test("DeepSeek runs through its headless plain-text mode", async (t) => {
   assert.equal(manifest.agent_version, "0.1.0-rc.6");
 });
 
+test("DeepSeek process receives an option terminator before a dash-prefixed prompt", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-option-prompt-"));
+  const argvLog = path.join(root, "dsh-argv.json");
+  const executable = await writeFakeDeepseek(root, { argvLog });
+  const previous = process.env.HITCH_DEEPSEEK_PATH;
+  process.env.HITCH_DEEPSEEK_PATH = executable;
+  t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
+  const runId = newRunId();
+  const prompt = "- starts with a dash";
+
+  const result = await executeRun({
+    runId,
+    request: request({ agent: "deepseek", cwd: root, prompt, timeout_ms: 5_000, agent_args: [] }),
+    runsRoot: path.join(root, "runs"),
+  });
+
+  assert.equal(result.status, "succeeded");
+  const argv = JSON.parse(await readFile(argvLog, "utf8")) as string[];
+  assert.deepEqual(argv.slice(-2), ["--", prompt]);
+});
+
 test("DeepSeek plain-text trajectory records minimal fidelity with preserved output", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-trajectory-"));
   const executable = await writeFakeDeepseek(root, { output: "reply:hello" });

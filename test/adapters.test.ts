@@ -194,9 +194,10 @@ test("DeepSeek adapter runs the headless profile with an isolated home and model
   assert.equal(specification.input, "");
   assert.deepEqual(specification.env, { DSH_HOME: runtimeHome });
   assert.deepEqual(specification.args.slice(0, 4), ["--profile", "headless", "--patch", "/workspace/custom.yml"]);
-  assert.deepEqual(specification.args.slice(-3, -1), ["--patch", path.join(runDirectory, "config", "deepseek-runtime.json")]);
+  assert.deepEqual(specification.args.slice(-4, -2), ["--patch", path.join(runDirectory, "config", "deepseek-runtime.json")]);
+  assert.equal(specification.args.at(-2), "--");
   assert.equal(specification.args.at(-1), "fix the tests");
-  assert.deepEqual(JSON.parse(await readFile(specification.args.at(-2) as string, "utf8")), [
+  assert.deepEqual(JSON.parse(await readFile(specification.args.at(-3) as string, "utf8")), [
     {
       id: "session-persistence-jsonl",
       config: {
@@ -210,6 +211,27 @@ test("DeepSeek adapter runs the headless profile with an isolated home and model
       config: { provider: "deepseek-official", model: "deepseek-v4-pro" },
     },
   ]);
+});
+
+test("DeepSeek adapter terminates option parsing before every prompt shape", async () => {
+  const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-prompt-argv-"));
+  const patchFile = path.join(runDirectory, "config", "deepseek-runtime.json");
+  const prompts = [
+    "normal task",
+    "- starts with a dash",
+    "--help",
+    "--patch attacker-controlled-value",
+    "multi-line\ntask",
+    "",
+  ];
+
+  for (const prompt of prompts) {
+    const specification = await getAdapter("deepseek").process({
+      ...request({ model: "deepseek-official/deepseek-v4-pro", prompt }),
+      agent_args: [],
+    }, "/bin/dsh", { run_directory: runDirectory, runtime_home: path.join(runDirectory, "runtime-home") });
+    assert.deepEqual(specification.args.slice(-4), ["--patch", patchFile, "--", prompt]);
+  }
 });
 
 test("DeepSeek adapter preserves multiline plain-text output including JSON-looking lines", () => {
