@@ -4,6 +4,7 @@ import path from "node:path";
 const HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024;
 const HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES = 2048;
 const HITCH_BRIDGE_ERROR_CODES = new Set([
+  "hitch_workdir_invalid",
   "hitch_process_failed",
   "hitch_result_missing",
   "hitch_result_not_file",
@@ -37,8 +38,29 @@ export async function readHarborBridgeError(trialDirectory: string): Promise<Har
     if (typeof diagnostic.code !== "string" || !HITCH_BRIDGE_ERROR_CODES.has(diagnostic.code)) return null;
     if (typeof diagnostic.message !== "string" || !diagnostic.message.trim()) return null;
     if (Buffer.byteLength(diagnostic.message, "utf8") > HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES) return null;
-    return { code: diagnostic.code, message: diagnostic.message, raw };
+    return { code: diagnostic.code, message: bridgeErrorMessage(diagnostic), raw };
   } catch {
     return null;
   }
+}
+
+function bridgeErrorMessage(diagnostic: Record<string, unknown>): string {
+  const message = diagnostic.message as string;
+  if (!message.includes("no diagnostic output")) return message;
+  const process = diagnostic.process;
+  if (!process || typeof process !== "object" || Array.isArray(process)) return message;
+  const evidence = process as Record<string, unknown>;
+  const tail = [evidence.stderr_tail, evidence.stdout_tail]
+    .find((value) => typeof value === "string" && value.trim()) as string | undefined;
+  if (!tail) return message;
+  return boundedUtf8Tail(
+    message.replace(/no diagnostic output/g, tail.trim()),
+    HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES,
+  );
+}
+
+function boundedUtf8Tail(value: string, maxBytes: number): string {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.byteLength <= maxBytes) return value;
+  return encoded.subarray(encoded.byteLength - maxBytes).toString("utf8").replace(/^\uFFFD+/, "");
 }

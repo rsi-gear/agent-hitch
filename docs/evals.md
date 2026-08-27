@@ -58,7 +58,7 @@ Hitch eval engine
        -> when platform-compatible, upload and re-verify the prepared harness artifact
        -> otherwise lock/look up the target-platform artifact in the host cache
        -> on a miss, one trial prepares and downloads it; other trials then upload it
-       -> Hitch run in /app (shared workspace)
+       -> Hitch run in the task environment's effective WORKDIR (shared workspace)
        -> selected native harness edits the task filesystem
        -> export the complete run bundle before container teardown
        -> Harbor verifier computes rewards

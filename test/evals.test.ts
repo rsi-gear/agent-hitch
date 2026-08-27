@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
+import { readHarborBridgeError } from "../src/evals/harbor-bridge-error.js";
 import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { lockedHarnessRef } from "../src/backends/harbor/index.js";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
@@ -299,7 +300,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const kwargs = agent.kwargs as Record<string, unknown>;
   assert.equal(agent.import_path, "hitch_harbor_agent:HitchHarborAgent");
   assert.equal(kwargs.harness_ref, "pi@version:1.2.3");
-  assert.equal(kwargs.workdir, "/app");
+  assert.equal(kwargs.workdir, undefined, "Harbor must preserve the task/image WORKDIR");
   assert.equal(kwargs.harness_artifact_cache_dir, path.join(root, "store", "harbor-artifacts"));
   assert.ok((await stat(kwargs.harness_artifact_cache_dir as string)).isDirectory());
   const piArtifact = kwargs.harness_artifact as { harness_id: string; artifact_id: string; node_version: string };
@@ -440,11 +441,10 @@ test("Harbor bridge reads the manifest entrypoint and validates it against the f
   assert.match(source, /runtime id mismatch/);
 });
 
-test("Harbor bridge setup() and run() behave against a real bundle", async (t) => {
+test("Harbor bridge inherits an image WORKDIR=/workspace and rejects missing workdirs before startup", async (t) => {
   // Behavioral smoke test: drive setup() and run() with a fake Harbor
-  // environment against an actual controller runtime bundle and assert the
-  // upload source, the manifest-declared remote entrypoint, the three CLI
-  // invocations, and the recorded runtime id.
+  // environment whose image cwd is /workspace against an actual controller
+  // runtime bundle and assert the resolved cwd reaches the Hitch run.
   const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-smoke-"));
   const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
   const use = await ensureControllerRuntime({ root: state });
@@ -468,6 +468,27 @@ test("Harbor bridge classifies persisted-result failures without masking process
   const result = spawnSync("python3", [smoke, bridge, use.directory, logs, "--result-matrix"], { encoding: "utf8" });
   assert.equal(result.status, 0, `bridge result matrix failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge result matrix OK/);
+});
+
+test("Harbor bridge diagnostic reader promotes OCI stdout when the legacy message says no output", async (t) => {
+  const trialDirectory = await mkdtemp(path.join(tmpdir(), "hitch-bridge-stdout-diagnostic-"));
+  t.after(() => forceRemove(trialDirectory));
+  await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), {
+    schema_version: "1",
+    code: "hitch_process_failed",
+    message: "Hitch agent run failed with code 126: no diagnostic output",
+    process: {
+      return_code: 126,
+      stdout_tail: 'chdir to cwd ("/app") failed: no such file or directory',
+      stderr_tail: "",
+    },
+  });
+
+  const diagnostic = await readHarborBridgeError(trialDirectory);
+  assert.ok(diagnostic);
+  assert.match(diagnostic.message, /chdir to cwd \("\/app"\) failed/);
+  assert.doesNotMatch(diagnostic.message, /no diagnostic output/);
 });
 
 test("Harbor bridge uploads compatible artifacts and host-caches one target-platform build across concurrent trials", async (t) => {

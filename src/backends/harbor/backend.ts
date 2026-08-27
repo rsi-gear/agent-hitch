@@ -335,7 +335,6 @@ export async function buildHarborJobConfig({
       } : {}),
       hitch_timeout_ms: request.timeout_ms,
       agent_args: request.agent_args,
-      workdir: "/app",
     },
     env: credentialEnvironment(request.pass_env, env),
     include_logs: ["hitch-*"],
