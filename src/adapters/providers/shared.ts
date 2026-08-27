@@ -1,23 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { HitchError } from "../../foundation/index.js";
-
-const DEEPSEEK_HEADLESS_STARTUP_PLUGIN = `export const name = "hitch-headless-startup";
-export const inject = ["cmdlineArgs"];
-
-export function apply(ctx, config = {}) {
-  const cmdlineArgs = ctx.get("cmdlineArgs");
-  if (cmdlineArgs === undefined) throw new Error("hitch-headless-startup: cmdlineArgs is unavailable");
-  let task = cmdlineArgs.get().join(" ");
-  if (config.unescapeLeadingLineBreak === true) {
-    if (!task.startsWith("\\n-")) throw new Error("hitch-headless-startup: escaped task marker is missing");
-    task = task.slice(1);
-  }
-  if (task.trim() === "") throw new Error("hitch-headless-startup: a task is required");
-  ctx.provide("headlessStartup", { task });
-}
-`;
 
 export function codexSupportsEphemeral(observedVersion: string | undefined): boolean {
   const match = String(observedVersion || "").match(/\b(\d+)\.(\d+)\.(\d+)\b/);
@@ -60,7 +43,6 @@ export async function writeDeepseekRuntimePatch(
   value: string,
   runDirectory: string | undefined,
   runtimeHome: string | undefined,
-  unescapeOptionLikePrompt = false,
 ): Promise<string> {
   if (!runDirectory || !runtimeHome) {
     throw new HitchError("DeepSeek session capture requires an isolated run directory", {
@@ -89,21 +71,6 @@ export async function writeDeepseekRuntimePatch(
       });
     }
     rows.push({ id: "agent-default-model", config: { provider, model } });
-  }
-  if (unescapeOptionLikePrompt) {
-    const startupPlugin = path.join(configDirectory, "deepseek-headless-startup.mjs");
-    await writeFile(startupPlugin, DEEPSEEK_HEADLESS_STARTUP_PLUGIN, { mode: 0o600 });
-    rows.push(
-      { id: "headless-startup", disabled: true },
-      {
-        insert: [{
-          id: "hitch-headless-startup",
-          name: pathToFileURL(startupPlugin).href,
-          inject: ["cmdlineArgs"],
-          config: { unescapeLeadingLineBreak: true },
-        }],
-      },
-    );
   }
   const file = path.join(configDirectory, "deepseek-runtime.json");
   await writeFile(file, `${JSON.stringify(rows, null, 2)}\n`, { mode: 0o600 });

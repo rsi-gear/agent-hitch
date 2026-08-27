@@ -149,7 +149,7 @@ test("DeepSeek runs through its headless plain-text mode", async (t) => {
   assert.equal(manifest.agent_version, "0.1.0-rc.6");
 });
 
-test("DeepSeek process escapes argv but records the exact dash-prefixed user message", async (t) => {
+test("DeepSeek process uses two terminators and records the exact dash-prefixed user message", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-option-prompt-"));
   const argvLog = path.join(root, "dsh-argv.json");
   const executable = await writeFakeDeepseek(root, { argvLog, nativeSession: true });
@@ -167,8 +167,7 @@ test("DeepSeek process escapes argv but records the exact dash-prefixed user mes
 
   assert.equal(result.status, "succeeded");
   const argv = JSON.parse(await readFile(argvLog, "utf8")) as string[];
-  assert.equal(argv.at(-1), `\n${prompt}`);
-  assert.equal(argv.includes("--"), false);
+  assert.deepEqual(argv.slice(-3), ["--", "--", prompt]);
   const providerRows = await readJSONLines(path.join(
     root,
     "runs",

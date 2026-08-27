@@ -34,19 +34,11 @@ export const deepseekAdapter: AdapterDefinition = {
     },
     async process(request, executable, runtime = {}) {
       const args = ["--profile", "headless", ...request.agent_args];
-      const optionLikePrompt = request.prompt.startsWith("-");
-      const patchFile = await writeDeepseekRuntimePatch(
-        request.model,
-        runtime.run_directory,
-        runtime.runtime_home,
-        optionLikePrompt,
-      );
+      const patchFile = await writeDeepseekRuntimePatch(request.model, runtime.run_directory, runtime.runtime_home);
       args.push("--patch", patchFile);
       // DSH parses argv once in the launcher and again in the headless app.
-      // Escape the launcher, then let the Hitch startup overlay remove exactly
-      // that marker before DSH creates the first user message.
-      const task = optionLikePrompt ? `\n${request.prompt}` : request.prompt;
-      args.push(task);
+      // Each parser consumes one terminator, leaving the prompt byte-exact.
+      args.push("--", "--", request.prompt);
       return {
         executable,
         args,

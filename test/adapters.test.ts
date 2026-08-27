@@ -194,9 +194,10 @@ test("DeepSeek adapter runs the headless profile with an isolated home and model
   assert.equal(specification.input, "");
   assert.deepEqual(specification.env, { DSH_HOME: runtimeHome });
   assert.deepEqual(specification.args.slice(0, 4), ["--profile", "headless", "--patch", "/workspace/custom.yml"]);
-  assert.deepEqual(specification.args.slice(-3, -1), ["--patch", path.join(runDirectory, "config", "deepseek-runtime.json")]);
+  assert.deepEqual(specification.args.slice(-5, -3), ["--patch", path.join(runDirectory, "config", "deepseek-runtime.json")]);
+  assert.deepEqual(specification.args.slice(-3, -1), ["--", "--"]);
   assert.equal(specification.args.at(-1), "fix the tests");
-  assert.deepEqual(JSON.parse(await readFile(specification.args.at(-2) as string, "utf8")), [
+  assert.deepEqual(JSON.parse(await readFile(specification.args.at(-4) as string, "utf8")), [
     {
       id: "session-persistence-jsonl",
       config: {
@@ -212,7 +213,7 @@ test("DeepSeek adapter runs the headless profile with an isolated home and model
   ]);
 });
 
-test("DeepSeek adapter escapes option-like argv and restores the exact DSH task", async () => {
+test("DeepSeek adapter terminates both DSH option parsers before every prompt shape", async () => {
   const runDirectory = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-prompt-argv-"));
   const patchFile = path.join(runDirectory, "config", "deepseek-runtime.json");
   const prompts = [
@@ -229,40 +230,7 @@ test("DeepSeek adapter escapes option-like argv and restores the exact DSH task"
       ...request({ model: "deepseek-official/deepseek-v4-pro", prompt }),
       agent_args: [],
     }, "/bin/dsh", { run_directory: runDirectory, runtime_home: path.join(runDirectory, "runtime-home") });
-    const expectedTask = prompt.startsWith("-") ? `\n${prompt}` : prompt;
-    assert.deepEqual(specification.args.slice(-3), ["--patch", patchFile, expectedTask]);
-    const patches = JSON.parse(await readFile(patchFile, "utf8")) as Array<{
-      id?: string;
-      disabled?: boolean;
-      insert?: Array<{
-        id?: string;
-        name?: string;
-        config?: { unescapeLeadingLineBreak?: boolean };
-      }>;
-    }>;
-    const startupDisabled = patches.some((row) => row.id === "headless-startup" && row.disabled === true);
-    const startup = patches.flatMap((row) => row.insert ?? [])
-      .find((entry) => entry.id === "hitch-headless-startup");
-    if (!prompt.startsWith("-")) {
-      assert.equal(startupDisabled, false);
-      assert.equal(startup, undefined);
-      continue;
-    }
-    assert.equal(startupDisabled, true);
-    assert.equal(startup?.config?.unescapeLeadingLineBreak, true);
-    assert.ok(startup?.name);
-    const plugin = await import(startup.name) as {
-      apply: (
-        context: { get: (name: string) => unknown; provide: (name: string, value: unknown) => void },
-        config: object,
-      ) => void;
-    };
-    let provided: unknown;
-    plugin.apply({
-      get: (name) => name === "cmdlineArgs" ? { get: () => [expectedTask] } : undefined,
-      provide: (name, value) => { if (name === "headlessStartup") provided = value; },
-    }, startup.config);
-    assert.deepEqual(provided, { task: prompt });
+    assert.deepEqual(specification.args.slice(-5), ["--patch", patchFile, "--", "--", prompt]);
   }
 });
 

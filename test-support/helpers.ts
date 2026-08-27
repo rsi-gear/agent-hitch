@@ -363,21 +363,14 @@ if (${JSON.stringify(argvLog)} !== undefined) {
   fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 }
 const launcherArgs = process.argv.slice(2);
-const finalPatch = launcherArgs.lastIndexOf("--patch");
-const innerArgs = finalPatch < 0 ? launcherArgs.slice(2) : launcherArgs.slice(finalPatch + 2);
-if (innerArgs[0]?.startsWith("-")) {
+const launcherTerminator = launcherArgs.indexOf("--");
+const innerArgs = launcherTerminator < 0 ? [] : launcherArgs.slice(launcherTerminator + 1);
+if (innerArgs[0]?.startsWith("-") && innerArgs[0] !== "--") {
   process.stderr.write("error: unknown option '" + innerArgs[0] + "'\\n");
   process.exit(1);
 }
-const runtimePatches = finalPatch < 0 ? [] : JSON.parse(fs.readFileSync(launcherArgs[finalPatch + 1], "utf8"));
-const unescapeLeadingLineBreak = runtimePatches.some((row) => Array.isArray(row.insert)
-  && row.insert.some((entry) => entry.id === "hitch-headless-startup"
-    && entry.config?.unescapeLeadingLineBreak === true));
-let prompt = innerArgs.join(" ");
-if (unescapeLeadingLineBreak) {
-  if (!prompt.startsWith("\\n-")) throw new Error("fake-dsh: escaped task marker is missing");
-  prompt = prompt.slice(1);
-}
+const taskArgs = innerArgs[0] === "--" ? innerArgs.slice(1) : innerArgs;
+const prompt = taskArgs.join(" ");
 if (${JSON.stringify(nativeSession)}) {
   const base = 1700000000000;
   const header = {type:"session",version:0,id:"session-native",createdAt:base,cwd:process.cwd(),delegationDepth:0};
