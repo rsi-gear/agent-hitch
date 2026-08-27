@@ -158,9 +158,9 @@ test("CLI runs, lists, and inspects Harbor evals", async (t) => {
     "--harbor", harbor,
     "--output", "json",
   ], { encoding: "utf8", env });
-  assert.equal(run.status, 0, run.stderr || undefined);
+  assert.equal(run.status, 13, run.stderr || "eval run should report invalid evidence");
   const result = JSON.parse(run.stdout) as { status: string; eval_id: string };
-  assert.equal(result.status, "succeeded");
+  assert.equal(result.status, "failed");
   assert.equal(result.eval_id, evalId);
 
   const list = spawnSync(process.execPath, [executable, "--root", root, "eval", "list", "--json"], { encoding: "utf8" });

@@ -51,6 +51,9 @@ export function mergeEvalProgressTrial(progress: EvalProgressV1, trial: EvalTria
   if (progress.trials.some((item) => item.run_id === parsed.run_id)) {
     throw new TypeError(`eval progress run identity conflict: ${parsed.run_id}`);
   }
+  if (progress.trials.some((item) => evalTrialKey(item) === evalTrialKey(parsed))) {
+    throw new TypeError(`eval progress logical trial conflict: ${parsed.task_id} attempt ${parsed.attempt}`);
+  }
   const trials = [...progress.trials, parsed].sort((left, right) => left.task_id.localeCompare(right.task_id)
     || left.attempt - right.attempt
     || left.trial_id.localeCompare(right.trial_id));

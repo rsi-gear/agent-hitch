@@ -65,6 +65,7 @@ class HitchHarborAgent(BaseAgent):
         benchmark_id: str | None = None,
         benchmark_revision: str | None = None,
         verifier_identity: str | None = None,
+        logical_attempt: int | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, **kwargs)
@@ -83,6 +84,9 @@ class HitchHarborAgent(BaseAgent):
         self.benchmark_id = benchmark_id
         self.benchmark_revision = benchmark_revision
         self.verifier_identity = verifier_identity
+        if logical_attempt is not None and (isinstance(logical_attempt, bool) or not isinstance(logical_attempt, int) or logical_attempt < 1):
+            raise ValueError("logical_attempt must be a positive integer")
+        self.logical_attempt = logical_attempt
         self._hitch_version: str | None = None
         self._entrypoint: str | None = None
         self._artifact_manifest: dict[str, Any] | None = None
@@ -1230,6 +1234,9 @@ mv "$stage_dir" "$target_dir"
         trial_dir = self.logs_dir.parent if self.logs_dir.name == "agent" else self.logs_dir
         trial_id = trial_dir.name or "trial__1"
         task_id = self._locked_task_id(trial_dir)
+        if self.logical_attempt is not None:
+            fallback_task_id = trial_id.rsplit("__", 1)[0] if "__" in trial_id else trial_id
+            return trial_id, task_id or fallback_task_id, self.logical_attempt
         match = re.fullmatch(r"(.+)__(\d+)", trial_id)
         if match:
             return trial_id, task_id or match.group(1), max(1, int(match.group(2)))

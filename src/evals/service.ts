@@ -12,6 +12,7 @@ import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, valid
 import { EvalEventSink } from "./events.js";
 import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
+import { invalidTrialSlots } from "./rerun-slots.js";
 import type { EvalRequestInput } from "./request.js";
 
 export interface RunEvalOptions {
@@ -155,6 +156,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
       attempts: normalized.attempts,
+      attempt_execution: "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
       ...(localTaskIds === null ? {} : { tasks: localTaskIds }),
       controller_runtime: {
@@ -195,90 +197,132 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(signal ? { signal } : {}),
       });
     }
-    const backendRun = await runHarborBackend({
-      evalId,
-      evalDirectory,
-      request: normalized,
-      root,
-      resolvedRevision,
-      runtimeDirectory: controllerRuntime.directory,
-      runtimeId: controllerRuntime.runtime_id,
-      preparedArtifact,
-      ...(localTransport ? { localTransport } : {}),
-      env,
-      ...(harborExecutable !== undefined ? { harborExecutable } : {}),
-      ...(signal ? { signal } : {}),
-      ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
-      emit: (event) => sink.emit(event),
-      onTrialSettled: async (trial, context): Promise<boolean> => {
-        try {
-          const ref = await importEvalTrialRun({
-            root,
-            evalId,
-            evalDirectory,
-            request: normalized,
-            resolvedRevision,
-            benchmarkId: normalized.benchmark_id,
-            benchmarkRevision: normalized.benchmark_revision,
-            runtimeId: controllerRuntime.runtime_id,
-            requireCompleteMarker: true,
-            allowMissingBundleDiagnostic: context.bundleWaitExpired,
-          }, trial, progress?.trials.length ?? 0, progress?.trials ?? []);
-          if (progress === null) throw new Error("eval progress was not initialized");
-          const previousGeneration = progress.generation;
-          progress = mergeEvalProgressTrial(progress, ref);
-          if (progress.generation !== previousGeneration) {
-            await validateEvalTrialReferences(root, evalId, [ref], {
+    const backendRuns: Array<{ attempt: number; run: Awaited<ReturnType<typeof runHarborBackend>> }> = [];
+    for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
+      if (signal?.aborted) break;
+      const backendDirectory = normalized.attempts === 1
+        ? path.join(evalDirectory, "harbor")
+        : path.join(evalDirectory, "harbor", attemptDirectoryName(logicalAttempt));
+      const harborJobDirectory = path.join(backendDirectory, "job");
+      const shardRefs: EvalTrialRefV1[] = [];
+      const publish = async (ref: EvalTrialRefV1): Promise<void> => {
+        if (ref.attempt !== logicalAttempt) {
+          throw new HitchError(`Harbor returned attempt ${ref.attempt}, expected ${logicalAttempt}`, {
+            code: "eval_trial_attempt_mismatch",
+            exitCode: 12,
+          });
+        }
+        if (!shardRefs.some((current) => current.trial_id === ref.trial_id)) shardRefs.push(ref);
+        if (progress === null) throw new Error("eval progress was not initialized");
+        const previousGeneration = progress.generation;
+        progress = mergeEvalProgressTrial(progress, ref);
+        if (progress.generation === previousGeneration) return;
+        await validateEvalTrialReferences(root, evalId, [ref], {
+          benchmarkId: normalized.benchmark_id,
+          benchmarkRevision: normalized.benchmark_revision,
+        });
+        await writeEvalProgress(evalDirectory, progress);
+        sink.emit({
+          type: "eval.trial.published",
+          trial_id: ref.trial_id,
+          task_id: ref.task_id,
+          attempt: ref.attempt,
+          run_id: ref.run_id,
+          observation_status: ref.observation_status,
+          settled_trials: progress.trials.length,
+          generation: progress.generation,
+        });
+      };
+      const backendRun = await runHarborBackend({
+        evalId,
+        evalDirectory,
+        backendDirectory,
+        logicalAttempt,
+        request: { ...normalized, attempts: 1 },
+        root,
+        resolvedRevision,
+        runtimeDirectory: controllerRuntime.directory,
+        runtimeId: controllerRuntime.runtime_id,
+        preparedArtifact,
+        ...(localTransport ? { localTransport } : {}),
+        env,
+        ...(harborExecutable !== undefined ? { harborExecutable } : {}),
+        ...(signal ? { signal } : {}),
+        ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
+        emit: (event) => sink.emit(event),
+        onTrialSettled: async (trial, context): Promise<boolean> => {
+          try {
+            const ref = await importEvalTrialRun({
+              root,
+              evalId,
+              evalDirectory,
+              harborJobDirectory,
+              expectedAttempt: logicalAttempt,
+              request: normalized,
+              resolvedRevision,
               benchmarkId: normalized.benchmark_id,
               benchmarkRevision: normalized.benchmark_revision,
-            });
-            await writeEvalProgress(evalDirectory, progress);
-            sink.emit({
-              type: "eval.trial.published",
-              trial_id: ref.trial_id,
-              task_id: ref.task_id,
-              attempt: ref.attempt,
-              run_id: ref.run_id,
-              observation_status: ref.observation_status,
-              settled_trials: progress.trials.length,
-              generation: progress.generation,
-            });
+              runtimeId: controllerRuntime.runtime_id,
+              requireCompleteMarker: true,
+              allowMissingBundleDiagnostic: context.bundleWaitExpired,
+            }, trial, shardRefs.length, shardRefs);
+            await publish(ref);
+            return true;
+          } catch (error) {
+            if (error instanceof TrialBundlePendingError) return false;
+            throw error;
           }
-          return true;
-        } catch (error) {
-          if (error instanceof TrialBundlePendingError) return false;
-          throw error;
-        }
-      },
-    });
-    trialRefs = await importEvalTrialRuns({
-      root,
-      evalId,
-      evalDirectory,
-      request: normalized,
-      resolvedRevision,
-      benchmarkId: normalized.benchmark_id,
-      benchmarkRevision: normalized.benchmark_revision,
-      runtimeId: controllerRuntime.runtime_id,
-      rawResult: backendRun.rawResult,
-    }, progress?.trials ?? []);
+        },
+      });
+      backendRuns.push({ attempt: logicalAttempt, run: backendRun });
+      const terminalRefs = await importEvalTrialRuns({
+        root,
+        evalId,
+        evalDirectory,
+        harborJobDirectory,
+        expectedAttempt: logicalAttempt,
+        request: normalized,
+        resolvedRevision,
+        benchmarkId: normalized.benchmark_id,
+        benchmarkRevision: normalized.benchmark_revision,
+        runtimeId: controllerRuntime.runtime_id,
+        rawResult: backendRun.rawResult,
+      }, shardRefs);
+      for (const ref of terminalRefs) await publish(ref);
+      assertBackendTrialSet(backendRun.rawResult, shardRefs);
+      await validateEvalTrialReferences(root, evalId, shardRefs, {
+        benchmarkId: normalized.benchmark_id,
+        benchmarkRevision: normalized.benchmark_revision,
+      });
+      if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) break;
+      if (localTransport && localSourceBackendFailure(backendRun.rawResult)) break;
+    }
     if (progress === null) throw new Error("eval progress was not initialized");
-    for (const ref of trialRefs) progress = mergeEvalProgressTrial(progress, ref);
-    await writeEvalProgress(evalDirectory, progress);
-    assertBackendTrialSet(backendRun.rawResult, progress.trials);
-    await validateEvalTrialReferences(root, evalId, trialRefs, {
-      benchmarkId: normalized.benchmark_id,
-      benchmarkRevision: normalized.benchmark_revision,
-    });
-    const cancelled = signal?.aborted;
-    const localSourceFailure = localTransport ? localSourceBackendFailure(backendRun.rawResult) : false;
-    const succeeded = !cancelled && !localSourceFailure && backendRun.backend.process_exit_code === 0 && backendRun.rawResult !== null;
+    trialRefs = progress.trials;
+    const cancelled = signal?.aborted === true;
+    const localSourceFailure = localTransport
+      ? backendRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
+      : false;
+    const backendsSucceeded = backendRuns.length === normalized.attempts
+      && backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null);
+    const invalidTrials = localTaskIds === null
+      ? trialRefs.filter((trial) => trial.observation_status !== "valid").map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }))
+      : invalidTrialSlots(localTaskIds, normalized.attempts, progress);
+    const succeeded = !cancelled && !localSourceFailure && backendsSucceeded && invalidTrials.length === 0;
+    const singleBackend = backendRuns.length === 1 ? backendRuns[0]!.run : undefined;
     result = {
       schema_version: SCHEMA_VERSION,
       eval_id: evalId,
       status: cancelled ? "cancelled" : succeeded ? "succeeded" : "failed",
       exit_code: cancelled ? 9 : succeeded ? 0 : 13,
-      backend: backendRun.backend,
+      ...(singleBackend ? { backend: singleBackend.backend, backend_summary: singleBackend.summary } : {}),
+      ...(normalized.attempts > 1 ? {
+        backend_runs: backendRuns.map(({ attempt, run }) => ({
+          attempt,
+          backend: run.backend,
+          backend_summary: run.summary,
+        })),
+      } : {}),
       candidate: plan.candidate,
       dataset: normalized.dataset,
       benchmark_id: normalized.benchmark_id,
@@ -286,19 +330,24 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       generation: progress.generation,
       trials: trialRefs,
       summary: summarizeTrialRefs(trialRefs),
-      backend_summary: backendRun.summary,
       prepared_artifact: preparedArtifactSummary(preparedArtifact),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       ...(succeeded ? {} : {
         error: {
-          code: cancelled ? "cancelled" : localSourceFailure ? "local_source_materialize_failed" : "harbor_failed",
+          code: cancelled
+            ? "cancelled"
+            : localSourceFailure
+              ? "local_source_materialize_failed"
+              : !backendsSucceeded
+                ? "harbor_failed"
+                : "eval_has_invalid_tasks",
           message: cancelled
             ? "eval was cancelled"
             : localSourceFailure
               ? "Harbor rejected the transported local Git source before candidate execution"
-            : backendRun.rawResult === null
-              ? `Harbor exited without a result (code ${backendRun.backend.process_exit_code ?? "null"})`
-              : `Harbor exited with code ${backendRun.backend.process_exit_code ?? "null"}`,
+              : !backendsSucceeded
+                ? `Harbor attempt shards completed ${backendRuns.length}/${normalized.attempts}`
+                : `eval has invalid or missing trials: ${invalidTrials.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`,
         },
       }),
       started_at: startedAt.toISOString(),
@@ -337,6 +386,10 @@ function assertBackendTrialSet(rawResult: Record<string, unknown> | null, refs: 
   if (backendIds.size !== trials.length || backendIds.size !== refIds.size || [...backendIds].some((id) => !refIds.has(id))) {
     throw new Error("Harbor terminal trial set does not match published eval progress");
   }
+}
+
+function attemptDirectoryName(attempt: number): string {
+  return `attempt-${String(attempt).padStart(4, "0")}`;
 }
 
 export function summarizeTrialRefs(trials: import("../domain/index.js").EvalTrialRefV1[]): Record<string, unknown> {

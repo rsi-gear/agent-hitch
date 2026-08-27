@@ -11,14 +11,25 @@ import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportU
 import { useControllerRuntimeById } from "../controller-runtime/index.js";
 import type { EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths, withFileLock } from "../foundation/index.js";
-import { evalTrialKey, readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
+import { readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { validateEvalId, validateEvalRequest } from "./request.js";
+import {
+  attemptDirectoryName,
+  formatSlot,
+  groupSlotsByAttempt,
+  invalidTrialSlots,
+  selectRerunTrialSlots,
+  slotKey,
+  sortSlots,
+  uniqueTasks,
+  validateProgressPlan,
+} from "./rerun-slots.js";
+import type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 import { summarizeTrialRefs } from "./service.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 
-export type RerunSelector =
-  | { mode: "invalid" }
-  | { mode: "tasks"; taskNames: readonly string[] };
+export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
+export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 
 export interface RerunEvalOptions {
   evalId: string;
@@ -29,7 +40,6 @@ export interface RerunEvalOptions {
   signal?: AbortSignal;
   trialBundleGraceMs?: number;
 }
-
 export interface EvalRerunResult {
   schema_version: "1";
   kind: "eval-rerun";
@@ -39,13 +49,17 @@ export interface EvalRerunResult {
   selected_tasks: string[];
   repaired_tasks: string[];
   remaining_invalid_tasks: string[];
+  selected_trials: EvalTrialSlot[];
+  repaired_trials: EvalTrialSlot[];
+  remaining_invalid_trials: EvalTrialSlot[];
   eval_status: "succeeded" | "failed";
   started_at: string;
   completed_at: string;
 }
-
 interface RerunPlan {
   tasks: string[];
+  attempts: number;
+  attemptExecution: "legacy-single-attempt-v1" | "harbor-attempt-shards-v1";
   candidate: Record<string, unknown>;
   preparedArtifact: Record<string, unknown>;
   controllerRuntime: Record<string, unknown>;
@@ -79,13 +93,15 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
   validateProgressPlan(progress, plan, request, options.evalId);
   const previousResult = await readJSON<Record<string, unknown> | null>(path.join(options.evalDirectory, "result.json"), null);
   if (previousResult?.status === "cancelled") throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 2 });
-  const selectedTasks = selectRerunTasks(plan.tasks, progress, options.selector);
+  const selectedTrials = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector);
+  const selectedTasks = uniqueTasks(selectedTrials);
   await atomicWriteJSON(path.join(rerunDirectory, "request.json"), {
     schema_version: SCHEMA_VERSION,
     rerun_id: rerunId,
     eval_id: options.evalId,
     mode: options.selector.mode,
     tasks: selectedTasks,
+    trials: selectedTrials,
     base_generation: progress.generation,
     created_at: startedAt,
   });
@@ -94,14 +110,16 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
     evalId: options.evalId,
     status: "running",
     tasks: selectedTasks,
+    trials: selectedTrials,
     repairedTasks: [],
+    repairedTrials: [],
     startedAt,
   });
 
-  const repaired = new Set<string>();
-  let backendRun: HarborBackendResult | undefined;
+  const repaired = new Map<string, EvalTrialSlot>();
+  const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
   try {
-    if (selectedTasks.length > 0) {
+    if (selectedTrials.length > 0) {
       const resolvedRevision = await loadResolvedRevision(options.evalDirectory, plan);
       const preparedArtifact = await loadRerunArtifact(options.root, plan);
       const runtimeId = requiredString(plan.controllerRuntime.runtime_id, "plan controller runtime id");
@@ -111,92 +129,113 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
         throw unavailable("controller runtime identity changed");
       }
       const localTransport = await loadLocalTransport(options.evalDirectory, plan, resolvedRevision, options.env, options.signal);
-      const backendDirectory = path.join(rerunDirectory, "harbor");
-      const harborJobDirectory = path.join(backendDirectory, "job");
-      const rerunRefs: EvalTrialRefV1[] = [];
-      const publish = async (ref: EvalTrialRefV1): Promise<void> => {
-        if (!selectedTasks.includes(ref.task_id) || ref.attempt !== 1) {
-          throw new HitchError(`Harbor rerun returned an unselected task: ${ref.task_id}`, { code: "eval_rerun_task_mismatch", exitCode: 12 });
-        }
-        if (!rerunRefs.some((current) => current.trial_id === ref.trial_id)) rerunRefs.push(ref);
-        if (ref.observation_status !== "valid") return;
-        await validateEvalTrialReferences(options.root, options.evalId, [ref], {
+      const groups = groupSlotsByAttempt(selectedTrials);
+      for (const [logicalAttempt, slots] of groups) {
+        if (options.signal?.aborted) throw new HitchError("eval rerun was aborted", { code: "eval_rerun_aborted", exitCode: 9 });
+        const taskNames = slots.map((slot) => slot.task_id);
+        const selectedKeys = new Set(slots.map(slotKey));
+        const backendDirectory = plan.attempts === 1
+          ? path.join(rerunDirectory, "harbor")
+          : path.join(rerunDirectory, "harbor", attemptDirectoryName(logicalAttempt));
+        const harborJobDirectory = path.join(backendDirectory, "job");
+        const rerunRefs: EvalTrialRefV1[] = [];
+        const publish = async (ref: EvalTrialRefV1): Promise<void> => {
+          const slot = { task_id: ref.task_id, attempt: ref.attempt };
+          const key = slotKey(slot);
+          if (!selectedKeys.has(key)) {
+            throw new HitchError(`Harbor rerun returned an unselected trial: ${ref.task_id} attempt ${ref.attempt}`, {
+              code: "eval_rerun_trial_mismatch",
+              exitCode: 12,
+            });
+          }
+          if (!rerunRefs.some((current) => current.trial_id === ref.trial_id)) rerunRefs.push(ref);
+          if (ref.observation_status !== "valid") return;
+          await validateEvalTrialReferences(options.root, options.evalId, [ref], {
+            benchmarkId: request.benchmark_id,
+            benchmarkRevision: request.benchmark_revision,
+          });
+          const previousGeneration = progress.generation;
+          progress = replaceInvalidEvalProgressTrial(progress, ref);
+          if (progress.generation === previousGeneration) return;
+          repaired.set(key, slot);
+          await writeEvalProgress(options.evalDirectory, progress);
+          await writeRerunState(statePath, {
+            rerunId,
+            evalId: options.evalId,
+            status: "running",
+            tasks: selectedTasks,
+            trials: selectedTrials,
+            repairedTasks: uniqueTasks([...repaired.values()]),
+            repairedTrials: sortSlots([...repaired.values()]),
+            startedAt,
+          });
+        };
+        const backendRun = await runHarborBackend({
+          evalId: options.evalId,
+          evalDirectory: options.evalDirectory,
+          backendDirectory,
+          logicalAttempt,
+          taskNames,
+          request: { ...request, attempts: 1 },
+          root: options.root,
+          resolvedRevision,
+          runtimeDirectory: runtime.directory,
+          runtimeId: runtime.runtime_id,
+          preparedArtifact,
+          ...(localTransport ? { localTransport } : {}),
+          env: options.env ?? process.env,
+          ...(options.harborExecutable === undefined ? {} : { harborExecutable: options.harborExecutable }),
+          ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
+          onTrialSettled: async (trial, context): Promise<boolean> => {
+            try {
+              const ref = await importEvalTrialRun({
+                root: options.root,
+                evalId: options.evalId,
+                evalDirectory: options.evalDirectory,
+                harborJobDirectory,
+                expectedAttempt: logicalAttempt,
+                request,
+                resolvedRevision,
+                benchmarkId: request.benchmark_id,
+                benchmarkRevision: request.benchmark_revision,
+                runtimeId: runtime.runtime_id,
+                requireCompleteMarker: true,
+                allowMissingBundleDiagnostic: context.bundleWaitExpired,
+              }, trial, rerunRefs.length, rerunRefs);
+              await publish(ref);
+              return true;
+            } catch (error) {
+              if (error instanceof TrialBundlePendingError) return false;
+              throw error;
+            }
+          },
+        });
+        backendRuns.push({ attempt: logicalAttempt, run: backendRun });
+        const terminalRefs = await importEvalTrialRuns({
+          root: options.root,
+          evalId: options.evalId,
+          evalDirectory: options.evalDirectory,
+          harborJobDirectory,
+          expectedAttempt: logicalAttempt,
+          request,
+          resolvedRevision,
           benchmarkId: request.benchmark_id,
           benchmarkRevision: request.benchmark_revision,
-        });
-        const previousGeneration = progress.generation;
-        progress = replaceInvalidEvalProgressTrial(progress, ref);
-        if (progress.generation === previousGeneration) return;
-        repaired.add(ref.task_id);
-        await writeEvalProgress(options.evalDirectory, progress);
-        await writeRerunState(statePath, {
-          rerunId,
-          evalId: options.evalId,
-          status: "running",
-          tasks: selectedTasks,
-          repairedTasks: [...repaired].sort(),
-          startedAt,
-        });
-      };
-      backendRun = await runHarborBackend({
-        evalId: options.evalId,
-        evalDirectory: options.evalDirectory,
-        backendDirectory,
-        taskNames: selectedTasks,
-        request,
-        root: options.root,
-        resolvedRevision,
-        runtimeDirectory: runtime.directory,
-        runtimeId: runtime.runtime_id,
-        preparedArtifact,
-        ...(localTransport ? { localTransport } : {}),
-        env: options.env ?? process.env,
-        ...(options.harborExecutable === undefined ? {} : { harborExecutable: options.harborExecutable }),
-        ...(options.signal ? { signal: options.signal } : {}),
-        ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
-        onTrialSettled: async (trial, context): Promise<boolean> => {
-          try {
-            const ref = await importEvalTrialRun({
-              root: options.root,
-              evalId: options.evalId,
-              evalDirectory: options.evalDirectory,
-              harborJobDirectory,
-              request,
-              resolvedRevision,
-              benchmarkId: request.benchmark_id,
-              benchmarkRevision: request.benchmark_revision,
-              runtimeId: runtime.runtime_id,
-              requireCompleteMarker: true,
-              allowMissingBundleDiagnostic: context.bundleWaitExpired,
-            }, trial, rerunRefs.length, rerunRefs);
-            await publish(ref);
-            return true;
-          } catch (error) {
-            if (error instanceof TrialBundlePendingError) return false;
-            throw error;
-          }
-        },
-      });
-      const terminalRefs = await importEvalTrialRuns({
-        root: options.root,
-        evalId: options.evalId,
-        evalDirectory: options.evalDirectory,
-        harborJobDirectory,
-        request,
-        resolvedRevision,
-        benchmarkId: request.benchmark_id,
-        benchmarkRevision: request.benchmark_revision,
-        runtimeId: runtime.runtime_id,
-        rawResult: backendRun.rawResult,
-      }, rerunRefs);
-      for (const ref of terminalRefs) await publish(ref);
-      if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) {
-        throw new HitchError("Harbor rerun failed before producing a complete result", { code: "eval_rerun_harbor_failed", exitCode: 13 });
+          runtimeId: runtime.runtime_id,
+          rawResult: backendRun.rawResult,
+        }, rerunRefs);
+        for (const ref of terminalRefs) await publish(ref);
+        if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) {
+          throw new HitchError("Harbor rerun failed before producing a complete result", { code: "eval_rerun_harbor_failed", exitCode: 13 });
+        }
       }
     }
 
-    const result = await finalizeRerun(options.evalDirectory, request, plan, progress, previousResult, backendRun);
-    const remaining = invalidTasks(plan.tasks, progress);
+    const result = await finalizeRerun(options.evalDirectory, request, plan, progress, previousResult, backendRuns);
+    const remainingTrials = invalidTrialSlots(plan.tasks, plan.attempts, progress);
+    const remaining = uniqueTasks(remainingTrials);
+    const repairedTrials = sortSlots([...repaired.values()]);
     const completedAt = new Date().toISOString();
     const output: EvalRerunResult = {
       schema_version: "1",
@@ -205,8 +244,11 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
       eval_id: options.evalId,
       status: "completed",
       selected_tasks: selectedTasks,
-      repaired_tasks: [...repaired].sort(),
+      repaired_tasks: uniqueTasks(repairedTrials),
       remaining_invalid_tasks: remaining,
+      selected_trials: selectedTrials,
+      repaired_trials: repairedTrials,
+      remaining_invalid_trials: remainingTrials,
       eval_status: result.status as "succeeded" | "failed",
       started_at: startedAt,
       completed_at: completedAt,
@@ -216,23 +258,26 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
       evalId: options.evalId,
       status: "completed",
       tasks: selectedTasks,
+      trials: selectedTrials,
       repairedTasks: output.repaired_tasks,
+      repairedTrials,
       startedAt,
       completedAt,
       evalStatus: output.eval_status,
       remainingInvalidTasks: remaining,
+      remainingInvalidTrials: remainingTrials,
     });
     return output;
   } catch (error) {
-    if (progress.generation > 0) {
-      await finalizeRerun(options.evalDirectory, request, plan, progress, previousResult, backendRun).catch(() => {});
-    }
+    await finalizeRerun(options.evalDirectory, request, plan, progress, previousResult, backendRuns).catch(() => {});
     await writeRerunState(statePath, {
       rerunId,
       evalId: options.evalId,
       status: "failed",
       tasks: selectedTasks,
-      repairedTasks: [...repaired].sort(),
+      trials: selectedTrials,
+      repairedTasks: uniqueTasks([...repaired.values()]),
+      repairedTrials: sortSlots([...repaired.values()]),
       startedAt,
       completedAt: new Date().toISOString(),
       errorCode: error instanceof HitchError ? error.code : "eval_rerun_failed",
@@ -241,52 +286,27 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
   }
 }
 
-export function selectRerunTasks(tasks: readonly string[], progress: EvalProgressV1, selector: RerunSelector): string[] {
-  const planned = new Set(tasks);
-  if (planned.size !== tasks.length || tasks.some((task) => typeof task !== "string" || task.length === 0)) {
-    throw unavailable("eval task plan is invalid");
-  }
-  const invalid = new Set(invalidTasks(tasks, progress));
-  if (selector.mode === "invalid") return [...invalid].sort();
-  const requested = [...new Set(selector.taskNames)].sort();
-  if (requested.length === 0) throw invalidInput("eval rerun requires at least one --task");
-  for (const task of requested) {
-    if (!planned.has(task)) throw new HitchError(`eval task is not in the plan: ${task}`, { code: "eval_rerun_unknown_task", exitCode: 2 });
-    if (!invalid.has(task)) throw new HitchError(`eval task is already valid: ${task}`, { code: "eval_task_already_valid", exitCode: 2 });
-  }
-  return requested;
-}
-
-function invalidTasks(tasks: readonly string[], progress: EvalProgressV1): string[] {
-  const byKey = new Map<string, EvalTrialRefV1>();
-  for (const trial of progress.trials) {
-    const key = evalTrialKey(trial);
-    if (byKey.has(key)) throw unavailable(`eval has duplicate logical task: ${trial.task_id}`);
-    byKey.set(key, trial);
-  }
-  return [...tasks].filter((task) => byKey.get(`${task}\u00001`)?.observation_status !== "valid").sort();
-}
-
-function validateProgressPlan(progress: EvalProgressV1, plan: RerunPlan, request: EvalRequest, evalId: string): void {
-  if (progress.eval_id !== evalId) throw unavailable("eval progress identity is invalid");
-  if (progress.benchmark_id !== request.benchmark_id || progress.benchmark_revision !== request.benchmark_revision) {
-    throw unavailable("eval progress benchmark identity changed");
-  }
-  if (progress.planned_tasks !== plan.tasks.length || progress.planned_trials !== plan.tasks.length) {
-    throw unavailable("eval progress does not match the attempts=1 task plan");
-  }
-  const planned = new Set(plan.tasks);
-  for (const trial of progress.trials) {
-    if (trial.attempt !== 1 || !planned.has(trial.task_id)) throw unavailable(`eval progress contains an unplanned task: ${trial.task_id}`);
-  }
-  invalidTasks(plan.tasks, progress);
-}
-
 function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): RerunPlan {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable("eval plan is missing");
   const plan = value as Record<string, unknown>;
-  if (plan.eval_id !== evalId || plan.schema_version !== "1" || plan.attempts !== 1) {
-    throw unavailable("eval rerun requires a schema v1 attempts=1 plan");
+  if (plan.eval_id !== evalId || plan.schema_version !== "1") {
+    throw unavailable("eval rerun requires a schema v1 plan");
+  }
+  if (!Number.isSafeInteger(plan.attempts) || (plan.attempts as number) < 1 || plan.attempts !== request.attempts) {
+    throw unavailable("eval request and attempt plan differ");
+  }
+  let attemptExecution: RerunPlan["attemptExecution"];
+  if (plan.attempt_execution === undefined && plan.attempts === 1) {
+    attemptExecution = "legacy-single-attempt-v1";
+  } else if (plan.attempt_execution === "harbor-attempt-shards-v1") {
+    attemptExecution = "harbor-attempt-shards-v1";
+  } else if (plan.attempt_execution === undefined) {
+    throw new HitchError(
+      "eval was created without explicit logical-attempt identity; create a new eval with agent-hitch >= 0.2.5",
+      { code: "eval_rerun_legacy_attempt_identity", exitCode: 2 },
+    );
+  } else {
+    throw unavailable(`unsupported eval attempt execution: ${String(plan.attempt_execution)}`);
   }
   if (plan.dataset !== request.dataset || plan.benchmark_id !== request.benchmark_id
     || plan.benchmark_revision !== request.benchmark_revision) throw unavailable("eval request and plan identity differ");
@@ -300,6 +320,8 @@ function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): R
   }
   return {
     tasks: [...plan.tasks as string[]],
+    attempts: plan.attempts as number,
+    attemptExecution,
     candidate: plan.candidate as Record<string, unknown>,
     preparedArtifact: plan.prepared_artifact as Record<string, unknown>,
     controllerRuntime: plan.controller_runtime as Record<string, unknown>,
@@ -390,18 +412,27 @@ async function finalizeRerun(
   plan: RerunPlan,
   progress: EvalProgressV1,
   previousResult: Record<string, unknown> | null,
-  backendRun?: HarborBackendResult,
+  backendRuns: ReadonlyArray<{ attempt: number; run: HarborBackendResult }> = [],
 ): Promise<Record<string, unknown>> {
-  const remaining = invalidTasks(plan.tasks, progress);
-  const succeeded = remaining.length === 0;
+  const remainingTrials = invalidTrialSlots(plan.tasks, plan.attempts, progress);
+  const remaining = uniqueTasks(remainingTrials);
+  const succeeded = remainingTrials.length === 0;
   const completedAt = new Date().toISOString();
+  const singleBackend = backendRuns.length === 1 ? backendRuns[0]!.run : undefined;
   const result: Record<string, unknown> = {
     ...(previousResult ?? {}),
     schema_version: SCHEMA_VERSION,
     eval_id: progress.eval_id,
     status: succeeded ? "succeeded" : "failed",
     exit_code: succeeded ? 0 : 13,
-    ...(backendRun ? { backend: backendRun.backend, backend_summary: backendRun.summary } : {}),
+    ...(singleBackend ? { backend: singleBackend.backend, backend_summary: singleBackend.summary } : {}),
+    ...(backendRuns.length > 1 ? {
+      backend_runs: backendRuns.map(({ attempt, run }) => ({
+        attempt,
+        backend: run.backend,
+        backend_summary: run.summary,
+      })),
+    } : {}),
     candidate: plan.candidate,
     dataset: request.dataset,
     benchmark_id: request.benchmark_id,
@@ -412,7 +443,7 @@ async function finalizeRerun(
     ...(succeeded ? { error: undefined } : {
       error: {
         code: "eval_has_invalid_tasks",
-        message: `eval has invalid or missing tasks: ${remaining.join(", ")}`,
+        message: `eval has invalid or missing trials: ${remainingTrials.map(formatSlot).join(", ")}`,
       },
     }),
     started_at: typeof previousResult?.started_at === "string" ? previousResult.started_at : progress.started_at,
@@ -428,11 +459,14 @@ async function writeRerunState(file: string, input: {
   evalId: string;
   status: "running" | "completed" | "failed";
   tasks: readonly string[];
+  trials?: readonly EvalTrialSlot[];
   repairedTasks: readonly string[];
+  repairedTrials?: readonly EvalTrialSlot[];
   startedAt: string;
   completedAt?: string;
   evalStatus?: "succeeded" | "failed";
   remainingInvalidTasks?: readonly string[];
+  remainingInvalidTrials?: readonly EvalTrialSlot[];
   errorCode?: string;
 }): Promise<void> {
   await atomicWriteJSON(file, {
@@ -441,9 +475,12 @@ async function writeRerunState(file: string, input: {
     eval_id: input.evalId,
     status: input.status,
     tasks: [...input.tasks],
+    ...(input.trials ? { trials: sortSlots(input.trials) } : {}),
     repaired_tasks: [...input.repairedTasks],
+    ...(input.repairedTrials ? { repaired_trials: sortSlots(input.repairedTrials) } : {}),
     ...(input.evalStatus ? { eval_status: input.evalStatus } : {}),
     ...(input.remainingInvalidTasks ? { remaining_invalid_tasks: [...input.remainingInvalidTasks] } : {}),
+    ...(input.remainingInvalidTrials ? { remaining_invalid_trials: sortSlots(input.remainingInvalidTrials) } : {}),
     ...(input.errorCode ? { error: { code: input.errorCode } } : {}),
     started_at: input.startedAt,
     ...(input.completedAt ? { completed_at: input.completedAt } : {}),

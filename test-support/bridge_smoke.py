@@ -287,6 +287,7 @@ def main() -> int:
             benchmark_id="benchmark",
             benchmark_revision="sha256:" + "b" * 64,
             verifier_identity="sha256:" + "c" * 64,
+            logical_attempt=2,
         )
 
     agent = make_agent(agent_logs_dir)
@@ -380,8 +381,8 @@ def main() -> int:
         errors.append(f"trial_id was {context.metadata.get('trial_id')!r}, expected {trial_id!r}")
     if context.metadata.get("task_id") != task_id:
         errors.append(f"task_id was {context.metadata.get('task_id')!r}, expected {task_id!r}")
-    if context.metadata.get("attempt") != 1:
-        errors.append(f"attempt was {context.metadata.get('attempt')!r}, expected 1")
+    if context.metadata.get("attempt") != 2:
+        errors.append(f"attempt was {context.metadata.get('attempt')!r}, expected 2")
     if artifact_manifest:
         expected_status = "host_cache_populated" if incompatible_artifact else "uploaded"
         if context.metadata.get("harness_artifact_transport", {}).get("status") != expected_status:

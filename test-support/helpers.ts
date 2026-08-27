@@ -240,15 +240,17 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
 }
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
 const output = path.join(config.jobs_dir, config.job_name);
+const logicalAttempt = config.agents[0].kwargs.logical_attempt || 1;
+const trials = [
+  {task_name:"one",trial_name:"one__random-" + logicalAttempt,verifier_result:{rewards:{reward:1}}},
+  {task_name:"two",trial_name:"two__random-" + logicalAttempt,verifier_result:{rewards:{reward:0.5}}}
+];
 fs.mkdirSync(output, {recursive:true});
 fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
-  n_total_trials: 2,
-  stats: {n_completed_trials: 2, n_errored_trials: 0, n_cancelled_trials: 0}
+  n_total_trials: trials.length,
+  stats: {n_completed_trials: trials.length, n_errored_trials: 0, n_cancelled_trials: 0}
 }));
-for (const trial of [
-  {task_name:"one",trial_name:"one__1",verifier_result:{rewards:{reward:1}}},
-  {task_name:"two",trial_name:"two__1",verifier_result:{rewards:{reward:0.5}}}
-]) {
+for (const trial of trials) {
   const trialOutput = path.join(output, trial.trial_name);
   fs.mkdirSync(trialOutput, {recursive:true});
   fs.writeFileSync(path.join(trialOutput, "result.json"), JSON.stringify(trial));

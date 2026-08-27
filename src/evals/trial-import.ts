@@ -26,6 +26,7 @@ export interface ImportEvalRunsOptions {
   benchmarkRevision: string;
   runtimeId?: string;
   harborJobDirectory?: string;
+  expectedAttempt?: number;
   rawResult: Record<string, unknown> | null;
 }
 
@@ -62,7 +63,8 @@ export async function importEvalTrialRun(
   // canonical task id used by the in-container bridge and exported run.
   const fallbackTaskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
   const trialId = nonEmpty(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
-  const attempt = trialAttempt(trialId);
+  const attempt = options.expectedAttempt ?? trialAttempt(trialId);
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new TypeError("expected eval attempt must be a positive safe integer");
   const trialDirectory = path.join(options.harborJobDirectory ?? path.join(options.evalDirectory, "harbor", "job"), trialId);
   const taskId = await lockedTaskId(trialDirectory) || fallbackTaskId;
   const existing = existingRefs.find((ref) => ref.trial_id === trialId);

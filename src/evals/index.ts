@@ -8,5 +8,5 @@ export type { InspectedEval, ListedEval } from "./records.js";
 export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";
 export type { ImportEvalRunsOptions } from "./trial-import.js";
 export { createEvalProgress, evalTrialKey, mergeEvalProgressTrial, readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
-export { rerunEval, selectRerunTasks } from "./rerun.js";
-export type { EvalRerunResult, RerunEvalOptions, RerunSelector } from "./rerun.js";
+export { rerunEval, selectRerunTasks, selectRerunTrialSlots } from "./rerun.js";
+export type { EvalRerunResult, EvalTrialSlot, RerunEvalOptions, RerunSelector } from "./rerun.js";
