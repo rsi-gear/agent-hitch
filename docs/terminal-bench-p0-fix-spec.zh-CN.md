@@ -1,6 +1,6 @@
 # Hitch × Terminal-Bench P0 故障修复 Spec
 
-- 状态：Implemented（本地验证完成，Terminal-Bench 定向 canary 待外部环境执行）
+- 状态：Implemented（本地验证及 Terminal-Bench 定向 canary 完成）
 - 日期：2026-08-27
 - 适用基线：`agent-hitch@0.2.4`，仓库 HEAD `ffcd80fe1174e9d32609555786a5b20cd9efc55a`
 - 输入证据：`hitch-terminal-bench-failure-report-2026-08-27.md`
@@ -47,13 +47,13 @@ Terminal-Bench 30-task baseline 中有两个已确认的 Hitch 确定性故障�
 `deepseekAdapter.process()` 生成的 argv 必须符合：
 
 ```text
-dsh --profile headless <agent_args...> --patch <runtime-patch> -- <prompt>
+dsh --profile headless <agent_args...> --patch <runtime-patch> <task>
 ```
 
 其中：
 
-- `--` 是 DSH option terminator，必须紧邻 prompt 之前。
-- `<prompt>` 必须是单个 argv 元素；不得按空格、换行或 shell token 再拆分。
+- `<task>` 必须是单个 argv 元素；不得按空格、换行或 shell token 再拆分。
+- 普通 prompt 按原字节传递；仅当 prompt 首字符为 `-` 时，在前面增加一个换行，使两层 Commander 都把它识别为 positional task，而不是选项。
 - `--profile`、用户 `agent_args` 和 Hitch runtime patch 的既有顺序保持不变。
 - `input` 继续为 `""`，`DSH_HOME` 行为不变。
 
@@ -63,10 +63,11 @@ dsh --profile headless <agent_args...> --patch <runtime-patch> -- <prompt>
 
 ```ts
 args.push("--patch", patchFile);
-args.push("--", request.prompt);
+const task = request.prompt.startsWith("-") ? `\n${request.prompt}` : request.prompt;
+args.push(task);
 ```
 
-本次选择标准 `--` 作为最小兼容修复。若 DSH 未来提供稳定的 prompt-file/stdin contract，应另立变更迁移，不能在本补丁中猜测未发布接口。
+真实 DSH 对 argv 执行 launcher 与 headless app 两层 Commander 解析，launcher 会消费标准 `--`，因此单个 terminator 无法保护第二层；双 terminator 又把嵌套 parser 的内部约定泄漏到 adapter。本实现改用最小的语义空白转义，不依赖 DSH 的 parser 层数。若 DSH 未来提供稳定的 prompt-file/stdin contract，应另立变更迁移。
 
 ### 4.3 测试要求
 
@@ -74,20 +75,20 @@ args.push("--", request.prompt);
 
 | prompt | 预期 |
 | --- | --- |
-| `normal task` | 作为 `--` 后唯一 positional task |
-| `- starts with a dash` | 不得成为未知选项 |
-| `--help` | 不得触发 DSH help |
-| `--patch attacker-controlled-value` | 不得改变 runtime patch |
+| `normal task` | 原样作为唯一 positional task |
+| `- starts with a dash` | 传入 `\n- starts with a dash`，不得成为未知选项 |
+| `--help` | 传入 `\n--help`，不得触发 DSH help |
+| `--patch attacker-controlled-value` | 增加一个前导换行，不得改变 runtime patch |
 | `multi-line\ntask` | 保持一个 argv 元素及原始换行 |
-| 空字符串 | 仍保留 `--` 和一个空 positional 元素 |
+| 空字符串 | 仍保留一个空 positional 元素 |
 
 断言必须验证完整 argv 尾部为：
 
 ```ts
-["--patch", patchFile, "--", prompt]
+["--patch", patchFile, prompt.startsWith("-") ? `\n${prompt}` : prompt]
 ```
 
-在 `test/engine.test.ts` 增加至少一个进程级 fixture：fake DSH 记录实际 `process.argv`，以 `- starts with a dash` 执行一次完整 Hitch run，并断言收到的最后两个元素严格为 `--` 和原 prompt。该测试用于防止 adapter 单测正确、process spawn 层又发生拆词的回归。
+在 `test/engine.test.ts` 增加至少一个进程级 fixture：fake DSH 模拟 launcher 与 headless app 的 option-like task 拒绝行为并记录实际 `process.argv`，以 `- starts with a dash` 执行一次完整 Hitch run，断言最后一个元素为 `\n- starts with a dash` 且 argv 不含 `--`。该测试用于防止 adapter 单测正确、process spawn 层又发生拆词的回归。
 
 ## 5. P0-B：Harbor result 读取与错误保真
 
@@ -358,10 +359,10 @@ npm run check
 ## 8. 兼容性、发布与回滚
 
 - 该修复是 patch-level bug fix，不修改公开 CLI 参数或现有 JSON schema version。
-- DeepSeek argv 新增 `--` 依赖 DSH/Commander 的标准 option-terminator 行为；发布前必须用当前支持的 DSH 精确版本至少做一次真实 canary。
+- DeepSeek 对 option-like prompt 增加一个语义空白前缀，普通 prompt 不变；发布前必须用当前支持的 DSH 精确版本至少做一次真实 canary。
 - Bridge error metadata 和 diagnostic artifact 均为 additive；旧调用方可忽略。
 - `invalid_reason` 保持 `infrastructure_failure`，避免破坏 Gear 当前 fail-closed contract。
-- 如真实 DSH 版本不接受 `--`，只回滚 P0-A，并在 DSH 正式提供 prompt-file/stdin 前锁定受影响版本；不得回滚 P0-B 的错误保真修复。
+- 如受支持的真实 DSH 版本会对前导语义空白做非预期处理，只回滚 P0-A，并在 DSH 正式提供 prompt-file/stdin 前锁定受影响版本；不得回滚 P0-B 的错误保真修复。
 
 ## 9. 完成定义
 
@@ -377,12 +378,14 @@ npm run check
 
 已完成：
 
-- DeepSeek adapter 在 prompt 前插入 `--`，并覆盖 adapter 与真实 process argv 回归测试。
+- DeepSeek adapter 仅为 option-like prompt 增加前导换行，避开 launcher/headless 两层选项解析，并增加 adapter 与 process argv 回归测试。
 - Harbor bridge 使用独立 result read/copy 命令，完成 missing、not-file、read-failed、empty、invalid JSON、schema invalid、run-id mismatch 分类。
 - Harbor bridge 保留进程错误优先级，输出有界 `hitch-bridge-error.json` 和 metadata。
 - diagnostic run 安全导入 allowlist 内的 bridge error，保持 observation `infrastructure_failure` 兼容语义。
 - `npm run check` 通过：architecture check 及 161 个测试全部成功。
 
-未执行：
+定向 canary：
 
-- `pytorch-model-recovery`、`prove-plus-comm` 和 30-task Terminal-Bench baseline 需要外部 Harbor/DSH/benchmark 环境，未作为本地实现测试运行。
+- `pytorch-model-recovery` 使用 Harbor 0.21.0、DSH 0.1.1-rc.2 和 `deepseek-v4-flash` 实跑；eval `eval_4b5b1a3901c944ef810e3244f917cd8e` 得到 valid observation、0 个 exception，未再出现 `unknown option`。reward 为 0，原因是 DSH task sandbox 无可用 backend，属于 agent/task 执行环境，不是 argv 或 Harbor bridge 故障。
+- `prove-plus-comm` 首次 smoke 在 agent 启动前发现本地派生镜像工作目录为 `/workspace`、缺少 `/app`；bridge 正确保留 `return_code=126` 与 `chdir /app failed`，且未出现裸 `JSONDecodeError`。该任务未用于 reward 验收。
+- 未运行 30-task baseline；本 P0 仅执行上述关键定向样本。

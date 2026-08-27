@@ -36,7 +36,11 @@ export const deepseekAdapter: AdapterDefinition = {
       const args = ["--profile", "headless", ...request.agent_args];
       const patchFile = await writeDeepseekRuntimePatch(request.model, runtime.run_directory, runtime.runtime_home);
       args.push("--patch", patchFile);
-      args.push("--", request.prompt);
+      // DSH parses argv once in the launcher and again in the headless app.
+      // A leading line break is semantically inert for a natural-language task
+      // and prevents either Commander layer from treating task text as a flag.
+      const task = request.prompt.startsWith("-") ? `\n${request.prompt}` : request.prompt;
+      args.push(task);
       return {
         executable,
         args,

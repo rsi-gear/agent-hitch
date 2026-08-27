@@ -360,8 +360,15 @@ if (process.argv.includes("--version")) {
 if (${JSON.stringify(argvLog)} !== undefined) {
   fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 }
+const launcherArgs = process.argv.slice(2);
+const finalPatch = launcherArgs.lastIndexOf("--patch");
+const innerArgs = finalPatch < 0 ? launcherArgs.slice(2) : launcherArgs.slice(finalPatch + 2);
+if (innerArgs[0]?.startsWith("-")) {
+  process.stderr.write("error: unknown option '" + innerArgs[0] + "'\\n");
+  process.exit(1);
+}
+const prompt = innerArgs.join(" ");
 if (${JSON.stringify(nativeSession)}) {
-  const prompt = process.argv.at(-1);
   const base = 1700000000000;
   const header = {type:"session",version:0,id:"session-native",createdAt:base,cwd:process.cwd(),delegationDepth:0};
   const completeEvents = [

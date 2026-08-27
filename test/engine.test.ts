@@ -149,7 +149,7 @@ test("DeepSeek runs through its headless plain-text mode", async (t) => {
   assert.equal(manifest.agent_version, "0.1.0-rc.6");
 });
 
-test("DeepSeek process receives an option terminator before a dash-prefixed prompt", async (t) => {
+test("DeepSeek process makes a dash-prefixed prompt positional without argv terminators", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-option-prompt-"));
   const argvLog = path.join(root, "dsh-argv.json");
   const executable = await writeFakeDeepseek(root, { argvLog });
@@ -167,7 +167,8 @@ test("DeepSeek process receives an option terminator before a dash-prefixed prom
 
   assert.equal(result.status, "succeeded");
   const argv = JSON.parse(await readFile(argvLog, "utf8")) as string[];
-  assert.deepEqual(argv.slice(-2), ["--", prompt]);
+  assert.equal(argv.at(-1), `\n${prompt}`);
+  assert.equal(argv.includes("--"), false);
 });
 
 test("DeepSeek plain-text trajectory records minimal fidelity with preserved output", async (t) => {
