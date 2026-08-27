@@ -1,6 +1,6 @@
 # Hitch × Terminal-Bench P0 故障修复 Spec
 
-- 状态：Implemented（本地验证及 Terminal-Bench 定向 canary 完成）
+- 状态：Implemented（本地验证、真实 DSH 精确 prompt canary 及 Terminal-Bench 链路 canary 完成）
 - 日期：2026-08-27
 - 适用基线：`agent-hitch@0.2.4`，仓库 HEAD `ffcd80fe1174e9d32609555786a5b20cd9efc55a`
 - 输入证据：`hitch-terminal-bench-failure-report-2026-08-27.md`
@@ -47,13 +47,14 @@ Terminal-Bench 30-task baseline 中有两个已确认的 Hitch 确定性故障�
 `deepseekAdapter.process()` 生成的 argv 必须符合：
 
 ```text
-dsh --profile headless <agent_args...> --patch <runtime-patch> <task>
+dsh --profile headless <agent_args...> --patch <runtime-patch> <transport-task>
 ```
 
 其中：
 
-- `<task>` 必须是单个 argv 元素；不得按空格、换行或 shell token 再拆分。
-- 普通 prompt 按原字节传递；仅当 prompt 首字符为 `-` 时，在前面增加一个换行，使两层 Commander 都把它识别为 positional task，而不是选项。
+- `<transport-task>` 必须是单个 argv 元素；不得按空格、换行或 shell token 再拆分。
+- 普通 prompt 按原字节传递；仅当 prompt 首字符为 `-` 时，argv 传输值在前面增加一个换行，使 DSH launcher 把它识别为 positional task，而不是选项。
+- 对 option-like prompt，runtime patch 必须用 Hitch startup provider 替换 DSH 默认 `headless-startup`，在生成 `headlessStartup.task` 前校验并删除且仅删除上述一个换行。最终首条 DSH `user/message` 必须与原始 `request.prompt` 字节一致。
 - `--profile`、用户 `agent_args` 和 Hitch runtime patch 的既有顺序保持不变。
 - `input` 继续为 `""`，`DSH_HOME` 行为不变。
 
@@ -67,7 +68,7 @@ const task = request.prompt.startsWith("-") ? `\n${request.prompt}` : request.pr
 args.push(task);
 ```
 
-真实 DSH 对 argv 执行 launcher 与 headless app 两层 Commander 解析，launcher 会消费标准 `--`，因此单个 terminator 无法保护第二层；双 terminator 又把嵌套 parser 的内部约定泄漏到 adapter。本实现改用最小的语义空白转义，不依赖 DSH 的 parser 层数。若 DSH 未来提供稳定的 prompt-file/stdin contract，应另立变更迁移。
+真实 DSH 对 argv 执行 launcher 与 headless app 两层 Commander 解析，launcher 会消费标准 `--`，因此单个 terminator 无法保护第二层；双 terminator 又把嵌套 parser 的内部约定泄漏到 adapter。本实现只在 transport 层使用前导换行，并让定向 startup provider 在 DSH 内恢复原文。startup provider 对缺失的转义标记 fail closed，不能静默删除用户原有内容。若 DSH 未来提供稳定的 prompt-file/stdin contract，应另立变更迁移。
 
 ### 4.3 测试要求
 
@@ -76,9 +77,9 @@ args.push(task);
 | prompt | 预期 |
 | --- | --- |
 | `normal task` | 原样作为唯一 positional task |
-| `- starts with a dash` | 传入 `\n- starts with a dash`，不得成为未知选项 |
-| `--help` | 传入 `\n--help`，不得触发 DSH help |
-| `--patch attacker-controlled-value` | 增加一个前导换行，不得改变 runtime patch |
+| `- starts with a dash` | argv 为 `\n- starts with a dash`；DSH user message 恢复为原文 |
+| `--help` | argv 为 `\n--help`，不得触发 help；DSH user message 恢复为原文 |
+| `--patch attacker-controlled-value` | transport 增加一个前导换行，不得改变 runtime patch；DSH user message 恢复为原文 |
 | `multi-line\ntask` | 保持一个 argv 元素及原始换行 |
 | 空字符串 | 仍保留一个空 positional 元素 |
 
@@ -88,7 +89,7 @@ args.push(task);
 ["--patch", patchFile, prompt.startsWith("-") ? `\n${prompt}` : prompt]
 ```
 
-在 `test/engine.test.ts` 增加至少一个进程级 fixture：fake DSH 模拟 launcher 与 headless app 的 option-like task 拒绝行为并记录实际 `process.argv`，以 `- starts with a dash` 执行一次完整 Hitch run，断言最后一个元素为 `\n- starts with a dash` 且 argv 不含 `--`。该测试用于防止 adapter 单测正确、process spawn 层又发生拆词的回归。
+在 `test/engine.test.ts` 增加至少一个进程级 fixture：fake DSH 模拟 launcher 与 startup overlay，记录实际 `process.argv` 并生成 native session。以 `- starts with a dash` 执行一次完整 Hitch run，断言 argv 最后一个元素为 `\n- starts with a dash`、argv 不含 `--`，同时 native session 首条 `user/message` 严格等于原 prompt。该测试同时防止 spawn 拆词和 transport escape 泄漏到模型上下文。
 
 ## 5. P0-B：Harbor result 读取与错误保真
 
@@ -359,10 +360,10 @@ npm run check
 ## 8. 兼容性、发布与回滚
 
 - 该修复是 patch-level bug fix，不修改公开 CLI 参数或现有 JSON schema version。
-- DeepSeek 对 option-like prompt 增加一个语义空白前缀，普通 prompt 不变；发布前必须用当前支持的 DSH 精确版本至少做一次真实 canary。
+- DeepSeek 对 option-like prompt 使用临时 argv 转义，并在 DSH startup provider 内恢复原文；普通 prompt 不变。发布前必须用当前支持的 DSH 精确版本至少做一次 native-session canary。
 - Bridge error metadata 和 diagnostic artifact 均为 additive；旧调用方可忽略。
 - `invalid_reason` 保持 `infrastructure_failure`，避免破坏 Gear 当前 fail-closed contract。
-- 如受支持的真实 DSH 版本会对前导语义空白做非预期处理，只回滚 P0-A，并在 DSH 正式提供 prompt-file/stdin 前锁定受影响版本；不得回滚 P0-B 的错误保真修复。
+- 如受支持的真实 DSH 版本不接受 startup overlay，只回滚 P0-A，并在 DSH 正式提供 prompt-file/stdin 前锁定受影响版本；不得回滚 P0-B 的错误保真修复。
 
 ## 9. 完成定义
 
@@ -378,7 +379,7 @@ npm run check
 
 已完成：
 
-- DeepSeek adapter 仅为 option-like prompt 增加前导换行，避开 launcher/headless 两层选项解析，并增加 adapter 与 process argv 回归测试。
+- DeepSeek adapter 仅在 argv transport 中为 option-like prompt 增加前导换行，并通过定向 DSH startup provider 在首条 user message 前恢复原文；adapter、生成 plugin、process argv 与 native session 均有回归断言。
 - Harbor bridge 使用独立 result read/copy 命令，完成 missing、not-file、read-failed、empty、invalid JSON、schema invalid、run-id mismatch 分类。
 - Harbor bridge 保留进程错误优先级，输出有界 `hitch-bridge-error.json` 和 metadata。
 - diagnostic run 安全导入 allowlist 内的 bridge error，保持 observation `infrastructure_failure` 兼容语义。
@@ -386,6 +387,7 @@ npm run check
 
 定向 canary：
 
-- `pytorch-model-recovery` 使用 Harbor 0.21.0、DSH 0.1.1-rc.2 和 `deepseek-v4-flash` 实跑；eval `eval_4b5b1a3901c944ef810e3244f917cd8e` 得到 valid observation、0 个 exception，未再出现 `unknown option`。reward 为 0，原因是 DSH task sandbox 无可用 backend，属于 agent/task 执行环境，不是 argv 或 Harbor bridge 故障。
+- `pytorch-model-recovery` 使用 Harbor 0.21.0、DSH 0.1.1-rc.2 和 `deepseek-v4-flash` 实跑；eval `eval_4b5b1a3901c944ef810e3244f917cd8e` 得到 valid observation、0 个 exception，未再出现 `unknown option`。该次 canary 也发现 transport 换行进入 user message，随后增加 startup 原文恢复层。reward 为 0，原因是 DSH task sandbox 无可用 backend，属于 agent/task 执行环境，不是 argv 或 Harbor bridge 故障。
+- 最终实现用真实 DSH 0.1.1-rc.2 执行 run `run_5359249f35a847d1a7c27b738b53168d`：argv 输入为 option-like prompt，run succeeded；provider-native session 首条 user message 精确为 `- Reply with exactly: HITCH_DSH_PROMPT_OK`，无前导换行，模型返回 `HITCH_DSH_PROMPT_OK`。
 - `prove-plus-comm` 首次 smoke 在 agent 启动前发现本地派生镜像工作目录为 `/workspace`、缺少 `/app`；bridge 正确保留 `return_code=126` 与 `chdir /app failed`，且未出现裸 `JSONDecodeError`。该任务未用于 reward 验收。
 - 未运行 30-task baseline；本 P0 仅执行上述关键定向样本。

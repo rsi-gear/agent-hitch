@@ -149,10 +149,10 @@ test("DeepSeek runs through its headless plain-text mode", async (t) => {
   assert.equal(manifest.agent_version, "0.1.0-rc.6");
 });
 
-test("DeepSeek process makes a dash-prefixed prompt positional without argv terminators", async (t) => {
+test("DeepSeek process escapes argv but records the exact dash-prefixed user message", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-option-prompt-"));
   const argvLog = path.join(root, "dsh-argv.json");
-  const executable = await writeFakeDeepseek(root, { argvLog });
+  const executable = await writeFakeDeepseek(root, { argvLog, nativeSession: true });
   const previous = process.env.HITCH_DEEPSEEK_PATH;
   process.env.HITCH_DEEPSEEK_PATH = executable;
   t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
@@ -169,6 +169,17 @@ test("DeepSeek process makes a dash-prefixed prompt positional without argv term
   const argv = JSON.parse(await readFile(argvLog, "utf8")) as string[];
   assert.equal(argv.at(-1), `\n${prompt}`);
   assert.equal(argv.includes("--"), false);
+  const providerRows = await readJSONLines(path.join(
+    root,
+    "runs",
+    runId,
+    "trajectory",
+    "provider",
+    "deepseek-session.jsonl",
+  ));
+  const userMessage = providerRows.find((row) => row.type === "user/message");
+  const content = (userMessage?.data as { content?: Array<{ text?: string }> } | undefined)?.content;
+  assert.equal(content?.[0]?.text, prompt, "the parser escape must not reach DSH's first user message");
 });
 
 test("DeepSeek plain-text trajectory records minimal fidelity with preserved output", async (t) => {

@@ -34,12 +34,18 @@ export const deepseekAdapter: AdapterDefinition = {
     },
     async process(request, executable, runtime = {}) {
       const args = ["--profile", "headless", ...request.agent_args];
-      const patchFile = await writeDeepseekRuntimePatch(request.model, runtime.run_directory, runtime.runtime_home);
+      const optionLikePrompt = request.prompt.startsWith("-");
+      const patchFile = await writeDeepseekRuntimePatch(
+        request.model,
+        runtime.run_directory,
+        runtime.runtime_home,
+        optionLikePrompt,
+      );
       args.push("--patch", patchFile);
       // DSH parses argv once in the launcher and again in the headless app.
-      // A leading line break is semantically inert for a natural-language task
-      // and prevents either Commander layer from treating task text as a flag.
-      const task = request.prompt.startsWith("-") ? `\n${request.prompt}` : request.prompt;
+      // Escape the launcher, then let the Hitch startup overlay remove exactly
+      // that marker before DSH creates the first user message.
+      const task = optionLikePrompt ? `\n${request.prompt}` : request.prompt;
       args.push(task);
       return {
         executable,

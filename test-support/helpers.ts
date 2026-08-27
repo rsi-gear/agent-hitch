@@ -367,7 +367,15 @@ if (innerArgs[0]?.startsWith("-")) {
   process.stderr.write("error: unknown option '" + innerArgs[0] + "'\\n");
   process.exit(1);
 }
-const prompt = innerArgs.join(" ");
+const runtimePatches = finalPatch < 0 ? [] : JSON.parse(fs.readFileSync(launcherArgs[finalPatch + 1], "utf8"));
+const unescapeLeadingLineBreak = runtimePatches.some((row) => Array.isArray(row.insert)
+  && row.insert.some((entry) => entry.id === "hitch-headless-startup"
+    && entry.config?.unescapeLeadingLineBreak === true));
+let prompt = innerArgs.join(" ");
+if (unescapeLeadingLineBreak) {
+  if (!prompt.startsWith("\\n-")) throw new Error("fake-dsh: escaped task marker is missing");
+  prompt = prompt.slice(1);
+}
 if (${JSON.stringify(nativeSession)}) {
   const base = 1700000000000;
   const header = {type:"session",version:0,id:"session-native",createdAt:base,cwd:process.cwd(),delegationDepth:0};
