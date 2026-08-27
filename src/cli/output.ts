@@ -70,6 +70,8 @@ Eval:
   Use --pass-env NAME for extra credentials.
   Every eval references a shared read-only controller runtime bundle by SHA-256 id
   (see 'hitch eval inspect' for the runtime storage kind).
+  Eval attempts are stable logical task/attempt slots; rerun repairs only invalid or missing slots.
+  --task selects every invalid or missing attempt for the named task.
 
 Trajectory and feedback:
   Structured adapters preserve provider-native events plus a DSH-compatible canonical view

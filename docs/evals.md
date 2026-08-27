@@ -167,10 +167,12 @@ events.jsonl
 progress.json                 # running, atomically replaced after each published trial
 result.json
 harbor/
-  job.json
-  stdout.log
-  stderr.log
-  job/result.json
+  job.json                         # attempts=1 compatibility layout
+  attempt-0001/                    # attempts>1: one n_attempts=1 shard per logical attempt
+    job.json
+    stdout.log
+    stderr.log
+    job/result.json
 ```
 
 `result.json` includes the benchmark identity and one `run_id` reference per
@@ -207,26 +209,40 @@ soon as the first trial settles. Registry-backed datasets leave the counts
 
 ## Rerunning invalid tasks
 
-An eval with a frozen local task plan and `--attempts 1` can rerun either every
-invalid/missing task or an explicit list of invalid task names:
+An eval with a frozen local task plan can rerun either every invalid/missing
+logical trial or the invalid/missing trials belonging to explicit task names:
 
 ```bash
 hitch eval rerun <eval-id> --invalid --output json
 hitch eval rerun <eval-id> --task task-a --task task-b --output json
 ```
 
-The rerun keeps the original eval, benchmark, candidate, model, timeout, and
-task identities. Valid tasks are never selected or overwritten. Each newly
-valid task first publishes its sealed run and then atomically replaces only the
-matching invalid/missing slot in `progress.json`; its reward is the verifier's
-ordinary reward and receives no retry penalty. A named task that is already
-valid is rejected.
+The rerun keeps the original eval, benchmark, candidate, model, timeout, task,
+and attempt identities. Hitch defines one logical slot for each
+`(task_id, attempt)` in the frozen plan. `--invalid` selects all invalid or
+missing slots; `--task task-a` selects all invalid or missing attempts for that
+task. A named task whose attempts are all valid is rejected.
+
+Harbor 0.21 trial names use opaque random suffixes, so Hitch never derives a
+new eval's logical attempt from that suffix. Initial evals execute attempts as
+ordered `n_attempts=1` shards and explicitly pass the logical attempt through
+the Harbor bridge and importer. Reruns group selected slots by attempt and use
+the same execution contract. Valid slots are never selected or overwritten;
+each newly valid run atomically replaces only its matching slot in
+`progress.json` and receives the verifier's ordinary reward without a retry
+penalty.
+
+Hitch 0.2.5 can rerun pre-0.2.5 plans when `attempts=1`. Older multi-attempt
+plans do not carry explicit logical-attempt identity and are rejected rather
+than repaired by guessing from Harbor trial names.
 
 Rerun audit state is written below `reruns/rerun_<id>/`. While its `state.json`
 is `running`, `progress.json` is the current membership and the prior
 `result.json` may be stale. When the invocation ends, Hitch regenerates the
-top-level result from progress. The eval succeeds only when every planned task
-is valid; otherwise the CLI envelope reports the remaining invalid tasks.
+top-level result from progress. The eval succeeds only when every planned
+task/attempt slot is valid. The JSON envelope retains task-level arrays and
+also reports `selected_trials`, `repaired_trials`, and
+`remaining_invalid_trials` as `{task_id, attempt}` values.
 
 For a local Git eval, `plan.json` and `result.json` also record the commit, tree,
 host resolution identity, payload SHA-256, byte count, object count, and file

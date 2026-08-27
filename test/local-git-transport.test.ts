@@ -147,7 +147,8 @@ test("Harbor eval records and hands off a local exact commit transport", async (
       timeout_ms: 5_000,
     },
   });
-  assert.equal(result.status, "succeeded");
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.code, "eval_has_invalid_tasks");
   const evalDirectory = path.join(fixture.stateRoot, "evals", evalId);
   const plan = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "plan.json"));
   const summary = plan.local_source_transport as Record<string, unknown>;

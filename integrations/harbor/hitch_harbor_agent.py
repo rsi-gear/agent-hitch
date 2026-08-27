@@ -28,6 +28,20 @@ LOCAL_GIT_TRANSPORT_MAX_BYTES = 512 * 1024 * 1024
 LOCAL_GIT_REMOTE_ROOT = "/opt/hitch-local-source"
 HARNESS_ARTIFACT_REMOTE_ROOT = "/opt/hitch-harness-artifact"
 HITCH_CONTAINER_STATE_ROOT = "/tmp/hitch-state"
+HITCH_BRIDGE_ERROR_LOG = "/logs/agent/hitch-bridge-error.json"
+HITCH_DIAGNOSTIC_MAX_BYTES = 8 * 1024
+HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024
+HITCH_RESULT_MISSING_EXIT = 44
+HITCH_RESULT_NOT_FILE_EXIT = 45
+
+
+class HitchBridgeError(RuntimeError):
+    """Stable Harbor-facing infrastructure failure with structured evidence."""
+
+    def __init__(self, code: str, message: str, evidence: dict[str, Any]) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.evidence = evidence
 
 
 class HitchHarborAgent(BaseAgent):
@@ -51,6 +65,7 @@ class HitchHarborAgent(BaseAgent):
         benchmark_id: str | None = None,
         benchmark_revision: str | None = None,
         verifier_identity: str | None = None,
+        logical_attempt: int | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, **kwargs)
@@ -69,6 +84,9 @@ class HitchHarborAgent(BaseAgent):
         self.benchmark_id = benchmark_id
         self.benchmark_revision = benchmark_revision
         self.verifier_identity = verifier_identity
+        if logical_attempt is not None and (isinstance(logical_attempt, bool) or not isinstance(logical_attempt, int) or logical_attempt < 1):
+            raise ValueError("logical_attempt must be a positive integer")
+        self.logical_attempt = logical_attempt
         self._hitch_version: str | None = None
         self._entrypoint: str | None = None
         self._artifact_manifest: dict[str, Any] | None = None
@@ -816,7 +834,8 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         context: AgentContext,
     ) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        run_id = "run_" + uuid.uuid4().hex
+        assigned_run_id = "run_" + uuid.uuid4().hex
+        run_id = assigned_run_id
         trial_id, task_id, attempt = self._trial_identity()
         context_payload: dict[str, Any] = {"kind": "ad_hoc"}
         parent_payload: dict[str, Any] | None = None
@@ -920,27 +939,37 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         )
         execution = await environment.exec(command, cwd=self.workdir)
         events = self._events(execution.stdout or "")
-        observed_run_id = next((event.get("run_id") for event in events if event.get("run_id")), None)
+        observed_run_id = next((
+            value
+            for event in events
+            for value in [event.get("run_id")]
+            if isinstance(value, str) and re.fullmatch(r"run_[a-f0-9]{32}", value)
+        ), None)
         if observed_run_id:
             run_id = str(observed_run_id)
-        hitch_result = None
-        if run_id:
-            result_path = f"/tmp/hitch-state/runs/{run_id}/result.json"
-            result = await environment.exec(
-                f"cat {shlex.quote(result_path)} | tee /logs/agent/hitch-result.json"
-            )
-            if result.return_code == 0 and result.stdout:
-                hitch_result = json.loads(result.stdout)
-            bundle_stage = f"/logs/agent/.hitch-run-bundle.{uuid.uuid4().hex}"
-            bundle_marker = json.dumps({
-                "schema_version": "1",
-                "run_id": run_id,
-                "eval_id": self.eval_id,
-                "trial_id": trial_id,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-            }, separators=(",", ":"))
-            export = await environment.exec(
-                f"""
+        result_path = f"/tmp/hitch-state/runs/{run_id}/result.json"
+        quoted_result_path = shlex.quote(result_path)
+        result_read = await environment.exec(
+            f"""
+if [ ! -e {quoted_result_path} ]; then exit {HITCH_RESULT_MISSING_EXIT}; fi
+if [ -L {quoted_result_path} ] || [ ! -f {quoted_result_path} ]; then exit {HITCH_RESULT_NOT_FILE_EXIT}; fi
+cat -- {quoted_result_path}
+""".strip()
+        )
+        result_copy = await environment.exec(
+            f"if [ -f {quoted_result_path} ] && [ ! -L {quoted_result_path} ]; then "
+            f"cp -- {quoted_result_path} /logs/agent/hitch-result.json; fi"
+        )
+        bundle_stage = f"/logs/agent/.hitch-run-bundle.{uuid.uuid4().hex}"
+        bundle_marker = json.dumps({
+            "schema_version": "1",
+            "run_id": run_id,
+            "eval_id": self.eval_id,
+            "trial_id": trial_id,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }, separators=(",", ":"))
+        bundle_export = await environment.exec(
+            f"""
 set -eu
 source_dir={shlex.quote(f'/tmp/hitch-state/runs/{run_id}')}
 target_dir=/logs/agent/hitch-run-bundle
@@ -954,9 +983,38 @@ printf '%s\n' {shlex.quote(bundle_marker)} > "$stage_dir/bundle.complete.json"
 rm -rf "$target_dir"
 mv "$stage_dir" "$target_dir"
 """.strip()
+        )
+        hitch_result, result_error_code, result_error_message = self._parse_hitch_result(result_read, run_id)
+        primary_code: str | None = None
+        primary_message: str | None = None
+        if execution.return_code != 0:
+            primary_code = "hitch_process_failed"
+            diagnostic = (execution.stderr or "").strip()
+            if hitch_result and isinstance(hitch_result.get("error"), dict):
+                result_message = hitch_result["error"].get("message")
+                if isinstance(result_message, str) and result_message.strip():
+                    diagnostic = result_message.strip()
+            primary_message = (
+                f"Hitch agent run failed with code {execution.return_code} "
+                f"(run_id={run_id}, trial_id={trial_id}): {self._bounded_tail(diagnostic or 'no diagnostic output')}"
             )
-            if export.return_code != 0:
-                raise RuntimeError("Hitch run bundle export failed before trial teardown")
+        elif result_error_code is not None:
+            primary_code = result_error_code
+            primary_message = result_error_message
+        elif hitch_result is not None and hitch_result.get("revision_identity") != self.revision_identity:
+            primary_code = "hitch_revision_identity_mismatch"
+            primary_message = (
+                "Hitch resolved a different harness revision inside the trial container "
+                f"(run_id={run_id}, trial_id={trial_id}): expected {self.revision_identity}, "
+                f"got {hitch_result.get('revision_identity')}"
+            )
+        elif bundle_export.return_code != 0:
+            primary_code = "hitch_run_bundle_export_failed"
+            primary_message = f"Hitch run bundle export failed (run_id={run_id}, trial_id={trial_id})"
+        elif result_copy.return_code != 0:
+            primary_code = "hitch_result_artifact_copy_failed"
+            primary_message = f"Hitch result artifact copy failed (run_id={run_id}, trial_id={trial_id})"
+
         context.metadata = {
             "candidate_id": self.candidate_id,
             "harness_ref": self.harness_ref,
@@ -989,26 +1047,196 @@ mv "$stage_dir" "$target_dir"
                 "node_version": self._artifact_manifest.get("toolchain", {}).get("node"),
                 "status": self._artifact_transport_status or "container_prepare",
             }
-        if execution.return_code != 0:
-            message = (execution.stderr or "").strip()
-            if hitch_result and hitch_result.get("error", {}).get("message"):
-                message = hitch_result["error"]["message"]
-            raise RuntimeError(
-                f"Hitch agent run failed with code {execution.return_code}: {message or 'no diagnostic output'}"
+        if primary_code is not None:
+            context.metadata["hitch_bridge_error_code"] = primary_code
+            context.metadata["hitch_bridge_error_artifact"] = "hitch-bridge-error.json"
+            evidence = self._bridge_error_evidence(
+                code=primary_code,
+                message=primary_message or primary_code,
+                trial_id=trial_id,
+                task_id=task_id,
+                attempt=attempt,
+                assigned_run_id=assigned_run_id,
+                observed_run_id=str(observed_run_id) if observed_run_id else None,
+                result_path=result_path,
+                execution=execution,
+                result_read=result_read,
+                result_diagnostic=result_error_code,
+                last_event=events[-1] if events else None,
+                bundle_export=bundle_export,
+                result_copy=result_copy,
             )
-        if hitch_result is None:
-            raise RuntimeError("Hitch agent run completed without a persisted result")
-        if hitch_result.get("revision_identity") != self.revision_identity:
-            raise RuntimeError(
-                "Hitch resolved a different harness revision inside the trial container: "
-                f"expected {self.revision_identity}, got {hitch_result.get('revision_identity')}"
+            await self._write_bridge_error(environment, evidence)
+            raise HitchBridgeError(primary_code, primary_message or primary_code, evidence)
+
+    @staticmethod
+    def _parse_hitch_result(
+        result: ExecResult,
+        expected_run_id: str,
+    ) -> tuple[dict[str, Any] | None, str | None, str | None]:
+        if result.return_code != 0:
+            if result.return_code == HITCH_RESULT_MISSING_EXIT:
+                return None, "hitch_result_missing", f"Hitch result file is missing (run_id={expected_run_id})"
+            if result.return_code == HITCH_RESULT_NOT_FILE_EXIT:
+                return None, "hitch_result_not_file", f"Hitch result path is not a regular file (run_id={expected_run_id})"
+            return None, "hitch_result_read_failed", (
+                f"Hitch result file could not be read with code {result.return_code} (run_id={expected_run_id})"
             )
+        payload = (result.stdout or "").strip()
+        if not payload:
+            return None, "hitch_result_empty", f"Hitch result file is empty (run_id={expected_run_id})"
+        try:
+            value = json.loads(payload)
+        except json.JSONDecodeError:
+            return None, "hitch_result_invalid_json", f"Hitch result is not valid JSON (run_id={expected_run_id})"
+        if not isinstance(value, dict):
+            return None, "hitch_result_schema_invalid", f"Hitch result must be a JSON object (run_id={expected_run_id})"
+        error = HitchHarborAgent._result_schema_error(value)
+        if error is not None:
+            return None, "hitch_result_schema_invalid", f"Hitch result schema is invalid: {error} (run_id={expected_run_id})"
+        if value["run_id"] != expected_run_id:
+            return None, "hitch_result_run_id_mismatch", (
+                f"Hitch result run id mismatch: expected {expected_run_id}, got {value['run_id']}"
+            )
+        return value, None, None
+
+    @staticmethod
+    def _result_schema_error(value: dict[str, Any]) -> str | None:
+        if value.get("schema_version") != "1":
+            return "schema_version must be '1'"
+        run_id = value.get("run_id")
+        if not isinstance(run_id, str) or re.fullmatch(r"run_[a-f0-9]{32}", run_id) is None:
+            return "run_id is invalid"
+        if value.get("status") not in {"succeeded", "failed", "timed_out", "cancelled"}:
+            return "status is invalid"
+        exit_code = value.get("exit_code")
+        if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code < 0:
+            return "exit_code must be a non-negative integer"
+        completed_at = value.get("completed_at")
+        if not isinstance(completed_at, str) or not completed_at.strip():
+            return "completed_at must be a non-empty string"
+        if "error" in value:
+            error = value["error"]
+            if not isinstance(error, dict):
+                return "error must be an object"
+            if not isinstance(error.get("code"), str) or not isinstance(error.get("message"), str):
+                return "error.code and error.message must be strings"
+        return None
+
+    def _bridge_error_evidence(
+        self,
+        *,
+        code: str,
+        message: str,
+        trial_id: str,
+        task_id: str,
+        attempt: int,
+        assigned_run_id: str,
+        observed_run_id: str | None,
+        result_path: str,
+        execution: ExecResult,
+        result_read: ExecResult,
+        result_diagnostic: str | None,
+        last_event: dict[str, Any] | None,
+        bundle_export: ExecResult,
+        result_copy: ExecResult,
+    ) -> dict[str, Any]:
+        signal_value = getattr(execution, "signal", None)
+        evidence: dict[str, Any] = {
+            "schema_version": "1",
+            "code": code,
+            "message": self._bounded_tail(message, 2048),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "eval_id": self.eval_id,
+            "trial_id": trial_id,
+            "task_id": task_id,
+            "attempt": attempt,
+            "assigned_run_id": assigned_run_id,
+            "observed_run_id": observed_run_id,
+            "result_path": result_path,
+            "process": {
+                "return_code": execution.return_code,
+                "signal": signal_value if isinstance(signal_value, str) else None,
+                "stdout_tail": self._bounded_tail(execution.stdout or ""),
+                "stderr_tail": self._bounded_tail(execution.stderr or ""),
+            },
+            "result_read": {
+                "return_code": result_read.return_code,
+                "stdout_tail": self._bounded_tail(result_read.stdout or ""),
+                "stderr_tail": self._bounded_tail(result_read.stderr or ""),
+            },
+            "last_event": self._bounded_event(last_event),
+            "result_diagnostic": result_diagnostic,
+        }
+        if bundle_export.return_code != 0:
+            evidence["bundle_export"] = {
+                "return_code": bundle_export.return_code,
+                "stdout_tail": self._bounded_tail(bundle_export.stdout or ""),
+                "stderr_tail": self._bounded_tail(bundle_export.stderr or ""),
+            }
+        if result_copy.return_code != 0:
+            evidence["result_copy"] = {
+                "return_code": result_copy.return_code,
+                "stdout_tail": self._bounded_tail(result_copy.stdout or ""),
+                "stderr_tail": self._bounded_tail(result_copy.stderr or ""),
+            }
+        if len(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > HITCH_BRIDGE_ERROR_MAX_BYTES:
+            evidence["message"] = self._bounded_tail(str(evidence["message"]), 1024)
+            evidence["last_event"] = self._bounded_event_summary(last_event)
+            for section_name in ["process", "result_read", "bundle_export", "result_copy"]:
+                section = evidence.get(section_name)
+                if not isinstance(section, dict):
+                    continue
+                for field in ["stdout_tail", "stderr_tail"]:
+                    section[field] = self._bounded_tail(str(section.get(field, "")), 2048)
+            evidence["diagnostics_truncated"] = True
+        return evidence
+
+    @staticmethod
+    def _bounded_tail(value: str, max_bytes: int = HITCH_DIAGNOSTIC_MAX_BYTES) -> str:
+        encoded = value.encode("utf-8", errors="replace")
+        if len(encoded) <= max_bytes:
+            return value
+        marker = f"[truncated {len(encoded) - max_bytes} bytes]\n".encode("utf-8")
+        available = max(0, max_bytes - len(marker))
+        suffix = encoded[-available:] if available else b""
+        suffix = suffix.decode("utf-8", errors="ignore").encode("utf-8")
+        return (marker + suffix).decode("utf-8")
+
+    @staticmethod
+    def _bounded_event(event: dict[str, Any] | None) -> dict[str, Any] | None:
+        if event is None:
+            return None
+        encoded = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) <= HITCH_DIAGNOSTIC_MAX_BYTES:
+            return event
+        return HitchHarborAgent._bounded_event_summary(event)
+
+    @staticmethod
+    def _bounded_event_summary(event: dict[str, Any] | None) -> dict[str, Any] | None:
+        if event is None:
+            return None
+        return {
+            "type": event.get("type"),
+            "run_id": event.get("run_id"),
+            "truncated": True,
+        }
+
+    @staticmethod
+    async def _write_bridge_error(environment: BaseEnvironment, evidence: dict[str, Any]) -> None:
+        payload = json.dumps(evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        await environment.exec(
+            f"umask 077; printf '%s\\n' {shlex.quote(payload)} > {HITCH_BRIDGE_ERROR_LOG}"
+        )
 
     def _trial_identity(self) -> tuple[str, str, int]:
         """Read Harbor's stable trial/task identity from the persisted trial state."""
         trial_dir = self.logs_dir.parent if self.logs_dir.name == "agent" else self.logs_dir
         trial_id = trial_dir.name or "trial__1"
         task_id = self._locked_task_id(trial_dir)
+        if self.logical_attempt is not None:
+            fallback_task_id = trial_id.rsplit("__", 1)[0] if "__" in trial_id else trial_id
+            return trial_id, task_id or fallback_task_id, self.logical_attempt
         match = re.fullmatch(r"(.+)__(\d+)", trial_id)
         if match:
             return trial_id, task_id or match.group(1), max(1, int(match.group(2)))

@@ -50,6 +50,8 @@ export async function writeDeepseekRuntimePatch(
       exitCode: 6,
     });
   }
+  const configDirectory = path.join(runDirectory, "config");
+  await mkdir(configDirectory, { recursive: true });
   const rows: Array<Record<string, unknown>> = [{
     id: "session-persistence-jsonl",
     config: {
@@ -70,8 +72,7 @@ export async function writeDeepseekRuntimePatch(
     }
     rows.push({ id: "agent-default-model", config: { provider, model } });
   }
-  const file = path.join(runDirectory, "config", "deepseek-runtime.json");
-  await mkdir(path.dirname(file), { recursive: true });
+  const file = path.join(configDirectory, "deepseek-runtime.json");
   await writeFile(file, `${JSON.stringify(rows, null, 2)}\n`, { mode: 0o600 });
   return file;
 }

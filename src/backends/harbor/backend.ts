@@ -21,6 +21,7 @@ export interface RunHarborBackendOptions {
   evalDirectory: string;
   backendDirectory?: string;
   taskNames?: readonly string[];
+  logicalAttempt?: number;
   request: EvalRequest;
   root: string;
   resolvedRevision: ResolvedRevision;
@@ -73,6 +74,7 @@ export async function runHarborBackend({
   evalDirectory,
   backendDirectory: requestedBackendDirectory,
   taskNames,
+  logicalAttempt,
   request,
   root,
   resolvedRevision,
@@ -88,6 +90,9 @@ export async function runHarborBackend({
   trialBundleGraceMs = DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
+  if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
+    throw invalidInput("Harbor logical attempt must be a positive safe integer");
+  }
   const harnessArtifactCacheDirectory = await ensureDir(path.join(statePaths(root).store, "harbor-artifacts"));
   const executable = await discoverHarbor(harborExecutable, root, env);
   const version = await detectVersion(executable, ["--version"]);
@@ -107,11 +112,18 @@ export async function runHarborBackend({
     localTransport,
     backendDirectory,
     ...(taskNames === undefined ? {} : { taskNames }),
+    ...(logicalAttempt === undefined ? {} : { logicalAttempt }),
     jobName,
     env,
   });
   await atomicWriteJSON(configPath, config);
-  emit({ type: "eval.backend.started", backend: "harbor", executable, version: version || null });
+  emit({
+    type: "eval.backend.started",
+    backend: "harbor",
+    executable,
+    version: version || null,
+    ...(logicalAttempt === undefined ? {} : { logical_attempt: logicalAttempt }),
+  });
 
   if (!Number.isSafeInteger(trialBundleGraceMs) || trialBundleGraceMs < 0) throw invalidInput("Harbor trial bundle grace must be a non-negative integer");
   const monitor = onTrialSettled === undefined
@@ -138,6 +150,7 @@ export async function runHarborBackend({
     process_exit_code: invocation.code,
     signal: invocation.signal,
     result_available: rawResult !== null,
+    ...(logicalAttempt === undefined ? {} : { logical_attempt: logicalAttempt }),
   });
 
   return {
@@ -239,6 +252,7 @@ export interface BuildHarborJobConfigOptions {
   localTransport?: LocalGitTransportUse | undefined;
   backendDirectory: string;
   taskNames?: readonly string[];
+  logicalAttempt?: number;
   jobName?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -254,9 +268,13 @@ export async function buildHarborJobConfig({
   localTransport,
   backendDirectory,
   taskNames,
+  logicalAttempt,
   jobName = "job",
   env = process.env,
 }: BuildHarborJobConfigOptions): Promise<Record<string, unknown>> {
+  if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
+    throw invalidInput("Harbor logical attempt must be a positive safe integer");
+  }
   const timeoutSeconds = request.timeout_ms > 0 ? Math.ceil(request.timeout_ms / 1_000) : null;
   const setupTimeoutSeconds = request.setup_timeout_ms > 0 ? Math.ceil(request.setup_timeout_ms / 1_000) : null;
   const agent: Record<string, unknown> = {
@@ -274,6 +292,7 @@ export async function buildHarborJobConfig({
           benchmark_revision: request.benchmark_revision,
           verifier: "dataset",
         }),
+        ...(logicalAttempt === undefined ? {} : { logical_attempt: logicalAttempt }),
       } : {}),
       harness_ref: lockedHarnessRef(resolvedRevision),
       revision_identity: resolvedRevision.identity,
@@ -327,7 +346,7 @@ export async function buildHarborJobConfig({
   return compact({
     job_name: jobName,
     jobs_dir: backendDirectory,
-    n_attempts: request.attempts,
+    n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
     environment: { type: "docker", delete: true },
     agents: [agent],

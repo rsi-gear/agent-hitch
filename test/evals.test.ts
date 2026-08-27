@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval, selectRerunTasks, validateEvalRequest } from "../src/evals/index.js";
+import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { lockedHarnessRef } from "../src/backends/harbor/index.js";
@@ -133,6 +133,70 @@ test("eval rerun selects only invalid tasks and replaces no valid reward", () =>
   assert.deepEqual(selectRerunTasks(["task-a", "task-b", "task-c"], repaired, { mode: "invalid" }), ["task-c"]);
 });
 
+test("multi-attempt rerun selection uses logical task/attempt slots", () => {
+  const evalId = newEvalId();
+  let progress = createEvalProgress({
+    evalId,
+    benchmarkId: "demo",
+    benchmarkRevision: "1.0",
+    plannedTasks: 2,
+    plannedTrials: 6,
+    startedAt: "2026-08-27T00:00:00.000Z",
+  });
+  const refs = [
+    { trial_id: "task-a__random-a1", run_id: "run_11111111111111111111111111111111", task_id: "task-a", attempt: 1, observation_status: "valid", reward: 1 },
+    { trial_id: "task-a__random-a2", run_id: "run_22222222222222222222222222222222", task_id: "task-a", attempt: 2, observation_status: "invalid", invalid_reason: "infrastructure_failure" },
+    { trial_id: "task-b__random-b1", run_id: "run_33333333333333333333333333333333", task_id: "task-b", attempt: 1, observation_status: "valid", reward: 1 },
+    { trial_id: "task-b__random-b2", run_id: "run_44444444444444444444444444444444", task_id: "task-b", attempt: 2, observation_status: "valid", reward: 0.5 },
+    { trial_id: "task-b__random-b3", run_id: "run_55555555555555555555555555555555", task_id: "task-b", attempt: 3, observation_status: "valid", reward: 0.75 },
+  ] as const;
+  for (const ref of refs) progress = mergeEvalProgressTrial(progress, ref);
+  assert.deepEqual(selectRerunTrialSlots(["task-a", "task-b"], 3, progress, { mode: "invalid" }), [
+    { task_id: "task-a", attempt: 2 },
+    { task_id: "task-a", attempt: 3 },
+  ]);
+  assert.deepEqual(selectRerunTrialSlots(["task-a", "task-b"], 3, progress, { mode: "tasks", taskNames: ["task-a"] }), [
+    { task_id: "task-a", attempt: 2 },
+    { task_id: "task-a", attempt: 3 },
+  ]);
+  assert.throws(() => mergeEvalProgressTrial(progress, {
+    trial_id: "task-a__duplicate-slot",
+    run_id: "run_66666666666666666666666666666666",
+    task_id: "task-a",
+    attempt: 1,
+    observation_status: "valid",
+    reward: 0,
+  }), /logical trial conflict/);
+});
+
+test("legacy multi-attempt plans fail before Harbor execution", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-legacy-multi-rerun-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  await mkdir(evalDirectory, { recursive: true });
+  const request = await validateEvalRequest(evalRequest({ attempts: 2 }));
+  await atomicWriteJSON(path.join(evalDirectory, "request.json"), request);
+  await atomicWriteJSON(path.join(evalDirectory, "plan.json"), {
+    schema_version: "1",
+    eval_id: evalId,
+    dataset: request.dataset,
+    benchmark_id: request.benchmark_id,
+    benchmark_revision: request.benchmark_revision,
+    attempts: 2,
+    tasks: ["task-a"],
+  });
+  await assert.rejects(rerunEval({
+    evalId,
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: path.join(root, "must-not-run"),
+  }), (error: unknown) => {
+    assert.equal((error as { code?: string }).code, "eval_rerun_legacy_attempt_identity");
+    return true;
+  });
+});
+
 test("local eval datasets expose a deterministic immutable task plan", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-local-dataset-plan-"));
   t.after(() => forceRemove(root));
@@ -210,15 +274,18 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
     },
   });
 
-  assert.equal(result.status, "succeeded");
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.code, "eval_has_invalid_tasks");
   const summary = result.summary as Record<string, unknown>;
-  assert.equal(summary.n_trials, 2);
+  assert.equal(summary.n_trials, 4);
   assert.equal(summary.primary_reward, null);
-  assert.equal(summary.n_invalid, 2);
-  const backendSummary = result.backend_summary as Record<string, unknown>;
+  assert.equal(summary.n_invalid, 4);
+  const backendRuns = result.backend_runs as Array<{ attempt: number; backend_summary: Record<string, unknown> }>;
+  assert.deepEqual(backendRuns.map(({ attempt }) => attempt), [1, 2]);
+  const backendSummary = backendRuns[0]!.backend_summary;
   assert.equal(backendSummary.primary_reward, 0.75);
   const trials = result.trials as Array<{ run_id: string; observation_status: string; invalid_reason: string }>;
-  assert.equal(trials.length, 2);
+  assert.equal(trials.length, 4);
   assert.ok(trials.every((trial) => /^run_[a-f0-9]{32}$/.test(trial.run_id)));
   assert.ok(trials.every((trial) => trial.observation_status === "invalid" && trial.invalid_reason === "trajectory_missing_or_corrupt"));
   for (const trial of trials) {
@@ -227,7 +294,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
     assert.equal((manifest.parent as Record<string, unknown>).eval_id, evalId);
   }
   const directory = path.join(root, "evals", evalId);
-  const config = await readJSON<Record<string, unknown>>(path.join(directory, "harbor", "job.json"));
+  const config = await readJSON<Record<string, unknown>>(path.join(directory, "harbor", "attempt-0001", "job.json"));
   const agent = (config.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
   const kwargs = agent.kwargs as Record<string, unknown>;
   assert.equal(agent.import_path, "hitch_harbor_agent:HitchHarborAgent");
@@ -241,7 +308,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(piArtifact.node_version, process.version);
   assert.equal((agent.env as Record<string, unknown>).DEEPSEEK_API_KEY, "${DEEPSEEK_API_KEY}");
   assert.equal((agent.env as Record<string, unknown>).OPENAI_API_KEY, "${OPENAI_API_KEY}");
-  assert.doesNotMatch(await readFile(path.join(directory, "harbor", "job.json"), "utf8"), /(?:deepseek-)?must-not-be-written/);
+  assert.doesNotMatch(await readFile(path.join(directory, "harbor", "attempt-0001", "job.json"), "utf8"), /(?:deepseek-)?must-not-be-written/);
   assert.deepEqual(config.datasets, [{ name: "demo", version: "1.0" }]);
   // New evals reference the shared controller runtime; they no longer contain
   // a complete runtime copy (spec §4.7).
@@ -256,7 +323,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(listed[0]?.primary_reward, null);
   const inspected = await inspectEval(evalId, { root });
   assert.equal((inspected.plan as { candidate: { revision_identity: string } }).candidate.revision_identity, (result.candidate as { revision_identity: string }).revision_identity);
-  assert.equal(inspected.result?.status, "succeeded");
+  assert.equal(inspected.result?.status, "failed");
   assert.equal(inspected.runtime_storage, "controller-runtime-ref-v1");
 });
 
@@ -288,7 +355,7 @@ test("every project-installed version harness is host-prepared and handed to Har
         timeout_ms: 5_000,
       },
     });
-    assert.equal(result.status, "succeeded", `${harness.id} eval failed`);
+    assert.equal(result.status, "failed", `${harness.id} eval unexpectedly succeeded without valid evidence`);
     const prepared = result.prepared_artifact as { artifact_id: string; harness_id: string };
     assert.equal(prepared.harness_id, harness.id);
     assert.ok((await stat(preparedArtifactDirectory(root, prepared.artifact_id))).isDirectory());
@@ -321,7 +388,7 @@ test("DeepSeek eval prepares one host artifact and pins it for every Harbor tria
     },
   });
 
-  assert.equal(result.status, "succeeded");
+  assert.equal(result.status, "failed");
   const prepared = result.prepared_artifact as {
     artifact_id: string;
     harness_id: string;
@@ -329,7 +396,7 @@ test("DeepSeek eval prepares one host artifact and pins it for every Harbor tria
   };
   assert.match(prepared.artifact_id, /^sha256:[0-9a-f]{64}$/);
   assert.equal(prepared.harness_id, "deepseek");
-  const config = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "harbor", "job.json"));
+  const config = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "harbor", "attempt-0001", "job.json"));
   const agent = (config.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
   const handoff = ((agent.kwargs as Record<string, unknown>).harness_artifact) as Record<string, string>;
   assert.equal(handoff.artifact_id, prepared.artifact_id);
@@ -388,6 +455,19 @@ test("Harbor bridge setup() and run() behave against a real bundle", async (t) =
   const result = spawnSync("python3", [smoke, bridge, use.directory, logs], { encoding: "utf8" });
   assert.equal(result.status, 0, `bridge smoke failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge smoke OK/);
+});
+
+test("Harbor bridge classifies persisted-result failures without masking process evidence", async (t) => {
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-result-matrix-"));
+  const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
+  const use = await ensureControllerRuntime({ root: state });
+  t.after(() => forceRemove(state));
+  const smoke = path.resolve("test-support", "bridge_smoke.py");
+  const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
+  const logs = path.join(state, "logs");
+  const result = spawnSync("python3", [smoke, bridge, use.directory, logs, "--result-matrix"], { encoding: "utf8" });
+  assert.equal(result.status, 0, `bridge result matrix failed:\n${result.stderr || result.stdout}`);
+  assert.match(result.stdout, /bridge result matrix OK/);
 });
 
 test("Harbor bridge uploads compatible artifacts and host-caches one target-platform build across concurrent trials", async (t) => {
@@ -468,6 +548,134 @@ test("failed Harbor bundle imports retain canonical staging evidence", async (t)
   assert.equal(refs[0]?.attempt, 1);
   assert.ok((await stat(bundle)).isDirectory(), "failed staging bundle should remain available");
   assert.ok((await stat(path.join(path.dirname(bundle), "hitch-run-import-error.json"))).isFile());
+});
+
+test("Harbor diagnostic runs retain a validated bridge error without trusting its identity", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-bridge-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "canonical-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  const agentDirectory = path.join(trialDirectory, "agent");
+  await mkdir(agentDirectory, { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "lock.json"), {
+    schema_version: 2,
+    task: { name: "canonical-task" },
+  });
+  await atomicWriteJSON(path.join(agentDirectory, "hitch-bridge-error.json"), {
+    schema_version: "1",
+    code: "hitch_result_missing",
+    message: "Hitch result file is missing",
+    eval_id: "eval_forged",
+    trial_id: "forged-trial",
+    task_id: "forged-task",
+    assigned_run_id: "run_ffffffffffffffffffffffffffffffff",
+  });
+
+  const refs = await importEvalTrialRuns({
+    root,
+    evalId,
+    evalDirectory,
+    request: {
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+      agent_args: [],
+    } as never,
+    resolvedRevision: {
+      harness_id: "pi",
+      identity: `sha256:${"a".repeat(64)}`,
+    } as never,
+    benchmarkId: "benchmark",
+    benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: {
+      trial_results: [{
+        task_name: "terminal-bench/display-task",
+        trial_name: trialId,
+        exception_info: { exception_type: "HitchBridgeError" },
+      }],
+    },
+  });
+
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.task_id, "canonical-task");
+  assert.equal(refs[0]?.observation_status, "invalid");
+  assert.equal(refs[0]?.invalid_reason, "infrastructure_failure");
+  const runDirectory = path.join(root, "runs", refs[0]!.run_id);
+  const result = await readJSON<{ run_id: string; error: { code: string; message: string } }>(path.join(runDirectory, "result.json"));
+  assert.equal(result.run_id, refs[0]?.run_id);
+  assert.deepEqual(result.error, {
+    code: "hitch_result_missing",
+    message: "Hitch result file is missing",
+  });
+  const manifest = await readJSON<{
+    context: { task_id: string };
+    parent: { eval_id: string; trial_id: string };
+    diagnostics: { harbor_bridge_error_ref: string };
+  }>(path.join(runDirectory, "manifest.json"));
+  assert.equal(manifest.context.task_id, "canonical-task");
+  assert.equal(manifest.parent.eval_id, evalId);
+  assert.equal(manifest.parent.trial_id, trialId);
+  assert.equal(manifest.diagnostics.harbor_bridge_error_ref, "diagnostics/harbor-bridge-error.json");
+  const diagnostic = await readJSON<{ code: string; eval_id: string }>(
+    path.join(runDirectory, "diagnostics", "harbor-bridge-error.json"),
+  );
+  assert.equal(diagnostic.code, "hitch_result_missing");
+  assert.equal(diagnostic.eval_id, "eval_forged", "artifact identity is evidence only");
+});
+
+test("Harbor diagnostic runs safely ignore an invalid bridge error artifact", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-invalid-bridge-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "safe-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  const agentDirectory = path.join(trialDirectory, "agent");
+  await mkdir(agentDirectory, { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "lock.json"), {
+    schema_version: 2,
+    task: { name: "safe-task" },
+  });
+  await atomicWriteJSON(path.join(agentDirectory, "hitch-bridge-error.json"), {
+    schema_version: "1",
+    code: "attacker_controlled_code",
+    message: "do not trust this",
+  });
+
+  const refs = await importEvalTrialRuns({
+    root,
+    evalId,
+    evalDirectory,
+    request: {
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+      agent_args: [],
+    } as never,
+    resolvedRevision: {
+      harness_id: "pi",
+      identity: `sha256:${"a".repeat(64)}`,
+    } as never,
+    benchmarkId: "benchmark",
+    benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: {
+      trial_results: [{
+        task_name: "safe-task",
+        trial_name: trialId,
+        exception_info: { exception_type: "InfraError" },
+      }],
+    },
+  });
+
+  const runDirectory = path.join(root, "runs", refs[0]!.run_id);
+  const result = await readJSON<{ error: { code: string } }>(path.join(runDirectory, "result.json"));
+  assert.equal(result.error.code, "infrastructure_failure");
+  await assert.rejects(
+    stat(path.join(runDirectory, "diagnostics", "harbor-bridge-error.json")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
 });
 
 test("Harbor importer uses lock task id when result task_name is display-qualified", async (t) => {
@@ -669,7 +877,7 @@ test("Harbor eval publishes a diagnostic trial after the bundle readiness grace"
   await assert.rejects(stat(path.join(evalDirectory, "result.json")), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
 
   const result = await running;
-  assert.equal(result.status, "succeeded");
+  assert.equal(result.status, "failed");
   assert.equal((result.trials as Array<{ observation_status: string }>)[0]?.observation_status, "invalid");
 });
 
@@ -741,6 +949,82 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
   assert.deepEqual(rerunConfig.datasets, [{ path: dataset, task_names: ["task-b"] }]);
 });
 
+test("multi-attempt rerun repairs only invalid logical slots", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-multi-rerun-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  for (const taskId of ["task-a", "task-b"]) {
+    await mkdir(path.join(dataset, taskId), { recursive: true });
+    await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  }
+  const normalized = await validateEvalRequest(evalRequest({ dataset, attempts: 2 }));
+  const trials = {
+    a1: { trialId: "task-a__random-a1", taskId: "task-a", runId: "run_11111111111111111111111111111111", attempt: 1, bundle: path.join(root, "a1") },
+    b1: { trialId: "task-b__random-b1", taskId: "task-b", runId: "run_22222222222222222222222222222222", attempt: 1, bundle: path.join(root, "b1") },
+    a2Invalid: { trialId: "task-a__random-a2-invalid", taskId: "task-a", attempt: 2 },
+    b2: { trialId: "task-b__random-b2", taskId: "task-b", runId: "run_33333333333333333333333333333333", attempt: 2, bundle: path.join(root, "b2") },
+    a2Repair: { trialId: "task-a__random-a2-repair", taskId: "task-a", runId: "run_44444444444444444444444444444444", attempt: 2, bundle: path.join(root, "a2-repair") },
+  };
+  for (const trial of [trials.a1, trials.b1, trials.b2, trials.a2Repair]) {
+    await writeExportedEvalRunBundle({
+      ...trial,
+      evalId,
+      benchmarkId: normalized.benchmark_id,
+      benchmarkRevision: normalized.benchmark_revision,
+    });
+  }
+  const harbor = await writeMultiAttemptRerunFakeHarbor(root, trials);
+  const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  const initial = await runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env,
+    trialBundleGraceMs: 0,
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      attempts: 2,
+      timeout_ms: 5_000,
+    },
+  });
+  assert.equal(initial.status, "failed");
+  const plan = await readJSON<{ attempt_execution: string }>(path.join(root, "evals", evalId, "plan.json"));
+  assert.equal(plan.attempt_execution, "harbor-attempt-shards-v1");
+
+  const rerun = await rerunEval({
+    evalId,
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    env,
+    trialBundleGraceMs: 0,
+  });
+  assert.deepEqual(rerun.selected_tasks, ["task-a"]);
+  assert.deepEqual(rerun.selected_trials, [{ task_id: "task-a", attempt: 2 }]);
+  assert.deepEqual(rerun.repaired_trials, [{ task_id: "task-a", attempt: 2 }]);
+  assert.deepEqual(rerun.remaining_invalid_trials, []);
+  assert.equal(rerun.eval_status, "succeeded");
+
+  const result = await readJSON<{ trials: Array<{ task_id: string; attempt: number; run_id: string }> }>(
+    path.join(root, "evals", evalId, "result.json"),
+  );
+  const bySlot = new Map(result.trials.map((trial) => [`${trial.task_id}#${trial.attempt}`, trial.run_id]));
+  assert.equal(bySlot.get("task-a#1"), trials.a1.runId);
+  assert.equal(bySlot.get("task-b#1"), trials.b1.runId);
+  assert.equal(bySlot.get("task-b#2"), trials.b2.runId);
+  assert.equal(bySlot.get("task-a#2"), trials.a2Repair.runId);
+  const rerunConfig = await readJSON<Record<string, unknown>>(
+    path.join(root, "evals", evalId, "reruns", rerun.rerun_id, "harbor", "attempt-0002", "job.json"),
+  );
+  assert.equal(rerunConfig.n_attempts, 1);
+  assert.equal(((rerunConfig.agents as Array<{ kwargs: Record<string, unknown> }>)[0]!.kwargs).logical_attempt, 2);
+  assert.deepEqual(rerunConfig.datasets, [{ path: dataset, task_names: ["task-a"] }]);
+});
+
 test("Harbor bridge rejects a job-pinned controller_runtime_id mismatch before uploading", async (t) => {
   // The bridge must compare the job-pinned controller_runtime_id with the
   // manifest's runtime_id and refuse to upload when they differ (spec §4.6).
@@ -764,6 +1048,7 @@ async function writeExportedEvalRunBundle(options: {
   taskId: string;
   benchmarkId: string;
   benchmarkRevision: string;
+  attempt?: number;
 }): Promise<void> {
   await mkdir(options.bundle, { recursive: true });
   const projector = new TrajectoryProjector({
@@ -811,7 +1096,7 @@ async function writeExportedEvalRunBundle(options: {
       task_digest: benchmarkTaskDigest(options.benchmarkId, options.benchmarkRevision, options.taskId),
       verifier_identity: benchmarkVerifierIdentity(options.benchmarkId, options.benchmarkRevision),
     },
-    parent: { kind: "eval", eval_id: options.evalId, trial_id: options.trialId, attempt: 1 },
+    parent: { kind: "eval", eval_id: options.evalId, trial_id: options.trialId, attempt: options.attempt ?? 1 },
     status: "succeeded",
     harness: {
       harness_id: "pi",
@@ -969,6 +1254,67 @@ if (Array.isArray(selected)) {
     stats: {n_completed_trials:1,n_errored_trials:1,n_cancelled_trials:0}
   }));
 }
+process.stdout.write("Results written\\n");
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeMultiAttemptRerunFakeHarbor(directory: string, options: {
+  a1: { bundle: string; trialId: string; taskId: string };
+  b1: { bundle: string; trialId: string; taskId: string };
+  a2Invalid: { trialId: string; taskId: string };
+  b2: { bundle: string; trialId: string; taskId: string };
+  a2Repair: { bundle: string; trialId: string; taskId: string };
+}): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-multi-rerun");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const output = path.join(config.jobs_dir, config.job_name);
+const logicalAttempt = config.agents[0].kwargs.logical_attempt;
+const selected = config.datasets[0].task_names;
+const fixtures = ${JSON.stringify(options)};
+let trials;
+if (Array.isArray(selected)) {
+  if (logicalAttempt !== 2 || JSON.stringify(selected) !== JSON.stringify(["task-a"])) process.exit(4);
+  trials = [fixtures.a2Repair];
+} else if (logicalAttempt === 1) {
+  trials = [fixtures.a1, fixtures.b1];
+} else if (logicalAttempt === 2) {
+  trials = [fixtures.a2Invalid, fixtures.b2];
+} else {
+  process.exit(5);
+}
+for (const trial of trials) {
+  const trialDirectory = path.join(output, trial.trialId);
+  fs.mkdirSync(path.join(trialDirectory, "agent"), {recursive:true});
+  fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:trial.taskId}}));
+  if (trial.bundle) fs.cpSync(trial.bundle, path.join(trialDirectory, "agent", "hitch-run-bundle"), {recursive:true});
+  fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+    task_name: trial.taskId,
+    trial_name: trial.trialId,
+    ...(trial.bundle ? {} : {exception_info:{exception_type:"InfraError"}}),
+    verifier_result: {rewards:{reward:trial.bundle ? 1 : 0}}
+  }));
+}
+fs.mkdirSync(output, {recursive:true});
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials: trials.length,
+  stats: {
+    n_completed_trials: trials.filter((trial) => trial.bundle).length,
+    n_errored_trials: trials.filter((trial) => !trial.bundle).length,
+    n_cancelled_trials: 0
+  }
+}));
 process.stdout.write("Results written\\n");
 `;
   await writeFile(executable, source, { mode: 0o755 });

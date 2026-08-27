@@ -36,7 +36,9 @@ export const deepseekAdapter: AdapterDefinition = {
       const args = ["--profile", "headless", ...request.agent_args];
       const patchFile = await writeDeepseekRuntimePatch(request.model, runtime.run_directory, runtime.runtime_home);
       args.push("--patch", patchFile);
-      args.push(request.prompt);
+      // DSH parses argv once in the launcher and again in the headless app.
+      // Each parser consumes one terminator, leaving the prompt byte-exact.
+      args.push("--", "--", request.prompt);
       return {
         executable,
         args,
