@@ -183,6 +183,35 @@ are reported separately and never converted into zero reward. `summary`
 aggregates only valid observations; `backend_summary` preserves Harbor's raw
 aggregate for diagnostics.
 
+Some shell verifiers mask bootstrap failures by writing `reward.txt = 0` after
+an earlier DNS, network, dependency-install, or test-runner failure. Hitch
+conservatively reclassifies that result as `verifier_infrastructure_failure`
+only when all of the following hold: the reward is exactly zero, no non-empty
+CTRF artifact or test-execution marker exists, and bounded Harbor verifier logs
+contain a stable infrastructure signature. The sealed run stores
+`verifier/infrastructure-error.json`; raw Harbor logs remain in the backend job
+directory.
+
+New evals retry verifier bootstrap failures once by default. The retry runs
+only `/tests/test.sh` again inside the original live Harbor trial: it does not
+recreate or call the Candidate Agent, and therefore grades the exact same
+candidate state. Each failed verifier attempt is archived below the Harbor
+trial's `verifier/infrastructure-attempts/` directory, while
+`infrastructure-retry-history.json` records `candidate_rerun: false` and is
+copied into the sealed run. A normal zero reward with CTRF or test-execution
+evidence is returned immediately and never retried.
+
+Non-verifier trial infrastructure failures may still require a new physical
+trial because no candidate state exists to grade. Verifier failures and missing
+verifier results are excluded from that outer retry path, so an exhausted
+verifier retry can never silently become a second candidate execution.
+Configure the cap with `--infrastructure-retries <n>` and linear backoff with
+`--infrastructure-retry-backoff <duration>`; set the retry count to zero to
+disable automatic retry. Exhausted verifier retries raise an explicit error,
+leave the observation invalid, and return
+`eval_infrastructure_retries_exhausted` instead of including a false zero in
+the score.
+
 The exported bundle below a Harbor trial is staging only. Hitch validates its
 identity and trajectory checksums, atomically publishes it to `runs/`, and then
 removes the staging copy so the eval directory never becomes a second
@@ -222,6 +251,12 @@ and attempt identities. Hitch defines one logical slot for each
 `(task_id, attempt)` in the frozen plan. `--invalid` selects all invalid or
 missing slots; `--task task-a` selects all invalid or missing attempts for that
 task. A named task whose attempts are all valid is rejected.
+
+Verifier infrastructure failures are deliberately not eligible for this
+full-trial rerun command. New evals already perform verifier-only retries while
+the original environment is live; after that environment is closed, Hitch
+returns `eval_verifier_only_rerun_unavailable` rather than rerunning the
+Candidate Agent under the guise of regrading the same output.
 
 Harbor 0.21 trial names use opaque random suffixes, so Hitch never derives a
 new eval's logical attempt from that suffix. Initial evals execute attempts as

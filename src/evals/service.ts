@@ -4,17 +4,18 @@ import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../ar
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
-import type { HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
+import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import { ensureControllerRuntime, writeRuntimeReference } from "../controller-runtime/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
 import type { EvalId, EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { EvalEventSink } from "./events.js";
 import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
+import { infrastructureFailureTrials, runInfrastructureRetries } from "./infrastructure-retry.js";
+import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 import { invalidTrialSlots } from "./rerun-slots.js";
 import type { EvalRequestInput } from "./request.js";
-
 export interface RunEvalOptions {
   evalId?: EvalId;
   request: EvalRequestInput;
@@ -35,7 +36,6 @@ export interface EvalResult extends Record<string, unknown> {
   started_at: string;
   completed_at: string;
 }
-
 export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
@@ -158,6 +158,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       attempts: normalized.attempts,
       attempt_execution: "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
+      infrastructure_retries: normalized.infrastructure_retries,
+      infrastructure_retry_backoff_ms: normalized.infrastructure_retry_backoff_ms,
       ...(localTaskIds === null ? {} : { tasks: localTaskIds }),
       controller_runtime: {
         runtime_id: controllerRuntime.runtime_id,
@@ -197,7 +199,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(signal ? { signal } : {}),
       });
     }
-    const backendRuns: Array<{ attempt: number; run: Awaited<ReturnType<typeof runHarborBackend>> }> = [];
+    const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
+    const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
     for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
       if (signal?.aborted) break;
       const backendDirectory = normalized.attempts === 1
@@ -296,18 +299,47 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       });
       if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) break;
       if (localTransport && localSourceBackendFailure(backendRun.rawResult)) break;
+      if (progress === null) throw new Error("eval progress was not initialized");
+      const retries = await runInfrastructureRetries({
+        evalId,
+        evalDirectory,
+        logicalAttempt,
+        initialRefs: shardRefs,
+        progress,
+        request: normalized,
+        root,
+        resolvedRevision,
+        controllerRuntime,
+        preparedArtifact,
+        ...(localTransport ? { localTransport } : {}),
+        env,
+        ...(harborExecutable !== undefined ? { harborExecutable } : {}),
+        ...(signal ? { signal } : {}),
+        ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
+        sink,
+        ...(localTransport ? { stopAfterResult: localSourceBackendFailure } : {}),
+      });
+      progress = retries.progress;
+      infrastructureRetryRuns.push(...retries.runs);
     }
     if (progress === null) throw new Error("eval progress was not initialized");
     trialRefs = progress.trials;
     const cancelled = signal?.aborted === true;
     const localSourceFailure = localTransport
       ? backendRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
+        || infrastructureRetryRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
       : false;
     const backendsSucceeded = backendRuns.length === normalized.attempts
       && backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null);
     const invalidTrials = localTaskIds === null
       ? trialRefs.filter((trial) => trial.observation_status !== "valid").map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }))
       : invalidTrialSlots(localTaskIds, normalized.attempts, progress);
+    const infrastructureFailures = infrastructureFailureTrials(trialRefs);
+    const infrastructureFailureSlots = infrastructureFailures.map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }));
+    const verifierRetriesExhausted = normalized.infrastructure_retries > 0 && infrastructureFailures.some((trial) => trial.invalid_reason === "verifier_infrastructure_failure");
+    const infrastructureErrorCode = verifierRetriesExhausted || (normalized.infrastructure_retries > 0 && infrastructureRetryRuns.length > 0)
+      ? "eval_infrastructure_retries_exhausted"
+      : "eval_has_infrastructure_failures";
     const succeeded = !cancelled && !localSourceFailure && backendsSucceeded && invalidTrials.length === 0;
     const singleBackend = backendRuns.length === 1 ? backendRuns[0]!.run : undefined;
     result = {
@@ -319,6 +351,23 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(normalized.attempts > 1 ? {
         backend_runs: backendRuns.map(({ attempt, run }) => ({
           attempt,
+          backend: run.backend,
+          backend_summary: run.summary,
+        })),
+      } : {}),
+      infrastructure_retry_policy: {
+        max_retries: normalized.infrastructure_retries,
+        backoff_ms: normalized.infrastructure_retry_backoff_ms,
+        verifier_execution: "same_trial_verifier_only",
+        candidate_rerun_on_verifier_failure: false,
+      },
+      ...(infrastructureRetryRuns.length > 0 ? {
+        infrastructure_retry_runs: infrastructureRetryRuns.map(({ attempt, retry, tasks, triggers, refs, run }) => ({
+          attempt,
+          retry,
+          tasks,
+          trigger_trials: triggers,
+          trials: refs,
           backend: run.backend,
           backend_summary: run.summary,
         })),
@@ -340,6 +389,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
               ? "local_source_materialize_failed"
               : !backendsSucceeded
                 ? "harbor_failed"
+                : infrastructureFailures.length > 0
+                  ? infrastructureErrorCode
                 : "eval_has_invalid_tasks",
           message: cancelled
             ? "eval was cancelled"
@@ -347,6 +398,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
               ? "Harbor rejected the transported local Git source before candidate execution"
               : !backendsSucceeded
                 ? `Harbor attempt shards completed ${backendRuns.length}/${normalized.attempts}`
+                : infrastructureFailures.length > 0
+                  ? `${infrastructureErrorCode === "eval_infrastructure_retries_exhausted" ? "infrastructure retries exhausted" : "verifier infrastructure failure"}: ${infrastructureFailureSlots.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`
                 : `eval has invalid or missing trials: ${invalidTrials.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`,
         },
       }),

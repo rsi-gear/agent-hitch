@@ -6,6 +6,8 @@ export interface EvalRequest {
   model: string;
   attempts: number;
   max_concurrent: number;
+  infrastructure_retries: number;
+  infrastructure_retry_backoff_ms: number;
   timeout_ms: number;
   setup_timeout_ms: number;
   agent_args: string[];

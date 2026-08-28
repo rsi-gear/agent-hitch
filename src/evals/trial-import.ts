@@ -15,6 +15,7 @@ import {
   sha256JSON,
 } from "../runs/index.js";
 import { readHarborBridgeError } from "./harbor-bridge-error.js";
+import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
 
 export interface ImportEvalRunsOptions {
   root: string;
@@ -214,14 +215,21 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     const verifier = verifierResult(input.trial);
     const verifierRef = verifier ? "verifier/result.json" : undefined;
     if (verifier) await atomicWriteJSON(path.join(staging, verifierRef as string), verifier);
-    const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
-    const observation = trialObservation(
-      input.trial,
-      beforeObservation.record.status,
-      beforeObservation.trajectory_status,
-      beforeObservation.record_status,
-      verifierRef,
+    const verifierInfrastructure = await detectVerifierInfrastructureFailure(
+      input.trialDirectory,
+      primaryVerifierReward(input.trial),
     );
+    if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(staging, verifierInfrastructure);
+    await copyVerifierRetryHistory(input.trialDirectory, staging);
+    const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
+    const observation = verifierObservation({
+      trial: input.trial,
+      runStatus: beforeObservation.record.status,
+      trajectoryStatus: beforeObservation.trajectory_status,
+      recordStatus: beforeObservation.record_status,
+      verifierRef,
+      infrastructure: verifierInfrastructure,
+    });
     const manifest = await readJSON<Record<string, unknown>>(path.join(staging, "manifest.json"));
     const portableManifest = withoutKeys(manifest, [
       "workspace", "source_workspace", "execution_workspace",
@@ -261,6 +269,12 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   const verifier = verifierResult(input.trial);
   const verifierRef = verifier ? "verifier/result.json" : undefined;
   if (verifier) await atomicWriteJSON(path.join(runDirectory, verifierRef as string), verifier);
+  const verifierInfrastructure = await detectVerifierInfrastructureFailure(
+    input.trialDirectory,
+    primaryVerifierReward(input.trial),
+  );
+  if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
+  await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
   const bridgeError = input.trial.exception_info
     ? await readHarborBridgeError(input.trialDirectory)
     : null;
@@ -272,7 +286,9 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
       bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
     );
   }
-  const reason = input.trial.exception_info
+  const reason = verifierInfrastructure
+    ? "verifier_infrastructure_failure"
+    : input.trial.exception_info
     ? "infrastructure_failure"
     : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
   const observation: RunObservationV1 = {
@@ -367,36 +383,6 @@ function evalTrialRef(input: TrialInput, runId: string, observation: RunObservat
   };
 }
 
-function trialObservation(
-  trial: Record<string, unknown>,
-  runStatus: string,
-  trajectoryStatus: "valid" | "missing" | "corrupt",
-  recordStatus: "valid" | "corrupt",
-  verifierRef: string | undefined,
-): RunObservationV1 {
-  if (trial.exception_info) return { status: "invalid", invalid_reason: "infrastructure_failure", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) };
-  if (runStatus === "cancelled") return { status: "invalid", invalid_reason: "cancelled", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) };
-  if (runStatus !== "succeeded") return { status: "invalid", invalid_reason: "infrastructure_failure", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) };
-  if (recordStatus !== "valid") return { status: "invalid", invalid_reason: "infrastructure_failure", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) };
-  if (trajectoryStatus !== "valid") return { status: "invalid", invalid_reason: "trajectory_missing_or_corrupt", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) };
-  const reward = primaryReward(trial);
-  if (reward === undefined || !verifierRef) return { status: "invalid", invalid_reason: "verifier_result_missing" };
-  return { status: "valid", reward, verifier_result_ref: verifierRef };
-}
-
-function verifierResult(trial: Record<string, unknown>): Record<string, unknown> | null {
-  return trial.verifier_result && typeof trial.verifier_result === "object" && !Array.isArray(trial.verifier_result)
-    ? trial.verifier_result as Record<string, unknown>
-    : null;
-}
-
-function primaryReward(trial: Record<string, unknown>): number | undefined {
-  const rewards = (verifierResult(trial)?.rewards || {}) as Record<string, unknown>;
-  const preferred = rewards.reward;
-  if (typeof preferred === "number" && Number.isFinite(preferred)) return preferred;
-  return Object.values(rewards).find((value): value is number => typeof value === "number" && Number.isFinite(value));
-}
-
 async function findRunBundle(root: string, depth = 0, requireCompleteMarker = false): Promise<string | null> {
   if (depth > 5) return null;
   try {
@@ -460,6 +446,16 @@ function withoutKeys(record: Record<string, unknown>, keys: string[]): Record<st
   const result = { ...record };
   for (const key of keys) delete result[key];
   return result;
+}
+
+async function copyVerifierRetryHistory(trialDirectory: string, runDirectory: string): Promise<void> {
+  const source = path.join(trialDirectory, "verifier", "infrastructure-retry-history.json");
+  const history = await readJSON<Record<string, unknown> | null>(source, null).catch(() => null);
+  if (history?.schema_version !== "1"
+    || history.code !== "verifier_infrastructure_retry_history"
+    || history.candidate_rerun !== false
+    || !Array.isArray(history.attempts)) return;
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "infrastructure-retry-history.json"), history);
 }
 
 async function validateJSONLines(file: string): Promise<void> {

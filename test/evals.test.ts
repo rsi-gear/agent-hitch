@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { readHarborBridgeError } from "../src/evals/harbor-bridge-error.js";
+import { detectVerifierInfrastructureFailure } from "../src/evals/verifier-diagnostics.js";
 import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { lockedHarnessRef } from "../src/backends/harbor/index.js";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
@@ -43,12 +44,61 @@ test("eval requests require immutable container-portable harness revisions", asy
   const request = await validateEvalRequest(evalRequest());
   assert.equal(request.backend, "harbor");
   assert.equal(request.attempts, 1);
+  assert.equal(request.infrastructure_retries, 1);
+  assert.equal(request.infrastructure_retry_backoff_ms, 1_000);
   assert.equal(request.timeout_ms, 15 * 60 * 1_000);
+  await assert.rejects(
+    validateEvalRequest(evalRequest({ infrastructure_retries: -1 })),
+    /infrastructure_retries must be a non-negative integer/,
+  );
   assert.equal(lockedHarnessRef({
     harness_id: "pi",
     revision: { type: "commit", commit: "0123456789abcdef0123456789abcdef01234567" },
     source: { type: "git", url: "https://example.test/pi.git", registered: true },
   } as never), "pi@commit:0123456789abcdef0123456789abcdef01234567");
+});
+
+test("verifier diagnostics distinguish masked bootstrap failures from executed tests", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const verifier = path.join(root, "verifier");
+  await mkdir(verifier, { recursive: true });
+  await writeFile(path.join(verifier, "test-stdout.txt"), [
+    "curl: (6) Could not resolve host: astral.sh",
+    "/tests/test.sh: line 19: uvx: command not found",
+  ].join("\n"), "utf8");
+
+  const detected = await detectVerifierInfrastructureFailure(root, 0);
+  assert.equal(detected?.code, "verifier_infrastructure_failure");
+  assert.deepEqual(detected?.signals, ["dns_resolution_failed", "test_runner_missing"]);
+  assert.equal(await detectVerifierInfrastructureFailure(root, 1), null);
+
+  await writeFile(path.join(verifier, "ctrf.json"), "{}\n", "utf8");
+  assert.equal(await detectVerifierInfrastructureFailure(root, 0), null);
+  await writeFile(path.join(verifier, "ctrf.json"), "", "utf8");
+  await writeFile(path.join(verifier, "test-stdout.txt"), [
+    "============================= test session starts ==============================",
+    "collected 1 item",
+    "curl: (6) Could not resolve host: candidate.invalid",
+    "============================== 1 failed in 0.1s ===============================",
+  ].join("\n"), "utf8");
+  assert.equal(await detectVerifierInfrastructureFailure(root, 0), null);
+
+  await atomicWriteJSON(path.join(verifier, "infrastructure-error.json"), {
+    schema_version: "1",
+    code: "verifier_infrastructure_failure",
+    signals: ["dns_resolution_failed", "test_runner_missing"],
+    source_files: ["verifier/infrastructure-attempts/attempt-0002/test-stdout.txt"],
+    attempts: [
+      { attempt: 1, signals: ["dns_resolution_failed"], source_files: ["verifier/test-stdout.txt"] },
+      { attempt: 2, signals: ["test_runner_missing"], source_files: ["verifier/test-stdout.txt"] },
+    ],
+    max_retries: 1,
+    backoff_ms: 0,
+  });
+  const exhausted = await detectVerifierInfrastructureFailure(root, undefined);
+  assert.equal(exhausted?.max_retries, 1);
+  assert.equal(exhausted?.attempts?.length, 2);
 });
 
 test("eval progress is canonical, monotonic, and rejects conflicting trial identities", () => {
@@ -132,6 +182,30 @@ test("eval rerun selects only invalid tasks and replaces no valid reward", () =>
   assert.equal(repaired.trials.find((trial) => trial.task_id === "task-a")?.run_id, "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   assert.equal(repaired.trials.find((trial) => trial.task_id === "task-b")?.reward, 0.75);
   assert.deepEqual(selectRerunTasks(["task-a", "task-b", "task-c"], repaired, { mode: "invalid" }), ["task-c"]);
+});
+
+test("eval rerun never turns a verifier fault into another candidate execution", () => {
+  const evalId = newEvalId();
+  let progress = createEvalProgress({
+    evalId,
+    benchmarkId: "demo",
+    benchmarkRevision: "1.0",
+    plannedTasks: 1,
+    plannedTrials: 1,
+    startedAt: "2026-08-27T00:00:00.000Z",
+  });
+  progress = mergeEvalProgressTrial(progress, {
+    trial_id: "task-a__1",
+    run_id: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    task_id: "task-a",
+    attempt: 1,
+    observation_status: "invalid",
+    invalid_reason: "verifier_infrastructure_failure",
+  });
+  assert.throws(
+    () => selectRerunTrialSlots(["task-a"], 1, progress, { mode: "invalid" }),
+    (error: unknown) => (error as { code?: string }).code === "eval_verifier_only_rerun_unavailable",
+  );
 });
 
 test("multi-attempt rerun selection uses logical task/attempt slots", () => {
@@ -309,6 +383,13 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(piArtifact.node_version, process.version);
   assert.equal((agent.env as Record<string, unknown>).DEEPSEEK_API_KEY, "${DEEPSEEK_API_KEY}");
   assert.equal((agent.env as Record<string, unknown>).OPENAI_API_KEY, "${OPENAI_API_KEY}");
+  assert.deepEqual(config.verifier, {
+    import_path: "hitch_harbor_verifier:HitchRetryingVerifier",
+    kwargs: {
+      infrastructure_retries: 1,
+      infrastructure_retry_backoff_ms: 1_000,
+    },
+  });
   assert.doesNotMatch(await readFile(path.join(directory, "harbor", "attempt-0001", "job.json"), "utf8"), /(?:deepseek-)?must-not-be-written/);
   assert.deepEqual(config.datasets, [{ name: "demo", version: "1.0" }]);
   // New evals reference the shared controller runtime; they no longer contain
@@ -412,11 +493,23 @@ test("DeepSeek eval prepares one host artifact and pins it for every Harbor tria
 });
 
 test("Harbor bridge source is valid Python", () => {
-  const source = path.resolve("integrations/harbor/hitch_harbor_agent.py");
-  const result = spawnSync("python3", ["-c", "import pathlib; compile(pathlib.Path(__import__('sys').argv[1]).read_text(), __import__('sys').argv[1], 'exec')", source], {
-    encoding: "utf8",
-  });
-  assert.equal(result.status, 0, result.stderr || undefined);
+  for (const source of [
+    path.resolve("integrations/harbor/hitch_harbor_agent.py"),
+    path.resolve("integrations/harbor/hitch_harbor_verifier.py"),
+  ]) {
+    const result = spawnSync("python3", ["-c", "import pathlib; compile(pathlib.Path(__import__('sys').argv[1]).read_text(), __import__('sys').argv[1], 'exec')", source], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || undefined);
+  }
+});
+
+test("Harbor verifier retries only its test phase and preserves real zero rewards", () => {
+  const smoke = path.resolve("test-support", "verifier_retry_smoke.py");
+  const verifier = path.resolve("integrations", "harbor", "hitch_harbor_verifier.py");
+  const result = spawnSync("python3", [smoke, verifier], { encoding: "utf8" });
+  assert.equal(result.status, 0, `verifier retry smoke failed:\n${result.stderr || result.stdout}`);
+  assert.match(result.stdout, /verifier retry smoke OK/);
 });
 
 test("Harbor bridge reads the manifest entrypoint and validates it against the file set", async () => {
@@ -849,6 +942,135 @@ test("Harbor eval publishes a completed trial before the aggregate benchmark res
   assert.deepEqual(finalProgress.trials.map((trial) => trial.run_id), [first.runId, second.runId]);
 });
 
+test("Harbor eval retries a masked verifier bootstrap failure without rerunning the candidate", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-verifier-retry-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  const taskId = "task-infra";
+  await mkdir(path.join(dataset, taskId), { recursive: true });
+  await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  const normalized = await validateEvalRequest(evalRequest({ dataset }));
+  const trial = {
+    trialId: "task-infra__single-candidate-run",
+    taskId,
+    runId: "run_77777777777777777777777777777777",
+    bundle: path.join(root, "single-run-bundle"),
+  };
+  await writeExportedEvalRunBundle({
+    bundle: trial.bundle,
+    runId: trial.runId,
+    evalId,
+    trialId: trial.trialId,
+    taskId,
+    benchmarkId: normalized.benchmark_id,
+    benchmarkRevision: normalized.benchmark_revision,
+  });
+  const harbor = await writeVerifierRetryFakeHarbor(root, trial);
+  const npm = await writeFakeNpm(root);
+  const result = await runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+      infrastructure_retries: 1,
+      infrastructure_retry_backoff_ms: 0,
+    },
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.equal((result.summary as { primary_reward: number }).primary_reward, 1);
+  const finalTrials = result.trials as Array<{ run_id: string; observation_status: string; reward?: number }>;
+  assert.deepEqual(finalTrials, [{
+    trial_id: trial.trialId,
+    run_id: trial.runId,
+    task_id: taskId,
+    attempt: 1,
+    observation_status: "valid",
+    reward: 1,
+    verifier_result_ref: "verifier/result.json",
+  }]);
+  assert.equal(result.infrastructure_retry_runs, undefined);
+  assert.deepEqual(result.infrastructure_retry_policy, {
+    max_retries: 1,
+    backoff_ms: 0,
+    verifier_execution: "same_trial_verifier_only",
+    candidate_rerun_on_verifier_failure: false,
+  });
+  const history = await readJSON<{ status: string; candidate_rerun: boolean; attempts: Array<{ signals: string[] }> }>(
+    path.join(root, "runs", trial.runId, "verifier", "infrastructure-retry-history.json"),
+  );
+  assert.equal(history.status, "recovered");
+  assert.equal(history.candidate_rerun, false);
+  assert.deepEqual(history.attempts[0]?.signals, ["dns_resolution_failed", "test_runner_missing"]);
+  assert.equal(await readFile(path.join(root, "fake-harbor-verifier-retry.count"), "utf8"), "1");
+  await assert.rejects(
+    stat(path.join(root, "evals", evalId, "infrastructure-retries")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
+});
+
+test("exhausted verifier-only retries fail explicitly without starting another candidate trial", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-verifier-exhausted-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  const taskId = "task-infra";
+  await mkdir(path.join(dataset, taskId), { recursive: true });
+  await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  const normalized = await validateEvalRequest(evalRequest({ dataset }));
+  const trial = {
+    trialId: "task-infra__exhausted",
+    taskId,
+    runId: "run_88888888888888888888888888888888",
+    bundle: path.join(root, "exhausted-run-bundle"),
+  };
+  await writeExportedEvalRunBundle({
+    bundle: trial.bundle,
+    runId: trial.runId,
+    evalId,
+    trialId: trial.trialId,
+    taskId,
+    benchmarkId: normalized.benchmark_id,
+    benchmarkRevision: normalized.benchmark_revision,
+  });
+  const harbor = await writeVerifierExhaustedFakeHarbor(root, trial);
+  const npm = await writeFakeNpm(root);
+  const result = await runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+      infrastructure_retries: 1,
+      infrastructure_retry_backoff_ms: 0,
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.code, "eval_infrastructure_retries_exhausted");
+  assert.equal((result.trials as Array<{ invalid_reason: string }>)[0]?.invalid_reason, "verifier_infrastructure_failure");
+  assert.equal(await readFile(path.join(root, "fake-harbor-verifier-exhausted.count"), "utf8"), "1");
+  await assert.rejects(
+    stat(path.join(root, "evals", evalId, "infrastructure-retries")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
+  const diagnostic = await readJSON<{ attempts: unknown[]; max_retries: number }>(
+    path.join(root, "runs", trial.runId, "verifier", "infrastructure-error.json"),
+  );
+  assert.equal(diagnostic.attempts.length, 2);
+  assert.equal(diagnostic.max_retries, 1);
+});
+
 test("Harbor eval publishes a diagnostic trial after the bundle readiness grace", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-diagnostic-progress-"));
   t.after(() => forceRemove(root));
@@ -869,6 +1091,7 @@ test("Harbor eval publishes a diagnostic trial after the bundle readiness grace"
       harness_ref: "pi@version:1.2.3",
       model: "openai/test-model",
       timeout_ms: 5_000,
+      infrastructure_retries: 0,
     },
   });
 
@@ -943,7 +1166,7 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
     root,
     harborExecutable: harbor,
     env,
-    request: { dataset, harness_ref: "pi@version:1.2.3", model: "openai/test-model", timeout_ms: 5_000 },
+    request: { dataset, harness_ref: "pi@version:1.2.3", model: "openai/test-model", timeout_ms: 5_000, infrastructure_retries: 0 },
   });
   const initialTrials = initial.trials as Array<{ task_id: string; run_id: string; reward?: number; observation_status: string }>;
   assert.equal(initialTrials.find((trial) => trial.task_id === "task-a")?.observation_status, "valid");
@@ -1010,6 +1233,7 @@ test("multi-attempt rerun repairs only invalid logical slots", async (t) => {
       model: "openai/test-model",
       attempts: 2,
       timeout_ms: 5_000,
+      infrastructure_retries: 0,
     },
   });
   assert.equal(initial.status, "failed");
@@ -1188,6 +1412,133 @@ setTimeout(() => {
   }));
   process.stdout.write("Results written\\n");
 }, 1000);
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeVerifierRetryFakeHarbor(directory: string, trial: {
+  bundle: string;
+  trialId: string;
+  taskId: string;
+}): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-verifier-retry");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+if (config.verifier?.import_path !== "hitch_harbor_verifier:HitchRetryingVerifier") process.exit(3);
+if (config.verifier?.kwargs?.infrastructure_retries !== 1) process.exit(4);
+if (config.verifier?.kwargs?.infrastructure_retry_backoff_ms !== 0) process.exit(5);
+const output = path.join(config.jobs_dir, config.job_name);
+const trial = ${JSON.stringify(trial)};
+const countPath = ${JSON.stringify(path.join(directory, "fake-harbor-verifier-retry.count"))};
+const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, "utf8")) : 0;
+fs.writeFileSync(countPath, String(count + 1));
+if (count !== 0) process.exit(6);
+const trialDirectory = path.join(output, trial.trialId);
+fs.mkdirSync(path.join(trialDirectory, "agent"), {recursive:true});
+fs.mkdirSync(path.join(trialDirectory, "verifier"), {recursive:true});
+fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:trial.taskId}}));
+fs.cpSync(trial.bundle, path.join(trialDirectory, "agent", "hitch-run-bundle"), {recursive:true});
+fs.writeFileSync(path.join(trialDirectory, "verifier", "reward.txt"), "1");
+fs.writeFileSync(path.join(trialDirectory, "verifier", "test-stdout.txt"), "1 passed in 0.01s\\n");
+fs.writeFileSync(path.join(trialDirectory, "verifier", "ctrf.json"), "{}\\n");
+fs.writeFileSync(path.join(trialDirectory, "verifier", "infrastructure-retry-history.json"), JSON.stringify({
+  schema_version: "1",
+  code: "verifier_infrastructure_retry_history",
+  status: "recovered",
+  max_retries: 1,
+  backoff_ms: 0,
+  candidate_rerun: false,
+  attempts: [{attempt:1,signals:["dns_resolution_failed","test_runner_missing"],source_files:["verifier/test-stdout.txt"]}]
+}));
+fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+  task_name: trial.taskId,
+  trial_name: trial.trialId,
+  verifier_result: {rewards:{reward:1}}
+}));
+fs.mkdirSync(output, {recursive:true});
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials: 1,
+  stats: {n_completed_trials:1,n_errored_trials:0,n_cancelled_trials:0}
+}));
+process.stdout.write("Results written\\n");
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeVerifierExhaustedFakeHarbor(directory: string, trial: {
+  bundle: string;
+  trialId: string;
+  taskId: string;
+}): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-verifier-exhausted");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+if (config.verifier?.import_path !== "hitch_harbor_verifier:HitchRetryingVerifier") process.exit(3);
+const countPath = ${JSON.stringify(path.join(directory, "fake-harbor-verifier-exhausted.count"))};
+const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, "utf8")) : 0;
+fs.writeFileSync(countPath, String(count + 1));
+if (count !== 0) process.exit(4);
+const trial = ${JSON.stringify(trial)};
+const output = path.join(config.jobs_dir, config.job_name);
+const trialDirectory = path.join(output, trial.trialId);
+fs.mkdirSync(path.join(trialDirectory, "agent"), {recursive:true});
+fs.mkdirSync(path.join(trialDirectory, "verifier"), {recursive:true});
+fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:trial.taskId}}));
+fs.cpSync(trial.bundle, path.join(trialDirectory, "agent", "hitch-run-bundle"), {recursive:true});
+const attempts = [1, 2].map(attempt => ({
+  attempt,
+  signals: ["dns_resolution_failed", "test_runner_missing"],
+  source_files: ["verifier/test-stdout.txt"]
+}));
+fs.writeFileSync(path.join(trialDirectory, "verifier", "infrastructure-error.json"), JSON.stringify({
+  schema_version: "1",
+  code: "verifier_infrastructure_failure",
+  signals: ["dns_resolution_failed", "test_runner_missing"],
+  source_files: ["verifier/test-stdout.txt"],
+  attempts,
+  max_retries: 1,
+  backoff_ms: 0
+}));
+fs.writeFileSync(path.join(trialDirectory, "verifier", "infrastructure-retry-history.json"), JSON.stringify({
+  schema_version: "1",
+  code: "verifier_infrastructure_retry_history",
+  status: "exhausted",
+  candidate_rerun: false,
+  attempts,
+  max_retries: 1,
+  backoff_ms: 0
+}));
+fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+  task_name: trial.taskId,
+  trial_name: trial.trialId,
+  exception_info: "VerifierInfrastructureError: verifier infrastructure retries exhausted"
+}));
+fs.mkdirSync(output, {recursive:true});
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials: 1,
+  stats: {n_completed_trials:0,n_errored_trials:1,n_cancelled_trials:0}
+}));
+process.stdout.write("Results written\\n");
 `;
   await writeFile(executable, source, { mode: 0o755 });
   return executable;
