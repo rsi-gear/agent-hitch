@@ -32,7 +32,7 @@ export function selectRerunTrialSlots(
   }
   if (!Number.isSafeInteger(attempts) || attempts < 1) throw unavailable("eval attempts plan is invalid");
   const invalid = invalidTrialSlots(tasks, attempts, progress);
-  if (selector.mode === "invalid") return invalid;
+  if (selector.mode === "invalid") return rejectVerifierOnlyReruns(progress, invalid);
   const requested = [...new Set(selector.taskNames)].sort();
   if (requested.length === 0) throw invalidInput("eval rerun requires at least one --task");
   for (const task of requested) {
@@ -42,7 +42,18 @@ export function selectRerunTrialSlots(
     }
   }
   const requestedSet = new Set(requested);
-  return invalid.filter((slot) => requestedSet.has(slot.task_id));
+  return rejectVerifierOnlyReruns(progress, invalid.filter((slot) => requestedSet.has(slot.task_id)));
+}
+
+function rejectVerifierOnlyReruns(progress: EvalProgressV1, slots: EvalTrialSlot[]): EvalTrialSlot[] {
+  const selected = new Set(slots.map(slotKey));
+  const verifierOnly = progress.trials.filter((trial) => selected.has(evalTrialKey(trial))
+    && (trial.invalid_reason === "verifier_infrastructure_failure" || trial.invalid_reason === "verifier_result_missing"));
+  if (verifierOnly.length === 0) return slots;
+  throw new HitchError(
+    `verifier-only retry is unavailable after the original trial environment closed: ${verifierOnly.map((trial) => `${trial.task_id}#${trial.attempt}`).join(", ")}; the Candidate Agent will not be rerun`,
+    { code: "eval_verifier_only_rerun_unavailable", exitCode: 2 },
+  );
 }
 
 export function invalidTrialSlots(tasks: readonly string[], attempts: number, progress: EvalProgressV1): EvalTrialSlot[] {

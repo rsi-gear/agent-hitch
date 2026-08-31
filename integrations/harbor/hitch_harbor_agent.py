@@ -60,7 +60,7 @@ class HitchHarborAgent(BaseAgent):
         local_source_transport: dict[str, Any] | None = None,
         hitch_timeout_ms: int = 900_000,
         agent_args: list[str] | None = None,
-        workdir: str = "/app",
+        workdir: str | None = None,
         eval_id: str | None = None,
         benchmark_id: str | None = None,
         benchmark_revision: str | None = None,
@@ -79,7 +79,10 @@ class HitchHarborAgent(BaseAgent):
         self.candidate_id = candidate_id
         self.hitch_timeout_ms = int(hitch_timeout_ms)
         self.agent_args = list(agent_args or [])
-        self.workdir = workdir
+        if workdir is not None and (not isinstance(workdir, str) or not workdir.strip()):
+            raise ValueError("workdir must be a non-empty string when provided")
+        self.workdir = workdir.strip() if isinstance(workdir, str) else None
+        self._workdir_source: str | None = "agent_config" if self.workdir is not None else None
         self.eval_id = eval_id
         self.benchmark_id = benchmark_id
         self.benchmark_revision = benchmark_revision
@@ -145,6 +148,7 @@ class HitchHarborAgent(BaseAgent):
         payload_dir = self.hitch_runtime_dir / "payload"
         if not payload_dir.is_dir():
             raise RuntimeError(f"Hitch runtime bundle has no payload directory: {self.hitch_runtime_dir}")
+        await self._resolve_workdir(environment)
         # Upload the cached bundle's payload (package.json + dist/) as the
         # package root under /opt/hitch; the local cache path is host-side
         # bookkeeping and is not identity (spec §4.2).
@@ -192,6 +196,111 @@ class HitchHarborAgent(BaseAgent):
         finally:
             if cache_lock is not None:
                 await self._release_artifact_cache_lock(cache_lock)
+
+    async def _resolve_workdir(self, environment: BaseEnvironment) -> str:
+        """Resolve Harbor's effective task directory and prove it is usable.
+
+        Harbor environments already combine task-level ``[environment].workdir``
+        with the container image's ``WORKDIR``. Honor an explicit bridge
+        override, then the task configuration, then ask the running container
+        for its default cwd instead of assuming a global path such as /app.
+        """
+        candidate = self.workdir
+        source = self._workdir_source
+        task_config = getattr(environment, "task_env_config", None)
+        task_workdir = getattr(task_config, "workdir", None)
+        discovery: ExecResult | None = None
+        if candidate is None and isinstance(task_workdir, str) and task_workdir.strip():
+            candidate = task_workdir.strip()
+            source = "task_environment"
+        if candidate is None:
+            discovery = await environment.exec("pwd -P")
+            candidate = (discovery.stdout or "").strip()
+            source = "container_workdir"
+            if discovery.return_code != 0 or not candidate:
+                detail = self._exec_diagnostic(discovery)
+                await self._raise_workdir_error(
+                    environment,
+                    "Could not determine the Harbor task working directory from the container "
+                    f"(exit={discovery.return_code}): {detail}",
+                    source=source,
+                    candidate=candidate or None,
+                    probe=discovery,
+                )
+        if (
+            candidate is None
+            or not PurePosixPath(candidate).is_absolute()
+            or "\x00" in candidate
+            or "\n" in candidate
+            or "\r" in candidate
+        ):
+            await self._raise_workdir_error(
+                environment,
+                f"Harbor task working directory must be an absolute POSIX path; got {candidate!r} "
+                f"from {source or 'unknown'}",
+                source=source,
+                candidate=candidate,
+                probe=discovery,
+            )
+
+        exists = await environment.exec(f"test -d {shlex.quote(candidate)}", cwd="/")
+        if exists.return_code != 0:
+            detail = self._exec_diagnostic(exists)
+            await self._raise_workdir_error(
+                environment,
+                f"Harbor task working directory does not exist or is not a directory: {candidate} "
+                f"(source={source}, exit={exists.return_code}): {detail}",
+                source=source,
+                candidate=candidate,
+                probe=exists,
+            )
+
+        usable = await environment.exec("pwd -P", cwd=candidate)
+        resolved = (usable.stdout or "").strip()
+        if usable.return_code != 0 or not resolved or not PurePosixPath(resolved).is_absolute():
+            detail = self._exec_diagnostic(usable)
+            await self._raise_workdir_error(
+                environment,
+                f"Harbor task working directory exists but cannot be used to start the Hitch agent: {candidate} "
+                f"(source={source}, exit={usable.return_code}): {detail}",
+                source=source,
+                candidate=candidate,
+                probe=usable,
+            )
+        self.workdir = resolved
+        self._workdir_source = source
+        return resolved
+
+    async def _raise_workdir_error(
+        self,
+        environment: BaseEnvironment,
+        message: str,
+        *,
+        source: str | None,
+        candidate: str | None,
+        probe: ExecResult | None,
+    ) -> None:
+        evidence: dict[str, Any] = {
+            "schema_version": "1",
+            "code": "hitch_workdir_invalid",
+            "message": self._bounded_tail(message, 2048),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "eval_id": self.eval_id,
+            "workdir": {
+                "source": source,
+                "candidate": candidate,
+                "return_code": probe.return_code if probe is not None else None,
+                "stdout_tail": self._bounded_tail(probe.stdout or "") if probe is not None else "",
+                "stderr_tail": self._bounded_tail(probe.stderr or "") if probe is not None else "",
+            },
+        }
+        await self._write_bridge_error(environment, evidence)
+        raise HitchBridgeError("hitch_workdir_invalid", message, evidence)
+
+    def _require_workdir(self) -> str:
+        if self.workdir is None:
+            raise RuntimeError("Hitch agent setup() must resolve the Harbor task working directory before run()")
+        return self.workdir
 
     def _verify_harness_artifact_host(self) -> dict[str, Any]:
         """Pin host artifact metadata before Harbor copies the directory."""
@@ -834,6 +943,7 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         context: AgentContext,
     ) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        workdir = self._require_workdir()
         assigned_run_id = "run_" + uuid.uuid4().hex
         run_id = assigned_run_id
         trial_id, task_id, attempt = self._trial_identity()
@@ -909,7 +1019,7 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             *self._local_source_cli_args(),
             *self._artifact_cli_args(),
             "--cwd",
-            shlex.quote(self.workdir),
+            shlex.quote(workdir),
             "--workspace-mode",
             "shared",
             "--prompt-file",
@@ -937,7 +1047,7 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             + " 2> >(tee /logs/agent/hitch-stderr.log >&2)"
             + " | tee /logs/agent/hitch-events.jsonl"
         )
-        execution = await environment.exec(command, cwd=self.workdir)
+        execution = await environment.exec(command, cwd=workdir)
         events = self._events(execution.stdout or "")
         observed_run_id = next((
             value
@@ -989,14 +1099,14 @@ mv "$stage_dir" "$target_dir"
         primary_message: str | None = None
         if execution.return_code != 0:
             primary_code = "hitch_process_failed"
-            diagnostic = (execution.stderr or "").strip()
+            diagnostic = self._exec_diagnostic(execution)
             if hitch_result and isinstance(hitch_result.get("error"), dict):
                 result_message = hitch_result["error"].get("message")
                 if isinstance(result_message, str) and result_message.strip():
                     diagnostic = result_message.strip()
             primary_message = (
                 f"Hitch agent run failed with code {execution.return_code} "
-                f"(run_id={run_id}, trial_id={trial_id}): {self._bounded_tail(diagnostic or 'no diagnostic output')}"
+                f"(run_id={run_id}, trial_id={trial_id}): {self._bounded_tail(diagnostic)}"
             )
         elif result_error_code is not None:
             primary_code = result_error_code
@@ -1022,6 +1132,8 @@ mv "$stage_dir" "$target_dir"
             "controller_runtime_id": self.controller_runtime_id,
             "hitch_run_id": run_id,
             "hitch_run_bundle": "hitch-run-bundle",
+            "hitch_workdir": workdir,
+            "hitch_workdir_source": self._workdir_source,
             "eval_id": self.eval_id,
             "trial_id": trial_id,
             "task_id": task_id,
@@ -1226,7 +1338,8 @@ mv "$stage_dir" "$target_dir"
     async def _write_bridge_error(environment: BaseEnvironment, evidence: dict[str, Any]) -> None:
         payload = json.dumps(evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         await environment.exec(
-            f"umask 077; printf '%s\\n' {shlex.quote(payload)} > {HITCH_BRIDGE_ERROR_LOG}"
+            f"umask 077; printf '%s\\n' {shlex.quote(payload)} > {HITCH_BRIDGE_ERROR_LOG}",
+            cwd="/",
         )
 
     def _trial_identity(self) -> tuple[str, str, int]:
@@ -1276,6 +1389,7 @@ mv "$stage_dir" "$target_dir"
             return Path(handle.name)
 
     async def _workspace_digest(self, environment: BaseEnvironment) -> str:
+        workdir = self._require_workdir()
         script = r"""
 const fs = require('node:fs');
 const path = require('node:path');
@@ -1296,8 +1410,8 @@ walk(process.argv[1]);
 process.stdout.write('sha256:' + hash.digest('hex'));
 """.strip()
         result = await environment.exec(
-            " ".join([self._node_prefix(), "node", "-e", shlex.quote(script), shlex.quote(self.workdir)]),
-            cwd=self.workdir,
+            " ".join([self._node_prefix(), "node", "-e", shlex.quote(script), shlex.quote(workdir)]),
+            cwd=workdir,
         )
         digest = (result.stdout or "").strip()
         if result.return_code == 0 and re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
@@ -1372,6 +1486,13 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)
             diagnostic = (result.stderr or result.stdout or "no output").strip()
             raise RuntimeError(f"container setup command failed ({result.return_code}): {diagnostic}")
         return result
+
+    @staticmethod
+    def _exec_diagnostic(result: ExecResult) -> str:
+        for value in (result.stderr, result.stdout):
+            if value and value.strip():
+                return value.strip()
+        return "no diagnostic output"
 
 
 def canonical_manifest_json(manifest: dict[str, Any]) -> str:

@@ -49,16 +49,23 @@ class BaseEnvironment:
         node_version: str = "v22.0.0",
         prepared_artifact_dir: Path | None = None,
         result_case: str = "valid",
+        default_workdir: str = "/workspace",
+        task_workdir: str | None = None,
+        existing_dirs: set[str] | None = None,
     ) -> None:
         self.uploads: list[tuple[str, str, str]] = []
         self.downloads: list[tuple[str, str]] = []
         self.execs: list[str] = []
+        self.exec_cwds: list[str | None] = []
         self.revision_identity = revision_identity
         self.platform_identity = platform_identity
         self.node_version = node_version
         self.prepared_artifact_dir = prepared_artifact_dir
         self.result_case = result_case
         self.bridge_errors: list[dict[str, Any]] = []
+        self.default_workdir = default_workdir
+        self.task_env_config = types.SimpleNamespace(workdir=task_workdir)
+        self.existing_dirs = set(existing_dirs or {"/", default_workdir})
 
     async def upload_dir(self, source: Path, target: str) -> None:
         self.uploads.append(("dir", str(source), target))
@@ -75,6 +82,18 @@ class BaseEnvironment:
 
     async def exec(self, command: str, cwd: str | None = None, user: str | int | None = None) -> ExecResult:
         self.execs.append(command)
+        self.exec_cwds.append(cwd)
+        effective_cwd = cwd or self.task_env_config.workdir or self.default_workdir
+        if effective_cwd not in self.existing_dirs:
+            return ExecResult(
+                stdout=f'chdir to cwd ("{effective_cwd}") failed: no such file or directory\n',
+                return_code=126,
+            )
+        if command == "pwd -P":
+            return ExecResult(stdout=effective_cwd + "\n", return_code=0)
+        if command.startswith("test -d "):
+            target = shlex.split(command)[-1]
+            return ExecResult(return_code=0 if target in self.existing_dirs else 1)
         if "process.platform" in command and "process.arch" in command:
             return ExecResult(stdout=self.platform_identity + "\n", return_code=0)
         if "process.version" in command:
@@ -99,6 +118,11 @@ class BaseEnvironment:
                     stderr="x" * 20_000 + "original process failure",
                     return_code=1,
                 )
+            if self.result_case == "process-stdout-failure-missing":
+                return ExecResult(
+                    stdout='chdir to cwd ("/app") failed: no such file or directory\n',
+                    return_code=126,
+                )
             return ExecResult(stdout=event, return_code=0)
         if "hitch-bridge-error.json" in command:
             for token in shlex.split(command):
@@ -115,7 +139,7 @@ class BaseEnvironment:
                 return ExecResult(stderr="result copy failed", return_code=1)
             return ExecResult(stdout="", return_code=0)
         if "cat --" in command and "/result.json" in command:
-            if self.result_case in {"missing", "process-failure-missing"}:
+            if self.result_case in {"missing", "process-failure-missing", "process-stdout-failure-missing"}:
                 return ExecResult(stderr="missing", return_code=44)
             if self.result_case == "not-file":
                 return ExecResult(stderr="not a regular file", return_code=45)
@@ -253,6 +277,7 @@ def main() -> int:
         platform_identity=container_platform,
         node_version=node_version,
         prepared_artifact_dir=container_artifact_dir,
+        default_workdir="/workspace",
     )
     context = AgentContext()
     artifact_handoff = {
@@ -281,7 +306,6 @@ def main() -> int:
             harness_artifact_cache_dir=str(cache_dir) if artifact_manifest else None,
             hitch_timeout_ms=5_000,
             agent_args=[],
-            workdir="/app",
             model_name="openai/test-model",
             eval_id="eval_bridge_smoke",
             benchmark_id="benchmark",
@@ -306,6 +330,7 @@ def main() -> int:
             revision_identity=revision_identity,
             platform_identity=container_platform,
             node_version=node_version,
+            default_workdir="/workspace",
         )
         second_context = AgentContext()
         second_agent = make_agent(second_agent_logs)
@@ -323,6 +348,33 @@ def main() -> int:
     asyncio.run(drive())
 
     errors: list[str] = []
+
+    # A configured directory is checked from / before any runtime upload, so
+    # an invalid path produces stable bridge evidence instead of an OCI chdir
+    # failure later in the agent process.
+    invalid_env = BaseEnvironment(revision_identity=revision_identity, default_workdir="/workspace")
+    invalid_agent = bridge.HitchHarborAgent(
+        logs_dir=agent_logs_dir,
+        harness_ref=harness_ref,
+        revision_identity=revision_identity,
+        hitch_runtime_dir=bundle_root,
+        controller_runtime_id=runtime_id,
+        hitch_timeout_ms=5_000,
+        workdir="/missing-workspace",
+        model_name="openai/test-model",
+    )
+    try:
+        asyncio.run(invalid_agent.setup(invalid_env))
+        errors.append("invalid workdir unexpectedly passed bridge setup")
+    except Exception as error:
+        if not isinstance(error, bridge.HitchBridgeError) or getattr(error, "code", None) != "hitch_workdir_invalid":
+            errors.append(f"invalid workdir raised an unexpected error: {type(error).__name__}: {error}")
+        if "/missing-workspace" not in str(error) or "does not exist" not in str(error):
+            errors.append(f"invalid workdir error was unclear: {error}")
+    if invalid_env.uploads:
+        errors.append("invalid workdir was detected only after a runtime upload")
+    if len(invalid_env.bridge_errors) != 1 or invalid_env.bridge_errors[0].get("code") != "hitch_workdir_invalid":
+        errors.append(f"invalid workdir evidence was not retained: {invalid_env.bridge_errors!r}")
 
     # 1. The payload directory is uploaded as /opt/hitch, not the bundle root.
     dir_uploads = [u for u in env.uploads if u[0] == "dir"]
@@ -383,6 +435,13 @@ def main() -> int:
         errors.append(f"task_id was {context.metadata.get('task_id')!r}, expected {task_id!r}")
     if context.metadata.get("attempt") != 2:
         errors.append(f"attempt was {context.metadata.get('attempt')!r}, expected 2")
+    if context.metadata.get("hitch_workdir") != "/workspace":
+        errors.append(f"hitch_workdir was {context.metadata.get('hitch_workdir')!r}, expected '/workspace'")
+    if context.metadata.get("hitch_workdir_source") != "container_workdir":
+        errors.append(f"hitch_workdir_source was {context.metadata.get('hitch_workdir_source')!r}")
+    run_cwds = [cwd for command, cwd in zip(env.execs, env.exec_cwds) if " run " in command and "hitch-events.jsonl" in command]
+    if run_cwds != ["/workspace"]:
+        errors.append(f"Hitch run cwd was {run_cwds!r}, expected ['/workspace']")
     if artifact_manifest:
         expected_status = "host_cache_populated" if incompatible_artifact else "uploaded"
         if context.metadata.get("harness_artifact_transport", {}).get("status") != expected_status:
@@ -417,7 +476,6 @@ def negative_main() -> int:
         controller_runtime_id="sha256:" + "f" * 64,  # deliberately wrong
         hitch_timeout_ms=5_000,
         agent_args=[],
-        workdir="/app",
         model_name="openai/test-model",
     )
 
@@ -457,6 +515,7 @@ def result_matrix_main() -> int:
         "incomplete": "hitch_result_schema_invalid",
         "mismatch": "hitch_result_run_id_mismatch",
         "process-failure-missing": "hitch_process_failed",
+        "process-stdout-failure-missing": "hitch_process_failed",
         "bundle-failure": "hitch_run_bundle_export_failed",
         "copy-failure": "hitch_result_artifact_copy_failed",
     }
@@ -482,7 +541,6 @@ def result_matrix_main() -> int:
             controller_runtime_id=runtime_id,
             hitch_timeout_ms=5_000,
             agent_args=[],
-            workdir="/app",
             model_name="openai/test-model",
             eval_id="eval_bridge_result_matrix",
             benchmark_id="benchmark",
@@ -490,11 +548,13 @@ def result_matrix_main() -> int:
             verifier_identity="sha256:" + "c" * 64,
         )
         await agent.setup(env)
+        caught_message = ""
         try:
             await agent.run("do the task", env, context)
             errors.append(f"{case}: run unexpectedly succeeded")
             return
         except Exception as error:
+            caught_message = str(error)
             if not isinstance(error, bridge.HitchBridgeError):
                 errors.append(f"{case}: unexpected exception type {type(error).__name__}: {error}")
                 return
@@ -526,6 +586,12 @@ def result_matrix_main() -> int:
                 stderr_tail = str(evidence.get("process", {}).get("stderr_tail", ""))
                 if "[truncated " not in stderr_tail or not stderr_tail.endswith("original process failure"):
                     errors.append(f"{case}: process stderr was not tail-bounded correctly")
+            if case == "process-stdout-failure-missing":
+                if "chdir to cwd" not in caught_message or "no diagnostic output" in caught_message:
+                    errors.append(f"{case}: stdout OCI diagnostic was not surfaced in the top-level error")
+                stdout_tail = str(evidence.get("process", {}).get("stdout_tail", ""))
+                if "chdir to cwd" not in stdout_tail:
+                    errors.append(f"{case}: process stdout evidence was not retained")
         read_commands = [command for command in env.execs if "cat --" in command and "/result.json" in command]
         if len(read_commands) != 1 or "| tee" in read_commands[0]:
             errors.append(f"{case}: result read still uses a masking pipeline")

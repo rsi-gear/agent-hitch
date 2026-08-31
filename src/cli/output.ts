@@ -46,7 +46,7 @@ Usage:
   hitch compare model|harness [filters] [--reference-run <run-id>] [--json]
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
-  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--eval-id <eval-id>]
+  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>]
   hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--output json]
   hitch eval list [--json]
   hitch eval inspect <eval-id> [--json]
@@ -71,6 +71,7 @@ Eval:
   Every eval references a shared read-only controller runtime bundle by SHA-256 id
   (see 'hitch eval inspect' for the runtime storage kind).
   Eval attempts are stable logical task/attempt slots; rerun repairs only invalid or missing slots.
+  Verifier infrastructure failures are retried once by default; use --infrastructure-retries 0 to disable.
   --task selects every invalid or missing attempt for the named task.
 
 Trajectory and feedback:

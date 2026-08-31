@@ -62,6 +62,8 @@ export function parseEvalRequest(args: string[]): Record<string, unknown> {
   const model = takeOption(args, "--model") || "";
   const attempts = positiveInteger(takeOption(args, "--attempts") || 1, "--attempts");
   const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
+  const infrastructureRetries = takeOption(args, "--infrastructure-retries");
+  const infrastructureRetryBackoff = takeOption(args, "--infrastructure-retry-backoff");
   const timeoutValue = takeOption(args, "--timeout");
   const setupTimeoutValue = takeOption(args, "--setup-timeout");
   const agentArgs = takeRepeatedOption(args, "--agent-arg");
@@ -75,11 +77,23 @@ export function parseEvalRequest(args: string[]): Record<string, unknown> {
     model,
     attempts,
     max_concurrent: maxConcurrent,
+    infrastructure_retries: infrastructureRetries === undefined
+      ? undefined
+      : nonNegativeInteger(infrastructureRetries, "--infrastructure-retries"),
+    infrastructure_retry_backoff_ms: infrastructureRetryBackoff === undefined
+      ? undefined
+      : parseDuration(infrastructureRetryBackoff),
     timeout_ms: timeoutValue === undefined ? undefined : parseDuration(timeoutValue),
     setup_timeout_ms: setupTimeoutValue === undefined ? undefined : parseDuration(setupTimeoutValue),
     agent_args: agentArgs,
     pass_env: passEnv,
   };
+}
+
+function nonNegativeInteger(value: unknown, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw invalidInput(`${name} must be a non-negative integer`);
+  return parsed;
 }
 
 export function takeOption(args: string[], name: string): string | undefined {

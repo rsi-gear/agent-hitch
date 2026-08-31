@@ -1,6 +1,6 @@
 {
   "name": "agent-hitch",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Content-addressed version control and evidence storage for agent harnesses",
   "keywords": [
     "ai-agents",
@@ -43,7 +43,8 @@
     "dist/src/",
     "dist/scripts/",
     "docs/schemas/",
-    "integrations/harbor/hitch_harbor_agent.py"
+    "integrations/harbor/hitch_harbor_agent.py",
+    "integrations/harbor/hitch_harbor_verifier.py"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

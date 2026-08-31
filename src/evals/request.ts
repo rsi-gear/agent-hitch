@@ -1,5 +1,7 @@
 export const DEFAULT_EVAL_TIMEOUT_MS = 15 * 60 * 1_000;
 export const DEFAULT_EVAL_SETUP_TIMEOUT_MS = 30 * 60 * 1_000;
+export const DEFAULT_INFRASTRUCTURE_RETRIES = 1;
+export const DEFAULT_INFRASTRUCTURE_RETRY_BACKOFF_MS = 1_000;
 
 const HARBOR_EVAL_BYPASS_ARG: Readonly<Record<string, string>> = {
   codex: "--dangerously-bypass-approvals-and-sandbox",
@@ -23,6 +25,8 @@ export interface EvalRequestInput {
   model?: unknown;
   attempts?: unknown;
   max_concurrent?: unknown;
+  infrastructure_retries?: unknown;
+  infrastructure_retry_backoff_ms?: unknown;
   timeout_ms?: unknown;
   setup_timeout_ms?: unknown;
   agent_args?: unknown;
@@ -33,7 +37,8 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   if (!input || typeof input !== "object" || Array.isArray(input)) throw invalidInput("eval request must be a JSON object");
   const allowed = new Set([
     "schema_version", "backend", "dataset", "harness_ref", "model", "attempts",
-    "max_concurrent", "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env",
+    "max_concurrent", "infrastructure_retries", "infrastructure_retry_backoff_ms",
+    "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env",
   ]);
   const unexpected = Object.keys(input).find((field) => !allowed.has(field));
   if (unexpected) throw invalidInput(`unknown eval request field: ${unexpected}`);
@@ -49,6 +54,14 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   const benchmark = await resolveBenchmarkReference(input.dataset.trim());
   const attempts = positiveInteger(input.attempts ?? 1, "attempts");
   const maxConcurrent = positiveInteger(input.max_concurrent ?? 4, "max_concurrent");
+  const infrastructureRetries = nonNegativeInteger(
+    input.infrastructure_retries ?? DEFAULT_INFRASTRUCTURE_RETRIES,
+    "infrastructure_retries",
+  );
+  const infrastructureRetryBackoff = nonNegativeNumber(
+    input.infrastructure_retry_backoff_ms ?? DEFAULT_INFRASTRUCTURE_RETRY_BACKOFF_MS,
+    "infrastructure_retry_backoff_ms",
+  );
   const timeout = nonNegativeNumber(input.timeout_ms ?? DEFAULT_EVAL_TIMEOUT_MS, "timeout_ms");
   const setupTimeout = nonNegativeNumber(input.setup_timeout_ms ?? DEFAULT_EVAL_SETUP_TIMEOUT_MS, "setup_timeout_ms");
   if (input.model !== undefined && typeof input.model !== "string") throw invalidInput("model must be a string");
@@ -69,6 +82,8 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     model: typeof input.model === "string" ? input.model : "",
     attempts,
     max_concurrent: maxConcurrent,
+    infrastructure_retries: infrastructureRetries,
+    infrastructure_retry_backoff_ms: infrastructureRetryBackoff,
     timeout_ms: timeout,
     setup_timeout_ms: setupTimeout,
     agent_args: agentArgs,
@@ -130,6 +145,12 @@ async function isRegularFile(file: string): Promise<boolean> {
 function positiveInteger(value: unknown, name: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw invalidInput(`${name} must be a positive integer`);
+  return parsed;
+}
+
+function nonNegativeInteger(value: unknown, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw invalidInput(`${name} must be a non-negative integer`);
   return parsed;
 }
 

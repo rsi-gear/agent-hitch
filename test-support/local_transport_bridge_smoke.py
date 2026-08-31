@@ -39,7 +39,6 @@ def agent_for(bridge, logs: Path, runtime: Path, runtime_id: str, transport: dic
         controller_runtime_id=runtime_id,
         local_source_transport=transport,
         hitch_timeout_ms=5_000,
-        workdir="/app",
         model_name="openai/test-model",
     )
 

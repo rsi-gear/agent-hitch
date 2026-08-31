@@ -1,4 +1,4 @@
-export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, newEvalId, resolveBenchmarkReference, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
+export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, DEFAULT_INFRASTRUCTURE_RETRIES, DEFAULT_INFRASTRUCTURE_RETRY_BACKOFF_MS, newEvalId, resolveBenchmarkReference, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 export type { EvalRequestInput } from "./request.js";
 export type { EvalRequest } from "../domain/index.js";
 export { runEval } from "./service.js";

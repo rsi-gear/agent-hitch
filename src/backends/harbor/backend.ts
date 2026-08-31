@@ -8,10 +8,10 @@ import type { EvalRequest, ResolvedRevision } from "../../domain/index.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
+import { harborVerifierConfig } from "./verifier-config.js";
 
 const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
-
 export interface HarborSettledTrialContext {
   bundleWaitExpired: boolean;
 }
@@ -335,7 +335,6 @@ export async function buildHarborJobConfig({
       } : {}),
       hitch_timeout_ms: request.timeout_ms,
       agent_args: request.agent_args,
-      workdir: "/app",
     },
     env: credentialEnvironment(request.pass_env, env),
     include_logs: ["hitch-*"],
@@ -349,6 +348,7 @@ export async function buildHarborJobConfig({
     n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
     environment: { type: "docker", delete: true },
+    verifier: harborVerifierConfig(request),
     agents: [agent],
     datasets: [await harborDatasetConfig(request.dataset, taskNames)],
     tasks: [],
