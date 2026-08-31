@@ -36,6 +36,7 @@ export interface InfrastructureRetryRun {
 export interface RunInfrastructureRetriesOptions {
   evalId: string;
   evalDirectory: string;
+  backendBaseDirectory?: string;
   logicalAttempt: number;
   initialRefs: readonly EvalTrialRefV1[];
   progress: EvalProgressV1;
@@ -78,8 +79,7 @@ export async function runInfrastructureRetries(
     if (options.signal?.aborted) break;
 
     const backendDirectory = path.join(
-      options.evalDirectory,
-      "infrastructure-retries",
+      options.backendBaseDirectory || path.join(options.evalDirectory, "infrastructure-retries"),
       `retry-${String(retry).padStart(4, "0")}`,
       options.request.attempts === 1 ? "harbor" : attemptDirectoryName(options.logicalAttempt),
     );

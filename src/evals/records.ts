@@ -51,6 +51,7 @@ export interface InspectedEval {
   request: Record<string, unknown> | null;
   resolution: Record<string, unknown> | null;
   plan: Record<string, unknown> | null;
+  execution_plan: Record<string, unknown> | null;
   submission: Record<string, unknown> | null;
   control: Record<string, unknown> | null;
   progress: Record<string, unknown> | null;
@@ -70,6 +71,7 @@ export async function inspectEval(evalId: string, { root }: { root: string }): P
     request,
     resolution: await readJSON<Record<string, unknown> | null>(path.join(directory, "resolution.json"), null),
     plan: await readJSON<Record<string, unknown> | null>(path.join(directory, "plan.json"), null),
+    execution_plan: await readJSON<Record<string, unknown> | null>(path.join(directory, "execution-plan.json"), null),
     submission: await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null),
     control: await readJSON<Record<string, unknown> | null>(path.join(directory, "control.json"), null),
     progress: await readJSON<Record<string, unknown> | null>(path.join(directory, "progress.json"), null),

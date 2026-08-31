@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/eval-execution-plan.schema.json",
+  "title": "Hitch eval execution plan V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "planner", "eval_id", "membership", "candidate_identity", "benchmark",
+    "provider", "max_parallelism", "default_trial_resources", "slots", "work_items", "retry_policy", "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "planner": { "const": "hitch-local-v1" },
+    "eval_id": { "$ref": "#/$defs/evalId" },
+    "membership": { "enum": ["known", "opaque"] },
+    "candidate_identity": { "$ref": "#/$defs/sha256" },
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "verifier_identity"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "verifier_identity": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "provider": { "type": "string", "minLength": 1 },
+    "max_parallelism": { "type": "integer", "minimum": 1 },
+    "default_trial_resources": { "$ref": "#/$defs/resources" },
+    "slots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_version", "slot_id", "eval_id", "task_id", "attempt", "candidate_identity", "state", "physical_execution"],
+        "properties": {
+          "schema_version": { "const": "1" },
+          "slot_id": { "type": "string", "pattern": "^slot_[a-f0-9]{32}$" },
+          "eval_id": { "$ref": "#/$defs/evalId" },
+          "task_id": { "type": "string", "minLength": 1 },
+          "task_digest": { "$ref": "#/$defs/sha256" },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "candidate_identity": { "$ref": "#/$defs/sha256" },
+          "state": { "enum": ["pending", "blocked", "ready", "leased", "running", "collecting", "succeeded", "invalid", "failed", "cancelled"] },
+          "physical_execution": { "type": "integer", "minimum": 1 },
+          "authoritative_run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+          "invalid_reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "work_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots",
+          "opaque_membership", "requested_parallelism", "reservation", "provider"
+        ],
+        "properties": {
+          "schema_version": { "const": "1" },
+          "work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
+          "eval_id": { "$ref": "#/$defs/evalId" },
+          "backend": { "const": "harbor" },
+          "logical_attempt": { "type": ["integer", "null"], "minimum": 1 },
+          "task_ids": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+          "slots": { "type": "array", "items": { "type": "string", "pattern": "^slot_[a-f0-9]{32}$" }, "uniqueItems": true },
+          "opaque_membership": { "type": "boolean" },
+          "requested_parallelism": { "type": "integer", "minimum": 1 },
+          "reservation": { "$ref": "#/$defs/resources" },
+          "provider": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["infrastructure_retries", "infrastructure_retry_backoff_ms", "verifier_execution", "candidate_rerun_on_verifier_failure"],
+      "properties": {
+        "infrastructure_retries": { "type": "integer", "minimum": 0 },
+        "infrastructure_retry_backoff_ms": { "type": "number", "minimum": 0 },
+        "verifier_execution": { "const": "same-trial-verifier-only" },
+        "candidate_rerun_on_verifier_failure": { "const": false }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "evalId": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 },
+        "memory_bytes": { "type": "integer", "minimum": 0 },
+        "container_slots": { "type": "integer", "minimum": 0 },
+        "build_slots": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

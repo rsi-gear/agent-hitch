@@ -53,6 +53,13 @@ admission; they do not yet configure Docker cgroup limits or inspect live host
 memory. The complete target architecture and its later provider/build/cache
 phases are specified in `hitch-harbor-control-plane-spec.zh-CN.md`.
 
+For a local dataset with enumerable `task.toml` entries, daemon mode writes an
+immutable `execution-plan.json` and runs one Harbor work item per task/attempt.
+Different tasks can use the admitted slots concurrently; attempts of the same
+task are ordered and never overlap in the local Docker collision domain.
+Registry/package datasets whose membership cannot be enumerated keep the
+single-Harbor-job compatibility path and its conservative reservation.
+
 ## Setup and diagnostics
 
 Hitch can install its pinned Harbor version into its own state directory:
@@ -199,6 +206,7 @@ submission.json               # daemon admission envelope and request digest
 control.json                  # queued/running/cancelling/terminal control state
 resolution.json
 plan.json
+execution-plan.json           # immutable slots, work items, resource reservations
 runtime.ref.json
 local-source/                 # present only for transported local Git commits
   manifest.json

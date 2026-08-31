@@ -2,6 +2,8 @@ export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, DEFAULT_INFRAST
 export type { EvalRequestInput } from "./request.js";
 export type { EvalRequest } from "../domain/index.js";
 export { EvalEventSink } from "./events.js";
+export { buildEvalExecutionPlan, parseEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
+export type { BuildEvalExecutionPlanOptions } from "./execution-plan.js";
 export { runEval } from "./service.js";
 export type { EvalResult, RunEvalOptions } from "./service.js";
 export { inspectEval, listEvals } from "./records.js";

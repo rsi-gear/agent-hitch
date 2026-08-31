@@ -59,7 +59,7 @@ export interface EvalRerunResult {
 interface RerunPlan {
   tasks: string[];
   attempts: number;
-  attemptExecution: "legacy-single-attempt-v1" | "harbor-attempt-shards-v1";
+  attemptExecution: "legacy-single-attempt-v1" | "harbor-attempt-shards-v1" | "harbor-task-slots-v1";
   candidate: Record<string, unknown>;
   preparedArtifact: Record<string, unknown>;
   controllerRuntime: Record<string, unknown>;
@@ -300,6 +300,8 @@ function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): R
     attemptExecution = "legacy-single-attempt-v1";
   } else if (plan.attempt_execution === "harbor-attempt-shards-v1") {
     attemptExecution = "harbor-attempt-shards-v1";
+  } else if (plan.attempt_execution === "harbor-task-slots-v1") {
+    attemptExecution = "harbor-task-slots-v1";
   } else if (plan.attempt_execution === undefined) {
     throw new HitchError(
       "eval was created without explicit logical-attempt identity; create a new eval with agent-hitch >= 0.2.5",

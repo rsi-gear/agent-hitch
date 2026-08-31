@@ -312,6 +312,8 @@ export class EvalScheduler {
       request: entry.request,
       normalizedRequest: entry.request,
       maxConcurrentOverride: parallelism,
+      executionResources: this.trialResources,
+      executionStrategy: "local-task-slots-v1",
       precreated: true,
       root: this.root,
       signal: controller.signal,

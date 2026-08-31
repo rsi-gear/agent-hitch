@@ -16,6 +16,9 @@ import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequ
 import { invalidTrialSlots } from "./rerun-slots.js";
 import type { EvalRequestInput } from "./request.js";
 import { prepareEvalDirectory } from "./directory.js";
+import { buildEvalExecutionPlan } from "./execution-plan.js";
+import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
+import { executePlannedHarborTasks } from "./planned-execution.js";
 export interface RunEvalOptions {
   evalId?: EvalId;
   request: EvalRequestInput;
@@ -31,6 +34,10 @@ export interface RunEvalOptions {
   normalizedRequest?: EvalRequest;
   /** Internal control-plane grant; request.json retains the requested cap. */
   maxConcurrentOverride?: number;
+  /** Internal operator reservation written into the immutable execution plan. */
+  executionResources?: import("../domain/index.js").ResourceVectorV1;
+  /** Internal execution strategy; direct mode retains the compatibility path. */
+  executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
 }
 export interface EvalResult extends Record<string, unknown> {
   schema_version: string;
@@ -41,7 +48,7 @@ export interface EvalResult extends Record<string, unknown> {
   started_at: string;
   completed_at: string;
 }
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards" }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -156,7 +163,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
       attempts: normalized.attempts,
-      attempt_execution: "harbor-attempt-shards-v1",
+      attempt_execution: executionStrategy === "local-task-slots-v1" && localTaskIds !== null
+        ? "harbor-task-slots-v1"
+        : "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
       infrastructure_retries: normalized.infrastructure_retries,
       infrastructure_retry_backoff_ms: normalized.infrastructure_retry_backoff_ms,
@@ -171,6 +180,20 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     };
     await atomicWriteJSON(path.join(evalDirectory, "resolution.json"), resolvedRevision);
     await atomicWriteJSON(path.join(evalDirectory, "plan.json"), plan);
+    const executionPlan = buildEvalExecutionPlan({
+      evalId,
+      request: normalized,
+      candidate: {
+        revisionIdentity: resolvedRevision.identity,
+        artifactId: artifact.artifact_id,
+      },
+      tasks: localTaskIds,
+      maxParallelism: normalized.max_concurrent,
+      ...(executionResources ? { trialResources: executionResources } : {}),
+      ...(executionStrategy === "local-task-slots-v1" && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
+      createdAt: plan.created_at,
+    });
+    await atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), executionPlan);
     progress = createEvalProgress({
       evalId,
       benchmarkId: normalized.benchmark_id,
@@ -187,6 +210,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       attempts: normalized.attempts,
       planned_tasks: plannedTasks,
       planned_trials: plannedTrials,
+      work_items: executionPlan.work_items.length,
+      membership: executionPlan.membership,
     });
     if (localTransport) {
       await verifyLocalGitTransport(localTransport, {
@@ -199,9 +224,36 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(signal ? { signal } : {}),
       });
     }
-    const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
+    const backendRuns: Array<{ attempt: number; run: HarborBackendResult; workId?: string; tasks?: string[] }> = [];
     const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
-    for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
+    const plannedTaskExecution = executionStrategy === "local-task-slots-v1" && localTaskIds !== null;
+    if (plannedTaskExecution) {
+      const execution = await executePlannedHarborTasks({
+        evalId,
+        evalDirectory,
+        plan: executionPlan,
+        progress,
+        request: normalized,
+        root,
+        resolvedRevision,
+        controllerRuntime,
+        preparedArtifact,
+        ...(localTransport ? { localTransport } : {}),
+        env,
+        ...(harborExecutable !== undefined ? { harborExecutable } : {}),
+        ...(signal ? { signal } : {}),
+        ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
+        sink,
+      });
+      progress = execution.progress;
+      backendRuns.push(...execution.backendRuns.map((entry) => ({
+        attempt: entry.attempt,
+        run: entry.run,
+        workId: entry.workId,
+        tasks: entry.tasks,
+      })));
+      infrastructureRetryRuns.push(...execution.infrastructureRetryRuns);
+    } else for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
       if (signal?.aborted) break;
       const backendDirectory = normalized.attempts === 1
         ? path.join(evalDirectory, "harbor")
@@ -329,7 +381,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ? backendRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
         || infrastructureRetryRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
       : false;
-    const backendsSucceeded = backendRuns.length === normalized.attempts
+    const expectedBackendRuns = plannedTaskExecution ? executionPlan.work_items.length : normalized.attempts;
+    const backendsSucceeded = backendRuns.length === expectedBackendRuns
       && backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null);
     const invalidTrials = localTaskIds === null
       ? trialRefs.filter((trial) => trial.observation_status !== "valid").map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }))
@@ -348,7 +401,15 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       status: cancelled ? "cancelled" : succeeded ? "succeeded" : "failed",
       exit_code: cancelled ? 9 : succeeded ? 0 : 13,
       ...(singleBackend ? { backend: singleBackend.backend, backend_summary: singleBackend.summary } : {}),
-      ...(normalized.attempts > 1 ? {
+      ...(plannedTaskExecution ? {
+        backend_work_items: backendRuns.map(({ attempt, workId, tasks, run }) => ({
+          work_id: workId,
+          attempt,
+          tasks,
+          backend: run.backend,
+          backend_summary: run.summary,
+        })),
+      } : normalized.attempts > 1 ? {
         backend_runs: backendRuns.map(({ attempt, run }) => ({
           attempt,
           backend: run.backend,
@@ -397,7 +458,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
             : localSourceFailure
               ? "Harbor rejected the transported local Git source before candidate execution"
               : !backendsSucceeded
-                ? `Harbor attempt shards completed ${backendRuns.length}/${normalized.attempts}`
+                ? `Harbor work items completed ${backendRuns.length}/${expectedBackendRuns}`
                 : infrastructureFailures.length > 0
                   ? `${infrastructureErrorCode === "eval_infrastructure_retries_exhausted" ? "infrastructure retries exhausted" : "verifier infrastructure failure"}: ${infrastructureFailureSlots.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`
                 : `eval has invalid or missing trials: ${invalidTrials.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`,
@@ -432,69 +493,4 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   return result;
 }
 
-function assertBackendTrialSet(rawResult: Record<string, unknown> | null, refs: readonly EvalTrialRefV1[]): void {
-  const trials = Array.isArray(rawResult?.trial_results) ? rawResult.trial_results as Record<string, unknown>[] : [];
-  const backendIds = new Set(trials.map((trial) => typeof trial.trial_name === "string" ? trial.trial_name : null).filter((value): value is string => value !== null));
-  const refIds = new Set(refs.map((ref) => ref.trial_id));
-  if (backendIds.size !== trials.length || backendIds.size !== refIds.size || [...backendIds].some((id) => !refIds.has(id))) {
-    throw new Error("Harbor terminal trial set does not match published eval progress");
-  }
-}
-
-function attemptDirectoryName(attempt: number): string {
-  return `attempt-${String(attempt).padStart(4, "0")}`;
-}
-
-export function summarizeTrialRefs(trials: import("../domain/index.js").EvalTrialRefV1[]): Record<string, unknown> {
-  const valid = trials.filter((trial) => trial.observation_status === "valid" && typeof trial.reward === "number");
-  const rewards = valid.map((trial) => trial.reward as number);
-  const aggregate = rewards.length
-    ? {
-        count: rewards.length,
-        mean: rewards.reduce((sum, reward) => sum + reward, 0) / rewards.length,
-        min: Math.min(...rewards),
-        max: Math.max(...rewards),
-      }
-    : null;
-  return {
-    n_trials: trials.length,
-    n_completed: valid.length,
-    n_invalid: trials.length - valid.length,
-    primary_reward: aggregate?.mean ?? null,
-    rewards: aggregate ? { reward: aggregate } : {},
-  };
-}
-
-function localSourceBackendFailure(rawResult: Record<string, unknown> | null): boolean {
-  if (!rawResult) return false;
-  // The bridge uses this fixed, non-secret marker when setup cannot verify or
-  // materialize the uploaded source. Do not surface provider exception text in
-  // the durable Hitch error, because it may contain backend diagnostics.
-  return JSON.stringify(rawResult).includes("hitch-local-source-materialize:");
-}
-
-function transportSummary(transport: LocalGitTransportUse): Record<string, unknown> {
-  const manifest = transport.manifest;
-  return {
-    kind: manifest.kind,
-    resolution_identity: manifest.resolution_identity,
-    commit: manifest.commit,
-    tree: manifest.tree,
-    payload_sha256: manifest.payload_sha256,
-    payload_bytes: manifest.payload_bytes,
-    object_count: manifest.object_count,
-    file_count: manifest.file_count,
-  };
-}
-
-function preparedArtifactSummary(artifact: HarborPreparedArtifactUse): Record<string, unknown> {
-  return {
-    artifact_id: artifact.artifact_id,
-    artifact_integrity: artifact.artifact_integrity,
-    entrypoint_integrity: artifact.entrypoint_integrity,
-    harness_id: artifact.harness_id,
-    revision_identity: artifact.revision_identity,
-    platform: artifact.platform,
-    source_type: artifact.source_type,
-  };
-}
+export { summarizeTrialRefs } from "./result-helpers.js";

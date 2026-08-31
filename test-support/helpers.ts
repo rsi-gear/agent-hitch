@@ -223,7 +223,13 @@ process.exit(2);
   return file;
 }
 
-export async function writeFakeHarbor(directory: string): Promise<string> {
+export async function writeFakeHarbor(directory: string, {
+  delayMs = 0,
+  activityLog,
+}: {
+  delayMs?: number;
+  activityLog?: string;
+} = {}): Promise<string> {
   const file = path.join(directory, "fake-harbor");
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -241,21 +247,32 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
 const output = path.join(config.jobs_dir, config.job_name);
 const logicalAttempt = config.agents[0].kwargs.logical_attempt || 1;
+const selectedTasks = config.datasets[0].task_names || null;
 const trials = [
   {task_name:"one",trial_name:"one__random-" + logicalAttempt,verifier_result:{rewards:{reward:1}}},
   {task_name:"two",trial_name:"two__random-" + logicalAttempt,verifier_result:{rewards:{reward:0.5}}}
-];
-fs.mkdirSync(output, {recursive:true});
-fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
-  n_total_trials: trials.length,
-  stats: {n_completed_trials: trials.length, n_errored_trials: 0, n_cancelled_trials: 0}
-}));
-for (const trial of trials) {
-  const trialOutput = path.join(output, trial.trial_name);
-  fs.mkdirSync(trialOutput, {recursive:true});
-  fs.writeFileSync(path.join(trialOutput, "result.json"), JSON.stringify(trial));
-}
-process.stdout.write("Results written\\n");
+].filter((trial) => selectedTasks === null || selectedTasks.includes(trial.task_name));
+const activityLog = ${activityLog === undefined ? "null" : JSON.stringify(activityLog)};
+const activity = (type) => {
+  if (activityLog) fs.appendFileSync(activityLog, JSON.stringify({type,time:Date.now(),logicalAttempt,tasks:trials.map((trial) => trial.task_name)}) + "\\n");
+};
+activity("start");
+const finish = () => {
+  fs.mkdirSync(output, {recursive:true});
+  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+    n_total_trials: trials.length,
+    stats: {n_completed_trials: trials.length, n_errored_trials: 0, n_cancelled_trials: 0}
+  }));
+  for (const trial of trials) {
+    const trialOutput = path.join(output, trial.trial_name);
+    fs.mkdirSync(trialOutput, {recursive:true});
+    fs.writeFileSync(path.join(trialOutput, "result.json"), JSON.stringify(trial));
+  }
+  activity("end");
+  process.stdout.write("Results written\\n");
+};
+if (${delayMs} > 0) setTimeout(finish, ${delayMs});
+else finish();
 `;
   await writeFile(file, source, { mode: 0o755 });
   await chmod(file, 0o755);
