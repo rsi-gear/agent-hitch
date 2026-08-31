@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { invalidInput } from "./errors.js";
 
@@ -84,4 +85,8 @@ export function statePaths(root: string): StatePaths {
     temporary: path.join(root, "tmp"),
     indexes: path.join(root, "indexes"),
   };
+}
+
+export function hitchRootId(root: string): string {
+  return createHash("sha256").update(statePaths(root).root).digest("hex").slice(0, 24);
 }

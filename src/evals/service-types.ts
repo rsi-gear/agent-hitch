@@ -1,6 +1,14 @@
 import type { BackendWorkItemV1, EvalId, EvalRequest, ResourceVectorV1 } from "../domain/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
+import type { DockerReaperReportV1 } from "./docker-reaper.js";
 import type { EvalRequestInput } from "./request.js";
+
+export type EvalDockerResourceReaper = (input: {
+  root: string;
+  leaseIds?: readonly string[];
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}) => Promise<DockerReaperReportV1>;
 
 export interface RunEvalOptions {
   evalId?: EvalId;
@@ -21,6 +29,7 @@ export interface RunEvalOptions {
   resumeExisting?: boolean;
   onControlPhase?: (phase: EvalExecutionPhase, work?: EvalWorkStateSnapshot) => Promise<void>;
   onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
+  dockerResourceReaper?: EvalDockerResourceReaper;
 }
 
 export type EvalExecutionPhase = "planning" | "preparing" | "running" | "finalizing";

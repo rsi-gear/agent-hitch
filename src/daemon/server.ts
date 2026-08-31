@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createReadStream } from "node:fs";
@@ -7,7 +7,7 @@ import path from "node:path";
 import { Scheduler } from "./scheduler.js";
 import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
 import type { EvalRerunExecutor, EvalSchedulerOptions } from "../control-plane/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
 import type { EvalId, ResourceVectorV1, RunId } from "../domain/index.js";
 import { acquireInstanceLock, authorized, ensureToken, releaseInstanceLock } from "./auth.js";
@@ -54,7 +54,7 @@ export class DaemonServer {
 
   constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor }: DaemonServerOptions) {
     this.paths = statePaths(root);
-    this.rootId = createHash("sha256").update(this.paths.root).digest("hex").slice(0, 24);
+    this.rootId = hitchRootId(this.paths.root);
     this.instanceId = randomBytes(16).toString("hex");
     this.port = port;
     this.maxConcurrent = maxConcurrent;

@@ -9,12 +9,14 @@ import { EvalEventSink } from "./events.js";
 import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease } from "./execution-leases.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord } from "./local-docker-provider.js";
+import { dockerResourceOwnership } from "./docker-ownership.js";
 import { runInfrastructureRetries } from "./infrastructure-retry.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { assertBackendTrialSet, localSourceBackendFailure } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import type { WorkItemAdmissionController } from "./service-types.js";
+import type { EvalDockerResourceReaper } from "./service-types.js";
 
 export interface PlannedBackendRun {
   attempt: number;
@@ -44,6 +46,7 @@ export interface ExecutePlannedHarborOptions {
   worker: ExecutionWorkerIdentity;
   admission?: WorkItemAdmissionController;
   onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
+  dockerResourceReaper?: EvalDockerResourceReaper;
 }
 
 export async function executePlannedHarborTasks(options: ExecutePlannedHarborOptions): Promise<{
@@ -211,6 +214,18 @@ async function executeWorkItem(
       lease_epoch: released.epoch,
       state: released.state,
     });
+    if (options.dockerResourceReaper) {
+      try {
+        const report = await options.dockerResourceReaper({
+          root: options.root,
+          leaseIds: [lease.leaseId],
+          env: options.env,
+        });
+        options.sink.emit({ type: "eval.work-item.resources-reaped", work_id: item.work_id, lease_id: lease.leaseId, scanned: report.scanned, deleted: report.deleted.length, issues: report.issues.length });
+      } catch (error) {
+        options.sink.emit({ type: "eval.work-item.reaper-failed", work_id: item.work_id, lease_id: lease.leaseId, code: (error as { code?: string }).code || "docker_reaper_failed" });
+      }
+    }
     await options.onWorkItemState?.(item.work_id, lease.leaseId, "terminal");
   }
 }
@@ -255,6 +270,7 @@ async function executeLeasedWorkItem(
     runtimeId: options.controllerRuntime.runtime_id,
     preparedArtifact: options.preparedArtifact,
     executionResources: item.reservation,
+    dockerOwnership: dockerResourceOwnership(options.root, lease, taskId),
     ...(options.localTransport ? { localTransport: options.localTransport } : {}),
     env: options.env,
     ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),

@@ -31,6 +31,7 @@ test("execution lease persists accepted, running, and released states", async (t
   t.after(() => rm(directory, { recursive: true, force: true }));
   const handle = await createExecutionLease({ evalDirectory: directory, ...identity, reservation, ttlMs: 60_000 });
   assert.equal(handle.current().state, "accepted");
+  assert.deepEqual(handle.current().resource_epochs, [1]);
   assert.equal((await handle.markRunning()).state, "running");
   const released = await handle.release();
   assert.equal(released.state, "released");
@@ -72,6 +73,7 @@ test("reissuing a proven-live lease increments epoch and fences the old worker",
   });
   assert.equal(recovered.state, "running");
   assert.equal(recovered.epoch, 2);
+  assert.deepEqual(recovered.resource_epochs, [1, 2]);
   await assert.rejects(oldWorker.heartbeat(1), (error: unknown) => (error as { code?: string }).code === "lease_epoch_mismatch");
   await assert.rejects(oldWorker.release(1), (error: unknown) => (error as { code?: string }).code === "lease_epoch_mismatch");
   assert.equal((await heartbeatExecutionLease({
@@ -82,6 +84,7 @@ test("reissuing a proven-live lease increments epoch and fences the old worker",
   const lost = await markExecutionLeaseLost({ evalDirectory: directory, leaseId: oldWorker.leaseId, expectedEpoch: 2 });
   assert.equal(lost.state, "lost");
   assert.equal(lost.epoch, 3);
+  assert.deepEqual(lost.resource_epochs, [1, 2]);
 });
 
 test("recovery marks active execution leases lost without changing terminal leases", async (t) => {

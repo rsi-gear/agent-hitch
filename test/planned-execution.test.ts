@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { ResourceLedger, WorkItemDispatcher } from "../src/control-plane/index.js";
 import { parseEvalExecutionPlan, readExecutionLeases, runEval } from "../src/evals/index.js";
-import { readJSON } from "../src/foundation/index.js";
+import { hitchRootId, readJSON } from "../src/foundation/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 
 test("planned local execution overlaps different tasks and serializes attempts of the same task", async (t) => {
@@ -23,6 +23,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const resources = new ResourceLedger({ cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 2, build_slots: 1 });
   const dispatcher = new WorkItemDispatcher({ resources });
   t.after(() => dispatcher.close());
+  const reapedLeases: string[] = [];
   const request = {
     dataset,
     harness_ref: "pi@version:1.2.3",
@@ -36,6 +37,10 @@ test("planned local execution overlaps different tasks and serializes attempts o
     executionStrategy: "local-task-slots-v1",
     trialBundleGraceMs: 0,
     env: { ...process.env, HITCH_NPM_PATH: npm },
+    dockerResourceReaper: async (input) => {
+      reapedLeases.push(...(input.leaseIds ?? []));
+      return { schema_version: "1", root_id: hitchRootId(root), scanned: 0, deleted: [], retained: [], issues: [] };
+    },
     workItemAdmission: {
       acquire: async ({ evalId, workItem, maxParallelism, signal }) => {
         const permit = await dispatcher.acquire({
@@ -63,7 +68,9 @@ test("planned local execution overlaps different tasks and serializes attempts o
   assert.equal(leases.length, 4);
   assert.ok(leases.every((lease) => lease.state === "released" && lease.terminal_at && lease.parent_allocation_id));
   assert.deepEqual(new Set(leases.map((lease) => lease.work_id)), new Set(plan.work_items.map((item) => item.work_id)));
+  assert.deepEqual(new Set(reapedLeases), new Set(leases.map((lease) => lease.lease_id)));
   for (const item of plan.work_items) {
+    const lease = leases.find((entry) => entry.work_id === item.work_id) as typeof leases[number];
     const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", item.work_id, "epoch-000001", "job.json"));
     const datasets = config.datasets as Array<Record<string, unknown>>;
     assert.equal(config.n_attempts, 1);
@@ -72,6 +79,16 @@ test("planned local execution overlaps different tasks and serializes attempts o
       type: "docker", delete: true,
       cpu_enforcement_policy: "limit", override_cpus: 1,
       memory_enforcement_policy: "limit", override_memory_mb: 1_024,
+      import_path: "hitch_harbor_environment:HitchHarborDockerEnvironment",
+      kwargs: { hitch_ownership_labels: {
+        "io.hitch.root-id": hitchRootId(root),
+        "io.hitch.provider": "local-docker",
+        "io.hitch.eval-id": result.eval_id,
+        "io.hitch.work-id": item.work_id,
+        "io.hitch.lease-id": lease.lease_id,
+        "io.hitch.lease-epoch": "1",
+        "io.hitch.task-id": item.task_ids[0],
+      } },
     });
     assert.deepEqual(datasets[0]?.task_names, item.task_ids);
   }

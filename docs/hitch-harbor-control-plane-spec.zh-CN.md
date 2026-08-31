@@ -543,6 +543,7 @@ interface ExecutionLeaseV1 {
   reservation: ResourceVectorV1
   state: 'offered' | 'accepted' | 'running' | 'releasing' | 'released' | 'expired' | 'lost'
   epoch: number
+  resource_epochs?: number[]
   issued_at: string
   accepted_at?: string
   heartbeat_at?: string
@@ -553,6 +554,7 @@ interface ExecutionLeaseV1 {
 
 - worker 必须携带 `(lease_id, epoch)` 上报事件。
 - 新 epoch 使旧 worker 的迟到事件失效。
+- `resource_epochs` 记录 provider 曾被授权创建资源的 epoch。恢复 lease 时追加新 epoch，fence 为 `lost` 时只递增当前 epoch、不虚构资源 epoch；reaper 必须精确匹配该集合。字段缺失的旧记录只把当前 epoch 视为可匹配值。
 - 本地 provider 也必须使用 lease，不能走无记录的快捷路径。
 
 ### 8.6 Environment image manifest
@@ -1060,12 +1062,15 @@ V1 行为：
 
 ```text
 io.hitch.root-id
+io.hitch.provider
 io.hitch.eval-id
 io.hitch.work-id
 io.hitch.lease-id
 io.hitch.lease-epoch
 io.hitch.task-id              # 已知时
 ```
+
+Hitch 通过 Harbor 自定义 Docker environment 在读取任务 `docker-compose.yaml` 与所有 `extra_docker_compose` 后生成最终 overlay：覆盖 `main`、任务 sidecar、Harbor egress sidecar、非 external network 和非 external volume。external network/volume 不得被标记为 Hitch 所有。纯 Dockerfile task 仍给 `main` 与默认 network 加标签，不改变 task、Agent 或 Verifier 语义。
 
 - backend directory 必须包含 `eval_id/work_id/lease_epoch`，防止迟到进程覆盖新执行结果。
 - provider 记录 Harbor PID、process start identity、Docker resource IDs 和最后心跳。
@@ -1094,7 +1099,7 @@ io.hitch.task-id              # 已知时
 - 能证明执行仍存活时签发更高 epoch 的恢复 lease。
 - 能证明尚未启动 Candidate Agent 时，可以安全重新排队。
 - 无法判断 Candidate Agent 是否运行过时，slot 标记 invalid `execution_state_ambiguous`，除非显式 retry policy 允许新的 physical execution。
-- reaper 只清理标签与 terminal/expired lease 完全匹配的资源。
+- reaper 只清理标签与 terminal/expired lease 完全匹配的资源；资源 epoch 必须出现在 lease 的 `resource_epochs` 中，因此恢复后的新 epoch 不会让旧容器失去可证明的所有权，也不会把任意旧 epoch 当成合法。
 
 ## 14. Harbor backend 集成
 
@@ -1558,6 +1563,8 @@ canonical trajectory 是审计证据，不是进程 checkpoint。把历史消息
 - 所有可回收资源必须至少有 root-id、lease-id 和 epoch 标签。
 - reaper 先列出、再逐个验证，不使用宽泛 name glob 删除。
 - label 缺失、冲突或 lease 不可读时只报告，不删除。
+- 本机 reaper 仅用精确 root-id label filter 枚举 container、network、volume；逐项 inspect 后验证 root/provider/eval/work/lease/resource epoch 与持久化 terminal/expired lease，在同一 lease file lock 内再次 inspect，最后按明确 resource ID 删除。daemon 启动恢复完成后、以及 work item release 后都会运行；失败只形成 cleanup 诊断，不能触发 Candidate rerun。
+- image 不进入上述通用 reaper；Stage 3 image GC 必须继续执行 image digest 与 Hitch label 双重确认。
 - 不自动执行全局 `docker system prune`、volume prune 或 builder prune。
 
 ### 20.4 远程 worker

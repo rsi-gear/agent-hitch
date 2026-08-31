@@ -21,6 +21,8 @@ export interface ExecutionLeaseV1 {
   reservation: ResourceVectorV1;
   state: ExecutionLeaseStateV1;
   epoch: number;
+  /** Epochs under which this lease's provider was authorized to create resources. */
+  resource_epochs?: number[];
   issued_at: string;
   accepted_at?: string;
   heartbeat_at?: string;

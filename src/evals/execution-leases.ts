@@ -50,6 +50,7 @@ export async function createExecutionLease(input: {
     reservation,
     state: "accepted",
     epoch: 1,
+    resource_epochs: [1],
     issued_at: issuedAt.toISOString(),
     accepted_at: issuedAt.toISOString(),
     heartbeat_at: issuedAt.toISOString(),
@@ -135,7 +136,13 @@ export async function reissueExecutionLease(input: {
       throw new HitchError(`execution lease cannot be reissued from ${lease.state}`, { code: "lease_not_recoverable", exitCode: 12 });
     }
     const { terminal_at: _terminalAt, ...active } = lease;
-    return writeLease(file, renewedLease({ ...active, state: "running", epoch: lease.epoch + 1 }, ttlMs));
+    const nextEpoch = lease.epoch + 1;
+    return writeLease(file, renewedLease({
+      ...active,
+      state: "running",
+      epoch: nextEpoch,
+      resource_epochs: [...new Set([...(lease.resource_epochs ?? [lease.epoch]), nextEpoch])].sort((left, right) => left - right),
+    }, ttlMs));
   });
 }
 
@@ -194,7 +201,7 @@ export function parseExecutionLease(value: unknown): ExecutionLeaseV1 {
   assertOnlyKeys(value, [
     "schema_version", "lease_id", "work_id", "eval_id", "worker_id", "provider", "collision_domain_id",
     "parent_allocation_id", "reservation", "state", "epoch", "issued_at", "accepted_at", "heartbeat_at",
-    "expires_at", "terminal_at",
+    "expires_at", "terminal_at", "resource_epochs",
   ]);
   const states = new Set<ExecutionLeaseStateV1>(["offered", "accepted", "running", "releasing", "released", "expired", "lost"]);
   if (value.schema_version !== "1" || typeof value.lease_id !== "string" || !/^lease_[a-f0-9]{32}$/.test(value.lease_id)
@@ -214,6 +221,10 @@ export function parseExecutionLease(value: unknown): ExecutionLeaseV1 {
   }
   const terminal = value.state === "released" || value.state === "expired" || value.state === "lost";
   if (terminal !== (value.terminal_at !== undefined)) throw new TypeError("execution lease terminal state is inconsistent");
+  const resourceEpochs = parseResourceEpochs(value.resource_epochs, value.epoch as number);
+  if (resourceEpochs && value.state !== "lost" && !resourceEpochs.includes(value.epoch as number)) {
+    throw new TypeError("execution lease current epoch is not authorized for resources");
+  }
   return {
     schema_version: "1",
     lease_id: value.lease_id,
@@ -226,12 +237,25 @@ export function parseExecutionLease(value: unknown): ExecutionLeaseV1 {
     reservation: parseResourceVector(value.reservation, "execution lease reservation"),
     state: value.state as ExecutionLeaseStateV1,
     epoch: value.epoch as number,
+    ...(resourceEpochs === undefined ? {} : { resource_epochs: resourceEpochs }),
     issued_at: value.issued_at,
     ...(value.accepted_at === undefined ? {} : { accepted_at: value.accepted_at as string }),
     ...(value.heartbeat_at === undefined ? {} : { heartbeat_at: value.heartbeat_at as string }),
     expires_at: value.expires_at,
     ...(value.terminal_at === undefined ? {} : { terminal_at: value.terminal_at as string }),
   };
+}
+
+function parseResourceEpochs(value: unknown, currentEpoch: number): number[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length < 1 || value.some((entry) => !Number.isSafeInteger(entry) || entry < 1 || entry > currentEpoch)) {
+    throw new TypeError("execution lease resource epochs are invalid");
+  }
+  const normalized = [...new Set(value as number[])].sort((left, right) => left - right);
+  if (normalized.length !== value.length || normalized.some((entry, index) => entry !== value[index])) {
+    throw new TypeError("execution lease resource epochs must be unique and ordered");
+  }
+  return normalized;
 }
 
 async function writeLease(file: string, value: ExecutionLeaseV1): Promise<ExecutionLeaseV1> {

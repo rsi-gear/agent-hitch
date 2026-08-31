@@ -2,6 +2,16 @@ import type { BackendWorkItemV1 } from "./execution-plan.js";
 import type { ResourceVectorV1 } from "./resources.js";
 import type { ExecutionLeaseV1 } from "./workers.js";
 
+export interface DockerResourceOwnershipV1 {
+  root_id: string;
+  provider: "local-docker";
+  eval_id: string;
+  work_id: string;
+  lease_id: string;
+  lease_epoch: number;
+  task_id?: string;
+}
+
 export interface ExecutionProviderStatusV1 {
   schema_version: "1";
   provider: string;

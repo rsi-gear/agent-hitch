@@ -1,4 +1,4 @@
-export { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, SCHEMA_VERSION, defaultRoot, parseDuration, positiveInteger, statePaths } from "./config.js";
+export { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, SCHEMA_VERSION, defaultRoot, hitchRootId, parseDuration, positiveInteger, statePaths } from "./config.js";
 export type { StatePaths } from "./config.js";
 export { HitchError, invalidInput } from "./errors.js";
 export type { HitchErrorOptions } from "./errors.js";

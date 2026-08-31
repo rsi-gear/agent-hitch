@@ -20,7 +20,7 @@ import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure,
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -233,6 +233,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         },
         ...(workItemAdmission ? { admission: workItemAdmission } : {}),
         ...(onWorkItemState ? { onWorkItemState } : {}),
+        ...(dockerResourceReaper ? { dockerResourceReaper } : {}),
       });
       progress = execution.progress;
       backendRuns.push(...execution.backendRuns.map((entry) => ({

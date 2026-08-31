@@ -1,9 +1,9 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
-import { EvalEventSink, newEvalId, readExecutionLeases, resolveLocalDatasetTaskIds, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
-import type { EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
+import { EvalEventSink, newEvalId, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
+import type { EvalDockerResourceReaper, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 import { CollisionLockManager } from "./collisions.js";
@@ -42,6 +42,7 @@ export interface EvalSchedulerOptions {
   workerId?: string;
   provider?: string;
   collisionDomainId?: string;
+  dockerResourceReaper?: EvalDockerResourceReaper;
 }
 
 export interface SubmitEvalOptions {
@@ -77,18 +78,19 @@ export class EvalScheduler {
   private readonly unsubscribeCollisions: () => void;
   private readonly collisions: CollisionLockManager;
   private readonly workItems: WorkItemDispatcher;
+  private readonly dockerResourceReaper: EvalDockerResourceReaper;
   private queue: QueuedEval[] = [];
   private active = new Map<EvalId, ActiveEval>();
   private completions = new Map<EvalId, Promise<void>>();
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId }: EvalSchedulerOptions) {
+  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources }: EvalSchedulerOptions) {
     this.root = root;
     this.evalsRoot = statePaths(root).evals;
     this.resources = resources;
     this.trialResources = trialResources;
-    const rootHash = sha256Bytes(root).slice("sha256:".length, "sha256:".length + 24);
+    const rootHash = hitchRootId(root);
     this.workerId = workerId || `worker_${rootHash}`;
     this.provider = provider;
     this.collisionDomainId = collisionDomainId || `local-docker-root:${rootHash}`;
@@ -96,6 +98,7 @@ export class EvalScheduler {
     this.onEvent = onEvent;
     this.collisions = collisions;
     this.workItems = new WorkItemDispatcher({ resources, collisions });
+    this.dockerResourceReaper = dockerResourceReaper;
     this.unsubscribe = resources.subscribe(() => this.scheduleDrain());
     this.unsubscribeCollisions = collisions.subscribe(() => this.scheduleDrain());
   }
@@ -103,6 +106,14 @@ export class EvalScheduler {
   async initialize(): Promise<void> {
     await ensureDir(this.evalsRoot);
     await this.recoverInterruptedEvals();
+    if (this.provider === "local-docker") {
+      try {
+        const report = await this.dockerResourceReaper({ root: this.root });
+        this.onEvent({ type: "docker.reaper.completed", root_id: report.root_id, scanned: report.scanned, deleted: report.deleted.length, issues: report.issues.length });
+      } catch (error) {
+        this.onEvent({ type: "docker.reaper.failed", code: (error as { code?: string }).code || "docker_reaper_failed" });
+      }
+    }
     this.scheduleDrain();
   }
 
@@ -370,6 +381,7 @@ export class EvalScheduler {
       root: this.root,
       signal: controller.signal,
       onEvent: this.onEvent,
+      dockerResourceReaper: this.dockerResourceReaper,
       onControlPhase: async (phase, work) => {
         await this.updateControl(entry.directory, (control) => applyEvalPhase(control, phase, work?.queuedWorkItems, work?.terminalWorkItems));
       },
