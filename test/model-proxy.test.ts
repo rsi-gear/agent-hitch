@@ -6,6 +6,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { HostModelProxy, loadInteractionCapture } from "../src/model-access/index.js";
+import { startEvalModelCaptureRuntime } from "../src/evals/model-capture-runtime.js";
 
 test("host model proxy streams provider traffic and seals redacted run-scoped evidence", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-model-proxy-"));
@@ -84,6 +85,64 @@ test("proxy health registration produces explicit none completeness when no mode
   const ref = await proxy.finalizeRun(runId, path.join(root, "run"));
   assert.equal(ref.completeness, "none");
   assert.equal(ref.interaction_count, 0);
+});
+
+test("host model proxy restores its endpoint and appends to persisted capture state", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-model-proxy-resume-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const upstream = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ model: "gpt-restored", usage: { output_tokens: 1 } }));
+  });
+  const upstreamUrl = await serverUrl(upstream);
+  t.after(() => close(upstream));
+  const options = {
+    captureRoot: path.join(root, "capture"),
+    evalId: `eval_${"e".repeat(32)}`,
+    mode: "proxy" as const,
+    required: true,
+    upstreams: { openai: upstreamUrl },
+    bindHost: "127.0.0.1",
+    advertisedHost: "127.0.0.1",
+  };
+  const first = await HostModelProxy.start(options);
+  const identity = first.runtimeIdentity();
+  const runId = `run_${"f".repeat(32)}`;
+  assert.equal((await fetch(`${first.localBaseUrl}/${runId}/openai/responses`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-one" }),
+  })).status, 200);
+  await first.close();
+
+  const restored = await HostModelProxy.start({
+    ...options,
+    listenPort: identity.listenPort,
+    capabilityToken: identity.capabilityToken,
+    resumeExisting: true,
+  });
+  t.after(() => restored.close());
+  assert.equal(restored.localBaseUrl, first.localBaseUrl);
+  assert.equal((await fetch(`${restored.localBaseUrl}/${runId}/openai/responses`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "gpt-two" }),
+  })).status, 200);
+  const ref = await restored.finalizeRun(runId, path.join(root, "run"));
+  assert.equal(ref.completeness, "complete");
+  assert.equal(ref.interaction_count, 2);
+  const loaded = await loadInteractionCapture(path.join(root, "run"));
+  assert.deepEqual(loaded.interactions.map((entry) => entry.sequence), [1, 2]);
+});
+
+test("eval model capture runtime persists and restores the exact Harbor route", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-model-runtime-resume-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const evalId = `eval_${"1".repeat(32)}`;
+  const plan = { requested_mode: "proxy" as const, effective_mode: "proxy" as const, required: true, topology: "host-side" as const };
+  const first = await startEvalModelCaptureRuntime({ plan, evalId, evalDirectory: root, env: {} });
+  assert.ok(first.route);
+  const originalRoute = first.route;
+  await first.close();
+  const restored = await startEvalModelCaptureRuntime({ plan, evalId, evalDirectory: root, env: {} });
+  t.after(() => restored.close());
+  assert.deepEqual(restored.route, originalRoute);
 });
 
 async function serverUrl(server: Server): Promise<string> {

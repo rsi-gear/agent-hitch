@@ -23,6 +23,14 @@ export interface HostModelProxyOptions {
   env?: NodeJS.ProcessEnv;
   bindHost?: string;
   advertisedHost?: string;
+  listenPort?: number;
+  capabilityToken?: string;
+  resumeExisting?: boolean;
+}
+
+export interface HostModelProxyRuntimeIdentity {
+  listenPort: number;
+  capabilityToken: string;
 }
 
 interface CaptureEntry {
@@ -43,15 +51,19 @@ export class HostModelProxy {
   private readonly upstreams: Record<Provider, URL>;
   private readonly credentials: string[];
   private readonly token: string;
+  private readonly port: number;
+  private readonly resumeExisting: boolean;
   private closed = false;
 
   private constructor(input: HostModelProxyOptions, server: Server, token: string, port: number) {
     this.server = server;
     this.token = token;
+    this.port = port;
     this.captureRoot = input.captureRoot;
     this.evalId = input.evalId;
     this.mode = input.mode;
     this.required = input.required;
+    this.resumeExisting = input.resumeExisting === true;
     const env = input.env ?? process.env;
     this.upstreams = {
       openai: modelUpstream(input.upstreams?.openai ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"),
@@ -76,13 +88,19 @@ export class HostModelProxy {
       throw new TypeError("host model proxy identity is invalid");
     }
     await ensureDir(input.captureRoot);
-    const token = randomBytes(24).toString("hex");
+    if (input.listenPort !== undefined && (!Number.isSafeInteger(input.listenPort) || input.listenPort < 1 || input.listenPort > 65_535)) {
+      throw new TypeError("host model proxy listen port is invalid");
+    }
+    if (input.capabilityToken !== undefined && !/^[a-f0-9]{48}$/.test(input.capabilityToken)) {
+      throw new TypeError("host model proxy capability token is invalid");
+    }
+    const token = input.capabilityToken ?? randomBytes(24).toString("hex");
     let proxy: HostModelProxy | undefined;
     const server = http.createServer((request, response) => {
       proxy?.handle(request, response).catch((error) => respondError(response, 502, "model_proxy_failed", error));
     });
     const bindHost = input.bindHost ?? (process.platform === "linux" ? "0.0.0.0" : "127.0.0.1");
-    const port = await listen(server, bindHost);
+    const port = await listen(server, bindHost, input.listenPort ?? 0);
     proxy = new HostModelProxy(input, server, token, port);
     return proxy;
   }
@@ -96,6 +114,10 @@ export class HostModelProxy {
     await rm(destination, { recursive: true, force: true });
     await cp(path.join(entry.directory, "interactions"), destination, { recursive: true, errorOnExist: true, force: false });
     return ref;
+  }
+
+  runtimeIdentity(): HostModelProxyRuntimeIdentity {
+    return { listenPort: this.port, capabilityToken: this.token };
   }
 
   async close(): Promise<void> {
@@ -187,6 +209,7 @@ export class HostModelProxy {
           required: this.required,
           topology: "host-side",
           credentialValues: this.credentials,
+          resumeExisting: this.resumeExisting,
         });
         return { directory, capture };
       })();
@@ -300,10 +323,10 @@ function credentialValues(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env).filter(([name, value]) => value && /(?:KEY|TOKEN|SECRET|PASSWORD|AUTH)/i.test(name)).map(([, value]) => value as string);
 }
 
-function listen(server: Server, host: string): Promise<number> {
+function listen(server: Server, host: string, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, host, () => {
+    server.listen(port, host, () => {
       server.off("error", reject);
       const address = server.address();
       if (!address || typeof address === "string") return reject(new Error("model proxy has no TCP address"));

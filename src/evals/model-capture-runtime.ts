@@ -2,6 +2,7 @@ import path from "node:path";
 import type { InteractionCaptureRefV1, ModelCapturePlanV1, ModelProxyRouteV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { HostModelProxy } from "../model-access/index.js";
+import { readModelProxyRuntimeState, writeModelProxyRuntimeState } from "./model-proxy-runtime-state.js";
 
 export interface EvalModelCaptureRuntime {
   plan: ModelCapturePlanV1;
@@ -24,23 +25,39 @@ export async function startEvalModelCaptureRuntime(input: {
   if (input.plan.effective_mode !== "proxy" && input.plan.effective_mode !== "hybrid") {
     return { plan: input.plan, close: async () => undefined };
   }
+  let proxy: HostModelProxy | undefined;
   try {
-    const proxy = await HostModelProxy.start({
+    const persisted = await readModelProxyRuntimeState(input.evalDirectory, input.evalId, input.plan);
+    proxy = await HostModelProxy.start({
       captureRoot: path.join(input.evalDirectory, "model-capture"),
       evalId: input.evalId,
       mode: input.plan.effective_mode,
       required: input.plan.required,
       env: input.env,
+      ...(persisted ? {
+        listenPort: persisted.listen_port,
+        capabilityToken: persisted.capability_token,
+        resumeExisting: true,
+      } : {}),
     });
-    const finalizeRun = (runId: string, destination: string) => proxy.finalizeRun(runId, destination);
+    await writeModelProxyRuntimeState({
+      evalDirectory: input.evalDirectory,
+      evalId: input.evalId,
+      plan: input.plan,
+      identity: proxy.runtimeIdentity(),
+      previous: persisted,
+    });
+    const activeProxy = proxy;
+    const finalizeRun = (runId: string, destination: string) => activeProxy.finalizeRun(runId, destination);
     return {
       plan: input.plan,
       route: proxy.route,
       exporter: { route: proxy.route, plan: input.plan, finalizeRun },
       finalizeRun,
-      close: () => proxy.close(),
+      close: () => activeProxy.close(),
     };
   } catch (error) {
+    await proxy?.close().catch(() => undefined);
     if (input.plan.required) {
       throw new HitchError("required model proxy failed to start", {
         code: "model_proxy_unavailable",

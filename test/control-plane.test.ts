@@ -452,6 +452,64 @@ test("eval scheduler reattaches a live local Harbor process and does not rerun t
   assert.match(events, /"type":"eval\.work-item\.recovered"/);
 });
 
+test("eval recovery restores the exact host model proxy route before reattaching Harbor", async (t) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-proxy-recovery-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const activityLog = path.join(root, "proxy-activity.jsonl");
+  const harbor = await writeFakeHarbor(root, { delayMs: 1_000, activityLog });
+  const npm = await writeFakeNpm(root, { packageName: "@openai/codex", binName: "codex" });
+  const child = spawn(process.execPath, [
+    path.join(import.meta.dirname, "..", "test-support", "recovery-scheduler-child.js"),
+    root, harbor, npm, dataset, "codex@version:1.2.3", "proxy",
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const evalId = await childEvalId(child);
+  const evalDirectory = path.join(root, "evals", evalId);
+  const proxyState = path.join(evalDirectory, "model-capture", "proxy.runtime.json");
+  await waitFor(async () => {
+    const [state, leases] = await Promise.all([
+      readJSON<Record<string, unknown> | null>(proxyState, null),
+      readdir(path.join(evalDirectory, "provider", "leases")).catch(() => []),
+    ]);
+    return state !== null && leases.length === 1;
+  }, 10_000);
+  const routeBefore = await readJSON<Record<string, unknown>>(proxyState);
+  child.kill("SIGKILL");
+  await new Promise<void>((resolve) => child.once("close", () => resolve()));
+
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
+    trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
+    executor: (options) => runEval({
+      ...options,
+      harborExecutable: harbor,
+      env: { ...process.env, HITCH_NPM_PATH: npm },
+      trialBundleGraceMs: 0,
+    }),
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null), 10_000);
+  const status = await scheduler.status(evalId);
+  assert.notEqual((status?.result?.error as { code?: string } | undefined)?.code, "execution_state_ambiguous", JSON.stringify(status?.result));
+  const routeAfter = await readJSON<Record<string, unknown>>(proxyState);
+  assert.equal(routeAfter.listen_port, routeBefore.listen_port);
+  assert.equal(routeAfter.capability_token, routeBefore.capability_token);
+  const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
+  assert.equal(activity.filter((entry) => entry.type === "start").length, 1);
+  const trial = (status?.result?.trials as Array<{ run_id: string }>)[0];
+  const bundle = await readJSON<{ capture: { mode: string; required: boolean; completeness: string } }>(path.join(root, "runs", trial!.run_id, "bundle.index.json"));
+  assert.deepEqual(bundle.capture, {
+    mode: "proxy", required: true, completeness: "none", interaction_count: 0,
+    redaction: { policy: "hitch-provider-redaction-v1", status: "not-needed", rules: [] },
+  });
+});
+
 test("daemon exposes queued eval status and terminal result", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-eval-"));
   const imageContext = path.join(root, "image-context");

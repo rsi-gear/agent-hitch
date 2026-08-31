@@ -428,7 +428,7 @@ API 输入使用同结构的 `EvalSubmissionInputV1`，但 `request` 接受 `Eva
 - 调度策略不参与 Harness、benchmark 或 observation identity。
 - `max_parallelism` 默认等于现有 `request.max_concurrent`，但仍受全局预算限制。
 - 服务端把缺省 execution policy 规范化后写入 `submission.json`；submission digest 同时覆盖 normalized request 与 execution policy，因此同一 idempotency key 不能被换成另一组资源或 provider 策略。
-- V1 本机 provider 已执行 `provider`、`max_parallelism`、`resources.default_trial` 和 build mode。`prebuild-required` 接受能够在 trial 前解析并安全注入 digest 的固定 registry 引用，以及满足保守 Dockerfile eligibility 的 task 主环境；Compose build、独立 verifier build、dynamic/resolution fallback 仍失败。尚不可执行的 remote provider、setup reservation、remote build cache 或 proxy/hybrid capture 必须在 admission 明确拒绝，不能只持久化后忽略。
+- V1 本机 provider 已执行 `provider`、`max_parallelism`、`resources.default_trial`、build mode 和 `host-side` proxy/hybrid capture。`prebuild-required` 接受能够在 trial 前解析并安全注入 digest 的固定 registry 引用，以及满足保守 Dockerfile eligibility 的 task 主环境；Compose build、独立 verifier build、dynamic/resolution fallback 仍失败。尚不可执行的 remote provider、setup reservation、remote build cache 或 `in-sandbox` capture 必须在 admission 明确拒绝，不能只持久化后忽略。
 
 ### 8.2 Resource vector
 
@@ -1401,6 +1401,8 @@ interface ModelInteractionV1 {
 - enterprise endpoint 的证书校验、SNI 和自定义 CA 必须显式配置，不允许静默关闭 TLS verification。
 - host-side proxy 不得监听超出 worker 所需的公共接口；in-sandbox proxy 不得把 credential 写入镜像层。
 - proxy 健康检查在 Candidate Agent 启动前完成；`required=true` 时健康检查失败不得启动 Agent。
+
+本机 `host-side` proxy 将端口、不可猜 capability token 和 capture append state 以 `0600` 权限持久化在 eval 的 `model-capture/` 下。daemon 恢复 active lease 时必须先以相同端口和 token 重建原 endpoint，再 reissue lease 和收集原 physical execution；无法精确恢复 endpoint 时状态为 `execution_state_ambiguous`，不得以新 proxy URL 继续旧 Harbor，也不得自动创建 Candidate rerun。
 
 ### 16.4 与 trajectory 的关系
 

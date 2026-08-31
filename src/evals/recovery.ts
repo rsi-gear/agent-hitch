@@ -9,6 +9,9 @@ import { loadEvalResumeState } from "./resume-state.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { assertBackendTrialSet } from "./result-helpers.js";
 import { importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";
+import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
+import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
+import { readModelProxyRuntimeState } from "./model-proxy-runtime-state.js";
 
 export interface EvalLeaseRecoveryResult {
   status: "resumable" | "ambiguous";
@@ -28,25 +31,38 @@ export async function recoverLocalDockerEvalLeases(input: {
   const emit = input.emit ?? (() => {});
   const recovered: string[] = [];
   let failure: { code: string; message: string } | undefined;
-  for (const lease of input.leases) {
-    if (!activeLease(lease)) continue;
-    try {
-      await recoverLease(input, lease, emit);
-      recovered.push(lease.lease_id);
-    } catch (error) {
-      const typed = error instanceof HitchError;
-      failure ??= {
-        code: typed ? error.code : "execution_state_ambiguous",
-        message: (error as Error)?.message || String(error),
-      };
+  let captureRuntime: EvalModelCaptureRuntime | undefined;
+  try {
+    captureRuntime = await restoreModelCaptureForRecovery(input);
+    for (const lease of input.leases) {
+      if (!activeLease(lease)) continue;
+      try {
+        await recoverLease(input, lease, emit, captureRuntime);
+        recovered.push(lease.lease_id);
+      } catch (error) {
+        const typed = error instanceof HitchError;
+        failure ??= {
+          code: typed ? error.code : "execution_state_ambiguous",
+          message: (error as Error)?.message || String(error),
+        };
+        const current = (await readExecutionLeases(input.evalDirectory)).find((entry) => entry.lease_id === lease.lease_id);
+        if (current && activeLease(current)) await markExecutionLeaseLost({
+          evalDirectory: input.evalDirectory,
+          leaseId: current.lease_id,
+          expectedEpoch: current.epoch,
+        });
+        emit({ type: "eval.lease.recovery-failed", lease_id: lease.lease_id, code: failure.code });
+      }
+    }
+  } catch (error) {
+    failure = { code: "execution_state_ambiguous", message: (error as Error)?.message || String(error) };
+    for (const lease of input.leases.filter(activeLease)) {
       const current = (await readExecutionLeases(input.evalDirectory)).find((entry) => entry.lease_id === lease.lease_id);
-      if (current && activeLease(current)) await markExecutionLeaseLost({
-        evalDirectory: input.evalDirectory,
-        leaseId: current.lease_id,
-        expectedEpoch: current.epoch,
-      });
+      if (current && activeLease(current)) await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: current.lease_id, expectedEpoch: current.epoch });
       emit({ type: "eval.lease.recovery-failed", lease_id: lease.lease_id, code: failure.code });
     }
+  } finally {
+    await captureRuntime?.close().catch(() => undefined);
   }
   return failure
     ? { status: "ambiguous", recovered_lease_ids: recovered, ...failure }
@@ -57,6 +73,7 @@ async function recoverLease(
   input: { root: string; evalId: EvalId; evalDirectory: string; cancelRequested?: boolean },
   lease: ExecutionLeaseV1,
   emit: (event: Record<string, unknown>) => void,
+  captureRuntime?: EvalModelCaptureRuntime,
 ): Promise<void> {
   if (lease.provider !== "local-docker") throw ambiguous(`unsupported recovery provider: ${lease.provider}`);
   const provider = new LocalDockerExecutionProvider({
@@ -94,7 +111,7 @@ async function recoverLease(
     const terminal = await waitForLocalDockerProcessTerminal({ root: input.root, leaseId: lease.lease_id, epoch: reissued.epoch });
     await heartbeatTail;
     if (heartbeatFailure !== undefined) throw heartbeatFailure;
-    try { await collectRecoveredWork(input, reissued, terminal.backend_directory, emit); } catch (error) {
+    try { await collectRecoveredWork(input, reissued, terminal.backend_directory, emit, captureRuntime); } catch (error) {
       if (!input.cancelRequested || (error as { code?: string }).code !== "recovery_collection_missing") throw error;
     }
     if (!input.cancelRequested && terminal.process_exit_code !== null && terminal.process_exit_code !== 0) {
@@ -114,6 +131,7 @@ async function collectRecoveredWork(
   lease: ExecutionLeaseV1,
   backendDirectory: string,
   emit: (event: Record<string, unknown>) => void,
+  captureRuntime?: EvalModelCaptureRuntime,
 ): Promise<void> {
   const state = await loadEvalResumeState(input.evalDirectory);
   const work = state.executionPlan.work_items.find((item) => item.work_id === lease.work_id);
@@ -136,6 +154,8 @@ async function collectRecoveredWork(
     benchmarkId: state.progress.benchmark_id,
     benchmarkRevision: state.progress.benchmark_revision,
     ...(runtimeId ? { runtimeId } : {}),
+    ...(state.executionPlan.model_capture ? { modelCapturePlan: captureRuntime?.plan ?? state.executionPlan.model_capture } : {}),
+    ...(captureRuntime?.exporter ? { interactionCaptureExporter: captureRuntime.exporter } : {}),
     rawResult,
   }, state.progress.trials);
   const workRefs = refs.filter((ref) => ref.task_id === work.task_ids[0] && ref.attempt === work.logical_attempt);
@@ -148,6 +168,26 @@ async function collectRecoveredWork(
   for (const ref of workRefs) progress = mergeEvalProgressTrial(progress, ref);
   if (progress.generation !== state.progress.generation) await writeEvalProgress(input.evalDirectory, progress);
   emit({ type: "eval.work-item.recovered", work_id: work.work_id, lease_id: lease.lease_id, trials: workRefs.length });
+}
+
+async function restoreModelCaptureForRecovery(input: {
+  evalId: EvalId;
+  evalDirectory: string;
+  leases: ExecutionLeaseV1[];
+}): Promise<EvalModelCaptureRuntime | undefined> {
+  if (!input.leases.some(activeLease)) return undefined;
+  const state = await loadEvalResumeState(input.evalDirectory);
+  const plan = state.executionPlan.model_capture;
+  if (!plan || plan.effective_mode !== "proxy" && plan.effective_mode !== "hybrid") return undefined;
+  if (!await readModelProxyRuntimeState(input.evalDirectory, input.evalId, plan)) {
+    throw ambiguous("recoverable model proxy has no persisted endpoint identity");
+  }
+  const runtime = await startEvalModelCaptureRuntime({ plan, evalId: input.evalId, evalDirectory: input.evalDirectory, env: process.env });
+  if (!runtime.route || !runtime.exporter) {
+    await runtime.close().catch(() => undefined);
+    throw ambiguous("recoverable model proxy endpoint could not be restored");
+  }
+  return runtime;
 }
 
 function activeLease(lease: ExecutionLeaseV1): boolean {

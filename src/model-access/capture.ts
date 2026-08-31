@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { InteractionCaptureRefV1, ModelInteractionV1, Sha256 } from "../domain/index.js";
-import { appendLine, atomicWriteJSON, ensureDir, sha256JSON, writePrivateFile } from "../foundation/index.js";
+import { appendLine, atomicWriteJSON, ensureDir, readJSON, sha256JSON, writePrivateFile } from "../foundation/index.js";
+import { parseModelInteraction } from "./records.js";
 
 const SENSITIVE_HEADER = /^(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$/i;
 const SENSITIVE_FIELD = /(?:^|[_-])(?:api[_-]?key|authorization|token|secret|password|credential|cookie)(?:$|[_-])/i;
@@ -20,6 +22,7 @@ export interface ModelInteractionCaptureOptions {
   topology: "host-side" | "in-sandbox";
   credentialValues?: readonly string[];
   redactionPolicy?: string;
+  resumeExisting?: boolean;
 }
 
 export interface CapturedModelExchange {
@@ -62,7 +65,11 @@ export class ModelInteractionCapture {
       || !new Set(["host-side", "in-sandbox"]).has(options.topology)) throw new TypeError("model interaction capture identity is invalid");
     await ensureDir(path.join(options.runDirectory, "interactions", "payloads"));
     const capture = new ModelInteractionCapture(options);
-    await writePrivateFile(capture.rows, "");
+    if (options.resumeExisting) await capture.restore();
+    else {
+      await writePrivateFile(capture.rows, "");
+      await capture.writeState();
+    }
     return capture;
   }
 
@@ -101,6 +108,7 @@ export class ModelInteractionCapture {
       },
     };
     await atomicWriteJSON(path.join(this.directory, "interaction.ref.json"), ref);
+    await this.writeState();
     return ref;
   }
 
@@ -138,7 +146,34 @@ export class ModelInteractionCapture {
       ...(exchange.error ? { error: { code: bounded(exchange.error.code, 256), message: bounded(this.redactText(exchange.error.message), 4_096) } } : {}),
     };
     await appendLine(this.rows, JSON.stringify(row));
+    await this.writeState();
     return row;
+  }
+
+  private async restore(): Promise<void> {
+    const rows = await readInteractionRows(this.rows, this.options.runId);
+    this.sequence = rows.length;
+    const state = await readJSON<Record<string, unknown> | null>(path.join(this.directory, "capture.state.json"), null);
+    if (!state) {
+      this.failed = rows.length > 0;
+      await this.writeState();
+      return;
+    }
+    const parsed = parseCaptureState(state);
+    for (const [rule, count] of parsed.redactions) this.redactions.set(rule, count);
+    this.failed = parsed.failed || parsed.sequence !== rows.length;
+    await this.writeState();
+  }
+
+  private writeState(): Promise<void> {
+    return atomicWriteJSON(path.join(this.directory, "capture.state.json"), {
+      schema_version: "1",
+      sequence: this.sequence,
+      failed: this.failed,
+      redactions: [...this.redactions].sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right)))
+        .map(([rule_id, count]) => ({ rule_id, count })),
+      updated_at: new Date().toISOString(),
+    });
   }
 
   private redact(value: unknown, key?: string): unknown {
@@ -170,6 +205,41 @@ export class ModelInteractionCapture {
   private increment(rule: string, count = 1): void {
     this.redactions.set(rule, (this.redactions.get(rule) ?? 0) + count);
   }
+}
+
+async function readInteractionRows(file: string, runId: string): Promise<ModelInteractionV1[]> {
+  let contents: string;
+  try { contents = await readFile(file, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      await writePrivateFile(file, "");
+      return [];
+    }
+    throw error;
+  }
+  const lines = contents.split(/\r?\n/).filter(Boolean);
+  const rows = lines.map((line) => parseModelInteraction(JSON.parse(line) as unknown));
+  if (rows.some((row, index) => row.run_id !== runId || row.sequence !== index + 1)) {
+    throw new TypeError("persisted model interaction sequence is invalid");
+  }
+  return rows;
+}
+
+function parseCaptureState(value: Record<string, unknown>): { sequence: number; failed: boolean; redactions: Array<[string, number]> } {
+  if (Object.keys(value).some((key) => !new Set(["schema_version", "sequence", "failed", "redactions", "updated_at"]).has(key))
+    || value.schema_version !== "1" || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0
+    || typeof value.failed !== "boolean" || !Array.isArray(value.redactions)
+    || typeof value.updated_at !== "string" || !Number.isFinite(Date.parse(value.updated_at))) {
+    throw new TypeError("model interaction capture state is invalid");
+  }
+  const redactions = value.redactions.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new TypeError("model interaction capture redaction state is invalid");
+    const record = entry as Record<string, unknown>;
+    if (Object.keys(record).some((key) => key !== "rule_id" && key !== "count") || typeof record.rule_id !== "string" || !record.rule_id
+      || !Number.isSafeInteger(record.count) || (record.count as number) < 1) throw new TypeError("model interaction capture redaction state is invalid");
+    return [record.rule_id, record.count] as [string, number];
+  });
+  return { sequence: value.sequence as number, failed: value.failed, redactions };
 }
 
 export function endpointIdentity(value: string): Sha256 {
