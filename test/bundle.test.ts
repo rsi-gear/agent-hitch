@@ -21,6 +21,11 @@ test("result bundle index seals every run file and detects later mutation", asyn
     reservation: { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 },
     observed: { sample_count: 2, containers: [] },
   });
+  const runtimeId = `sha256:${"c".repeat(64)}` as const;
+  await atomicWriteJSON(path.join(directory, "runtime.ref.json"), {
+    schema_version: "1", storage: "controller-runtime-ref-v1", runtime_id: runtimeId,
+    manifest_digest: `sha256:${"d".repeat(64)}`, created_at: new Date().toISOString(),
+  });
   await atomicWriteJSON(path.join(directory, "manifest.json"), {
     schema_version: "1",
     run_id: runId,
@@ -47,10 +52,16 @@ test("result bundle index seals every run file and detects later mutation", asyn
     requested: { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 },
     observed: { sample_count: 2, container_count: 0, oom_killed_containers: 0 },
   });
+  assert.deepEqual(index.capture, {
+    mode: "off", required: false, completeness: "none", interaction_count: 0,
+    redaction: { policy: "hitch-provider-redaction-v1", status: "not-needed", rules: [] },
+  });
+  assert.equal(index.provenance.controller_runtime_id, runtimeId);
   assert.deepEqual(await verifyResultBundleIndex(directory), index);
   const legacy = { ...index } as Record<string, unknown>;
   delete legacy.environment;
   delete legacy.resources;
+  delete legacy.capture;
   legacy.bundle_digest = sha256JSON({
     schema_version: index.schema_version, run_id: index.run_id, sealed: index.sealed,
     context_identity: index.context_identity, files: index.files, provenance: index.provenance,

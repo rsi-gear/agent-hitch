@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/model-interaction.schema.json",
+  "title": "Hitch model interaction V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "interaction_id", "run_id", "sequence", "requested_model", "endpoint_identity", "started_at", "status"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "interaction_id": { "type": "string", "pattern": "^interaction_[a-f0-9]{32}$" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "eval_id": { "type": "string", "minLength": 1 },
+    "trial_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "requested_model": { "type": "string" },
+    "effective_model": { "type": "string", "minLength": 1 },
+    "endpoint_identity": { "$ref": "#/$defs/sha256" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "latency_ms": { "type": "integer", "minimum": 0 },
+    "status": { "enum": ["succeeded", "failed", "cancelled"] },
+    "http_status": { "type": "integer", "minimum": 100, "maximum": 599 },
+    "retry_of": { "type": "string", "pattern": "^interaction_[a-f0-9]{32}$" },
+    "usage": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0 } },
+    "request_ref": { "$ref": "#/$defs/relativePath" },
+    "response_ref": { "$ref": "#/$defs/relativePath" },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "relativePath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
+  }
+}

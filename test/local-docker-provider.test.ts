@@ -74,7 +74,10 @@ test("local Docker provider records process identity and classifies recovery wit
   assert.equal((await provider.plan({
     work,
     platform: `${process.platform}-${process.arch}`,
-    adapter_requirements: { harness_id: "pi", needs_docker: true, needs_model_proxy: false },
+    adapter_requirements: {
+      harness_id: "pi", needs_docker: true, needs_model_proxy: false, network: "required", credential_names: [],
+      endpoint_override: "unknown", capture: { native_events: true, native_session: true, model_proxy_compatible: false },
+    },
   })).supported, true);
 
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {

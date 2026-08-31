@@ -4,7 +4,7 @@ import type { ResolvedRevision } from "../artifacts/index.js";
 import { readHarborRawResult } from "../backends/index.js";
 import type { EvalExecutionPlanV1, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, readJSON } from "../foundation/index.js";
-import { summarizeTrialRefs } from "./service.js";
+import { summarizeTrialRefs } from "./result-helpers.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { evalRerunSemantics } from "./rerun-types.js";

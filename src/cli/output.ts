@@ -85,6 +85,7 @@ Usage:
   hitch runs list [filters] [--json]
   hitch runs inspect <run-id> [--json]
   hitch runs rebuild-index [--json]
+  hitch runs candidate <run-id> [--context-license allowed|denied|unknown] [--capture-required] [--json]
   hitch compare model|harness [filters] [--reference-run <run-id>] [--json]
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]

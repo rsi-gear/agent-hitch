@@ -27,7 +27,7 @@ import {
   validateProgressPlan,
 } from "./rerun-slots.js";
 import type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
-import { summarizeTrialRefs } from "./service.js";
+import { summarizeTrialRefs } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { collectOnlyEvalRerun } from "./collect-only-rerun.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";

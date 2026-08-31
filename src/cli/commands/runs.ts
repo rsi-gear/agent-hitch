@@ -1,7 +1,7 @@
 import path from "node:path";
-import { loadRunRecord, queryRuns, rebuildRunIndexes } from "../../runs/index.js";
+import { deriveTrainingDataCandidate, loadRunRecord, queryRuns, rebuildRunIndexes } from "../../runs/index.js";
 import { SCHEMA_VERSION, invalidInput, statePaths } from "../../foundation/index.js";
-import { assertNoArgs, takeFlag } from "../arguments.js";
+import { assertNoArgs, takeFlag, takeOption } from "../arguments.js";
 import { takeRunQuery } from "./compare.js";
 
 export async function runsCommand(args: string[], root: string): Promise<void> {
@@ -33,5 +33,23 @@ export async function runsCommand(args: string[], root: string): Promise<void> {
     else process.stdout.write(`Indexed ${index.runs.length} runs\n`);
     return;
   }
-  throw invalidInput("runs requires list, inspect, or rebuild-index");
+  if (action === "candidate") {
+    const json = takeFlag(args, "--json");
+    const captureRequired = takeFlag(args, "--capture-required");
+    const contextLicense = takeOption(args, "--context-license") ?? "unknown";
+    const redactionPolicy = takeOption(args, "--redaction-policy") ?? "hitch-provider-redaction-v1";
+    const runId = args.shift();
+    if (!runId || !/^run_[a-f0-9]{32}$/.test(runId)) throw invalidInput("runs candidate requires a valid run ID");
+    if (!new Set(["allowed", "denied", "unknown"]).has(contextLicense)) throw invalidInput("--context-license must be allowed, denied, or unknown");
+    assertNoArgs(args);
+    const derived = await deriveTrainingDataCandidate({
+      root,
+      runId,
+      policy: { contextLicense: contextLicense as "allowed" | "denied" | "unknown", captureRequired, redactionPolicy },
+    });
+    if (json) process.stdout.write(`${JSON.stringify(derived, null, 2)}\n`);
+    else process.stdout.write(`${derived.candidate.candidate_id}  ${derived.candidate.eligibility}  ${derived.path}\n`);
+    return;
+  }
+  throw invalidInput("runs requires list, inspect, rebuild-index, or candidate");
 }

@@ -347,6 +347,10 @@ domain
     build-records/
       sha256/<64-hex>/record.json
 
+  derived/
+    training-data-candidates/
+      sha256/<64-hex>.json
+
   locks/
     builds/<64-hex>.lock
     trial-slots/<64-hex>.lock
@@ -661,6 +665,17 @@ interface ResultBundleIndexV1 {
     observed?: Record<string, number>
   }
   interaction_ref?: string
+  capture?: {
+    mode: 'off' | 'native' | 'proxy' | 'hybrid'
+    required: boolean
+    completeness: 'complete' | 'partial' | 'none'
+    interaction_count: number
+    redaction: {
+      policy: string
+      status: 'applied' | 'not-needed' | 'failed'
+      rules: Array<{ rule_id: string; count: number }>
+    }
+  }
   provenance: {
     harness_revision: `sha256:${string}`
     artifact_id?: `sha256:${string}`
@@ -674,7 +689,7 @@ interface ResultBundleIndexV1 {
 }
 ```
 
-新写入的 bundle index 从 `environment/image.manifest.json` 和 `execution.json` 生成 `environment`、`resources` 摘要并纳入 `bundle_digest`；旧 V1 index 缺少这两个 additive 字段时仍可读取和按其原始 identity 校验。
+新写入的 bundle index 从 `environment/image.manifest.json`、`execution.json`、trajectory ref 和 interaction ref 生成 `environment`、`resources`、`capture` 摘要并纳入 `bundle_digest`；旧 V1 index 缺少这些 additive 字段时仍可读取和按其原始 identity 校验。
 
 `bundle.index.json` 是对现有 run 目录的新增索引，不替换 `manifest.json`、`result.json` 或 `trajectory.ref.json`。旧 reader 可以忽略它，新 reader 必须验证所有文件路径不逃逸 run 目录、文件类型为 regular file、大小和摘要匹配。
 
@@ -804,6 +819,8 @@ Planner 输出 immutable `execution-plan.json`，至少包含：
 - capture policy；
 - retry policy；
 - planner 和 schema 版本。
+
+`capture policy` 在计划中保存 `requested_mode`、`effective_mode`、`required`，代理模式还保存 `topology`；发生可接受降级时必须额外保存 `degraded_reason`。恢复执行使用已封存的生效计划，不得把不支持的 resume/replay 或 capture 模式静默改写成新的 Candidate execution。
 
 ### 10.2 已知 task membership
 
@@ -1463,6 +1480,7 @@ interface TrainingDataCandidateV1 {
 - infrastructure diagnostic run 永远 `ineligible`。
 
 Training-data Candidate 是派生记录，不写回或修改 source bundle。
+导出器先完整验证 source bundle、RunRecord、trajectory 和 Verifier evidence，再把记录按 `candidate_id` 写入 `derived/training-data-candidates/sha256/<64-hex>.json`。同一 identity 重复导出必须幂等，已有 identity 不得重绑定到另一内容；CLI 入口为 `hitch runs candidate <run-id>`，许可、required capture 和 redaction policy 都必须作为显式 policy 输入参与 candidate/provenance identity。
 
 ## 18. 状态机、取消与恢复
 

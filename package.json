@@ -29,6 +29,7 @@
     "./evals": "./dist/src/evals/index.js",
     "./feedback": "./dist/src/feedback/index.js",
     "./images": "./dist/src/images/index.js",
+    "./model-access": "./dist/src/model-access/index.js",
     "./foundation": "./dist/src/foundation/index.js",
     "./revisions": "./dist/src/revisions/index.js",
     "./runs": "./dist/src/runs/index.js",

@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalId, EvalRequest, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
 import type { EvalRequestInput } from "./request.js";
@@ -26,6 +26,7 @@ export interface RunEvalOptions {
   executionResourceSource?: "submission-default" | "operator-default";
   executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
   executionWorker?: ExecutionWorkerIdentity;
+  modelCapturePlan?: ModelCapturePlanV1;
   workItemAdmission?: WorkItemAdmissionController;
   resumeExisting?: boolean;
   onControlPhase?: (phase: EvalExecutionPhase, work?: EvalWorkStateSnapshot) => Promise<void>;

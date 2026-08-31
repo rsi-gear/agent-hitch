@@ -34,6 +34,19 @@ export interface ExecutionProviderStatusV1 {
   heartbeat_at: string;
 }
 
+export interface AdapterRuntimeRequirementsV1 {
+  platforms?: string[];
+  node_range?: string;
+  network: "required" | "optional" | "forbidden";
+  credential_names: string[];
+  endpoint_override: "supported" | "unsupported" | "unknown";
+  capture: {
+    native_events: boolean;
+    native_session: boolean;
+    model_proxy_compatible: boolean;
+  };
+}
+
 export interface ProviderPlanInputV1 {
   work: BackendWorkItemV1;
   platform: string;
@@ -41,7 +54,7 @@ export interface ProviderPlanInputV1 {
     harness_id: string;
     needs_docker: boolean;
     needs_model_proxy: boolean;
-  };
+  } & AdapterRuntimeRequirementsV1;
 }
 
 export interface ProviderPlanResultV1 {

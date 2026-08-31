@@ -65,12 +65,46 @@
         }
       }
     },
+    "interaction_ref": { "$ref": "#/$defs/relativePath" },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "required", "completeness", "interaction_count", "redaction"],
+      "properties": {
+        "mode": { "enum": ["off", "native", "proxy", "hybrid"] },
+        "required": { "type": "boolean" },
+        "completeness": { "enum": ["complete", "partial", "none"] },
+        "interaction_count": { "type": "integer", "minimum": 0 },
+        "redaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy", "status", "rules"],
+          "properties": {
+            "policy": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "status": { "enum": ["applied", "not-needed", "failed"] },
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["rule_id", "count"],
+                "properties": {
+                  "rule_id": { "type": "string", "minLength": 1 },
+                  "count": { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "harness_revision": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
         "artifact_id": { "$ref": "#/$defs/sha256" },
+        "controller_runtime_id": { "$ref": "#/$defs/sha256" },
         "benchmark_id": { "type": "string" },
         "benchmark_revision": { "type": "string" },
         "verifier_identity": { "$ref": "#/$defs/sha256" }

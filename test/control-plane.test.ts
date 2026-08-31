@@ -147,6 +147,7 @@ test("eval submission execution policy is pinned and drives admission", async (t
   assert.deepEqual(observed?.executionResources, custom);
   assert.equal(observed?.executionResourceSource, "submission-default");
   assert.equal(observed?.executionWorker?.provider, "local-docker");
+  assert.deepEqual(observed?.modelCapturePlan, { requested_mode: "native", effective_mode: "native", required: false });
   assert.equal(typeof observed?.environmentImageManifestLoader, "function");
   const submission = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "submission.json"));
   assert.deepEqual(submission.execution, execution);
@@ -162,6 +163,44 @@ test("eval submission execution policy is pinned and drives admission", async (t
   await assert.rejects(
     scheduler.submit({ request: request(1), execution: { ...execution, provider: "remote", max_parallelism: 1 } }),
     (error: unknown) => (error as { code?: string }).code === "execution_provider_unavailable",
+  );
+});
+
+test("eval admission distinguishes optional model-capture degradation from required failure", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-capture-policy-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let observed: RunEvalOptions | undefined;
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 4, build_slots: 1 }),
+    trialResources: TRIAL,
+    executor: async (options) => { observed = options; return fakeEvalExecutor(1)(options); },
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  const baseExecution = {
+    provider: "local-docker",
+    max_parallelism: 1,
+    resources: { default_trial: TRIAL },
+    build: { mode: "backend" as const },
+  };
+  const evalId = await scheduler.submit({
+    request: { ...request(1), harness_ref: "codex@version:1.2.3" },
+    execution: { ...baseExecution, model_capture: { mode: "proxy" as const, required: false } },
+  });
+  await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null));
+  assert.deepEqual(observed?.modelCapturePlan, {
+    requested_mode: "proxy",
+    effective_mode: "native",
+    required: false,
+    degraded_reason: "provider-model-proxy-unavailable",
+  });
+  await assert.rejects(
+    scheduler.submit({
+      request: { ...request(1), harness_ref: "codex@version:1.2.3" },
+      execution: { ...baseExecution, model_capture: { mode: "proxy", required: true } },
+    }),
+    (error: unknown) => (error as { code?: string }).code === "model_capture_unsupported",
   );
 });
 

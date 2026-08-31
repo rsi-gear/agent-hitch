@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, ResourceVectorV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
 import { parseTaskResourceRequirements, reservationForTasks } from "./execution-plan-resources.js";
 
@@ -23,6 +23,7 @@ export interface BuildEvalExecutionPlanOptions {
   environmentImages?: readonly EnvironmentImageUseV1[];
   environmentImageFallbacks?: readonly EnvironmentImageFallbackV1[];
   provider?: string;
+  modelCapture?: ModelCapturePlanV1 | null;
   createdAt?: string;
   workItemMode?: "attempt-shards" | "task-slots";
 }
@@ -37,6 +38,11 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
   }
   const provider = options.provider || "local-docker";
   if (!provider) throw new TypeError("execution plan provider is invalid");
+  const modelCapture = options.modelCapture === null ? undefined : parseModelCapturePlan(options.modelCapture ?? {
+    requested_mode: "native",
+    effective_mode: "native",
+    required: false,
+  });
   const tasks = options.tasks === null ? null : canonicalTasks(options.tasks);
   const taskResources = tasks === null ? undefined : parseTaskResourceRequirements(options.taskResources, tasks);
   const environmentImages = tasks === null ? [] : parseEnvironmentImageUses(options.environmentImages ?? [], tasks, "execution plan environment images");
@@ -74,6 +80,7 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
       }),
     },
     provider,
+    ...(modelCapture ? { model_capture: modelCapture } : {}),
     max_parallelism: options.maxParallelism,
     default_trial_resources: resources,
     ...(taskResources ? { task_resources: taskResources } : {}),
@@ -94,7 +101,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
   if (!isRecord(value)) throw new TypeError("eval execution plan must be an object");
   const plan = value;
   assertOnlyKeys(plan, [
-    "schema_version", "planner", "eval_id", "membership", "candidate_identity", "benchmark", "provider",
+    "schema_version", "planner", "eval_id", "membership", "candidate_identity", "benchmark", "provider", "model_capture",
     "max_parallelism", "default_trial_resources", "task_resources", "image_fallbacks", "slots", "work_items", "retry_policy", "created_at",
   ], "eval execution plan");
   if (plan.schema_version !== "1" || plan.planner !== "hitch-local-v1" || !isEvalId(plan.eval_id)
@@ -105,6 +112,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
     throw new TypeError("eval execution plan identity is invalid");
   }
   const benchmark = parseBenchmark(plan.benchmark);
+  const modelCapture = plan.model_capture === undefined ? undefined : parseModelCapturePlan(plan.model_capture);
   const resources = parseResourceVector(plan.default_trial_resources, "execution plan default trial resources");
   if (!Array.isArray(plan.slots) || !Array.isArray(plan.work_items)) throw new TypeError("eval execution plan work graph is invalid");
   const slots = plan.slots.map((slot, index) => parseSlot(slot, plan.eval_id as string, plan.candidate_identity as Sha256, index));
@@ -128,6 +136,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
     candidate_identity: plan.candidate_identity as Sha256,
     benchmark,
     provider: plan.provider,
+    ...(modelCapture ? { model_capture: modelCapture } : {}),
     max_parallelism: plan.max_parallelism as number,
     default_trial_resources: resources,
     ...(taskResources ? { task_resources: taskResources } : {}),
@@ -136,6 +145,34 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
     work_items: workItems,
     retry_policy: retry,
     created_at: plan.created_at,
+  };
+}
+
+function parseModelCapturePlan(value: unknown): ModelCapturePlanV1 {
+  if (!isRecord(value)) throw new TypeError("execution plan model capture must be an object");
+  assertOnlyKeys(value, ["requested_mode", "effective_mode", "required", "topology", "degraded_reason"], "execution plan model capture");
+  const modes = new Set(["off", "native", "proxy", "hybrid"]);
+  if (!modes.has(value.requested_mode as string) || !modes.has(value.effective_mode as string)
+    || typeof value.required !== "boolean"
+    || value.topology !== undefined && value.topology !== "host-side" && value.topology !== "in-sandbox"
+    || value.degraded_reason !== undefined && (typeof value.degraded_reason !== "string" || !value.degraded_reason)) {
+    throw new TypeError("execution plan model capture is invalid");
+  }
+  if ((value.effective_mode === "proxy" || value.effective_mode === "hybrid") !== (value.topology !== undefined)) {
+    throw new TypeError("execution plan model capture topology is invalid");
+  }
+  if ((value.requested_mode !== value.effective_mode) !== (value.degraded_reason !== undefined)) {
+    throw new TypeError("execution plan model capture degradation evidence is invalid");
+  }
+  if (value.required === true && value.requested_mode !== value.effective_mode) {
+    throw new TypeError("required model capture cannot be degraded");
+  }
+  return {
+    requested_mode: value.requested_mode as ModelCapturePlanV1["requested_mode"],
+    effective_mode: value.effective_mode as ModelCapturePlanV1["effective_mode"],
+    required: value.required,
+    ...(value.topology === undefined ? {} : { topology: value.topology }),
+    ...(value.degraded_reason === undefined ? {} : { degraded_reason: value.degraded_reason }),
   };
 }
 

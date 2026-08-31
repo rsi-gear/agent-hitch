@@ -89,9 +89,6 @@ export function assertExecutionPolicySupported(policy: EvalExecutionPolicyV1, pr
   if (policy.provider !== provider) throw new HitchError(`execution provider is unavailable: ${policy.provider}`, { code: "execution_provider_unavailable", exitCode: 10 });
   if (policy.resources.setup) throw new HitchError("setup resource reservations are not supported by the local provider yet", { code: "execution_setup_resources_unsupported", exitCode: 10 });
   if (policy.build.remote_cache) throw new HitchError("remote build cache is not supported by the local image service yet", { code: "build_remote_cache_unsupported", exitCode: 10 });
-  if (policy.model_capture.mode === "proxy" || policy.model_capture.mode === "hybrid") {
-    throw new HitchError(`${policy.model_capture.mode} model capture is unavailable`, { code: "model_capture_unsupported", exitCode: 10 });
-  }
   if (policy.model_capture.mode === "off" && policy.model_capture.required) throw invalidSubmission("off model capture cannot be required");
 }
 

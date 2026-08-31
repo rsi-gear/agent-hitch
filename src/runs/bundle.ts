@@ -4,6 +4,7 @@ import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { ResultBundleFileRoleV1, ResultBundleFileV1, ResultBundleIndexV1, Sha256 } from "../domain/index.js";
 import { atomicWriteJSON, readJSON, sha256JSON } from "../foundation/index.js";
+import { loadInteractionCapture } from "../model-access/index.js";
 
 const BUNDLE_INDEX = "bundle.index.json";
 
@@ -20,7 +21,7 @@ export async function writeResultBundleIndex(runDirectory: string): Promise<Resu
     protocol: manifest.protocol,
     observation: manifest.observation,
   });
-  const provenance = bundleProvenance(manifest);
+  const provenance = await bundleProvenance(runDirectory, manifest);
   const summaries = await bundleSummaries(runDirectory);
   const identity = {
     schema_version: "1" as const,
@@ -58,9 +59,13 @@ export async function verifyResultBundleIndex(runDirectory: string): Promise<Res
   if (contextIdentity !== index.context_identity) throw new TypeError("result bundle context identity does not match");
   const summaries = await bundleSummaries(runDirectory);
   if (index.environment !== undefined && JSON.stringify(index.environment) !== JSON.stringify(summaries.environment)
-    || index.resources !== undefined && JSON.stringify(index.resources) !== JSON.stringify(summaries.resources)) {
+    || index.resources !== undefined && JSON.stringify(index.resources) !== JSON.stringify(summaries.resources)
+    || index.interaction_ref !== undefined && index.interaction_ref !== summaries.interaction_ref
+    || index.capture !== undefined && JSON.stringify(index.capture) !== JSON.stringify(summaries.capture)) {
     throw new TypeError("result bundle execution summary does not match");
   }
+  const provenance = await bundleProvenance(runDirectory, manifest);
+  if (JSON.stringify(index.provenance) !== JSON.stringify(provenance)) throw new TypeError("result bundle provenance does not match");
   const digest = sha256JSON({
     schema_version: index.schema_version,
     run_id: index.run_id,
@@ -69,6 +74,8 @@ export async function verifyResultBundleIndex(runDirectory: string): Promise<Res
     files: index.files,
     ...(index.environment ? { environment: index.environment } : {}),
     ...(index.resources ? { resources: index.resources } : {}),
+    ...(index.interaction_ref ? { interaction_ref: index.interaction_ref } : {}),
+    ...(index.capture ? { capture: index.capture } : {}),
     provenance: index.provenance,
   });
   if (digest !== index.bundle_digest) throw new TypeError("result bundle digest does not match");
@@ -92,6 +99,8 @@ export function parseResultBundleIndex(value: unknown): ResultBundleIndexV1 {
   const provenance = parseProvenance(record.provenance);
   const environment = record.environment === undefined ? undefined : parseBundleEnvironment(record.environment);
   const resources = record.resources === undefined ? undefined : parseBundleResources(record.resources);
+  const interactionRef = record.interaction_ref === undefined ? undefined : relativeRef(record.interaction_ref, "result bundle interaction ref");
+  const capture = record.capture === undefined ? undefined : parseBundleCapture(record.capture);
   return {
     schema_version: "1",
     run_id: runId,
@@ -100,18 +109,25 @@ export function parseResultBundleIndex(value: unknown): ResultBundleIndexV1 {
     files,
     ...(environment ? { environment } : {}),
     ...(resources ? { resources } : {}),
+    ...(interactionRef ? { interaction_ref: interactionRef } : {}),
+    ...(capture ? { capture } : {}),
     provenance,
     bundle_digest: record.bundle_digest as Sha256,
     created_at: record.created_at,
   };
 }
 
-async function bundleSummaries(root: string): Promise<Pick<ResultBundleIndexV1, "environment" | "resources">> {
+async function bundleSummaries(root: string): Promise<Pick<ResultBundleIndexV1, "environment" | "resources" | "interaction_ref" | "capture">> {
   const execution = await readJSON<Record<string, unknown> | null>(path.join(root, "execution.json"), null);
   const imageEvidence = await readJSON<Record<string, unknown> | null>(path.join(root, "environment", "image.manifest.json"), null);
+  const capture = await captureSummary(root);
+  const interactionRef = await readJSON<unknown | null>(path.join(root, "interactions", "interaction.ref.json"), null) === null
+    ? undefined
+    : "interactions/interaction.ref.json";
   const resources = execution ? resourcesFromExecution(execution) : undefined;
-  if (!imageEvidence) return { ...(resources ? { resources } : {}) };
-  if (!execution) return {};
+  const captureFields = { ...(interactionRef ? { interaction_ref: interactionRef } : {}), capture };
+  if (!imageEvidence) return { ...(resources ? { resources } : {}), ...captureFields };
+  if (!execution) return captureFields;
   if (typeof execution.provider !== "string" || !execution.provider) throw new TypeError("result bundle environment has no provider evidence");
   if (imageEvidence.schema_version !== "1" || !Array.isArray(imageEvidence.manifests)) throw new TypeError("result bundle environment image evidence is invalid");
   const images = imageEvidence.manifests.map((value, index) => {
@@ -129,7 +145,75 @@ async function bundleSummaries(root: string): Promise<Pick<ResultBundleIndexV1, 
     ...(typeof execution.worker_id === "string" && execution.worker_id ? { worker_id: execution.worker_id } : {}),
     ...(typeof execution.lease_id === "string" && /^lease_[a-f0-9]{32}$/.test(execution.lease_id) ? { lease_id: execution.lease_id } : {}),
   };
-  return { environment, ...(resources ? { resources } : {}) };
+  return { environment, ...(resources ? { resources } : {}), ...captureFields };
+}
+
+async function captureSummary(root: string): Promise<NonNullable<ResultBundleIndexV1["capture"]>> {
+  const trajectory = await readJSON<Record<string, unknown> | null>(path.join(root, "trajectory.ref.json"), null);
+  const interaction = await readJSON<Record<string, unknown> | null>(path.join(root, "interactions", "interaction.ref.json"), null);
+  const rules = redactionRules(trajectory?.redactions);
+  if (!interaction) return {
+    mode: trajectory ? "native" : "off",
+    required: false,
+    completeness: trajectory ? "complete" : "none",
+    interaction_count: 0,
+    redaction: { policy: "hitch-provider-redaction-v1", status: rules.length > 0 ? "applied" : "not-needed", rules },
+  };
+  const parsed = (await loadInteractionCapture(root)).ref;
+  return {
+    mode: parsed.mode,
+    required: parsed.required,
+    completeness: parsed.completeness,
+    interaction_count: parsed.interaction_count,
+    redaction: {
+      policy: parsed.redaction.policy,
+      status: parsed.redaction.status,
+      rules: canonicalRules([...rules, ...parsed.redaction.rules]),
+    },
+  };
+}
+
+function parseBundleCapture(value: unknown): NonNullable<ResultBundleIndexV1["capture"]> {
+  const record = asRecord(value);
+  if (!new Set(["off", "native", "proxy", "hybrid"]).has(String(record.mode)) || typeof record.required !== "boolean"
+    || !new Set(["complete", "partial", "none"]).has(String(record.completeness))
+    || !Number.isSafeInteger(record.interaction_count) || (record.interaction_count as number) < 0) throw new TypeError("result bundle capture summary is invalid");
+  const redaction = asRecord(record.redaction);
+  if (typeof redaction.policy !== "string" || !redaction.policy || !new Set(["applied", "not-needed", "failed"]).has(String(redaction.status))) {
+    throw new TypeError("result bundle redaction summary is invalid");
+  }
+  return {
+    mode: record.mode as NonNullable<ResultBundleIndexV1["capture"]>["mode"],
+    required: record.required,
+    completeness: record.completeness as NonNullable<ResultBundleIndexV1["capture"]>["completeness"],
+    interaction_count: record.interaction_count as number,
+    redaction: {
+      policy: redaction.policy,
+      status: redaction.status as NonNullable<ResultBundleIndexV1["capture"]>["redaction"]["status"],
+      rules: redactionRules(redaction.rules),
+    },
+  };
+}
+
+function redactionRules(value: unknown): Array<{ rule_id: string; count: number }> {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new TypeError("capture redaction rules are invalid");
+  const rules = value.map((entry) => {
+    const record = asRecord(entry);
+    if (typeof record.rule_id !== "string" || !record.rule_id || !Number.isSafeInteger(record.count) || (record.count as number) < 1) {
+      throw new TypeError("capture redaction rule is invalid");
+    }
+    return { rule_id: record.rule_id, count: record.count as number };
+  });
+  const canonical = canonicalRules(rules);
+  if (JSON.stringify(canonical) !== JSON.stringify(rules)) throw new TypeError("capture redaction rules are not canonical");
+  return rules;
+}
+
+function canonicalRules(rules: Array<{ rule_id: string; count: number }>): Array<{ rule_id: string; count: number }> {
+  const totals = new Map<string, number>();
+  for (const rule of rules) totals.set(rule.rule_id, (totals.get(rule.rule_id) ?? 0) + rule.count);
+  return [...totals].sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right))).map(([rule_id, count]) => ({ rule_id, count }));
 }
 
 function resourcesFromExecution(execution: Record<string, unknown>): ResultBundleIndexV1["resources"] {
@@ -240,12 +324,14 @@ function parseBundleFile(value: unknown, index: number): ResultBundleFileV1 {
   return { role: file.role as ResultBundleFileRoleV1, path: file.path, size: file.size as number, sha256: file.sha256 as Sha256 };
 }
 
-function bundleProvenance(manifest: Record<string, unknown>): ResultBundleIndexV1["provenance"] {
+async function bundleProvenance(root: string, manifest: Record<string, unknown>): Promise<ResultBundleIndexV1["provenance"]> {
   const harness = asRecord(manifest.harness);
   const context = asRecord(manifest.context);
+  const runtime = await readJSON<Record<string, unknown> | null>(path.join(root, "runtime.ref.json"), null);
   return {
     ...(isSha256(harness.revision_identity) || harness.revision_identity === null ? { harness_revision: harness.revision_identity as Sha256 | null } : {}),
     ...(isSha256(harness.artifact_id) ? { artifact_id: harness.artifact_id as Sha256 } : {}),
+    ...(isSha256(runtime?.runtime_id) ? { controller_runtime_id: runtime.runtime_id as Sha256 } : {}),
     ...(typeof context.benchmark_id === "string" ? { benchmark_id: context.benchmark_id } : {}),
     ...(typeof context.benchmark_revision === "string" ? { benchmark_revision: context.benchmark_revision } : {}),
     ...(isSha256(context.verifier_identity) ? { verifier_identity: context.verifier_identity as Sha256 } : {}),
@@ -256,10 +342,16 @@ function parseProvenance(value: unknown): ResultBundleIndexV1["provenance"] {
   const record = asRecord(value);
   if (record.harness_revision !== undefined && record.harness_revision !== null && !isSha256(record.harness_revision)) throw new TypeError("result bundle harness revision is invalid");
   if (record.artifact_id !== undefined && !isSha256(record.artifact_id)) throw new TypeError("result bundle artifact id is invalid");
+  if (record.controller_runtime_id !== undefined && !isSha256(record.controller_runtime_id)) throw new TypeError("result bundle controller runtime id is invalid");
   if (record.verifier_identity !== undefined && !isSha256(record.verifier_identity)) throw new TypeError("result bundle verifier identity is invalid");
   if (record.benchmark_id !== undefined && typeof record.benchmark_id !== "string") throw new TypeError("result bundle benchmark id is invalid");
   if (record.benchmark_revision !== undefined && typeof record.benchmark_revision !== "string") throw new TypeError("result bundle benchmark revision is invalid");
   return record as ResultBundleIndexV1["provenance"];
+}
+
+function relativeRef(value: unknown, label: string): string {
+  if (typeof value !== "string" || !validRelativePath(value)) throw new TypeError(`${label} is invalid`);
+  return value;
 }
 
 function requiredRunId(value: unknown): string {

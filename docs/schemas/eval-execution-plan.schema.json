@@ -25,6 +25,7 @@
       }
     },
     "provider": { "type": "string", "minLength": 1 },
+    "model_capture": { "$ref": "#/$defs/modelCapture" },
     "max_parallelism": { "type": "integer", "minimum": 1 },
     "default_trial_resources": { "$ref": "#/$defs/resources" },
     "task_resources": {
@@ -100,6 +101,18 @@
   "$defs": {
     "evalId": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
     "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "modelCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_mode", "effective_mode", "required"],
+      "properties": {
+        "requested_mode": { "enum": ["off", "native", "proxy", "hybrid"] },
+        "effective_mode": { "enum": ["off", "native", "proxy", "hybrid"] },
+        "required": { "type": "boolean" },
+        "topology": { "enum": ["host-side", "in-sandbox"] },
+        "degraded_reason": { "type": "string", "minLength": 1 }
+      }
+    },
     "resources": {
       "type": "object",
       "additionalProperties": false,

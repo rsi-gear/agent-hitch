@@ -1,6 +1,7 @@
 import type { Sha256 } from "./ids.js";
 import type { ResourceVectorV1 } from "./resources.js";
 import type { EnvironmentImageFallbackV1, EnvironmentImageUseV1 } from "./images.js";
+import type { ModelCapturePlanV1 } from "./interactions.js";
 
 export type TrialSlotStateV1 =
   | "pending"
@@ -94,6 +95,7 @@ export interface EvalExecutionPlanV1 {
     verifier_identity: Sha256;
   };
   provider: string;
+  model_capture?: ModelCapturePlanV1;
   max_parallelism: number;
   default_trial_resources: ResourceVectorV1;
   task_resources?: TaskResourceRequirementV1[];

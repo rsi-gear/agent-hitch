@@ -36,6 +36,7 @@ test("package exports contain only module facades", () => {
     "./evals",
     "./feedback",
     "./images",
+    "./model-access",
     "./foundation",
     "./revisions",
     "./runs",

@@ -22,7 +22,9 @@ import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure,
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader }: RunEvalOptions): Promise<EvalResult> {
+import { modelCaptureDegradationEvent, resolveEvalModelCapturePlan } from "./model-capture-plan.js";
+import { finalizeEvalResult } from "./eval-finalization.js";
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -125,6 +127,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     const plannedTrials = plannedTasks === null ? null : plannedTasks * normalized.attempts;
     if (plannedTrials !== null && !Number.isSafeInteger(plannedTrials)) throw invalidInput("planned trial count exceeds the safe integer range");
     if (resume) startedAt = new Date(resume.progress.started_at);
+    const capture = resolveEvalModelCapturePlan({ requested: modelCapturePlan, resumed: resume?.executionPlan.model_capture, resuming: Boolean(resume) });
     const plan = {
       schema_version: SCHEMA_VERSION,
       eval_id: evalId,
@@ -145,6 +148,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ? "harbor-task-slots-v1"
         : "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
+      ...(capture.persist ? { model_capture: capture.plan } : {}),
       infrastructure_retries: normalized.infrastructure_retries,
       infrastructure_retry_backoff_ms: normalized.infrastructure_retry_backoff_ms,
       ...(localTaskIds === null ? {} : { tasks: localTaskIds }),
@@ -170,6 +174,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(localPlanning.environmentImages.length > 0 ? { environmentImages: localPlanning.environmentImages } : {}),
       ...(localPlanning.environmentImageFallbacks.length > 0 ? { environmentImageFallbacks: localPlanning.environmentImageFallbacks } : {}),
       ...(executionWorker ? { provider: executionWorker.provider } : {}),
+      modelCapture: capture.persist ? capture.plan : null,
       ...(executionStrategy === "local-task-slots-v1" && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
       createdAt: plan.created_at,
     });
@@ -180,6 +185,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), expectedExecutionPlan),
     ]);
     const executionPlan = resume?.executionPlan ?? expectedExecutionPlan;
+    const captureDegradation = modelCaptureDegradationEvent(executionPlan.model_capture); if (captureDegradation) sink.emit(captureDegradation);
     progress = resume?.progress ?? createEvalProgress({
       evalId,
       benchmarkId: normalized.benchmark_id,
@@ -490,10 +496,5 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       completed_at: new Date().toISOString(),
     };
   }
-  await atomicWriteJSON(path.join(evalDirectory, "result.json"), result);
-  sink.emit({ type: result.status === "succeeded" ? "eval.completed" : "eval.failed", status: result.status, exit_code: result.exit_code, error: result.error });
-  await sink.close();
-  return result;
+  return finalizeEvalResult(evalDirectory, sink, result);
 }
-
-export { summarizeTrialRefs } from "./result-helpers.js";

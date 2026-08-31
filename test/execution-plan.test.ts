@@ -57,6 +57,22 @@ test("execution plan conservatively represents opaque dataset membership", () =>
   assert.deepEqual(plan.work_items[0]?.reservation, { cpu_millis: 4_000, memory_bytes: 8_192, container_slots: 2, build_slots: 0 });
 });
 
+test("execution plan seals requested and effective model capture policy", () => {
+  const modelCapture = {
+    requested_mode: "hybrid" as const,
+    effective_mode: "native" as const,
+    required: false,
+    degraded_reason: "provider-model-proxy-unavailable",
+  };
+  const plan = buildEvalExecutionPlan({ ...input, tasks: ["one"], modelCapture });
+  assert.deepEqual(plan.model_capture, modelCapture);
+  assert.deepEqual(parseEvalExecutionPlan(plan), plan);
+  assert.throws(
+    () => parseEvalExecutionPlan({ ...plan, model_capture: { ...modelCapture, required: true } }),
+    /required model capture cannot be degraded/,
+  );
+});
+
 test("task-slot planning emits one schedulable work item per logical trial", () => {
   const plan = buildEvalExecutionPlan({ ...input, tasks: ["two", "one"], workItemMode: "task-slots" });
   assert.equal(plan.work_items.length, 4);

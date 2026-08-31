@@ -1,8 +1,8 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
-import { EvalEventSink, newEvalId, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
+import { EvalEventSink, newEvalId, parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
 import type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
@@ -16,11 +16,14 @@ import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker
 import { recoverPersistedEvals } from "./eval-recovery.js";
 import { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
 import { EvalImageServices } from "./eval-image-services.js";
+import { modelCapturePlanForEval } from "./model-capture-planning.js";
+import { writeSyntheticEvalResult } from "./synthetic-result.js";
 
 interface QueuedEval {
   evalId: EvalId;
   request: EvalRequest;
   execution: EvalExecutionPolicyV1;
+  modelCapturePlan?: ModelCapturePlanV1;
   directory: string;
   collisionKeys: string[];
   fineGrained: boolean;
@@ -129,6 +132,7 @@ export class EvalScheduler {
     if (!this.accepting) throw new HitchError("daemon is shutting down", { code: "daemon_shutting_down", exitCode: 12 });
     const normalized = await normalizeEvalSubmissionInput(input, { provider: this.provider, trialResources: this.trialResources });
     assertExecutionPolicySupported(normalized.execution, this.provider);
+    const modelCapturePlan = this.capturePlan(normalized.request, normalized.execution);
     const idempotencyKey = reconcileIdempotencyKeys(normalized.idempotencyKey, options.idempotencyKey);
     if (!this.resources.canEverFit(normalized.execution.resources.default_trial)) {
       throw new HitchError("one eval trial exceeds the daemon resource capacity", {
@@ -152,7 +156,7 @@ export class EvalScheduler {
           }
           return validateEvalId(existing.eval_id);
         }
-        const entry = await this.persistSubmission(normalized.request, normalized.execution, submissionDigest, keyHash);
+        const entry = await this.persistSubmission(normalized.request, normalized.execution, modelCapturePlan, submissionDigest, keyHash);
         try {
           await atomicWriteJSON(indexPath, { schema_version: "1", eval_id: entry.evalId, submission_digest: submissionDigest });
         } catch (error) {
@@ -162,10 +166,10 @@ export class EvalScheduler {
         return this.enqueue(entry);
       }, { timeoutCode: "idempotency_locked", timeoutExitCode: 12 });
     }
-    return this.enqueue(await this.persistSubmission(normalized.request, normalized.execution, submissionDigest));
+    return this.enqueue(await this.persistSubmission(normalized.request, normalized.execution, modelCapturePlan, submissionDigest));
   }
 
-  private async persistSubmission(normalized: EvalRequest, execution: EvalExecutionPolicyV1, submissionDigest: `sha256:${string}`, keyHash?: `sha256:${string}`): Promise<QueuedEval> {
+  private async persistSubmission(normalized: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1, submissionDigest: `sha256:${string}`, keyHash?: `sha256:${string}`): Promise<QueuedEval> {
     const evalId = newEvalId();
     const directory = path.join(this.evalsRoot, evalId);
     await mkdir(directory, { mode: 0o700 });
@@ -196,8 +200,8 @@ export class EvalScheduler {
       await atomicWriteJSON(path.join(directory, "request.json"), normalized);
       await atomicWriteJSON(path.join(directory, "submission.json"), submission);
       await atomicWriteJSON(path.join(directory, "control.json"), control);
-      await this.emitPersisted(directory, evalId, { type: "eval.queued", requested_parallelism: execution.max_parallelism });
-      return this.queuedEval(evalId, normalized, execution, directory);
+      await this.emitPersisted(directory, evalId, { type: "eval.queued", requested_parallelism: execution.max_parallelism, model_capture: modelCapturePlan });
+      return this.queuedEval(evalId, normalized, execution, modelCapturePlan, directory);
     } catch (error) {
       await rm(directory, { recursive: true, force: true });
       throw error;
@@ -246,7 +250,7 @@ export class EvalScheduler {
       const [entry] = this.queue.splice(queuedIndex, 1);
       if (!entry) return "not_cancellable";
       const now = new Date().toISOString();
-      await this.writeSyntheticResult(entry, "cancelled", "cancelled", "eval cancelled before launch", now);
+      await writeSyntheticEvalResult({ directory: entry.directory, evalId: entry.evalId, request: entry.request, status: "cancelled", code: "cancelled", message: "eval cancelled before launch", completedAt: now });
       await this.updateControl(entry.directory, (control) => ({
         ...control,
         state: "cancelled",
@@ -380,6 +384,7 @@ export class EvalScheduler {
       normalizedRequest: entry.request,
       maxConcurrentOverride: parallelism,
       executionResources: entry.execution.resources.default_trial,
+      ...(entry.modelCapturePlan ? { modelCapturePlan: entry.modelCapturePlan } : {}),
       executionResourceSource: "submission-default",
       executionStrategy: "local-task-slots-v1",
       environmentBuildMode: entry.execution.build.mode,
@@ -426,7 +431,7 @@ export class EvalScheduler {
     const cancelled = this.active.get(entry.evalId)?.controller.signal.aborted === true;
     const code = cancelled ? "cancelled" : "control_plane_error";
     const message = cancelled ? "eval was cancelled" : (error as Error)?.message || String(error);
-    await this.writeSyntheticResult(entry, cancelled ? "cancelled" : "failed", code, message, now);
+    await writeSyntheticEvalResult({ directory: entry.directory, evalId: entry.evalId, request: entry.request, status: cancelled ? "cancelled" : "failed", code, message, completedAt: now });
     await this.updateControl(entry.directory, (control) => {
       const { allocation_id: _allocationId, ...released } = control;
       return { ...settleEvalWorkItems(released as EvalControlV1), state: cancelled ? "cancelled" : "failed", error: { code, message } };
@@ -439,17 +444,22 @@ export class EvalScheduler {
     for (const entry of recovered) {
       const execution = entry.execution || defaultEvalExecutionPolicy(entry.request, { provider: this.provider, trialResources: this.trialResources, buildMode: "backend" });
       assertExecutionPolicySupported(execution, this.provider);
-      this.queue.push(await this.queuedEval(entry.evalId, entry.request, execution, entry.directory, entry.resumeExisting));
+      const persistedPlan = entry.resumeExisting
+        ? parseEvalExecutionPlan(await readJSON(path.join(entry.directory, "execution-plan.json")))
+        : null;
+      const capturePlan = persistedPlan ? persistedPlan.model_capture : this.capturePlan(entry.request, execution);
+      this.queue.push(await this.queuedEval(entry.evalId, entry.request, execution, capturePlan, entry.directory, entry.resumeExisting));
     }
   }
 
-  private async queuedEval(evalId: EvalId, request: EvalRequest, execution: EvalExecutionPolicyV1, directory: string, resumeExisting = false): Promise<QueuedEval> {
+  private async queuedEval(evalId: EvalId, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string, resumeExisting = false): Promise<QueuedEval> {
     const taskIds = await resolveLocalDatasetTaskIds(request.dataset);
     const fineGrained = taskIds !== null;
     return {
       evalId,
       request,
       execution,
+      ...(modelCapturePlan ? { modelCapturePlan } : {}),
       directory,
       fineGrained,
       resumeExisting,
@@ -457,21 +467,8 @@ export class EvalScheduler {
     };
   }
 
-  private async writeSyntheticResult(entry: QueuedEval, status: "failed" | "cancelled", code: string, message: string, completedAt: string): Promise<void> {
-    if (await readJSON(path.join(entry.directory, "result.json"), null)) return;
-    const control = parseEvalControl(await readJSON(path.join(entry.directory, "control.json")));
-    await atomicWriteJSON(path.join(entry.directory, "result.json"), {
-      schema_version: SCHEMA_VERSION,
-      eval_id: entry.evalId,
-      status,
-      exit_code: status === "cancelled" ? 9 : 12,
-      error: { code, message },
-      benchmark_id: entry.request.benchmark_id,
-      benchmark_revision: entry.request.benchmark_revision,
-      trials: [],
-      started_at: control.created_at,
-      completed_at: completedAt,
-    });
+  private capturePlan(request: EvalRequest, execution: EvalExecutionPolicyV1): ModelCapturePlanV1 {
+    return modelCapturePlanForEval(request, execution, this.providerSnapshot());
   }
 
   private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> {
