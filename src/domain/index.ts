@@ -11,6 +11,7 @@ export * from "./resources.js";
 export * from "./control-plane.js";
 export * from "./bundles.js";
 export * from "./execution-plan.js";
+export * from "./execution-evidence.js";
 export * from "./workers.js";
 export * from "./providers.js";
 export * from "./images.js";

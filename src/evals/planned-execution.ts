@@ -18,6 +18,7 @@ import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, valid
 import type { WorkItemAdmissionController } from "./service-types.js";
 import type { EvalDockerResourceReaper } from "./service-types.js";
 import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
+import { startDockerResourceObserver } from "./docker-resource-observer.js";
 
 export interface PlannedBackendRun {
   attempt: number;
@@ -241,6 +242,8 @@ async function executeLeasedWorkItem(
   const logicalAttempt = item.logical_attempt as number;
   const taskId = item.task_ids[0] as string;
   const runtimeResources = runtimeResourcesForTask(options.plan, taskId, item.reservation);
+  const ownership = dockerResourceOwnership(options.root, lease, taskId);
+  const resourceObserver = startDockerResourceObserver({ ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
   const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(lease.epoch).padStart(6, "0")}`);
   const harborJobDirectory = path.join(backendDirectory, "job");
   const refs: EvalTrialRefV1[] = [];
@@ -273,7 +276,7 @@ async function executeLeasedWorkItem(
     preparedArtifact: options.preparedArtifact,
     executionResources: runtimeResources.mainLimits,
     ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
-    dockerOwnership: dockerResourceOwnership(options.root, lease, taskId),
+    dockerOwnership: ownership,
     ...(options.localTransport ? { localTransport: options.localTransport } : {}),
     env: options.env,
     ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
@@ -310,6 +313,7 @@ async function executeLeasedWorkItem(
           benchmarkId: options.request.benchmark_id,
           benchmarkRevision: options.request.benchmark_revision,
           runtimeId: options.controllerRuntime.runtime_id,
+          executionEvidence: await resourceObserver.capture(),
           requireCompleteMarker: true,
           allowMissingBundleDiagnostic: context.bundleWaitExpired,
         }, trial, refs.length, refs);
@@ -320,7 +324,7 @@ async function executeLeasedWorkItem(
         throw error;
       }
     },
-  });
+  }).finally(async () => { await resourceObserver.stop(); });
   const terminalRefs = await importEvalTrialRuns({
     root: options.root,
     evalId: options.evalId,
@@ -332,6 +336,7 @@ async function executeLeasedWorkItem(
     benchmarkId: options.request.benchmark_id,
     benchmarkRevision: options.request.benchmark_revision,
     runtimeId: options.controllerRuntime.runtime_id,
+    executionEvidence: await resourceObserver.capture(),
     rawResult: run.rawResult,
   }, refs);
   for (const ref of terminalRefs) await publish(ref);

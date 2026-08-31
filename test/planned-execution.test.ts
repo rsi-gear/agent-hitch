@@ -69,6 +69,12 @@ test("planned local execution overlaps different tasks and serializes attempts o
   assert.ok(leases.every((lease) => lease.state === "released" && lease.terminal_at && lease.parent_allocation_id));
   assert.deepEqual(new Set(leases.map((lease) => lease.work_id)), new Set(plan.work_items.map((item) => item.work_id)));
   assert.deepEqual(new Set(reapedLeases), new Set(leases.map((lease) => lease.lease_id)));
+  for (const trial of result.trials as Array<{ run_id: string; task_id: string }>) {
+    const execution = await readJSON<Record<string, unknown>>(path.join(root, "runs", trial.run_id, "execution.json"));
+    assert.equal(execution.provider, "local-docker");
+    assert.equal(execution.task_id, trial.task_id);
+    assert.equal((execution.observed as Record<string, unknown>).status, "unavailable");
+  }
   for (const item of plan.work_items) {
     const lease = leases.find((entry) => entry.work_id === item.work_id) as typeof leases[number];
     const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", item.work_id, "epoch-000001", "job.json"));

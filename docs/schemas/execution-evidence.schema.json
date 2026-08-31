@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/execution-evidence.schema.json",
+  "title": "Hitch execution evidence V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "provider", "worker_id", "collision_domain_id", "eval_id", "work_id",
+    "lease_id", "lease_epoch", "task_id", "reservation", "enforced", "observed"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "provider": { "const": "local-docker" },
+    "worker_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "collision_domain_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+    "work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
+    "lease_id": { "type": "string", "pattern": "^lease_[a-f0-9]{32}$" },
+    "lease_epoch": { "type": "integer", "minimum": 1 },
+    "task_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "reservation": { "$ref": "#/$defs/resources" },
+    "enforced": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["main_limits", "sidecar_limits"],
+      "properties": {
+        "main_limits": { "$ref": "#/$defs/resources" },
+        "sidecar_limits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cpu_millis", "memory_bytes"],
+            "properties": {
+              "cpu_millis": { "type": "integer", "minimum": 1 },
+              "memory_bytes": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "started_at", "collected_at", "sample_count", "containers", "unavailable_fields", "issues"],
+      "properties": {
+        "status": { "enum": ["partial", "unavailable"] },
+        "started_at": { "type": "string", "format": "date-time" },
+        "collected_at": { "type": "string", "format": "date-time" },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "containers": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/container" } },
+        "unavailable_fields": {
+          "type": "array",
+          "items": { "enum": ["cpu_time_ns", "peak_memory_bytes", "exit_status"] },
+          "uniqueItems": true
+        },
+        "issues": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 512 } }
+      }
+    }
+  },
+  "$defs": {
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 },
+        "memory_bytes": { "type": "integer", "minimum": 0 },
+        "container_slots": { "type": "integer", "minimum": 0 },
+        "build_slots": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["container_id", "first_observed_at", "last_observed_at"],
+      "properties": {
+        "container_id": { "type": "string", "pattern": "^[a-f0-9]{12,64}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "first_observed_at": { "type": "string", "format": "date-time" },
+        "last_observed_at": { "type": "string", "format": "date-time" },
+        "peak_memory_bytes": { "type": "integer", "minimum": 0 },
+        "oom_killed": { "type": "boolean" },
+        "exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "exit_reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    }
+  }
+}

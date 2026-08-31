@@ -2,9 +2,8 @@ import { cp, lstat, mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs
 import path from "node:path";
 import { atomicWriteJSON, ensureDir, readJSON, statePaths, writePrivateFile } from "../foundation/index.js";
 import type { ResolvedRevision } from "../artifacts/index.js";
-import type { EvalRequest } from "../domain/index.js";
-import type { EvalTrialRefV1, RunObservationV1, Sha256 } from "../domain/index.js";
 import { validateRunContext } from "../domain/index.js";
+import type { EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, RunObservationV1, Sha256 } from "../domain/index.js";
 import { newRunId, safeAgentArgsForPersistence } from "../runs/index.js";
 import {
   benchmarkTaskDigest,
@@ -17,6 +16,7 @@ import {
 } from "../runs/index.js";
 import { readHarborBridgeError } from "./harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
+import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 
 export interface ImportEvalRunsOptions {
   root: string;
@@ -30,13 +30,12 @@ export interface ImportEvalRunsOptions {
   harborJobDirectory?: string;
   expectedAttempt?: number;
   rawResult: Record<string, unknown> | null;
+  executionEvidence?: ExecutionEvidenceV1;
 }
-
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
   requireCompleteMarker?: boolean;
   allowMissingBundleDiagnostic?: boolean;
 }
-
 /** Import every Harbor trial into the authoritative runs/ store. */
 export async function importEvalTrialRuns(
   options: ImportEvalRunsOptions,
@@ -241,6 +240,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     await atomicWriteJSON(path.join(staging, "request.json"), { ...request, cwd: "." });
     const result = await readJSON<Record<string, unknown>>(path.join(staging, "result.json"));
     await atomicWriteJSON(path.join(staging, "result.json"), withoutKeys(result, ["workspace"]));
+    await writeTrialExecutionEvidence(staging, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
     await atomicWriteJSON(path.join(staging, "manifest.json"), {
       ...portableManifest,
       observation,
@@ -321,6 +321,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     diagnostic: "trial bundle was not exported",
   });
   await atomicWriteJSON(path.join(runDirectory, "resolution.json"), input.resolvedRevision);
+  await writeTrialExecutionEvidence(runDirectory, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
   await writePrivateFile(path.join(runDirectory, "events.jsonl"), `${JSON.stringify({
     schema_version: "1",
     sequence: 1,
