@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-work-offer.schema.json",
+  "title": "Hitch remote work offer V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "state", "issued_at", "expires_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "offer_id": { "type": "string", "pattern": "^offer_[a-f0-9]{32}$" },
+    "nonce": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "worker_id": { "type": "string", "pattern": "^worker_[a-z0-9][a-z0-9_-]{0,62}$" },
+    "lease": { "$ref": "execution-lease.schema.json" },
+    "work": { "$ref": "eval-execution-plan.schema.json#/properties/work_items/items" },
+    "state": { "enum": ["offered", "accepted", "rejected", "cancel-requested", "completed", "released", "expired"] },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "accepted_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "released_at": { "type": "string", "format": "date-time" },
+    "rejection_code": { "type": "string", "minLength": 1 },
+    "accept_receipt_digest": { "$ref": "#/$defs/sha256" },
+    "terminal_receipt_digest": { "$ref": "#/$defs/sha256" },
+    "release_receipt_digest": { "$ref": "#/$defs/sha256" },
+    "terminal": {
+      "type": "object", "additionalProperties": false, "required": ["status", "artifacts", "sent_at"],
+      "properties": {
+        "status": { "enum": ["succeeded", "failed", "cancelled"] },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifactRef" } },
+        "sent_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "artifactRef": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "digest", "size"],
+      "properties": {
+        "kind": { "enum": ["result-bundle", "diagnostic"] }, "digest": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 536870912 }
+      }
+    }
+  }
+}

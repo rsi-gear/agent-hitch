@@ -33,6 +33,9 @@ export interface StatePaths {
   trainingDataCandidates: string;
   workers: string;
   workerLocks: string;
+  workerProtocol: string;
+  workerProtocolLocks: string;
+  workerStaging: string;
   workspaces: string;
   temporary: string;
   indexes: string;
@@ -87,6 +90,9 @@ export function statePaths(root: string): StatePaths {
     trainingDataCandidates: path.join(root, "derived", "training-data-candidates", "sha256"),
     workers: path.join(root, "workers"),
     workerLocks: path.join(root, "locks", "workers"),
+    workerProtocol: path.join(root, "worker-protocol"),
+    workerProtocolLocks: path.join(root, "locks", "worker-protocol"),
+    workerStaging: path.join(root, "worker-staging"),
     workspaces: path.join(root, "workspaces"),
     temporary: path.join(root, "tmp"),
     indexes: path.join(root, "indexes"),

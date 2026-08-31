@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { RemoteWorkerRegistry } from "../control-plane/index.js";
+import type { RemoteWorkerProtocol, RemoteWorkerRegistry } from "../control-plane/index.js";
+import type { BackendWorkItemV1, ExecutionLeaseV1 } from "../domain/index.js";
 import { invalidInput } from "../foundation/index.js";
 import { authorized } from "./auth.js";
 
@@ -8,9 +9,10 @@ export async function handleWorkerProtocolRoute(input: {
   response: ServerResponse;
   url: URL;
   registry: RemoteWorkerRegistry;
+  protocol: RemoteWorkerProtocol;
   adminToken: string;
 }): Promise<boolean> {
-  const { request, response, url, registry } = input;
+  const { request, response, url, registry, protocol } = input;
   if (request.method === "POST" && url.pathname === "/v1/workers/register") {
     if (!authorized(request, input.adminToken)) unauthorized(response);
     else {
@@ -50,9 +52,112 @@ export async function handleWorkerProtocolRoute(input: {
   return false;
 }
 
+export async function handleRemoteWorkRoute(input: {
+  request: IncomingMessage;
+  response: ServerResponse;
+  url: URL;
+  registry: RemoteWorkerRegistry;
+  protocol: RemoteWorkerProtocol;
+  adminToken: string;
+}): Promise<boolean> {
+  const { request, response, url, registry, protocol } = input;
+  const artifactMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/artifacts\/(sha256:[a-f0-9]{64})$/);
+  if (artifactMatch && request.method === "PUT") {
+    const workerId = artifactMatch[1] as string;
+    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    else {
+      const generation = positiveGeneration(url.searchParams.get("generation"));
+      const epoch = positiveGeneration(url.searchParams.get("epoch"));
+      const expectedSize = contentLength(request);
+      const artifact = await protocol.uploadArtifact({
+        workerId, leaseId: artifactMatch[2] as string, digest: artifactMatch[3] as string,
+        generation, epoch, expectedSize, body: request,
+      });
+      json(response, 201, { schema_version: "1", artifact });
+    }
+    return true;
+  }
+  const collection = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/offers$/);
+  if (collection) {
+    const workerId = collection[1] as string;
+    if (request.method === "POST") {
+      if (!authorized(request, input.adminToken)) unauthorized(response);
+      else {
+        const body = objectBody(await readBodyJSON(request));
+        const offer = await protocol.createOffer(workerId, body.lease as ExecutionLeaseV1, body.work as BackendWorkItemV1);
+        json(response, 201, { schema_version: "1", offer });
+      }
+      return true;
+    }
+    if (request.method === "GET") {
+      if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+      else {
+        const generation = positiveGeneration(url.searchParams.get("generation"));
+        json(response, 200, { schema_version: "1", offers: await protocol.listOffers(workerId, generation) });
+      }
+      return true;
+    }
+  }
+  const offerMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/offers\/(offer_[a-f0-9]{32})\/(accept|complete|release|cancel)$/);
+  if (offerMatch) {
+    const [, workerId, offerId, action] = offerMatch as unknown as [string, string, string, string];
+    if (request.method !== "POST") return false;
+    if (action === "cancel") {
+      if (!authorized(request, input.adminToken)) unauthorized(response);
+      else json(response, 200, { schema_version: "1", offer: await protocol.requestCancel(workerId, offerId) });
+      return true;
+    }
+    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    else {
+      const body = { ...objectBody(await readBodyJSON(request)), offer_id: offerId };
+      const offer = action === "accept"
+        ? await protocol.acceptOffer(workerId, body)
+        : action === "complete"
+          ? await protocol.completeOffer(workerId, body)
+          : await protocol.releaseOffer(workerId, body);
+      json(response, 200, { schema_version: "1", offer });
+    }
+    return true;
+  }
+  const eventMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/events$/);
+  if (eventMatch && request.method === "POST") {
+    const workerId = eventMatch[1] as string;
+    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    else {
+      const event = await protocol.recordEvent(workerId, { ...objectBody(await readBodyJSON(request)), lease_id: eventMatch[2] });
+      json(response, event.duplicate ? 200 : 201, { schema_version: "1", ...event });
+    }
+    return true;
+  }
+  return false;
+}
+
 function bearerToken(request: IncomingMessage): string | null {
   const value = request.headers.authorization;
   return typeof value === "string" && value.startsWith("Bearer ") ? value.slice(7) : null;
+}
+
+async function workerAuthorized(request: IncomingMessage, registry: RemoteWorkerRegistry, workerId: string): Promise<boolean> {
+  const token = bearerToken(request);
+  return token !== null && registry.authenticate(workerId, token);
+}
+
+function objectBody(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("worker protocol body must be an object");
+  return value as Record<string, unknown>;
+}
+
+function positiveGeneration(value: string | null): number {
+  if (!value || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw invalidInput("worker generation is required");
+  return Number(value);
+}
+
+function contentLength(request: IncomingMessage): number {
+  const value = request.headers["content-length"];
+  if (Array.isArray(value) || typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw invalidInput("worker artifact content-length is required");
+  }
+  return Number(value);
 }
 
 async function readBodyJSON(request: IncomingMessage, limit = 1_048_576): Promise<unknown> {

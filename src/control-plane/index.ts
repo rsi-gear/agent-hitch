@@ -15,3 +15,6 @@ export { BuildSlotAdmission } from "./build-admission.js";
 export { inspectBuild } from "./build-records.js";
 export { RemoteWorkerRegistry, parseRemoteWorkerHeartbeat, parseRemoteWorkerRegistration } from "./remote-workers.js";
 export type { RemoteWorkerRegistrationResult } from "./remote-workers.js";
+export { RemoteWorkerProtocol, parseRemoteWorkerEvent } from "./remote-worker-protocol.js";
+export { RemoteWorkerArtifactStore } from "./remote-worker-artifacts.js";
+export type { RemoteWorkerArtifactRecordV1 } from "./remote-worker-artifacts.js";

@@ -1,4 +1,6 @@
 import type { ResourceVectorV1 } from "./resources.js";
+import type { BackendWorkItemV1 } from "./execution-plan.js";
+import type { Sha256 } from "./ids.js";
 
 export type ExecutionLeaseStateV1 =
   | "offered"
@@ -88,4 +90,48 @@ export interface RemoteWorkerPublicRecordV1 {
   registered_at: string;
   heartbeat_at: string;
   revoked_at?: string;
+}
+
+export interface RemoteWorkArtifactRefV1 {
+  kind: "result-bundle" | "diagnostic";
+  digest: Sha256;
+  size: number;
+}
+
+export interface RemoteWorkTerminalV1 {
+  status: "succeeded" | "failed" | "cancelled";
+  artifacts: RemoteWorkArtifactRefV1[];
+  sent_at: string;
+}
+
+export interface RemoteWorkOfferV1 {
+  schema_version: "1";
+  offer_id: string;
+  nonce: string;
+  generation: number;
+  worker_id: string;
+  lease: ExecutionLeaseV1;
+  work: BackendWorkItemV1;
+  state: "offered" | "accepted" | "rejected" | "cancel-requested" | "completed" | "released" | "expired";
+  issued_at: string;
+  expires_at: string;
+  accepted_at?: string;
+  completed_at?: string;
+  released_at?: string;
+  rejection_code?: string;
+  terminal?: RemoteWorkTerminalV1;
+  accept_receipt_digest?: Sha256;
+  terminal_receipt_digest?: Sha256;
+  release_receipt_digest?: Sha256;
+}
+
+export interface RemoteWorkerEventV1 {
+  schema_version: "1";
+  generation: number;
+  lease_id: string;
+  epoch: number;
+  sequence: number;
+  type: string;
+  payload?: Record<string, unknown>;
+  sent_at: string;
 }
