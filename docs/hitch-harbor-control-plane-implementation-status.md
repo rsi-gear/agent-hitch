@@ -14,7 +14,7 @@ Last audited: 2026-08-31 on branch `codex/harbor-control-plane`.
 | --- | --- | --- | --- |
 | Stage 0: contracts and compatibility | Partial | Strict eval submission/control/execution-plan/lease/worker/bundle schemas; direct Harbor fixtures; architecture checker | Execution policy, environment image, interaction, provider protocol, rerun operation and training-candidate schemas/capabilities |
 | Stage 1: daemon eval and durable queue | Partial | `/v1/evals`, status/events/cancel, idempotency, persisted control, shared resource ledger, work-item DRR, ambiguous-execution recovery | Daemon rerun endpoint, complete control states/work-item lists and provider-aware recovery |
-| Stage 2: vector scheduling and sharding | Partial | Atomic CPU/memory/container/build ledger, local task slots, cross-eval DRR, per-work-item task mutex, ordered same-task attempts, execution leases, opaque fallback | Lease heartbeat/epoch recovery, Docker labels/reaper, resource derivation and hard limits |
+| Stage 2: vector scheduling and sharding | Partial | Atomic CPU/memory/container/build ledger, local task slots, cross-eval DRR, per-work-item task mutex, ordered same-task attempts, heartbeat-renewed execution leases with epoch fencing, opaque fallback | Provider-driven lease recovery integration, Docker labels/reaper, resource derivation and hard limits |
 | Stage 3: environment image service | Missing | Harbor still owns its existing environment build path | Image resolver/manifest/store, keyed BuildKit execution, registry cache, digest overlay/verification and image GC |
 | Stage 4: execution providers | Partial | `/v1/workers` exposes one local worker identity and capacity | Provider interface, local-docker implementation boundary, registration/heartbeat, remote transport, worker selection and recovery probes |
 | Stage 5: model capture and data candidates | Missing | Provider-native trajectory and sealed Result Bundle index already exist | Proxy/hybrid capture, interaction store/redaction, capture policy gate, bundle interaction refs and read-only training-candidate exporter |
@@ -30,7 +30,7 @@ Last audited: 2026-08-31 on branch `codex/harbor-control-plane`.
 | Same image build deduplicated | Missing | Harness artifacts are content-addressed; benchmark environment images are not managed by an image service |
 | Harbor remains semantic authority | Implemented | Backend keeps Harbor dataset/environment/Verifier behavior and imports its result evidence |
 | Verifier-only retry never reruns Candidate | Implemented | Dedicated verifier retry path and negative tests cover exhausted retries |
-| Crash recovery creates no duplicate authoritative run | Partial | Ambiguous work is failed without replay; provider reattach, terminal collection and epoch-fenced late events are absent |
+| Crash recovery creates no duplicate authoritative run | Partial | Ambiguous work is failed without replay; reissued/lost leases increment epoch and stale lease mutations fail closed; provider reattach and terminal collection are absent |
 | Reaper only deletes owned resources | Missing | No Docker ownership-label reaper exists |
 | Harness artifact/controller runtime are not bypassed | Implemented | Every eval resolves immutable artifact/runtime identities and validates them before Harbor handoff |
 | Every sealed run has a verified bundle index | Implemented | Run finalization creates the index and mutation tests verify it fails closed |
@@ -46,7 +46,8 @@ Last audited: 2026-08-31 on branch `codex/harbor-control-plane`.
 - Daemon crash injection at every transition listed in Spec section 25.3.
 - Ten concurrent requests for one image produce one BuildKit invocation.
 - Docker label ownership and reaper negative tests.
-- Malicious remote-worker paths, stale lease epochs and duplicate events.
+- Malicious remote-worker paths and duplicate event delivery (stale lease epoch
+  mutation is covered locally).
 - Capture redaction for standard and custom secret headers.
 - Fixed-machine load/canary acceptance from sections 25.5 and 25.6.
 

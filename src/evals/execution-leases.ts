@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { ExecutionLeaseStateV1, ExecutionLeaseV1, ResourceVectorV1 } from "../domain/index.js";
-import { atomicWriteJSON, ensureDir, readJSON } from "../foundation/index.js";
+import { HitchError, atomicWriteJSON, ensureDir, readJSON, withFileLock } from "../foundation/index.js";
 
 const ACTIVE_STATES = new Set<ExecutionLeaseStateV1>(["offered", "accepted", "running", "releasing"]);
+export const DEFAULT_EXECUTION_LEASE_TTL_MS = 45_000;
+export const DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS = 10_000;
 
 export interface ExecutionWorkerIdentity {
   workerId: string;
@@ -16,8 +18,9 @@ export interface ExecutionWorkerIdentity {
 export interface ExecutionLeaseHandle {
   readonly leaseId: string;
   current(): ExecutionLeaseV1;
-  markRunning(): Promise<ExecutionLeaseV1>;
-  release(): Promise<ExecutionLeaseV1>;
+  markRunning(expectedEpoch?: number): Promise<ExecutionLeaseV1>;
+  heartbeat(expectedEpoch?: number): Promise<ExecutionLeaseV1>;
+  release(expectedEpoch?: number): Promise<ExecutionLeaseV1>;
 }
 
 export async function createExecutionLease(input: {
@@ -53,23 +56,92 @@ export async function createExecutionLease(input: {
     expires_at: new Date(issuedAt.getTime() + input.ttlMs).toISOString(),
   });
   await atomicWriteJSON(file, lease);
+  let tail: Promise<void> = Promise.resolve();
+  const update = (operation: () => Promise<ExecutionLeaseV1>): Promise<ExecutionLeaseV1> => {
+    let result!: ExecutionLeaseV1;
+    const current = tail.then(async () => { result = await operation(); });
+    tail = current.catch(() => {});
+    return current.then(() => result);
+  };
   return {
     leaseId,
     current: () => lease,
-    markRunning: async () => {
-      if (lease.state === "running") return lease;
-      if (lease.state !== "accepted") throw new TypeError(`execution lease cannot start from ${lease.state}`);
-      lease = await writeLease(file, { ...lease, state: "running", heartbeat_at: new Date().toISOString() });
+    markRunning: (expectedEpoch = lease.epoch) => update(async () => {
+      lease = await mutateLease(file, lease.lease_id, expectedEpoch, async (current) => {
+        if (current.state === "running") return current;
+        if (current.state !== "accepted") throw new TypeError(`execution lease cannot start from ${current.state}`);
+        return writeLease(file, renewedLease({ ...current, state: "running" }, input.ttlMs));
+      });
       return lease;
-    },
-    release: async () => {
-      if (lease.state === "released" || lease.state === "lost" || lease.state === "expired") return lease;
-      const now = new Date().toISOString();
-      lease = await writeLease(file, { ...lease, state: "releasing", heartbeat_at: now });
-      lease = await writeLease(file, { ...lease, state: "released", heartbeat_at: now, terminal_at: now });
+    }),
+    heartbeat: (expectedEpoch = lease.epoch) => update(async () => {
+      lease = await mutateLease(file, lease.lease_id, expectedEpoch, async (current) => {
+        assertCanHeartbeat(current);
+        return writeLease(file, renewedLease(current, input.ttlMs));
+      });
       return lease;
-    },
+    }),
+    release: (expectedEpoch = lease.epoch) => update(async () => {
+      lease = await mutateLease(file, lease.lease_id, expectedEpoch, async (current) => {
+        if (current.state === "released" || current.state === "lost" || current.state === "expired") return current;
+        const now = new Date().toISOString();
+        const releasing = await writeLease(file, { ...current, state: "releasing", heartbeat_at: now });
+        return writeLease(file, { ...releasing, state: "released", heartbeat_at: now, terminal_at: now });
+      });
+      return lease;
+    }),
   };
+}
+
+export async function heartbeatExecutionLease(input: {
+  evalDirectory: string;
+  leaseId: string;
+  expectedEpoch: number;
+  ttlMs?: number;
+}): Promise<ExecutionLeaseV1> {
+  if (!/^lease_[a-f0-9]{32}$/.test(input.leaseId)) throw new TypeError("execution lease id is invalid");
+  const ttlMs = input.ttlMs ?? DEFAULT_EXECUTION_LEASE_TTL_MS;
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new TypeError("execution lease ttl must be a positive safe integer");
+  const file = path.join(input.evalDirectory, "leases", `${input.leaseId}.json`);
+  return mutateLease(file, input.leaseId, input.expectedEpoch, async (lease) => {
+    assertCanHeartbeat(lease);
+    return writeLease(file, renewedLease(lease, ttlMs));
+  });
+}
+
+export async function reissueExecutionLease(input: {
+  evalDirectory: string;
+  leaseId: string;
+  expectedEpoch: number;
+  ttlMs?: number;
+}): Promise<ExecutionLeaseV1> {
+  const { file, ttlMs } = leaseMutationInput(input);
+  return mutateLease(file, input.leaseId, input.expectedEpoch, async (lease) => {
+    if (lease.state !== "accepted" && lease.state !== "running" && lease.state !== "expired") {
+      throw new HitchError(`execution lease cannot be reissued from ${lease.state}`, { code: "lease_not_recoverable", exitCode: 12 });
+    }
+    const { terminal_at: _terminalAt, ...active } = lease;
+    return writeLease(file, renewedLease({ ...active, state: "running", epoch: lease.epoch + 1 }, ttlMs));
+  });
+}
+
+export async function markExecutionLeaseLost(input: {
+  evalDirectory: string;
+  leaseId: string;
+  expectedEpoch: number;
+}): Promise<ExecutionLeaseV1> {
+  const { file } = leaseMutationInput(input);
+  return mutateLease(file, input.leaseId, input.expectedEpoch, async (lease) => {
+    if (!ACTIVE_STATES.has(lease.state)) return lease;
+    const now = new Date().toISOString();
+    return writeLease(file, {
+      ...lease,
+      state: "lost",
+      epoch: lease.epoch + 1,
+      heartbeat_at: now,
+      terminal_at: now,
+    });
+  });
 }
 
 export async function readExecutionLeases(evalDirectory: string): Promise<ExecutionLeaseV1[]> {
@@ -94,10 +166,11 @@ export async function recoverExecutionLeases(evalDirectory: string): Promise<Exe
   const recovered: ExecutionLeaseV1[] = [];
   for (const lease of leases) {
     if (!ACTIVE_STATES.has(lease.state)) continue;
-    const now = new Date().toISOString();
-    const lost = parseExecutionLease({ ...lease, state: "lost", heartbeat_at: now, terminal_at: now });
-    await atomicWriteJSON(path.join(evalDirectory, "leases", `${lease.lease_id}.json`), lost);
-    recovered.push(lost);
+    recovered.push(await markExecutionLeaseLost({
+      evalDirectory,
+      leaseId: lease.lease_id,
+      expectedEpoch: lease.epoch,
+    }));
   }
   return recovered;
 }
@@ -151,6 +224,55 @@ async function writeLease(file: string, value: ExecutionLeaseV1): Promise<Execut
   const lease = parseExecutionLease(value);
   await atomicWriteJSON(file, lease);
   return lease;
+}
+
+async function mutateLease(
+  file: string,
+  leaseId: string,
+  expectedEpoch: number,
+  operation: (lease: ExecutionLeaseV1) => Promise<ExecutionLeaseV1>,
+): Promise<ExecutionLeaseV1> {
+  return withFileLock(path.join(path.dirname(file), ".locks"), leaseId, async () => {
+    const persisted = parseExecutionLease(await readJSON<unknown>(file));
+    if (persisted.lease_id !== leaseId) throw new HitchError("execution lease identity changed", { code: "lease_identity_mismatch", exitCode: 12 });
+    assertEpoch(persisted, expectedEpoch);
+    return operation(persisted);
+  }, { timeoutCode: "lease_update_locked", timeoutExitCode: 12 });
+}
+
+function renewedLease(lease: ExecutionLeaseV1, ttlMs: number): ExecutionLeaseV1 {
+  const now = new Date();
+  return {
+    ...lease,
+    heartbeat_at: now.toISOString(),
+    expires_at: new Date(now.getTime() + ttlMs).toISOString(),
+  };
+}
+
+function leaseMutationInput(input: {
+  evalDirectory: string;
+  leaseId: string;
+  ttlMs?: number;
+}): { file: string; ttlMs: number } {
+  if (!/^lease_[a-f0-9]{32}$/.test(input.leaseId)) throw new TypeError("execution lease id is invalid");
+  const ttlMs = input.ttlMs ?? DEFAULT_EXECUTION_LEASE_TTL_MS;
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new TypeError("execution lease ttl must be a positive safe integer");
+  return { file: path.join(input.evalDirectory, "leases", `${input.leaseId}.json`), ttlMs };
+}
+
+function assertEpoch(lease: ExecutionLeaseV1, expectedEpoch: number): void {
+  if (!Number.isSafeInteger(expectedEpoch) || expectedEpoch < 1 || expectedEpoch !== lease.epoch) {
+    throw new HitchError(`execution lease epoch mismatch: expected ${lease.epoch}, received ${expectedEpoch}`, {
+      code: "lease_epoch_mismatch",
+      exitCode: 12,
+    });
+  }
+}
+
+function assertCanHeartbeat(lease: ExecutionLeaseV1): void {
+  if (lease.state !== "accepted" && lease.state !== "running") {
+    throw new HitchError(`execution lease cannot heartbeat from ${lease.state}`, { code: "lease_not_active", exitCode: 12 });
+  }
 }
 
 function validateWorker(worker: ExecutionWorkerIdentity): void {

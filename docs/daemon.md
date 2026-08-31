@@ -169,9 +169,14 @@ hashed before persistence and is scoped to the daemon's state root.
 
 Every planned local Harbor work item writes an execution lease under
 `evals/<eval-id>/leases/`. The lease records its worker, collision domain,
-parent resource allocation, reservation, epoch, and terminal release. On daemon
-restart, an accepted/running lease that cannot be proven complete is marked
-`lost`; the enclosing eval follows the existing no-blind-replay recovery rule.
+parent resource allocation, reservation, epoch, heartbeat, and terminal
+release. Running work renews its lease every 10 seconds against a 45-second
+TTL. Recovery that can prove the original physical execution is still alive
+reissues the lease at a higher epoch; old-epoch heartbeat and release writes
+then fail closed. The current local provider does not yet persist enough
+process identity to make that proof after daemon restart, so accepted/running
+leases are conservatively marked `lost` at a higher epoch and the enclosing
+eval follows the no-blind-replay recovery rule.
 
 ## Filesystem contract
 

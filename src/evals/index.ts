@@ -4,7 +4,7 @@ export type { EvalRequest } from "../domain/index.js";
 export { EvalEventSink } from "./events.js";
 export { buildEvalExecutionPlan, parseEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
 export type { BuildEvalExecutionPlanOptions } from "./execution-plan.js";
-export { createExecutionLease, parseExecutionLease, readExecutionLeases, recoverExecutionLeases } from "./execution-leases.js";
+export { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease, heartbeatExecutionLease, markExecutionLeaseLost, parseExecutionLease, readExecutionLeases, recoverExecutionLeases, reissueExecutionLease } from "./execution-leases.js";
 export type { ExecutionLeaseHandle, ExecutionWorkerIdentity } from "./execution-leases.js";
 export { runEval } from "./service.js";
 export type { EvalResult, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";

@@ -6,7 +6,7 @@ import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js"
 import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalId, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
-import { createExecutionLease } from "./execution-leases.js";
+import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease } from "./execution-leases.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import { runInfrastructureRetries } from "./infrastructure-retry.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
@@ -159,9 +159,10 @@ async function executeWorkItem(
     workId: item.work_id,
     worker: parentAllocationId ? { ...options.worker, parentAllocationId } : options.worker,
     reservation: item.reservation,
-    ttlMs: executionLeaseTtl(options.request),
+    ttlMs: DEFAULT_EXECUTION_LEASE_TTL_MS,
   });
-  await lease.markRunning();
+  const epoch = lease.current().epoch;
+  await lease.markRunning(epoch);
   options.sink.emit({
     type: "eval.work-item.started",
     work_id: item.work_id,
@@ -170,10 +171,32 @@ async function executeWorkItem(
     task_id: item.task_ids[0],
     attempt: item.logical_attempt,
   });
+  let heartbeatFailure: unknown;
+  let heartbeatTail: Promise<void> = Promise.resolve();
+  const heartbeatTimer = setInterval(() => {
+    if (heartbeatFailure !== undefined) return;
+    heartbeatTail = heartbeatTail.then(async () => {
+      const renewed = await lease.heartbeat(epoch);
+      options.sink.emit({
+        type: "lease.renewed",
+        work_id: item.work_id,
+        lease_id: lease.leaseId,
+        lease_epoch: renewed.epoch,
+        heartbeat_at: renewed.heartbeat_at,
+        expires_at: renewed.expires_at,
+      });
+    }).catch((error) => { heartbeatFailure ??= error; });
+  }, DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS);
+  heartbeatTimer.unref();
   try {
-    return { ...await executeLeasedWorkItem(options, publisher, item), leaseId: lease.leaseId };
+    const completed = await executeLeasedWorkItem(options, publisher, item);
+    await heartbeatTail;
+    if (heartbeatFailure !== undefined) throw heartbeatFailure;
+    return { ...completed, leaseId: lease.leaseId };
   } finally {
-    const released = await lease.release();
+    clearInterval(heartbeatTimer);
+    await heartbeatTail;
+    const released = await lease.release(epoch);
     options.sink.emit({
       type: "eval.work-item.lease-released",
       work_id: item.work_id,
@@ -367,9 +390,4 @@ function assertTaskSlotPlan(plan: EvalExecutionPlanV1): void {
 
 function workOrder(plan: EvalExecutionPlanV1, workId: string): number {
   return plan.work_items.findIndex((item) => item.work_id === workId);
-}
-
-function executionLeaseTtl(request: EvalRequest): number {
-  const requested = request.timeout_ms + request.setup_timeout_ms + 60_000;
-  return Math.max(60_000, Math.min(requested || 24 * 60 * 60 * 1_000, 30 * 24 * 60 * 60 * 1_000));
 }
