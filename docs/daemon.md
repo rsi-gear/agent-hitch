@@ -80,6 +80,11 @@ separate `eval submit`, `eval watch`, and `eval cancel` commands. Daemon runs
 and evals reserve capacity from one vector ledger so aggregate CPU, memory, and
 container admission stays bounded.
 
+For local datasets with known task membership, resource and task-collision
+permits are granted per work item by an eval-level deficit round-robin queue.
+Opaque datasets retain one coarse allocation. `/health` exposes the dispatcher
+under `eval_scheduler.work_items` in addition to the aggregate resource ledger.
+
 ## Resource policy
 
 The daemon owns one resource policy for its complete state root. Capacity and

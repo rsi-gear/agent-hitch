@@ -91,13 +91,18 @@ export async function parseEvalSubmission(value: unknown, expectedEvalId: EvalId
 export async function evalCollisionKeys(request: EvalRequest, collisionDomainId = "local-docker"): Promise<string[]> {
   const tasks = await resolveLocalDatasetTaskIds(request.dataset);
   const taskIds = tasks === null ? ["*"] : tasks;
-  return taskIds.map((taskId) => `collision_${sha256JSON({
+  return taskIds.map((taskId) => evalTaskCollisionKey(request, taskId, collisionDomainId)).sort();
+}
+
+export function evalTaskCollisionKey(request: EvalRequest, taskId: string, collisionDomainId = "local-docker"): string {
+  if (!taskId || !collisionDomainId) throw new TypeError("eval collision identity must be non-empty");
+  return `collision_${sha256JSON({
     domain: collisionDomainId,
     backend: request.backend,
     benchmark_id: request.benchmark_id,
     benchmark_revision: request.benchmark_revision,
     task_id: taskId,
-  }).slice("sha256:".length)}`).sort();
+  }).slice("sha256:".length)}`;
 }
 
 function persistedRequestInput(request: EvalRequest): EvalRequestInput {

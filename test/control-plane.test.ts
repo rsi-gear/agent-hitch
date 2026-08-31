@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EvalScheduler, ResourceLedger, scaleResources } from "../src/control-plane/index.js";
-import type { EvalControlV1, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
+import type { BackendWorkItemV1, EvalControlV1, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
 import { createExecutionLease, readExecutionLeases } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
@@ -87,6 +87,65 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
   await waitFor(() => scheduler.status(second).then((status) => status?.result !== null));
   assert.equal((await scheduler.status(first))?.result?.status, "cancelled");
   assert.equal((await scheduler.status(second))?.result?.status, "succeeded");
+});
+
+test("local evals dispatch work items fairly across evals without exceeding the shared vector ledger", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-work-dispatch-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataset = path.join(root, "dataset");
+  for (const taskId of ["a", "b", "c", "d"]) {
+    await mkdir(path.join(dataset, taskId), { recursive: true });
+    await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  }
+  const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 2, build_slots: 1 });
+  const order: string[] = [];
+  let releaseLarge!: () => void;
+  let largeReady!: () => void;
+  const largeGate = new Promise<void>((resolve) => { releaseLarge = resolve; });
+  const ready = new Promise<void>((resolve) => { largeReady = resolve; });
+  const executor = async (options: RunEvalOptions): Promise<EvalResult> => {
+    const admission = options.workItemAdmission;
+    if (!admission || !options.evalId) throw new Error("fine-grained work admission was not provided");
+    const acquire = async (taskId: string) => {
+      const permit = await admission.acquire({
+        evalId: options.evalId as never,
+        workItem: workItem(options.evalId as string, taskId),
+        maxParallelism: options.request.model === "large" ? 2 : 1,
+      });
+      order.push(`${options.request.model}-${taskId}`);
+      assert.ok(ledger.snapshot().allocated.container_slots <= 2);
+      return permit;
+    };
+    if (options.request.model === "large") {
+      const first = await acquire("a");
+      const second = await acquire("b");
+      const thirdPromise = acquire("c");
+      largeReady();
+      await largeGate;
+      first.release();
+      const third = await thirdPromise;
+      second.release();
+      third.release();
+    } else {
+      const permit = await acquire("d");
+      permit.release();
+    }
+    const now = new Date().toISOString();
+    return { schema_version: "1", eval_id: options.evalId as never, status: "succeeded", exit_code: 0, started_at: now, completed_at: now };
+  };
+  const scheduler = new EvalScheduler({ root, resources: ledger, trialResources: TRIAL, executor });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+
+  const large = await scheduler.submit({ ...request(2), dataset, model: "large" });
+  await ready;
+  const small = await scheduler.submit({ ...request(1), dataset, model: "small" });
+  await waitFor(() => scheduler.status(small).then((status) => status?.control.state === "running"));
+  releaseLarge();
+  await waitFor(() => scheduler.status(large).then((status) => status?.result !== null));
+  await waitFor(() => scheduler.status(small).then((status) => status?.result !== null));
+  assert.deepEqual(order, ["large-a", "large-b", "small-d", "large-c"]);
+  assert.deepEqual(ledger.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
 });
 
 test("eval scheduler fails an ambiguous interrupted execution without replaying it", async (t) => {
@@ -234,4 +293,20 @@ async function waitForStatus(client: Awaited<ReturnType<typeof daemonClient>>, e
     await delay(10);
   }
   throw new Error("timed out waiting for daemon eval result");
+}
+
+function workItem(evalId: string, taskId: string): BackendWorkItemV1 {
+  return {
+    schema_version: "1",
+    work_id: `work_${sha256JSON({ eval_id: evalId, task_id: taskId }).slice("sha256:".length, "sha256:".length + 32)}`,
+    eval_id: evalId,
+    backend: "harbor",
+    logical_attempt: 1,
+    task_ids: [taskId],
+    slots: [],
+    opaque_membership: false,
+    requested_parallelism: 1,
+    reservation: TRIAL,
+    provider: "local-docker",
+  };
 }

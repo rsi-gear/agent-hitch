@@ -19,7 +19,7 @@ import { buildEvalExecutionPlan } from "./execution-plan.js";
 import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -221,6 +221,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
           provider: "local-docker",
           collisionDomainId: `local-process:${process.pid}`,
         },
+        ...(workItemAdmission ? { admission: workItemAdmission } : {}),
       });
       progress = execution.progress;
       backendRuns.push(...execution.backendRuns.map((entry) => ({

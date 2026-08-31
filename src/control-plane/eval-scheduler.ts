@@ -2,26 +2,31 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
-import { EvalEventSink, newEvalId, readExecutionLeases, recoverExecutionLeases, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
+import { EvalEventSink, newEvalId, readExecutionLeases, recoverExecutionLeases, resolveLocalDatasetTaskIds, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
 import type { EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
-import { ResourceLedger, scaleResources, zeroResources } from "./resources.js";
+import { ResourceLedger, scaleResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
-import { evalCollisionKeys, idempotencyIndexPath, isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState, validateIdempotencyKey } from "./eval-records.js";
+import { evalTaskCollisionKey, idempotencyIndexPath, isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState, validateIdempotencyKey } from "./eval-records.js";
+import { WorkItemDispatcher } from "./work-dispatcher.js";
+import { workItemAdmission } from "./work-admission.js";
+import { localWorkerSnapshot } from "./local-worker.js";
 
 interface QueuedEval {
   evalId: EvalId;
   request: EvalRequest;
   directory: string;
   collisionKeys: string[];
+  fineGrained: boolean;
 }
 
 interface ActiveEval {
   controller: AbortController;
-  lease: ResourceLease;
+  lease?: ResourceLease;
   admittedParallelism: number;
-  collisions: CollisionLease;
+  collisions?: CollisionLease;
+  fineGrained: boolean;
 }
 
 export interface EvalSchedulerOptions {
@@ -68,6 +73,7 @@ export class EvalScheduler {
   private readonly unsubscribe: () => void;
   private readonly unsubscribeCollisions: () => void;
   private readonly collisions: CollisionLockManager;
+  private readonly workItems: WorkItemDispatcher;
   private queue: QueuedEval[] = [];
   private active = new Map<EvalId, ActiveEval>();
   private completions = new Map<EvalId, Promise<void>>();
@@ -86,6 +92,7 @@ export class EvalScheduler {
     this.executor = executor;
     this.onEvent = onEvent;
     this.collisions = collisions;
+    this.workItems = new WorkItemDispatcher({ resources, collisions });
     this.unsubscribe = resources.subscribe(() => this.scheduleDrain());
     this.unsubscribeCollisions = collisions.subscribe(() => this.scheduleDrain());
   }
@@ -162,7 +169,7 @@ export class EvalScheduler {
       await atomicWriteJSON(path.join(directory, "submission.json"), submission);
       await atomicWriteJSON(path.join(directory, "control.json"), control);
       await this.emitPersisted(directory, evalId, { type: "eval.queued", requested_parallelism: normalized.max_concurrent });
-      return { evalId, request: normalized, directory, collisionKeys: await evalCollisionKeys(normalized, this.collisionDomainId) };
+      return this.queuedEval(evalId, normalized, directory);
     } catch (error) {
       await rm(directory, { recursive: true, force: true });
       throw error;
@@ -184,6 +191,9 @@ export class EvalScheduler {
     const control = parseEvalControl(controlValue);
     const result = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
     const progress = await readJSON<Record<string, unknown> | null>(path.join(directory, "progress.json"), null);
+    const active = this.active.get(evalId);
+    const workItems = this.workItems.evalSnapshot(evalId);
+    const admitted = active?.fineGrained ? workItems?.active ?? 0 : control.admitted_parallelism;
     return {
       request,
       control,
@@ -192,8 +202,8 @@ export class EvalScheduler {
       leases: await readExecutionLeases(directory),
       effective_parallelism: {
         requested: control.requested_parallelism,
-        admitted: control.admitted_parallelism,
-        running: this.active.has(evalId) ? control.admitted_parallelism : 0,
+        admitted,
+        running: active ? admitted : 0,
       },
     };
   }
@@ -239,36 +249,18 @@ export class EvalScheduler {
       accepting: this.accepting,
       active: [...this.active.entries()].map(([evalId, active]) => ({
         eval_id: evalId,
-        admitted_parallelism: active.admittedParallelism,
-        allocation_id: active.lease.allocation.allocation_id,
-        collision_keys: active.collisions.keys,
+        admitted_parallelism: active.fineGrained ? this.workItems.evalSnapshot(evalId)?.active ?? 0 : active.admittedParallelism,
+        ...(active.lease ? { allocation_id: active.lease.allocation.allocation_id } : {}),
+        collision_keys: active.collisions?.keys ?? [],
+        scheduling: active.fineGrained ? "work-item-drr-v1" : "coarse-eval-v1",
       })),
       collisions: this.collisions.snapshot(),
+      work_items: this.workItems.snapshot(),
     };
   }
 
   workerSnapshot(): ExecutionWorkerV1 {
-    const resources = this.resources.snapshot();
-    return {
-      schema_version: "1",
-      worker_id: this.workerId,
-      provider: this.provider,
-      status: this.accepting ? "ready" : "draining",
-      collision_domain_id: this.collisionDomainId,
-      capabilities: {
-        backends: ["harbor"],
-        platforms: [`${process.platform}-${process.arch}`],
-        task_membership: ["known", "opaque"],
-        isolated_same_task_attempts: false,
-        remote: false,
-      },
-      capacity: {
-        total: resources.capacity,
-        reserved_for_system: zeroResources(),
-        allocatable: resources.capacity,
-        allocated: resources.allocated,
-      },
-    };
+    return localWorkerSnapshot({ workerId: this.workerId, provider: this.provider, collisionDomainId: this.collisionDomainId, accepting: this.accepting, resources: this.resources });
   }
 
   async shutdown(): Promise<void> {
@@ -277,6 +269,7 @@ export class EvalScheduler {
     for (const entry of [...this.queue]) await this.cancel(entry.evalId);
     for (const [evalId] of this.active) await this.cancel(evalId);
     await Promise.all([...this.completions.values()]);
+    this.workItems.close();
     this.unsubscribe();
     this.unsubscribeCollisions();
   }
@@ -293,55 +286,56 @@ export class EvalScheduler {
       for (;;) {
         const selected = this.selectRunnable();
         if (!selected) break;
-        const { index, parallelism, lease, collisions } = selected;
+        const { index, parallelism, lease, collisions, fineGrained } = selected;
         const [entry] = this.queue.splice(index, 1);
         if (!entry) {
-          lease.release();
-          collisions.release();
+          lease?.release();
+          collisions?.release();
           continue;
         }
-        this.start(entry, parallelism, lease, collisions);
+        this.start(entry, parallelism, fineGrained, lease, collisions);
       }
     } finally {
       this.draining = false;
     }
   }
 
-  private selectRunnable(): { index: number; parallelism: number; lease: ResourceLease; collisions: CollisionLease } | null {
+  private selectRunnable(): { index: number; parallelism: number; fineGrained: boolean; lease?: ResourceLease; collisions?: CollisionLease } | null {
     for (let index = 0; index < this.queue.length; index += 1) {
       const entry = this.queue[index] as QueuedEval;
+      if (entry.fineGrained) return { index, parallelism: entry.request.max_concurrent, fineGrained: true };
       const parallelism = this.resources.maximumUnits(this.trialResources, entry.request.max_concurrent);
       if (parallelism < 1) continue;
       const collisions = this.collisions.tryAcquire(entry.evalId, entry.collisionKeys);
       if (!collisions) continue;
       const lease = this.resources.tryAcquire(entry.evalId, "eval", scaleResources(this.trialResources, parallelism));
-      if (lease) return { index, parallelism, lease, collisions };
+      if (lease) return { index, parallelism, fineGrained: false, lease, collisions };
       collisions.release();
     }
     return null;
   }
 
-  private start(entry: QueuedEval, parallelism: number, lease: ResourceLease, collisions: CollisionLease): void {
+  private start(entry: QueuedEval, parallelism: number, fineGrained: boolean, lease?: ResourceLease, collisions?: CollisionLease): void {
     const controller = new AbortController();
-    this.active.set(entry.evalId, { controller, lease, admittedParallelism: parallelism, collisions });
-    const completion = this.execute(entry, parallelism, lease, controller)
+    this.active.set(entry.evalId, { controller, admittedParallelism: parallelism, fineGrained, ...(lease ? { lease } : {}), ...(collisions ? { collisions } : {}) });
+    const completion = this.execute(entry, parallelism, fineGrained, lease, controller)
       .catch((error) => this.recordUnexpectedFailure(entry, error))
       .finally(() => {
         this.active.delete(entry.evalId);
         this.completions.delete(entry.evalId);
-        lease.release();
-        collisions.release();
+        lease?.release();
+        collisions?.release();
         this.scheduleDrain();
       });
     this.completions.set(entry.evalId, completion);
   }
 
-  private async execute(entry: QueuedEval, parallelism: number, lease: ResourceLease, controller: AbortController): Promise<void> {
+  private async execute(entry: QueuedEval, parallelism: number, fineGrained: boolean, lease: ResourceLease | undefined, controller: AbortController): Promise<void> {
     await this.updateControl(entry.directory, (control) => ({
       ...control,
       state: "running",
-      admitted_parallelism: parallelism,
-      allocation_id: lease.allocation.allocation_id,
+      admitted_parallelism: fineGrained ? 0 : parallelism,
+      ...(lease ? { allocation_id: lease.allocation.allocation_id } : {}),
     }));
     const result = await this.executor({
       evalId: entry.evalId,
@@ -354,8 +348,11 @@ export class EvalScheduler {
         workerId: this.workerId,
         provider: this.provider,
         collisionDomainId: this.collisionDomainId,
-        parentAllocationId: lease.allocation.allocation_id,
+        ...(lease ? { parentAllocationId: lease.allocation.allocation_id } : {}),
       },
+      ...(fineGrained ? {
+        workItemAdmission: workItemAdmission({ dispatcher: this.workItems, request: entry.request, collisionDomainId: this.collisionDomainId }),
+      } : {}),
       precreated: true,
       root: this.root,
       signal: controller.signal,
@@ -370,7 +367,7 @@ export class EvalScheduler {
       return {
         ...released,
         state,
-        admitted_parallelism: parallelism,
+        admitted_parallelism: fineGrained ? 0 : parallelism,
         ...(result.error ? { error: result.error } : {}),
       };
     });
@@ -419,13 +416,13 @@ export class EvalScheduler {
         continue;
       }
       if (control.state === "queued") {
-        this.queue.push({ evalId, request: submission.request, directory, collisionKeys: await evalCollisionKeys(submission.request, this.collisionDomainId) });
+        this.queue.push(await this.queuedEval(evalId, submission.request, directory));
         continue;
       }
       if (isTerminalControl(control.state)) continue;
       const cancelled = control.state === "cancelling";
       const now = new Date().toISOString();
-      const entry = { evalId, request: submission.request, directory, collisionKeys: await evalCollisionKeys(submission.request, this.collisionDomainId) };
+      const entry = await this.queuedEval(evalId, submission.request, directory);
       const code = cancelled ? "cancelled" : "execution_state_ambiguous";
       const message = cancelled ? "eval cancellation was recovered after daemon restart" : "daemon restarted while eval execution state was ambiguous";
       await this.writeSyntheticResult(entry, cancelled ? "cancelled" : "failed", code, message, now);
@@ -435,6 +432,18 @@ export class EvalScheduler {
       });
       await this.emitPersisted(directory, evalId, { type: "eval.recovered", status: cancelled ? "cancelled" : "failed", code });
     }
+  }
+
+  private async queuedEval(evalId: EvalId, request: EvalRequest, directory: string): Promise<QueuedEval> {
+    const taskIds = await resolveLocalDatasetTaskIds(request.dataset);
+    const fineGrained = taskIds !== null;
+    return {
+      evalId,
+      request,
+      directory,
+      fineGrained,
+      collisionKeys: fineGrained ? [] : [evalTaskCollisionKey(request, "*", this.collisionDomainId)],
+    };
   }
 
   private async writeSyntheticResult(entry: QueuedEval, status: "failed" | "cancelled", code: string, message: string, completedAt: string): Promise<void> {

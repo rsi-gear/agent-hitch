@@ -57,6 +57,15 @@ admission; they do not yet configure Docker cgroup limits or inspect live host
 memory. The complete target architecture and its later provider/build/cache
 phases are specified in `hitch-harbor-control-plane-spec.zh-CN.md`.
 
+Known local task work items enter a shared deficit round-robin dispatcher.
+Capacity is acquired atomically per work item, the dispatcher rotates after
+each grant, and a temporarily blocked task mutex does not prevent another task
+from the same eval from running. A newly submitted small eval therefore gets a
+released slot within a bounded round instead of waiting for a large eval to
+finish all of its tasks. Opaque datasets retain one conservative coarse
+allocation because their work-item identities are not known before Harbor
+starts.
+
 For a local dataset with enumerable `task.toml` entries, daemon mode writes an
 immutable `execution-plan.json` and runs one Harbor work item per task/attempt.
 Different tasks can use the admitted slots concurrently; attempts of the same

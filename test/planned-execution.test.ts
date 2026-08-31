@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { ResourceLedger, WorkItemDispatcher } from "../src/control-plane/index.js";
 import { parseEvalExecutionPlan, readExecutionLeases, runEval } from "../src/evals/index.js";
 import { readJSON } from "../src/foundation/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
@@ -19,12 +20,28 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const activityLog = path.join(root, "harbor-activity.jsonl");
   const harbor = await writeFakeHarbor(root, { delayMs: 150, activityLog });
   const npm = await writeFakeNpm(root);
+  const resources = new ResourceLedger({ cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 2, build_slots: 1 });
+  const dispatcher = new WorkItemDispatcher({ resources });
+  t.after(() => dispatcher.close());
   const result = await runEval({
     root,
     harborExecutable: harbor,
     executionStrategy: "local-task-slots-v1",
     trialBundleGraceMs: 0,
     env: { ...process.env, HITCH_NPM_PATH: npm },
+    workItemAdmission: {
+      acquire: async ({ evalId, workItem, maxParallelism, signal }) => {
+        const permit = await dispatcher.acquire({
+          evalId,
+          workId: workItem.work_id,
+          maxParallelism,
+          reservation: workItem.reservation,
+          collisionKeys: workItem.task_ids.map((taskId) => `test-task:${taskId}`),
+          ...(signal ? { signal } : {}),
+        });
+        return { allocationId: permit.allocation.allocation_id, collisionKeys: permit.collision_keys, release: permit.release };
+      },
+    },
     request: {
       dataset,
       harness_ref: "pi@version:1.2.3",
@@ -43,7 +60,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
   assert.equal(plan.work_items.length, 4);
   const leases = await readExecutionLeases(evalDirectory);
   assert.equal(leases.length, 4);
-  assert.ok(leases.every((lease) => lease.state === "released" && lease.terminal_at));
+  assert.ok(leases.every((lease) => lease.state === "released" && lease.terminal_at && lease.parent_allocation_id));
   assert.deepEqual(new Set(leases.map((lease) => lease.work_id)), new Set(plan.work_items.map((item) => item.work_id)));
   for (const item of plan.work_items) {
     const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", item.work_id, "job.json"));
@@ -62,6 +79,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const firstStarts = [event(activity, "start", "one", 1).time, event(activity, "start", "two", 1).time];
   const firstEnds = [event(activity, "end", "one", 1).time, event(activity, "end", "two", 1).time];
   assert.ok(Math.max(...firstStarts) < Math.min(...firstEnds), "different tasks did not overlap");
+  assert.deepEqual(resources.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
 });
 
 interface Activity {

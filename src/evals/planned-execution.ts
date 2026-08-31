@@ -13,6 +13,7 @@ import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { assertBackendTrialSet, localSourceBackendFailure } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
+import type { WorkItemAdmissionController } from "./service-types.js";
 
 export interface PlannedBackendRun {
   attempt: number;
@@ -40,6 +41,7 @@ export interface ExecutePlannedHarborOptions {
   trialBundleGraceMs?: number;
   sink: EvalEventSink;
   worker: ExecutionWorkerIdentity;
+  admission?: WorkItemAdmissionController;
 }
 
 export async function executePlannedHarborTasks(options: ExecutePlannedHarborOptions): Promise<{
@@ -49,7 +51,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
 }> {
   assertTaskSlotPlan(options.plan);
   const publisher = new ProgressPublisher(options.progress, options);
-  const semaphore = new FairSemaphore(options.plan.max_parallelism);
+  const semaphore = options.admission ? undefined : new FairSemaphore(options.plan.max_parallelism);
   const byTask = new Map<string, BackendWorkItemV1[]>();
   for (const item of options.plan.work_items) {
     const taskId = item.task_ids[0] as string;
@@ -66,9 +68,28 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       if (stopDispatch || options.signal?.aborted) break;
       let release: (() => void) | undefined;
       try {
-        release = await semaphore.acquire(options.signal);
+        let parentAllocationId: string | undefined;
+        if (options.admission) {
+          const permit = await options.admission.acquire({
+            evalId: options.evalId,
+            workItem: item,
+            maxParallelism: options.plan.max_parallelism,
+            ...(options.signal ? { signal: options.signal } : {}),
+          });
+          parentAllocationId = permit.allocationId;
+          release = permit.release;
+          options.sink.emit({
+            type: "eval.work-item.admitted",
+            work_id: item.work_id,
+            allocation_id: permit.allocationId,
+            collision_keys: permit.collisionKeys,
+            reservation: item.reservation,
+          });
+        } else {
+          release = await semaphore?.acquire(options.signal);
+        }
         if (stopDispatch || options.signal?.aborted) break;
-        const completed = await executeWorkItem(options, publisher, item);
+        const completed = await executeWorkItem(options, publisher, item, parentAllocationId);
         results.push(completed);
         const failed = completed.run.backend.process_exit_code !== 0 || completed.run.rawResult === null
           || Boolean(options.localTransport && localSourceBackendFailure(completed.run.rawResult));
@@ -130,12 +151,13 @@ async function executeWorkItem(
   options: ExecutePlannedHarborOptions,
   publisher: ProgressPublisher,
   item: BackendWorkItemV1,
+  parentAllocationId?: string,
 ): Promise<PlannedBackendRun> {
   const lease = await createExecutionLease({
     evalDirectory: options.evalDirectory,
     evalId: options.evalId,
     workId: item.work_id,
-    worker: options.worker,
+    worker: parentAllocationId ? { ...options.worker, parentAllocationId } : options.worker,
     reservation: item.reservation,
     ttlMs: executionLeaseTtl(options.request),
   });

@@ -1,4 +1,4 @@
-import type { EvalId, EvalRequest, ResourceVectorV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, EvalId, EvalRequest, ResourceVectorV1 } from "../domain/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { EvalRequestInput } from "./request.js";
 
@@ -17,6 +17,22 @@ export interface RunEvalOptions {
   executionResources?: ResourceVectorV1;
   executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
   executionWorker?: ExecutionWorkerIdentity;
+  workItemAdmission?: WorkItemAdmissionController;
+}
+
+export interface WorkItemAdmissionPermit {
+  allocationId: string;
+  collisionKeys: string[];
+  release(): void;
+}
+
+export interface WorkItemAdmissionController {
+  acquire(input: {
+    evalId: EvalId;
+    workItem: BackendWorkItemV1;
+    maxParallelism: number;
+    signal?: AbortSignal;
+  }): Promise<WorkItemAdmissionPermit>;
 }
 
 export interface EvalResult extends Record<string, unknown> {

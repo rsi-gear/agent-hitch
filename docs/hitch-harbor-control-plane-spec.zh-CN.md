@@ -7,6 +7,7 @@
 - Harbor 基线：`0.21.0`
 - 适用范围：Harbor-backed eval、Docker 并发、环境镜像构建、执行节点、模型交互采集与结果封装
 - 变更类型：新增控制面与执行抽象；保持 Harbor 任务、环境和 Verifier 语义兼容
+- 实现证据追踪：`hitch-harbor-control-plane-implementation-status.md`
 
 ## 1. 摘要
 
