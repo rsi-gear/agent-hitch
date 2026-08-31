@@ -9,6 +9,7 @@ import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
+import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 
 const INFRASTRUCTURE_REASONS = new Set([
   "infrastructure_failure",
@@ -54,6 +55,7 @@ export interface RunInfrastructureRetriesOptions {
   stopAfterResult?: (rawResult: Record<string, unknown> | null) => boolean;
   executionResources?: ResourceVectorV1;
   resolvedImages?: Record<string, string>;
+  environmentImages?: TrialEnvironmentImagesV1;
 }
 
 export async function runInfrastructureRetries(
@@ -156,6 +158,7 @@ export async function runInfrastructureRetries(
             benchmarkId: options.request.benchmark_id,
             benchmarkRevision: options.request.benchmark_revision,
             runtimeId: options.controllerRuntime.runtime_id,
+            ...(options.environmentImages ? { environmentImages: options.environmentImages } : {}),
             requireCompleteMarker: true,
             allowMissingBundleDiagnostic: context.bundleWaitExpired,
           }, trial, retryRefs.length, retryRefs);
@@ -178,6 +181,7 @@ export async function runInfrastructureRetries(
       benchmarkId: options.request.benchmark_id,
       benchmarkRevision: options.request.benchmark_revision,
       runtimeId: options.controllerRuntime.runtime_id,
+      ...(options.environmentImages ? { environmentImages: options.environmentImages } : {}),
       rawResult: run.rawResult,
     }, retryRefs);
     for (const ref of terminalRefs) await publish(ref);

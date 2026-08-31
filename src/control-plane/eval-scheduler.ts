@@ -15,7 +15,7 @@ import { workItemAdmission } from "./work-admission.js";
 import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker.js";
 import { recoverPersistedEvals } from "./eval-recovery.js";
 import { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
-import { localRegistryImageResolution } from "./eval-image-resolution.js";
+import { localEnvironmentImageManifestLoader, localRegistryImageResolution } from "./eval-image-resolution.js";
 
 interface QueuedEval {
   evalId: EvalId;
@@ -383,6 +383,7 @@ export class EvalScheduler {
       executionStrategy: "local-task-slots-v1",
       environmentBuildMode: entry.execution.build.mode,
       environmentImageResolver: this.environmentImageResolver,
+      environmentImageManifestLoader: localEnvironmentImageManifestLoader(this.root),
       executionWorker: {
         workerId: this.workerId,
         provider: entry.execution.provider,

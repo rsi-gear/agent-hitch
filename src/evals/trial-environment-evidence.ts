@@ -1,0 +1,64 @@
+import path from "node:path";
+import type { EnvironmentImageManifestV1, EnvironmentImageUseV1, RunEnvironmentImagesV1 } from "../domain/index.js";
+import { HitchError, atomicWriteJSON, ensureDir } from "../foundation/index.js";
+import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
+
+export interface TrialEnvironmentImagesV1 {
+  uses: EnvironmentImageUseV1[];
+  manifests: EnvironmentImageManifestV1[];
+}
+
+export async function loadTrialEnvironmentImages(input: {
+  taskId: string;
+  uses: readonly EnvironmentImageUseV1[];
+  loader?: EvalEnvironmentImageManifestLoader;
+}): Promise<TrialEnvironmentImagesV1 | undefined> {
+  if (input.uses.length === 0) return undefined;
+  if (!input.loader) throw new HitchError("environment image manifest loader is unavailable", { code: "environment_image_manifest_unavailable", exitCode: 12 });
+  const uses = [...input.uses].sort((left, right) => compare(left.requested_reference, right.requested_reference));
+  const manifests = await Promise.all(uses.map((use) => input.loader?.(use.image_id) as Promise<EnvironmentImageManifestV1>));
+  const unique = new Map<string, EnvironmentImageManifestV1>();
+  for (let index = 0; index < uses.length; index += 1) {
+    const use = uses[index] as EnvironmentImageUseV1;
+    const manifest = manifests[index] as EnvironmentImageManifestV1;
+    validatePair(input.taskId, use, manifest);
+    const previous = unique.get(manifest.image_id);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(manifest)) throw new TypeError("environment image manifest identity changed");
+    unique.set(manifest.image_id, manifest);
+  }
+  return { uses, manifests: [...unique.values()].sort((left, right) => compare(left.image_id, right.image_id)) };
+}
+
+export async function writeTrialEnvironmentImageEvidence(
+  runDirectory: string,
+  taskId: string,
+  evidence?: TrialEnvironmentImagesV1,
+): Promise<void> {
+  if (!evidence) return;
+  const byId = new Map(evidence.manifests.map((manifest) => [manifest.image_id, manifest]));
+  for (const use of evidence.uses) {
+    const manifest = byId.get(use.image_id);
+    if (!manifest) throw new TypeError("environment image evidence manifest is missing");
+    validatePair(taskId, use, manifest);
+  }
+  await ensureDir(path.join(runDirectory, "environment"));
+  const persisted: RunEnvironmentImagesV1 = {
+    schema_version: "1",
+    task_id: taskId,
+    uses: evidence.uses,
+    manifests: evidence.manifests,
+  };
+  await atomicWriteJSON(path.join(runDirectory, "environment", "image.manifest.json"), persisted);
+}
+
+function validatePair(taskId: string, use: EnvironmentImageUseV1, manifest: EnvironmentImageManifestV1): void {
+  if (!use.task_ids.includes(taskId) || manifest.schema_version !== "1" || manifest.image_id !== use.image_id
+    || manifest.output.reference !== use.reference || manifest.output.manifest_digest !== use.manifest_digest
+    || manifest.platform !== use.platform || manifest.source.task_id !== undefined && manifest.source.task_id !== taskId) {
+    throw new TypeError("environment image manifest does not match the planned trial image");
+  }
+}
+
+function compare(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left), Buffer.from(right));
+}

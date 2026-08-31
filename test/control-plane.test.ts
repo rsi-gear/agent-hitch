@@ -147,6 +147,7 @@ test("eval submission execution policy is pinned and drives admission", async (t
   assert.deepEqual(observed?.executionResources, custom);
   assert.equal(observed?.executionResourceSource, "submission-default");
   assert.equal(observed?.executionWorker?.provider, "local-docker");
+  assert.equal(typeof observed?.environmentImageManifestLoader, "function");
   const submission = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "submission.json"));
   assert.deepEqual(submission.execution, execution);
   assert.equal(submission.submission_digest, sha256JSON({ request: await readJSON(path.join(root, "evals", evalId, "request.json")), execution }));

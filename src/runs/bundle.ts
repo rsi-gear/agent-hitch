@@ -21,12 +21,14 @@ export async function writeResultBundleIndex(runDirectory: string): Promise<Resu
     observation: manifest.observation,
   });
   const provenance = bundleProvenance(manifest);
+  const summaries = await bundleSummaries(runDirectory);
   const identity = {
     schema_version: "1" as const,
     run_id: runId,
     sealed: true as const,
     context_identity: contextIdentity,
     files,
+    ...summaries,
     provenance,
   };
   const index: ResultBundleIndexV1 = {
@@ -54,12 +56,19 @@ export async function verifyResultBundleIndex(runDirectory: string): Promise<Res
     observation: manifest.observation,
   });
   if (contextIdentity !== index.context_identity) throw new TypeError("result bundle context identity does not match");
+  const summaries = await bundleSummaries(runDirectory);
+  if (index.environment !== undefined && JSON.stringify(index.environment) !== JSON.stringify(summaries.environment)
+    || index.resources !== undefined && JSON.stringify(index.resources) !== JSON.stringify(summaries.resources)) {
+    throw new TypeError("result bundle execution summary does not match");
+  }
   const digest = sha256JSON({
     schema_version: index.schema_version,
     run_id: index.run_id,
     sealed: index.sealed,
     context_identity: index.context_identity,
     files: index.files,
+    ...(index.environment ? { environment: index.environment } : {}),
+    ...(index.resources ? { resources: index.resources } : {}),
     provenance: index.provenance,
   });
   if (digest !== index.bundle_digest) throw new TypeError("result bundle digest does not match");
@@ -81,16 +90,87 @@ export function parseResultBundleIndex(value: unknown): ResultBundleIndexV1 {
     throw new TypeError("result bundle files are not uniquely and canonically sorted");
   }
   const provenance = parseProvenance(record.provenance);
+  const environment = record.environment === undefined ? undefined : parseBundleEnvironment(record.environment);
+  const resources = record.resources === undefined ? undefined : parseBundleResources(record.resources);
   return {
     schema_version: "1",
     run_id: runId,
     sealed: true,
     context_identity: record.context_identity as Sha256,
     files,
+    ...(environment ? { environment } : {}),
+    ...(resources ? { resources } : {}),
     provenance,
     bundle_digest: record.bundle_digest as Sha256,
     created_at: record.created_at,
   };
+}
+
+async function bundleSummaries(root: string): Promise<Pick<ResultBundleIndexV1, "environment" | "resources">> {
+  const execution = await readJSON<Record<string, unknown> | null>(path.join(root, "execution.json"), null);
+  const imageEvidence = await readJSON<Record<string, unknown> | null>(path.join(root, "environment", "image.manifest.json"), null);
+  const resources = execution ? resourcesFromExecution(execution) : undefined;
+  if (!imageEvidence) return { ...(resources ? { resources } : {}) };
+  if (!execution || typeof execution.provider !== "string" || !execution.provider) throw new TypeError("result bundle environment has no provider evidence");
+  if (imageEvidence.schema_version !== "1" || !Array.isArray(imageEvidence.manifests)) throw new TypeError("result bundle environment image evidence is invalid");
+  const images = imageEvidence.manifests.map((value, index) => {
+    const manifest = asRecord(value);
+    const output = asRecord(manifest.output);
+    if (!isSha256(manifest.image_id) || !isSha256(output.manifest_digest) || typeof output.reference !== "string" || !output.reference) {
+      throw new TypeError(`result bundle environment image ${index} is invalid`);
+    }
+    return { image_id: manifest.image_id as Sha256, image_digest: output.manifest_digest as Sha256, reference: output.reference };
+  }).sort((left, right) => Buffer.from(left.image_id).compare(Buffer.from(right.image_id)));
+  if (new Set(images.map((image) => image.image_id)).size !== images.length) throw new TypeError("result bundle environment images are duplicated");
+  const environment: NonNullable<ResultBundleIndexV1["environment"]> = {
+    images,
+    provider: execution.provider,
+    ...(typeof execution.worker_id === "string" && execution.worker_id ? { worker_id: execution.worker_id } : {}),
+    ...(typeof execution.lease_id === "string" && /^lease_[a-f0-9]{32}$/.test(execution.lease_id) ? { lease_id: execution.lease_id } : {}),
+  };
+  return { environment, ...(resources ? { resources } : {}) };
+}
+
+function resourcesFromExecution(execution: Record<string, unknown>): ResultBundleIndexV1["resources"] {
+  const requested = resourceVector(execution.reservation);
+  const observedValue = asRecord(execution.observed);
+  const containers = Array.isArray(observedValue.containers) ? observedValue.containers.map(asRecord) : [];
+  const peaks = containers.map((container) => container.peak_memory_bytes).filter((value): value is number => Number.isSafeInteger(value) && (value as number) >= 0);
+  const observed = {
+    ...(Number.isSafeInteger(observedValue.sample_count) && (observedValue.sample_count as number) >= 0 ? { sample_count: observedValue.sample_count as number } : {}),
+    container_count: containers.length,
+    ...(peaks.length > 0 ? { peak_memory_bytes: Math.max(...peaks) } : {}),
+    oom_killed_containers: containers.filter((container) => container.oom_killed === true).length,
+  };
+  return { requested, observed };
+}
+
+function parseBundleEnvironment(value: unknown): NonNullable<ResultBundleIndexV1["environment"]> {
+  const record = asRecord(value);
+  if (!Array.isArray(record.images) || typeof record.provider !== "string" || !record.provider
+    || record.worker_id !== undefined && (typeof record.worker_id !== "string" || !record.worker_id)
+    || record.lease_id !== undefined && (typeof record.lease_id !== "string" || !/^lease_[a-f0-9]{32}$/.test(record.lease_id))) throw new TypeError("result bundle environment summary is invalid");
+  const images = record.images.map((value) => {
+    const image = asRecord(value);
+    if (!isSha256(image.image_id) || !isSha256(image.image_digest) || typeof image.reference !== "string" || !image.reference) throw new TypeError("result bundle environment summary image is invalid");
+    return image as { image_id: Sha256; image_digest: Sha256; reference: string };
+  });
+  return { images, provider: record.provider, ...(record.worker_id ? { worker_id: record.worker_id as string } : {}), ...(record.lease_id ? { lease_id: record.lease_id as string } : {}) };
+}
+
+function parseBundleResources(value: unknown): NonNullable<ResultBundleIndexV1["resources"]> {
+  const record = asRecord(value);
+  const observed = record.observed === undefined ? undefined : asRecord(record.observed);
+  if (observed && Object.values(observed).some((entry) => !Number.isSafeInteger(entry) || (entry as number) < 0)) throw new TypeError("result bundle observed resources are invalid");
+  return { requested: resourceVector(record.requested), ...(observed ? { observed: observed as Record<string, number> } : {}) };
+}
+
+function resourceVector(value: unknown): NonNullable<ResultBundleIndexV1["resources"]>["requested"] {
+  const record = asRecord(value);
+  const fields = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
+  if (Object.keys(record).some((key) => !fields.includes(key as typeof fields[number]))
+    || fields.some((key) => !Number.isSafeInteger(record[key]) || (record[key] as number) < 0)) throw new TypeError("result bundle requested resources are invalid");
+  return Object.fromEntries(fields.map((key) => [key, record[key]])) as unknown as NonNullable<ResultBundleIndexV1["resources"]>["requested"];
 }
 
 async function bundleFiles(root: string): Promise<ResultBundleFileV1[]> {

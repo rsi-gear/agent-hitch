@@ -380,7 +380,7 @@ domain
 
 `control.json` 不能代替 `progress.json` 或 `result.json`。前者描述执行控制状态，后两者描述已发布的评测事实。
 
-`environment/image.manifest.json` 是所用小型 EnvironmentImageManifest 的完整副本，不是指向可变 Docker tag 的路径；发布前必须确认其 `image_id` 与全局 store 一致。`runtime.ref.json` 只固定 controller runtime identity、manifest digest 和相对语义，不复制完整 runtime payload。`execution.json` 保存 provider、worker、lease、reservation 和有界 observed resource summary。
+`environment/image.manifest.json` 是一次 trial 所用镜像证据集合，包含每个 `EnvironmentImageUseV1` 以及按 `image_id` 去重后的完整 `EnvironmentImageManifestV1` 副本，不是指向可变 Docker tag 的路径；发布前必须确认每个 `image_id`、platform、reference 与 manifest digest 同 execution plan 和全局 store 一致。`runtime.ref.json` 只固定 controller runtime identity、manifest digest 和相对语义，不复制完整 runtime payload。`execution.json` 保存 provider、worker、lease、reservation 和有界 observed resource summary。
 
 ## 8. 领域记录与 Schema
 
@@ -643,8 +643,11 @@ interface ResultBundleIndexV1 {
     sha256: `sha256:${string}`
   }>
   environment?: {
-    image_id?: `sha256:${string}`
-    image_digest?: `sha256:${string}`
+    images: Array<{
+      image_id: `sha256:${string}`
+      image_digest: `sha256:${string}`
+      reference: string
+    }>
     provider: string
     worker_id?: string
     lease_id?: string
@@ -666,6 +669,8 @@ interface ResultBundleIndexV1 {
   created_at: string
 }
 ```
+
+新写入的 bundle index 从 `environment/image.manifest.json` 和 `execution.json` 生成 `environment`、`resources` 摘要并纳入 `bundle_digest`；旧 V1 index 缺少这两个 additive 字段时仍可读取和按其原始 identity 校验。
 
 `bundle.index.json` 是对现有 run 目录的新增索引，不替换 `manifest.json`、`result.json` 或 `trajectory.ref.json`。旧 reader 可以忽略它，新 reader 必须验证所有文件路径不逃逸 run 目录、文件类型为 regular file、大小和摘要匹配。
 

@@ -241,6 +241,11 @@ export function environmentImageManifestPath(root: string, imageId: Sha256): str
   return path.join(statePaths(root).environmentImages, imageId.slice("sha256:".length), "manifest.json");
 }
 
+export async function loadEnvironmentImageManifest(root: string, imageId: Sha256): Promise<EnvironmentImageManifestV1> {
+  if (!root || !/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new TypeError("environment image identity is invalid");
+  return parseEnvironmentImageManifest(await readJSON(environmentImageManifestPath(root, imageId)));
+}
+
 export function environmentBuildRecordPath(root: string, cacheKey: Sha256): string {
   return path.join(statePaths(root).buildRecords, cacheKey.slice("sha256:".length), "record.json");
 }

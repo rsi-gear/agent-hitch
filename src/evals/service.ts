@@ -22,7 +22,7 @@ import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure,
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageManifestLoader }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -109,8 +109,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       platform: artifact.platform,
       cache_hit: artifact.cache_hit,
     });
-    // Phase 2: the shared, read-only, SHA-256-addressed controller runtime
-    // cache replaces the per-eval Hitch runtime copy (spec §4).
     const controllerRuntime: ControllerRuntimeUseResult = await ensureControllerRuntime({ root });
     const runtimeRefFile = await writeRuntimeReference(evalDirectory, controllerRuntime);
     sink.emit({
@@ -241,6 +239,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(workItemAdmission ? { admission: workItemAdmission } : {}),
         ...(onWorkItemState ? { onWorkItemState } : {}),
         ...(dockerResourceReaper ? { dockerResourceReaper } : {}),
+        ...(environmentImageManifestLoader ? { environmentImageManifestLoader } : {}),
       });
       progress = execution.progress;
       backendRuns.push(...execution.backendRuns.map((entry) => ({

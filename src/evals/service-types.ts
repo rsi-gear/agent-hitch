@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EvalId, EvalRequest, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalId, EvalRequest, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
 import type { EvalRequestInput } from "./request.js";
@@ -33,7 +33,10 @@ export interface RunEvalOptions {
   dockerResourceReaper?: EvalDockerResourceReaper;
   environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
   environmentImageResolver?: EvalEnvironmentImageResolver;
+  environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
 }
+
+export type EvalEnvironmentImageManifestLoader = (imageId: Sha256) => Promise<EnvironmentImageManifestV1>;
 
 export type EvalEnvironmentImageResolver = (input: {
   benchmarkId: string;

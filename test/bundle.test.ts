@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { atomicWriteJSON } from "../src/foundation/index.js";
+import { atomicWriteJSON, sha256JSON } from "../src/foundation/index.js";
 import { verifyResultBundleIndex, writeResultBundleIndex } from "../src/runs/index.js";
 
 test("result bundle index seals every run file and detects later mutation", async (t) => {
@@ -14,6 +14,13 @@ test("result bundle index seals every run file and detects later mutation", asyn
   await atomicWriteJSON(path.join(directory, "resolution.json"), { schema_version: "1", identity: "sha256:b".padEnd(71, "b") });
   await atomicWriteJSON(path.join(directory, "result.json"), { schema_version: "1", run_id: runId, status: "succeeded", exit_code: 0 });
   await writeFile(path.join(directory, "events.jsonl"), `${JSON.stringify({ sequence: 1, type: "run.completed" })}\n`);
+  await mkdir(path.join(directory, "environment"));
+  await atomicWriteJSON(path.join(directory, "environment", "image.manifest.json"), { schema_version: "1", task_id: "task-a", uses: [], manifests: [] });
+  await atomicWriteJSON(path.join(directory, "execution.json"), {
+    provider: "local-docker", worker_id: "worker-test", lease_id: `lease_${"a".repeat(32)}`,
+    reservation: { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 },
+    observed: { sample_count: 2, containers: [] },
+  });
   await atomicWriteJSON(path.join(directory, "manifest.json"), {
     schema_version: "1",
     run_id: runId,
@@ -34,9 +41,23 @@ test("result bundle index seals every run file and detects later mutation", asyn
   assert.equal(index.run_id, runId);
   assert.ok(index.files.some((file) => file.path === "manifest.json" && file.role === "manifest"));
   assert.ok(index.files.some((file) => file.path === "events.jsonl" && file.role === "control-events"));
+  assert.ok(index.files.some((file) => file.path === "environment/image.manifest.json" && file.role === "environment-manifest"));
+  assert.deepEqual(index.environment, { images: [], provider: "local-docker", worker_id: "worker-test", lease_id: `lease_${"a".repeat(32)}` });
+  assert.deepEqual(index.resources, {
+    requested: { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 },
+    observed: { sample_count: 2, container_count: 0, oom_killed_containers: 0 },
+  });
   assert.deepEqual(await verifyResultBundleIndex(directory), index);
+  const legacy = { ...index } as Record<string, unknown>;
+  delete legacy.environment;
+  delete legacy.resources;
+  legacy.bundle_digest = sha256JSON({
+    schema_version: index.schema_version, run_id: index.run_id, sealed: index.sealed,
+    context_identity: index.context_identity, files: index.files, provenance: index.provenance,
+  });
+  await atomicWriteJSON(path.join(directory, "bundle.index.json"), legacy);
+  assert.equal((await verifyResultBundleIndex(directory)).environment, undefined);
 
   await atomicWriteJSON(path.join(directory, "result.json"), { schema_version: "1", run_id: runId, status: "failed", exit_code: 12 });
   await assert.rejects(verifyResultBundleIndex(directory), /file set or integrity does not match/);
 });
-

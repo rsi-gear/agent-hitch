@@ -1,5 +1,5 @@
-import type { EvalEnvironmentImageResolver } from "../evals/index.js";
-import { DockerRegistryResolver, resolveRegistryEnvironmentImage } from "../images/index.js";
+import type { EvalEnvironmentImageManifestLoader, EvalEnvironmentImageResolver } from "../evals/index.js";
+import { DockerRegistryResolver, loadEnvironmentImageManifest, resolveRegistryEnvironmentImage } from "../images/index.js";
 import type { RegistryImageResolver } from "../images/index.js";
 
 export function localRegistryImageResolution(root: string, resolver: RegistryImageResolver = new DockerRegistryResolver()): EvalEnvironmentImageResolver {
@@ -22,4 +22,8 @@ export function localRegistryImageResolution(root: string, resolver: RegistryIma
       cache_hit: resolved.cacheHit,
     };
   };
+}
+
+export function localEnvironmentImageManifestLoader(root: string): EvalEnvironmentImageManifestLoader {
+  return (imageId) => loadEnvironmentImageManifest(root, imageId);
 }

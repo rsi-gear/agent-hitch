@@ -45,6 +45,11 @@ fallback reason separately. `prebuild-preferred` can fall back; a
 `prebuild-required` request fails before Harbor starts if any service cannot be
 prebuilt. Harbor's final Compose overlay replaces only exact discovered image
 references and the same mapping is reused by infrastructure retries.
+Before a planned work item starts Harbor, every referenced global manifest is
+reloaded and matched against the immutable plan. Each imported or diagnostic
+run then embeds the uses and full, de-duplicated manifests in
+`environment/image.manifest.json`; the sealed bundle index records their OCI
+digests together with provider/worker/lease and requested/observed resources.
 
 Remaining work:
 
@@ -52,7 +57,7 @@ Remaining work:
   contexts;
 - version-canary-backed removal of a Harbor/Compose build stanza after a
   successful prebuild;
-- post-start verification of the actual trial container image digest;
+- post-start verification of the actual trial container image/config digest;
 - image reference GC.
 
 Successful, failed, and in-progress records have a stable `build_<id>` index.

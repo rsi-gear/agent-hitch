@@ -30,6 +30,41 @@
         }
       }
     },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["images", "provider"],
+      "properties": {
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["image_id", "image_digest", "reference"],
+            "properties": {
+              "image_id": { "$ref": "#/$defs/sha256" },
+              "image_digest": { "$ref": "#/$defs/sha256" },
+              "reference": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "provider": { "type": "string", "minLength": 1 },
+        "worker_id": { "type": "string", "minLength": 1 },
+        "lease_id": { "type": "string", "pattern": "^lease_[a-f0-9]{32}$" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested"],
+      "properties": {
+        "requested": { "$ref": "#/$defs/resources" },
+        "observed": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
@@ -46,7 +81,17 @@
   },
   "$defs": {
     "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 },
+        "memory_bytes": { "type": "integer", "minimum": 0 },
+        "container_slots": { "type": "integer", "minimum": 0 },
+        "build_slots": { "type": "integer", "minimum": 0 }
+      }
+    },
     "relativePath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
   }
 }
-

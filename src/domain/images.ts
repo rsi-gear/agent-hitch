@@ -49,6 +49,13 @@ export interface EnvironmentImageFallbackV1 {
   code: "backend-build" | "dynamic-image" | "policy-backend" | "resolver-unavailable" | "resolution-failed";
 }
 
+export interface RunEnvironmentImagesV1 {
+  schema_version: "1";
+  task_id: string;
+  uses: EnvironmentImageUseV1[];
+  manifests: EnvironmentImageManifestV1[];
+}
+
 export interface EnvironmentBuildRecordV1 {
   schema_version: "1";
   build_id: string;

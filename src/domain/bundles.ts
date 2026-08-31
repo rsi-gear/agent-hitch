@@ -1,4 +1,5 @@
 import type { Sha256 } from "./ids.js";
+import type { ResourceVectorV1 } from "./resources.js";
 
 export type ResultBundleFileRoleV1 =
   | "request"
@@ -30,6 +31,16 @@ export interface ResultBundleIndexV1 {
   sealed: true;
   context_identity: Sha256;
   files: ResultBundleFileV1[];
+  environment?: {
+    images: Array<{ image_id: Sha256; image_digest: Sha256; reference: string }>;
+    provider: string;
+    worker_id?: string;
+    lease_id?: string;
+  };
+  resources?: {
+    requested: ResourceVectorV1;
+    observed?: Record<string, number>;
+  };
   provenance: {
     harness_revision?: Sha256 | null;
     artifact_id?: Sha256;
@@ -40,4 +51,3 @@ export interface ResultBundleIndexV1 {
   bundle_digest: Sha256;
   created_at: string;
 }
-

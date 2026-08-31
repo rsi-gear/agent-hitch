@@ -17,6 +17,8 @@ import {
 import { readHarborBridgeError } from "./harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
+import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
+import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 
 export interface ImportEvalRunsOptions {
   root: string;
@@ -31,12 +33,12 @@ export interface ImportEvalRunsOptions {
   expectedAttempt?: number;
   rawResult: Record<string, unknown> | null;
   executionEvidence?: ExecutionEvidenceV1;
+  environmentImages?: TrialEnvironmentImagesV1;
 }
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
   requireCompleteMarker?: boolean;
   allowMissingBundleDiagnostic?: boolean;
 }
-/** Import every Harbor trial into the authoritative runs/ store. */
 export async function importEvalTrialRuns(
   options: ImportEvalRunsOptions,
   existingRefs: readonly EvalTrialRefV1[] = [],
@@ -52,16 +54,12 @@ export async function importEvalTrialRuns(
   return refs;
 }
 
-/** Import one settled Harbor trial, reusing an already-published ref idempotently. */
 export async function importEvalTrialRun(
   options: ImportEvalRunOptions,
   trial: Record<string, unknown>,
   index = 0,
   existingRefs: readonly EvalTrialRefV1[] = [],
 ): Promise<EvalTrialRefV1> {
-  // Harbor's result task_name may be display-qualified (for example,
-  // terminal-bench/regex-log), while the persisted trial lock contains the
-  // canonical task id used by the in-container bridge and exported run.
   const fallbackTaskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
   const trialId = nonEmpty(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
   const attempt = options.expectedAttempt ?? trialAttempt(trialId);
@@ -241,6 +239,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     const result = await readJSON<Record<string, unknown>>(path.join(staging, "result.json"));
     await atomicWriteJSON(path.join(staging, "result.json"), withoutKeys(result, ["workspace"]));
     await writeTrialExecutionEvidence(staging, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
+    await writeTrialEnvironmentImageEvidence(staging, input.taskId, input.environmentImages);
     await atomicWriteJSON(path.join(staging, "manifest.json"), {
       ...portableManifest,
       observation,
@@ -322,6 +321,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   });
   await atomicWriteJSON(path.join(runDirectory, "resolution.json"), input.resolvedRevision);
   await writeTrialExecutionEvidence(runDirectory, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
+  await writeTrialEnvironmentImageEvidence(runDirectory, input.taskId, input.environmentImages);
   await writePrivateFile(path.join(runDirectory, "events.jsonl"), `${JSON.stringify({
     schema_version: "1",
     sequence: 1,
@@ -433,8 +433,6 @@ async function validateBundleTree(root: string): Promise<void> {
 function trialAttempt(trialId: string): number {
   const match = trialId.match(/__(\d+)$/);
   const value = Number(match?.[1]);
-  // Modern Harbor trial ids carry a random suffix. Each such id identifies a
-  // distinct trial, whose execution attempt starts at one.
   return Number.isInteger(value) && value > 0 ? value : 1;
 }
 
