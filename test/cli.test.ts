@@ -40,6 +40,7 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /hitch eval watch <eval-id>/);
   assert.match(help.stdout, /hitch eval cancel <eval-id>/);
   assert.match(help.stdout, /hitch eval rerun <eval-id> \(--invalid \| --task <name>/);
+  assert.match(help.stdout, /--type <type>/);
   assert.match(help.stdout, /hitch eval setup harbor/);
   assert.match(help.stdout, /hitch eval doctor/);
   assert.match(help.stdout, /--capacity-cpu-millis <n>/);
@@ -85,6 +86,22 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   ], { encoding: "utf8" });
   assert.equal(mixedRerunSelector.status, 2);
   assert.match(mixedRerunSelector.stderr, /exactly one of --invalid or --task/);
+
+  const unknownRerunType = spawnSync(process.execPath, [
+    executable,
+    "eval", "rerun", "eval_77777777777777777777777777777777",
+    "--invalid", "--type", "resume",
+  ], { encoding: "utf8" });
+  assert.equal(unknownRerunType.status, 2);
+  assert.match(unknownRerunType.stderr, /eval rerun --type must be one of/);
+
+  const unavailableReplay = spawnSync(process.execPath, [
+    executable,
+    "eval", "rerun", "eval_77777777777777777777777777777777",
+    "--invalid", "--type", "trajectory-replay",
+  ], { encoding: "utf8" });
+  assert.equal(unavailableReplay.status, 2);
+  assert.match(unavailableReplay.stderr, /trajectory evidence alone cannot restore tool or process state/);
 
   const invalidDaemonPolicy = spawnSync(process.execPath, [
     executable,

@@ -74,7 +74,7 @@ Usage:
   hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>]
   hitch eval watch <eval-id> [--output json|jsonl]
   hitch eval cancel <eval-id>
-  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--output json]
+  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--output json]
   hitch eval list [--json]
   hitch eval inspect <eval-id> [--json]
   hitch workspace inspect <run-id> [--json]
@@ -95,6 +95,8 @@ Usage:
 
 Eval:
   Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.
+  Rerun type candidate-restart is supported and is the compatibility default.
+  candidate-resume, trajectory-replay, verifier-only, and collect-only fail explicitly until their recovery prerequisites exist.
   Use 'hitch eval setup harbor' for an isolated managed install and 'hitch eval doctor' to verify it.
   Eval accepts exact version:, registered commit:, or full lowercase local git+file commit refs.
   Local Git evals transport only committed Git objects; the source repository must be clean.

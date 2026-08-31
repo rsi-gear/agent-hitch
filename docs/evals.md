@@ -300,12 +300,32 @@ An eval with a frozen local task plan can rerun either every invalid/missing
 logical trial or the invalid/missing trials belonging to explicit task names:
 
 ```bash
-hitch eval rerun <eval-id> --invalid --output json
-hitch eval rerun <eval-id> --task task-a --task task-b --output json
+hitch eval rerun <eval-id> --invalid --type candidate-restart --output json
+hitch eval rerun <eval-id> --task task-a --task task-b --type candidate-restart --output json
 ```
 
-The rerun keeps the original eval, benchmark, candidate, model, timeout, task,
-and attempt identities. Hitch defines one logical slot for each
+`--type` is explicit in audit records and defaults to `candidate-restart` for
+backward compatibility. Rerun/recovery operations have distinct semantics:
+
+| Type | Candidate | Conversation | Sandbox | Current support |
+| --- | --- | --- | --- | --- |
+| `candidate-restart` | Executes again from the original instruction | New conversation | Clean environment | Supported |
+| `candidate-resume` | Continues an interrupted candidate | Provider-native session | Restored checkpoint | Reserved; rejected until both checkpoint and adapter resume exist |
+| `trajectory-replay` | Starts a new physical execution with prior context | Verified canonical trajectory | Restored checkpoint | Reserved; rejected until replay and checkpoint support exist |
+| `verifier-only` | Does not execute | None | Original retained environment | Automatic only while the original trial is live |
+| `collect-only` | Does not execute | None | None | Reserved for terminal-but-uncollected recovery |
+
+A canonical trajectory is evidence, not a process checkpoint. Feeding it back
+to an LLM can reconstruct conversational context, but it cannot restore the
+container filesystem, running processes, pending tool calls, credentials, or a
+provider-native session. Hitch therefore treats that operation as
+`trajectory-replay`, never as transparent `candidate-resume`, and refuses to
+perform it unless the source trajectory is verified and the corresponding
+sandbox checkpoint can also be restored.
+
+The `candidate-restart` rerun keeps the original eval, benchmark, candidate,
+model, timeout, task, and attempt identities, but creates a new physical
+Candidate execution. Hitch defines one logical slot for each
 `(task_id, attempt)` in the frozen plan. `--invalid` selects all invalid or
 missing slots; `--task task-a` selects all invalid or missing attempts for that
 task. A named task whose attempts are all valid is rejected.
@@ -329,7 +349,9 @@ Hitch 0.2.5 can rerun pre-0.2.5 plans when `attempts=1`. Older multi-attempt
 plans do not carry explicit logical-attempt identity and are rejected rather
 than repaired by guessing from Harbor trial names.
 
-Rerun audit state is written below `reruns/rerun_<id>/`. While its `state.json`
+Rerun audit state is written below `reruns/rerun_<id>/`. `request.json`,
+`state.json`, and the command result include `rerun_type` plus explicit
+Candidate, conversation, and sandbox semantics. While `state.json`
 is `running`, `progress.json` is the current membership and the prior
 `result.json` may be stale. When the invocation ends, Hitch regenerates the
 top-level result from progress. The eval succeeds only when every planned

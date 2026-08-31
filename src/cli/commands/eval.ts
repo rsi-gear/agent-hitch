@@ -1,5 +1,5 @@
 import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "../../backends/index.js";
-import { inspectEval, listEvals, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
+import { inspectEval, listEvals, parseEvalRerunType, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
 import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput } from "../../foundation/index.js";
 import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
@@ -27,6 +27,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   const evalId = validateEvalId(evalIdValue);
   const invalid = takeFlag(args, "--invalid");
   const taskNames = takeRepeatedOption(args, "--task");
+  const rerunType = parseEvalRerunType(takeOption(args, "--type") || "candidate-restart");
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
   assertNoArgs(args);
@@ -40,6 +41,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
     const result = await rerunEval({
       evalId,
       root,
+      rerunType,
       selector: invalid ? { mode: "invalid" } : { mode: "tasks", taskNames },
       ...(harborExecutable === undefined ? {} : { harborExecutable }),
       signal: controller.signal,

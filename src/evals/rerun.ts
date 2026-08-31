@@ -13,6 +13,8 @@ import type { EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/inde
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths, withFileLock } from "../foundation/index.js";
 import { readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { validateEvalId, validateEvalRequest } from "./request.js";
+import { assertEvalRerunTypeSupported, evalRerunSemantics, parseEvalRerunType } from "./rerun-types.js";
+import type { EvalRerunResult, EvalRerunType, RerunEvalOptions } from "./rerun-types.js";
 import {
   attemptDirectoryName,
   formatSlot,
@@ -30,32 +32,6 @@ import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, valid
 
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
-
-export interface RerunEvalOptions {
-  evalId: string;
-  selector: RerunSelector;
-  root: string;
-  env?: NodeJS.ProcessEnv;
-  harborExecutable?: string;
-  signal?: AbortSignal;
-  trialBundleGraceMs?: number;
-}
-export interface EvalRerunResult {
-  schema_version: "1";
-  kind: "eval-rerun";
-  rerun_id: string;
-  eval_id: string;
-  status: "completed";
-  selected_tasks: string[];
-  repaired_tasks: string[];
-  remaining_invalid_tasks: string[];
-  selected_trials: EvalTrialSlot[];
-  repaired_trials: EvalTrialSlot[];
-  remaining_invalid_trials: EvalTrialSlot[];
-  eval_status: "succeeded" | "failed";
-  started_at: string;
-  completed_at: string;
-}
 interface RerunPlan {
   tasks: string[];
   attempts: number;
@@ -68,17 +44,19 @@ interface RerunPlan {
 
 export async function rerunEval(options: RerunEvalOptions): Promise<EvalRerunResult> {
   if (!options.root) throw invalidInput("a Hitch state root is required for eval rerun");
+  const rerunType = parseEvalRerunType(options.rerunType ?? "candidate-restart");
+  assertEvalRerunTypeSupported(rerunType);
   const evalId = validateEvalId(options.evalId);
   const evalDirectory = path.join(statePaths(options.root).evals, evalId);
   return withFileLock(
     path.join(evalDirectory, "reruns"),
     "active",
-    () => rerunEvalLocked({ ...options, evalId, evalDirectory }),
+    () => rerunEvalLocked({ ...options, rerunType, evalId, evalDirectory }),
     { timeoutCode: "eval_rerun_active", timeoutExitCode: 2, ...(options.signal ? { signal: options.signal } : {}) },
   );
 }
 
-async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; evalDirectory: string }): Promise<EvalRerunResult> {
+async function rerunEvalLocked(options: RerunEvalOptions & { rerunType: EvalRerunType; evalId: string; evalDirectory: string }): Promise<EvalRerunResult> {
   const startedAt = new Date().toISOString();
   const rerunId = `rerun_${randomUUID().replaceAll("-", "")}`;
   const rerunDirectory = await ensureDir(path.join(options.evalDirectory, "reruns", rerunId));
@@ -99,6 +77,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
     schema_version: SCHEMA_VERSION,
     rerun_id: rerunId,
     eval_id: options.evalId,
+    rerun_type: options.rerunType,
+    semantics: evalRerunSemantics(options.rerunType),
     mode: options.selector.mode,
     tasks: selectedTasks,
     trials: selectedTrials,
@@ -108,6 +88,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
   await writeRerunState(statePath, {
     rerunId,
     evalId: options.evalId,
+    rerunType: options.rerunType,
     status: "running",
     tasks: selectedTasks,
     trials: selectedTrials,
@@ -162,6 +143,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
           await writeRerunState(statePath, {
             rerunId,
             evalId: options.evalId,
+            rerunType: options.rerunType,
             status: "running",
             tasks: selectedTasks,
             trials: selectedTrials,
@@ -241,6 +223,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
       schema_version: "1",
       kind: "eval-rerun",
       rerun_id: rerunId,
+      rerun_type: options.rerunType,
+      semantics: evalRerunSemantics(options.rerunType),
       eval_id: options.evalId,
       status: "completed",
       selected_tasks: selectedTasks,
@@ -256,6 +240,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
     await writeRerunState(statePath, {
       rerunId,
       evalId: options.evalId,
+      rerunType: options.rerunType,
       status: "completed",
       tasks: selectedTasks,
       trials: selectedTrials,
@@ -273,6 +258,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { evalId: string; eva
     await writeRerunState(statePath, {
       rerunId,
       evalId: options.evalId,
+      rerunType: options.rerunType,
       status: "failed",
       tasks: selectedTasks,
       trials: selectedTrials,
@@ -459,6 +445,7 @@ async function finalizeRerun(
 async function writeRerunState(file: string, input: {
   rerunId: string;
   evalId: string;
+  rerunType: EvalRerunType;
   status: "running" | "completed" | "failed";
   tasks: readonly string[];
   trials?: readonly EvalTrialSlot[];
@@ -475,6 +462,8 @@ async function writeRerunState(file: string, input: {
     schema_version: SCHEMA_VERSION,
     rerun_id: input.rerunId,
     eval_id: input.evalId,
+    rerun_type: input.rerunType,
+    semantics: evalRerunSemantics(input.rerunType),
     status: input.status,
     tasks: [...input.tasks],
     ...(input.trials ? { trials: sortSlots(input.trials) } : {}),

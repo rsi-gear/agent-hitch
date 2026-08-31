@@ -734,6 +734,7 @@ hitch eval run ... --daemon          # 提交并等待，保持现有 JSON/JSONL
 hitch eval submit ...                # 提交后立即返回 eval_id
 hitch eval watch eval_<id>           # 跟随 events，最后输出 result
 hitch eval cancel eval_<id>
+hitch eval rerun eval_<id> ... --type candidate-restart
 ```
 
 执行策略参数：
@@ -1461,7 +1462,51 @@ ready -> offered -> accepted -> running -> releasing -> released
 
 恢复过程本身必须产生事件，且同一 lease recovery 可幂等重试。
 
+这里的 `recover` 不是 `rerun`：能够证明原 physical execution 仍存活或已经终止但尚未收集时，应继续消费原执行或收集原结果，不创建新的 Candidate execution。只有 provider 无法恢复原执行且操作方明确选择 rerun policy 时，才可以创建新的 physical execution。
+
 ## 19. 失败分类与重试策略
+
+### 19.1 Rerun 类型
+
+`rerun` 必须显式区分以下类型，不能在恢复失败后静默退化为 Candidate 从头执行：
+
+| `rerun_type` | Candidate 行为 | 对话来源 | Sandbox 来源 | V1 状态 |
+| --- | --- | --- | --- | --- |
+| `candidate-restart` | 从原 instruction 重新执行 | 新会话 | 干净环境 | 已实现；兼容默认值 |
+| `candidate-resume` | 继续原 Candidate | provider-native session | 可验证 checkpoint | 保留；条件不满足时拒绝 |
+| `trajectory-replay` | 新 physical execution 重放上下文 | 已验证 canonical trajectory | 可验证 checkpoint | 保留；条件不满足时拒绝 |
+| `verifier-only` | 不执行 Candidate | 无 | 原 live/retained sandbox | 仅原环境仍可用时允许 |
+| `collect-only` | 不执行 Candidate | 无 | 无 | 用于 terminal-but-uncollected 导入恢复 |
+
+持久化的 rerun request、state、event 和 result 至少记录：
+
+```ts
+interface EvalRerunOperationV1 {
+  rerun_type:
+    | 'candidate-restart'
+    | 'candidate-resume'
+    | 'trajectory-replay'
+    | 'verifier-only'
+    | 'collect-only'
+  semantics: {
+    candidate_action: 'restart' | 'resume' | 'replay' | 'none'
+    conversation_source: 'original-instruction' | 'native-session' | 'canonical-trajectory' | 'none'
+    sandbox_source: 'clean' | 'checkpoint' | 'retained' | 'none'
+    candidate_executes: boolean
+  }
+  source_trial_id?: string
+  source_run_id?: string
+  source_lease_id?: string
+  source_trajectory_digest?: `sha256:${string}`
+  source_checkpoint_digest?: `sha256:${string}`
+}
+```
+
+canonical trajectory 是审计证据，不是进程 checkpoint。把历史消息重新发送给 LLM 只能称为 `trajectory-replay`，不能称为透明 `candidate-resume`，因为轨迹不能单独恢复容器文件系统、后台进程、未完成 tool call、凭据句柄或 provider-native session。`trajectory-replay` 必须同时满足：trajectory 完整性验证通过、来源 lineage 明确、sandbox checkpoint 可恢复、Adapter 明确支持 context replay；否则返回 `eval_trajectory_replay_unavailable`。
+
+`candidate-resume` 必须同时验证 Adapter `resume` capability、原生 session identity、sandbox checkpoint、来源 lease epoch 和模型/protocol identity。任一条件不满足时返回 `eval_candidate_resume_unavailable`，不得改跑 `candidate-restart`。所有新执行必须获得新 lease/epoch，并以 `retry_of` 或 `resume_of` 指向来源执行；旧 epoch 的迟到事件不得覆盖新执行。
+
+### 19.2 失败与重试矩阵
 
 | 阶段 | 稳定错误码示例 | 默认重试 | Candidate 是否重跑 |
 | --- | --- | --- | --- |

@@ -14,4 +14,6 @@ export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } 
 export type { ImportEvalRunsOptions } from "./trial-import.js";
 export { createEvalProgress, evalTrialKey, mergeEvalProgressTrial, readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 export { rerunEval, selectRerunTasks, selectRerunTrialSlots } from "./rerun.js";
-export type { EvalRerunResult, EvalTrialSlot, RerunEvalOptions, RerunSelector } from "./rerun.js";
+export type { EvalTrialSlot, RerunSelector } from "./rerun.js";
+export { EVAL_RERUN_TYPES, assertEvalRerunTypeSupported, evalRerunSemantics, parseEvalRerunType } from "./rerun-types.js";
+export type { EvalRerunResult, EvalRerunSemanticsV1, EvalRerunType, RerunEvalOptions } from "./rerun-types.js";
