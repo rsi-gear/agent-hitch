@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
-import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, ResourceLedger, validateResourceVector } from "../control-plane/index.js";
+import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
 import type { EvalRerunExecutor, EvalSchedulerOptions } from "../control-plane/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
@@ -202,6 +202,13 @@ export class DaemonServer {
     if (request.method === "GET" && url.pathname === "/v1/workers") {
       const worker = this.evalScheduler?.providerSnapshot();
       return json(response, 200, { schema_version: SCHEMA_VERSION, workers: worker ? [worker] : [] });
+    }
+    const buildMatch = url.pathname.match(/^\/v1\/builds\/(build_[a-f0-9]{32})$/);
+    if (request.method === "GET" && buildMatch) {
+      const inspected = await inspectBuild(this.paths.root, buildMatch[1] as string);
+      return inspected
+        ? json(response, 200, { schema_version: SCHEMA_VERSION, build_id: buildMatch[1], ...inspected })
+        : json(response, 404, { error: { code: "build_not_found", message: `build not found: ${buildMatch[1]}` } });
     }
     if (request.method === "POST" && url.pathname === "/v1/runs") {
       const requestBody = await readBodyJSON(request);

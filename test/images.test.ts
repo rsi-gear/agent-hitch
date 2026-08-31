@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Sha256 } from "../src/domain/index.js";
 import { BuildSlotAdmission, ResourceLedger } from "../src/control-plane/index.js";
-import { DockerBuildKitBuilder, EnvironmentImageService, parseEnvironmentImageManifest, resolveBuildContext } from "../src/images/index.js";
+import { DockerBuildKitBuilder, EnvironmentImageService, inspectEnvironmentBuild, parseEnvironmentImageManifest, resolveBuildContext } from "../src/images/index.js";
 import type { EnvironmentImageBuilder } from "../src/images/index.js";
 import { delay, sha256JSON, statePaths } from "../src/foundation/index.js";
 
@@ -63,6 +63,9 @@ test("ten concurrent requests for one environment image invoke BuildKit once", a
     "manifest.json",
   ), "utf8")));
   assert.equal(persisted.image_id, manifest.image_id);
+  const inspected = await inspectEnvironmentBuild(root, `build_${manifest.build.cache_key.slice("sha256:".length, "sha256:".length + 32)}`);
+  assert.equal(inspected?.record.state, "succeeded");
+  assert.equal(inspected?.manifest?.image_id, manifest.image_id);
 
   const restarted = new EnvironmentImageService({ root, builder });
   const cached = await restarted.build(request);

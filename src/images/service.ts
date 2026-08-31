@@ -143,24 +143,31 @@ export class EnvironmentImageService {
   }
 
   private async cached(cacheKey: Sha256): Promise<EnvironmentImageManifestV1 | null> {
-    const record = await readJSON<unknown | null>(recordPath(this.root, cacheKey), null);
+    const record = await readJSON<unknown | null>(environmentBuildRecordPath(this.root, cacheKey), null);
     if (!record) return null;
     const parsed = parseEnvironmentBuildRecord(record);
     if (parsed.state !== "succeeded" || !parsed.image_id) return null;
-    const manifest = await readJSON<unknown | null>(manifestPath(this.root, parsed.image_id), null);
+    const manifest = await readJSON<unknown | null>(environmentImageManifestPath(this.root, parsed.image_id), null);
     return manifest ? parseEnvironmentImageManifest(manifest) : null;
   }
 
   private async writeManifest(manifest: EnvironmentImageManifestV1): Promise<void> {
-    const file = manifestPath(this.root, manifest.image_id);
+    const file = environmentImageManifestPath(this.root, manifest.image_id);
     await ensureDir(path.dirname(file));
     await atomicWriteJSON(file, manifest);
     parseEnvironmentImageManifest(await readJSON(file));
   }
 
   private async writeRecord(record: EnvironmentBuildRecordV1): Promise<void> {
-    const file = recordPath(this.root, record.cache_key);
+    const file = environmentBuildRecordPath(this.root, record.cache_key);
+    const index = path.join(statePaths(this.root).buildIndexes, `${record.build_id}.json`);
     await ensureDir(path.dirname(file));
+    await ensureDir(path.dirname(index));
+    const existing = await readJSON<Record<string, unknown> | null>(index, null);
+    if (existing && (existing.schema_version !== "1" || existing.build_id !== record.build_id || existing.cache_key !== record.cache_key)) {
+      throw new HitchError("environment build id collision", { code: "build_id_collision", exitCode: 12 });
+    }
+    if (!existing) await atomicWriteJSON(index, { schema_version: "1", build_id: record.build_id, cache_key: record.cache_key });
     await atomicWriteJSON(file, record);
   }
 }
@@ -230,10 +237,10 @@ function canonicalBaseImages(value: Array<{ reference: string; digest: Sha256 }>
   return [...value].sort((left, right) => Buffer.compare(Buffer.from(left.reference), Buffer.from(right.reference)));
 }
 
-function manifestPath(root: string, imageId: Sha256): string {
+export function environmentImageManifestPath(root: string, imageId: Sha256): string {
   return path.join(statePaths(root).environmentImages, imageId.slice("sha256:".length), "manifest.json");
 }
 
-function recordPath(root: string, cacheKey: Sha256): string {
+export function environmentBuildRecordPath(root: string, cacheKey: Sha256): string {
   return path.join(statePaths(root).buildRecords, cacheKey.slice("sha256:".length), "record.json");
 }

@@ -6,12 +6,13 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EvalScheduler, ResourceLedger, scaleResources } from "../src/control-plane/index.js";
-import type { BackendWorkItemV1, EvalControlV1, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
+import type { BackendWorkItemV1, EvalControlV1, EvalRequest, ResourceVectorV1, Sha256 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
 import { createExecutionLease, readExecutionLeases, runEval } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256JSON } from "../src/foundation/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { EnvironmentImageService } from "../src/images/index.js";
 
 const GIB = 1024 * 1024 * 1024;
 const TRIAL: ResourceVectorV1 = { cpu_millis: 2_000, memory_bytes: 4 * GIB, container_slots: 1, build_slots: 0 };
@@ -285,6 +286,24 @@ test("eval scheduler reattaches a live local Harbor process and does not rerun t
 
 test("daemon exposes queued eval status and terminal result", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-eval-"));
+  const imageContext = path.join(root, "image-context");
+  await mkdir(imageContext, { recursive: true });
+  await writeFile(path.join(imageContext, "Dockerfile"), "FROM scratch\n");
+  const images = new EnvironmentImageService({
+    root,
+    builder: {
+      id: "daemon-build-test",
+      probe: async () => true,
+      build: async (input) => ({
+        reference: input.outputReference,
+        manifest_digest: sha256JSON({ cache: input.cacheKey, kind: "manifest" }),
+        config_digest: sha256JSON({ cache: input.cacheKey, kind: "config" }),
+        platform: input.platform,
+      }),
+    },
+  });
+  const built = await images.build({ benchmarkId: "demo", benchmarkRevision: "1", contextDirectory: imageContext, platform: "linux/amd64" });
+  const buildId = `build_${built.manifest.build.cache_key.slice("sha256:".length, "sha256:".length + 32)}`;
   const server = new DaemonServer({
     root,
     port: 0,
@@ -302,6 +321,9 @@ test("daemon exposes queued eval status and terminal result", async (t) => {
   const worker = (workers.workers as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
   assert.equal(worker.provider, "local-docker");
   assert.equal((worker.capacity as { total: { container_slots: number } }).total.container_slots, 1);
+  const build = await client.request(`/v1/builds/${buildId}`);
+  assert.equal((build.record as { state: string }).state, "succeeded");
+  assert.equal((build.manifest as { image_id: Sha256 }).image_id, built.manifest.image_id);
   const accepted = await client.request("/v1/evals", { method: "POST", body: JSON.stringify(request(4)) });
   assert.match(accepted.eval_id as string, /^eval_[a-f0-9]{32}$/);
   const status = await waitForStatus(client, accepted.eval_id as string);

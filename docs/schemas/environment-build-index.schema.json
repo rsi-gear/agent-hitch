@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/environment-build-index.schema.json",
+  "title": "Hitch environment build index V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "build_id", "cache_key"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "build_id": { "type": "string", "pattern": "^build_[a-f0-9]{32}$" },
+    "cache_key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

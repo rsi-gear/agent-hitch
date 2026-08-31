@@ -35,7 +35,11 @@ Not yet wired into eval execution:
   resolution;
 - version-canary-backed replacement of a Harbor build stanza with a digest;
 - post-start verification of the actual trial container image digest;
-- image reference GC and `/v1/builds/{build-id}` inspection.
+- image reference GC.
+
+Successful, failed, and in-progress records have a stable `build_<id>` index.
+An authenticated daemon exposes them at `GET /v1/builds/{build-id}` together
+with the verified manifest when one has been promoted.
 
 Until those are implemented, status and result records must describe the
 existing path as `backend-build`, not `prebuilt`.

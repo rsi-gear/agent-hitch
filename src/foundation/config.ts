@@ -28,6 +28,7 @@ export interface StatePaths {
   environmentImages: string;
   buildRecords: string;
   buildLocks: string;
+  buildIndexes: string;
   workspaces: string;
   temporary: string;
   indexes: string;
@@ -78,6 +79,7 @@ export function statePaths(root: string): StatePaths {
     environmentImages: path.join(root, "store", "environment-images", "sha256"),
     buildRecords: path.join(root, "store", "build-records", "sha256"),
     buildLocks: path.join(root, "locks", "builds"),
+    buildIndexes: path.join(root, "indexes", "builds"),
     workspaces: path.join(root, "workspaces"),
     temporary: path.join(root, "tmp"),
     indexes: path.join(root, "indexes"),

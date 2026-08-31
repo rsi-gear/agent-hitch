@@ -10,3 +10,4 @@ export type { WorkDispatchPermit, WorkDispatchRequest, WorkDispatcherSnapshot, W
 export { EvalRerunScheduler, parseEvalRerunSubmissionInput } from "./rerun-scheduler.js";
 export type { EvalRerunExecutor, EvalRerunSchedulerOptions, EvalRerunStatus, EvalRerunSubmissionInput } from "./rerun-scheduler.js";
 export { BuildSlotAdmission } from "./build-admission.js";
+export { inspectBuild } from "./build-records.js";
