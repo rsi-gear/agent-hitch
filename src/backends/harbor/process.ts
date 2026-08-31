@@ -1,17 +1,19 @@
 import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import type { ChildProcess } from "node:child_process";
+import { closeSync, createWriteStream, openSync } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { HitchError, consumeLines, terminateProcess } from "../../foundation/index.js";
 
 export interface HarborProcessCallbacks {
   onStarted?: (pid: number) => void | Promise<void>;
   onExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
+  persistAcrossParentExit?: boolean;
 }
 
 export function invokeHarbor(
   executable: string,
   args: string[],
-  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited }: {
+  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, persistAcrossParentExit }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     stdoutPath: string;
@@ -20,6 +22,18 @@ export function invokeHarbor(
     emit: (event: Record<string, unknown>) => void;
   } & HarborProcessCallbacks,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  if (onStarted && persistAcrossParentExit) {
+    return invokeRecoverableHarbor(executable, args, {
+      cwd,
+      env,
+      stdoutPath,
+      stderrPath,
+      emit,
+      onStarted,
+      ...(signal ? { signal } : {}),
+      ...(onExited ? { onExited } : {}),
+    });
+  }
   return new Promise((resolve, reject) => {
     const stdout = createWriteStream(stdoutPath, { flags: "w", mode: 0o600 });
     const stderr = createWriteStream(stderrPath, { flags: "w", mode: 0o600 });
@@ -71,6 +85,71 @@ export function invokeHarbor(
       Promise.all([started, closeWriteStream(stdout), closeWriteStream(stderr)])
         .then(async () => { await onExited?.(result); resolve(result); })
         .catch(reject);
+    });
+    if (signal?.aborted) abort();
+  });
+}
+
+function invokeRecoverableHarbor(
+  executable: string,
+  args: string[],
+  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited }: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    stdoutPath: string;
+    stderrPath: string;
+    signal?: AbortSignal;
+    emit: (event: Record<string, unknown>) => void;
+    onStarted: (pid: number) => void | Promise<void>;
+    onExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
+  },
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    const stdout = openSync(stdoutPath, "w", 0o600);
+    let stderr: number | undefined;
+    let child: ChildProcess;
+    try {
+      stderr = openSync(stderrPath, "w", 0o600);
+      child = spawn(executable, args, {
+        cwd,
+        env,
+        stdio: ["ignore", stdout, stderr],
+        detached: process.platform !== "win32",
+        windowsHide: true,
+      });
+    } finally {
+      closeSync(stdout);
+      if (stderr !== undefined) closeSync(stderr);
+    }
+    let settled = false;
+    const abort = () => terminateProcess(child).catch(() => {});
+    signal?.addEventListener("abort", abort, { once: true });
+    const started = child.pid === undefined
+      ? Promise.reject(new HitchError("Harbor process has no PID", { code: "harbor_launch_failed", exitCode: 6 }))
+      : Promise.resolve(onStarted(child.pid));
+    started.then(() => emit({ type: "eval.backend.process-recorded", process_id: child.pid })).catch((error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      abort();
+      reject(new HitchError(`failed to record Harbor process identity: ${(error as Error).message}`, {
+        code: "provider_process_record_failed",
+        exitCode: 12,
+        cause: error,
+      }));
+    });
+    child.once("error", (error: Error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      reject(new HitchError(`failed to launch Harbor: ${error.message}`, { code: "harbor_launch_failed", exitCode: 6, cause: error }));
+    });
+    child.once("close", (code: number | null, processSignal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      const result = { code, signal: processSignal };
+      started.then(async () => { await onExited?.(result); resolve(result); }).catch(reject);
     });
     if (signal?.aborted) abort();
   });

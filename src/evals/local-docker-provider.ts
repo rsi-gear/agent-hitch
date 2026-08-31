@@ -216,7 +216,51 @@ export async function releaseLocalDockerProcessRecord(input: { root: string; lea
 
 export async function adoptLocalDockerLeaseEpoch(input: { root: string; leaseId: string; expectedEpoch: number; nextEpoch: number }): Promise<LocalProviderExecutionRecordV1> {
   if (!Number.isSafeInteger(input.nextEpoch) || input.nextEpoch !== input.expectedEpoch + 1) throw new TypeError("local provider next lease epoch is invalid");
-  return mutateProviderRecord(input.root, input.leaseId, input.expectedEpoch, (record) => ({ ...record, lease_epoch: input.nextEpoch }));
+  return mutateProviderRecord(input.root, input.leaseId, input.expectedEpoch, (record) => {
+    if (record.state === "released") throw new HitchError("cannot adopt a released local provider process", { code: "provider_process_released", exitCode: 12 });
+    return { ...record, lease_epoch: input.nextEpoch };
+  });
+}
+
+export async function readLocalDockerProcessRecord(input: { root: string; leaseId: string; epoch: number }): Promise<LocalProviderExecutionRecordV1> {
+  return (await locateProviderRecord(input.root, input.leaseId, input.epoch)).record;
+}
+
+export async function reconcileLocalDockerProcess(input: { root: string; leaseId: string; epoch: number }): Promise<LocalProviderExecutionRecordV1> {
+  return mutateProviderRecord(input.root, input.leaseId, input.epoch, async (record) => {
+    if (record.state !== "running") return record;
+    const status = await inspectProcessIdentity(record.process);
+    if (status === "running" || status === "unavailable") return record;
+    return {
+      ...record,
+      state: "terminal",
+      process_exit_code: null,
+      signal: null,
+      completed_at: new Date().toISOString(),
+    };
+  });
+}
+
+export async function waitForLocalDockerProcessTerminal(input: {
+  root: string;
+  leaseId: string;
+  epoch: number;
+  signal?: AbortSignal;
+  pollIntervalMs?: number;
+}): Promise<LocalProviderExecutionRecordV1> {
+  const pollIntervalMs = input.pollIntervalMs ?? 500;
+  if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1) throw new TypeError("local provider poll interval is invalid");
+  for (;;) {
+    if (input.signal?.aborted) throw new HitchError("local provider process wait was cancelled", { code: "provider_wait_cancelled", exitCode: 9 });
+    const record = await readLocalDockerProcessRecord(input);
+    if (record.state !== "running") return record;
+    const status = await inspectProcessIdentity(record.process);
+    if (status === "terminal" || status === "identity-mismatch") return reconcileLocalDockerProcess(input);
+    if (status === "unavailable") {
+      throw new HitchError("local provider process identity is unavailable", { code: "provider_process_probe_unavailable", exitCode: 12 });
+    }
+    await abortableDelay(pollIntervalMs, input.signal);
+  }
 }
 
 export function parseLocalProviderExecutionRecord(value: unknown): LocalProviderExecutionRecordV1 {
@@ -268,14 +312,29 @@ async function readLeaseIndex(root: string, leaseId: string): Promise<{ eval_id:
   return { eval_id: value.eval_id };
 }
 
-async function mutateProviderRecord(root: string, leaseId: string, epoch: number, update: (record: LocalProviderExecutionRecordV1) => LocalProviderExecutionRecordV1): Promise<LocalProviderExecutionRecordV1> {
+async function mutateProviderRecord(root: string, leaseId: string, epoch: number, update: (record: LocalProviderExecutionRecordV1) => LocalProviderExecutionRecordV1 | Promise<LocalProviderExecutionRecordV1>): Promise<LocalProviderExecutionRecordV1> {
   validateLeaseMutation(leaseId, epoch);
   return withFileLock(path.join(root, "providers", "local-docker", ".locks"), leaseId, async () => {
     const { evalDirectory, record } = await locateProviderRecord(root, leaseId, epoch);
-    const next = parseLocalProviderExecutionRecord(update(record));
+    const next = parseLocalProviderExecutionRecord(await update(record));
     await writeRecord(evalDirectory, next);
     return next;
   }, { timeoutCode: "provider_record_locked", timeoutExitCode: 12 });
+}
+
+function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, milliseconds);
+    const abort = () => done(new HitchError("local provider process wait was cancelled", { code: "provider_wait_cancelled", exitCode: 9 }));
+    function done(error?: Error): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve();
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+  });
 }
 
 async function locateProviderRecord(root: string, leaseId: string, epoch: number): Promise<{ evalDirectory: string; record: LocalProviderExecutionRecordV1 }> {

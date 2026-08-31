@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BackendWorkItemV1, ExecutionProviderStatusV1 } from "../src/domain/index.js";
-import { createExecutionLease, LocalDockerExecutionProvider, parseExecutionProviderStatus, parseLocalProviderExecutionRecord } from "../src/evals/index.js";
+import { adoptLocalDockerLeaseEpoch, createExecutionLease, LocalDockerExecutionProvider, parseExecutionProviderStatus, parseLocalProviderExecutionRecord, readLocalDockerProcessRecord, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord, waitForLocalDockerProcessTerminal } from "../src/evals/index.js";
 import { captureProcessIdentity, inspectProcessIdentity } from "../src/foundation/index.js";
 
 const evalId = "eval_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -103,6 +103,38 @@ test("local Docker provider records process identity and classifies recovery wit
   await assert.rejects(provider.release(lease.leaseId, 3), (error: unknown) => (error as { code?: string }).code === "lease_epoch_mismatch");
   await provider.release(lease.leaseId, 2);
   assert.equal((await provider.recover(recoveredLease)).state, "released");
+  await assert.rejects(provider.adoptLeaseEpoch(lease.leaseId, 2, 3), (error: unknown) => (error as { code?: string }).code === "provider_process_released");
+});
+
+test("local Docker provider reconciles an orphaned terminal process without inventing an exit code", async (t) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-local-provider-reconcile-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const evalDirectory = path.join(root, "evals", evalId);
+  const backendDirectory = path.join(evalDirectory, "harbor", "work-items", workId, "epoch-000001");
+  await mkdir(backendDirectory, { recursive: true });
+  const workerId = "worker_local_reconcile";
+  const lease = await createExecutionLease({
+    evalDirectory,
+    evalId,
+    workId,
+    worker: { workerId, provider: "local-docker", collisionDomainId: "docker:test" },
+    reservation,
+    ttlMs: 60_000,
+  });
+  const activeLease = await lease.markRunning(1);
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 25)"], { stdio: "ignore", detached: true });
+  assert.ok(child.pid);
+  await recordLocalDockerProcessStart({ root, workerId, evalDirectory, lease: activeLease, backendDirectory, pid: child.pid });
+  await new Promise<void>((resolve) => child.once("close", () => resolve()));
+  const terminal = await waitForLocalDockerProcessTerminal({ root, leaseId: lease.leaseId, epoch: 1, pollIntervalMs: 5 });
+  assert.equal(terminal.state, "terminal");
+  assert.equal(terminal.process_exit_code, null);
+  assert.equal(terminal.signal, null);
+  assert.deepEqual(await readLocalDockerProcessRecord({ root, leaseId: lease.leaseId, epoch: 1 }), terminal);
+  const adopted = await adoptLocalDockerLeaseEpoch({ root, leaseId: lease.leaseId, expectedEpoch: 1, nextEpoch: 2 });
+  assert.equal(adopted.state, "terminal");
+  await releaseLocalDockerProcessRecord({ root, leaseId: lease.leaseId, epoch: 2 });
 });
 
 function providerStatus(workerId: string): ExecutionProviderStatusV1 {

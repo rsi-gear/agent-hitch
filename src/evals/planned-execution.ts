@@ -255,6 +255,7 @@ async function executeLeasedWorkItem(
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
     ...(options.worker.provider === "local-docker" && process.platform !== "win32" ? {
+      recoverableProcess: true,
       onProcessStarted: (pid: number) => recordLocalDockerProcessStart({
         root: options.root,
         workerId: options.worker.workerId,

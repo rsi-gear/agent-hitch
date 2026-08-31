@@ -35,6 +35,7 @@ export interface RunHarborBackendOptions {
   trialBundleGraceMs?: number;
   onProcessStarted?: (pid: number) => void | Promise<void>;
   onProcessExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
+  recoverableProcess?: boolean;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -90,6 +91,7 @@ export async function runHarborBackend({
   trialBundleGraceMs = DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS,
   onProcessStarted,
   onProcessExited,
+  recoverableProcess = false,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
@@ -141,6 +143,7 @@ export async function runHarborBackend({
       ...(signal ? { signal } : {}),
       ...(onProcessStarted ? { onStarted: onProcessStarted } : {}),
       ...(onProcessExited ? { onExited: onProcessExited } : {}),
+      ...(recoverableProcess ? { persistAcrossParentExit: true } : {}),
       emit,
     });
   } finally {

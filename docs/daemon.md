@@ -176,10 +176,11 @@ parent resource allocation, reservation, epoch, heartbeat, and terminal
 release. Running work renews its lease every 10 seconds against a 45-second
 TTL. Recovery that can prove the original physical execution is still alive
 reissues the lease at a higher epoch; old-epoch heartbeat and release writes
-then fail closed. The current local provider does not yet persist enough
-process identity to make that proof after daemon restart, so accepted/running
-leases are conservatively marked `lost` at a higher epoch and the enclosing
-eval follows the no-blind-replay recovery rule.
+then fail closed. The local provider persists Harbor PID and process-start
+identity and can therefore distinguish a live original process from PID reuse.
+The scheduler does not yet consume that proof during daemon startup, so its
+current restart path still marks active leases `lost` and follows the
+no-blind-replay recovery rule.
 
 The rerun submission body uses one explicit selector:
 
@@ -199,7 +200,11 @@ provider execution record under `evals/<eval-id>/provider/leases/`. The record
 pins the work/lease epoch, epoch-qualified backend directory, Harbor PID, and an
 OS process-start identity so PID reuse cannot be mistaken for a recovered run.
 The local probe distinguishes `running`, `terminal-uncollected`, `released`, and
-`ambiguous`; daemon orchestration does not yet reattach a probed process.
+`ambiguous`. Lease-managed Harbor processes write stdout/stderr directly to
+epoch-qualified files instead of daemon-owned pipes, allowing the original
+process to survive a daemon crash. The provider can poll and reconcile an
+orphaned process without inventing an exit code; daemon orchestration does not
+yet reattach or collect a probed process.
 
 ## Filesystem contract
 

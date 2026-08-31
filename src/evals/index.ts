@@ -17,5 +17,5 @@ export { rerunEval, selectRerunTasks, selectRerunTrialSlots } from "./rerun.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun.js";
 export { EVAL_RERUN_TYPES, assertEvalRerunTypeSupported, evalRerunSemantics, parseEvalRerunType } from "./rerun-types.js";
 export type { EvalRerunResult, EvalRerunSemanticsV1, EvalRerunType, RerunEvalOptions } from "./rerun-types.js";
-export { LocalDockerExecutionProvider, adoptLocalDockerLeaseEpoch, parseExecutionProviderStatus, parseLocalProviderExecutionRecord, recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord } from "./local-docker-provider.js";
+export { LocalDockerExecutionProvider, adoptLocalDockerLeaseEpoch, parseExecutionProviderStatus, parseLocalProviderExecutionRecord, readLocalDockerProcessRecord, reconcileLocalDockerProcess, recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord, waitForLocalDockerProcessTerminal } from "./local-docker-provider.js";
 export type { LocalDockerExecutionProviderOptions, LocalProviderExecutionRecordV1 } from "./local-docker-provider.js";
