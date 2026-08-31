@@ -182,6 +182,10 @@ export class DaemonServer {
       const key = url.pathname === "/v1/agents" ? "agents" : "harnesses";
       return json(response, 200, { schema_version: SCHEMA_VERSION, [key]: this.agents });
     }
+    if (request.method === "GET" && url.pathname === "/v1/workers") {
+      const worker = this.evalScheduler?.workerSnapshot();
+      return json(response, 200, { schema_version: SCHEMA_VERSION, workers: worker ? [worker] : [] });
+    }
     if (request.method === "POST" && url.pathname === "/v1/runs") {
       const requestBody = await readBodyJSON(request);
       const runId = await this.scheduler?.submit(requestBody as RunRequestInput);

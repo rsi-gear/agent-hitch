@@ -207,6 +207,7 @@ control.json                  # queued/running/cancelling/terminal control state
 resolution.json
 plan.json
 execution-plan.json           # immutable slots, work items, resource reservations
+leases/                       # per-work-item worker/resource lease history
 runtime.ref.json
 local-source/                 # present only for transported local Git commits
   manifest.json

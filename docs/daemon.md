@@ -113,6 +113,7 @@ Run requests are validated against the contract represented by
 | --- | --- | --- |
 | `GET` | `/health` | Readiness, PID, uptime, detected harnesses, queue counts |
 | `GET` | `/v1/harnesses` | Refresh and return detailed harness discovery |
+| `GET` | `/v1/workers` | Return local execution-provider capabilities and resource capacity |
 | `GET` | `/v1/agents` | Compatibility alias using the legacy response key |
 | `POST` | `/v1/runs` | Validate, persist, and enqueue a run |
 | `GET` | `/v1/runs/{id}` | Read manifest and final result when present |
@@ -126,6 +127,12 @@ Run requests are validated against the contract represented by
 
 `POST /v1/evals` accepts an optional `Idempotency-Key` header. The key is
 hashed before persistence and is scoped to the daemon's state root.
+
+Every planned local Harbor work item writes an execution lease under
+`evals/<eval-id>/leases/`. The lease records its worker, collision domain,
+parent resource allocation, reservation, epoch, and terminal release. On daemon
+restart, an accepted/running lease that cannot be proven complete is marked
+`lost`; the enclosing eval follows the existing no-blind-replay recovery rule.
 
 ## Filesystem contract
 

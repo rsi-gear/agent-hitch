@@ -6,6 +6,8 @@ import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js"
 import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalId, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
+import { createExecutionLease } from "./execution-leases.js";
+import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import { runInfrastructureRetries } from "./infrastructure-retry.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
@@ -17,6 +19,7 @@ export interface PlannedBackendRun {
   workId: string;
   tasks: string[];
   refs: EvalTrialRefV1[];
+  leaseId: string;
   run: HarborBackendResult;
 }
 
@@ -36,6 +39,7 @@ export interface ExecutePlannedHarborOptions {
   signal?: AbortSignal;
   trialBundleGraceMs?: number;
   sink: EvalEventSink;
+  worker: ExecutionWorkerIdentity;
 }
 
 export async function executePlannedHarborTasks(options: ExecutePlannedHarborOptions): Promise<{
@@ -64,7 +68,6 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       try {
         release = await semaphore.acquire(options.signal);
         if (stopDispatch || options.signal?.aborted) break;
-        options.sink.emit({ type: "eval.work-item.started", work_id: item.work_id, task_id: taskId, attempt: item.logical_attempt });
         const completed = await executeWorkItem(options, publisher, item);
         results.push(completed);
         const failed = completed.run.backend.process_exit_code !== 0 || completed.run.rawResult === null
@@ -72,6 +75,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
         options.sink.emit({
           type: "eval.work-item.completed",
           work_id: item.work_id,
+          lease_id: completed.leaseId,
           task_id: taskId,
           attempt: item.logical_attempt,
           process_exit_code: completed.run.backend.process_exit_code,
@@ -127,6 +131,42 @@ async function executeWorkItem(
   publisher: ProgressPublisher,
   item: BackendWorkItemV1,
 ): Promise<PlannedBackendRun> {
+  const lease = await createExecutionLease({
+    evalDirectory: options.evalDirectory,
+    evalId: options.evalId,
+    workId: item.work_id,
+    worker: options.worker,
+    reservation: item.reservation,
+    ttlMs: executionLeaseTtl(options.request),
+  });
+  await lease.markRunning();
+  options.sink.emit({
+    type: "eval.work-item.started",
+    work_id: item.work_id,
+    lease_id: lease.leaseId,
+    lease_epoch: lease.current().epoch,
+    task_id: item.task_ids[0],
+    attempt: item.logical_attempt,
+  });
+  try {
+    return { ...await executeLeasedWorkItem(options, publisher, item), leaseId: lease.leaseId };
+  } finally {
+    const released = await lease.release();
+    options.sink.emit({
+      type: "eval.work-item.lease-released",
+      work_id: item.work_id,
+      lease_id: lease.leaseId,
+      lease_epoch: released.epoch,
+      state: released.state,
+    });
+  }
+}
+
+async function executeLeasedWorkItem(
+  options: ExecutePlannedHarborOptions,
+  publisher: ProgressPublisher,
+  item: BackendWorkItemV1,
+): Promise<Omit<PlannedBackendRun, "leaseId">> {
   const logicalAttempt = item.logical_attempt as number;
   const taskId = item.task_ids[0] as string;
   const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id);
@@ -305,4 +345,9 @@ function assertTaskSlotPlan(plan: EvalExecutionPlanV1): void {
 
 function workOrder(plan: EvalExecutionPlanV1, workId: string): number {
   return plan.work_items.findIndex((item) => item.work_id === workId);
+}
+
+function executionLeaseTtl(request: EvalRequest): number {
+  const requested = request.timeout_ms + request.setup_timeout_ms + 60_000;
+  return Math.max(60_000, Math.min(requested || 24 * 60 * 60 * 1_000, 30 * 24 * 60 * 60 * 1_000));
 }

@@ -1,7 +1,9 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { inspectEvalRuntimeKind } from "../controller-runtime/index.js";
+import type { ExecutionLeaseV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput, readJSON, statePaths } from "../foundation/index.js";
+import { readExecutionLeases } from "./execution-leases.js";
 
 export interface ListedEval {
   eval_id: string;
@@ -55,6 +57,7 @@ export interface InspectedEval {
   submission: Record<string, unknown> | null;
   control: Record<string, unknown> | null;
   progress: Record<string, unknown> | null;
+  leases: ExecutionLeaseV1[];
   result: Record<string, unknown> | null;
   runtime_storage: "controller-runtime-ref-v1" | "embedded-runtime-v1" | "none";
 }
@@ -75,6 +78,7 @@ export async function inspectEval(evalId: string, { root }: { root: string }): P
     submission: await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null),
     control: await readJSON<Record<string, unknown> | null>(path.join(directory, "control.json"), null),
     progress: await readJSON<Record<string, unknown> | null>(path.join(directory, "progress.json"), null),
+    leases: await readExecutionLeases(directory),
     result: await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null),
     runtime_storage: await inspectEvalRuntimeKind(directory),
   };

@@ -88,11 +88,11 @@ export async function parseEvalSubmission(value: unknown, expectedEvalId: EvalId
   };
 }
 
-export async function evalCollisionKeys(request: EvalRequest): Promise<string[]> {
+export async function evalCollisionKeys(request: EvalRequest, collisionDomainId = "local-docker"): Promise<string[]> {
   const tasks = await resolveLocalDatasetTaskIds(request.dataset);
   const taskIds = tasks === null ? ["*"] : tasks;
   return taskIds.map((taskId) => `collision_${sha256JSON({
-    domain: "local-docker",
+    domain: collisionDomainId,
     backend: request.backend,
     benchmark_id: request.benchmark_id,
     benchmark_revision: request.benchmark_revision,

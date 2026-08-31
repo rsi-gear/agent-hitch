@@ -6,6 +6,7 @@ import path from "node:path";
 import { EvalScheduler, ResourceLedger, scaleResources } from "../src/control-plane/index.js";
 import type { EvalControlV1, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
+import { createExecutionLease, readExecutionLeases } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256JSON } from "../src/foundation/index.js";
 
@@ -131,6 +132,20 @@ test("eval scheduler fails an ambiguous interrupted execution without replaying 
     created_at: now,
     updated_at: now,
   } satisfies EvalControlV1);
+  const interruptedLease = await createExecutionLease({
+    evalDirectory: directory,
+    evalId,
+    workId: "work_cccccccccccccccccccccccccccccccc",
+    worker: {
+      workerId: "worker_test",
+      provider: "local-docker",
+      collisionDomainId: "docker:test",
+      parentAllocationId: "allocation_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    },
+    reservation: TRIAL,
+    ttlMs: 60_000,
+  });
+  await interruptedLease.markRunning();
 
   let executions = 0;
   const scheduler = new EvalScheduler({
@@ -148,6 +163,7 @@ test("eval scheduler fails an ambiguous interrupted execution without replaying 
   assert.equal(executions, 0);
   assert.equal(status?.control.state, "failed");
   assert.equal((status?.result?.error as { code: string }).code, "execution_state_ambiguous");
+  assert.equal((await readExecutionLeases(directory))[0]?.state, "lost");
 });
 
 test("daemon exposes queued eval status and terminal result", async (t) => {
@@ -165,6 +181,10 @@ test("daemon exposes queued eval status and terminal result", async (t) => {
     await rm(root, { recursive: true, force: true });
   });
   const client = await daemonClient(root);
+  const workers = await client.request("/v1/workers");
+  const worker = (workers.workers as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
+  assert.equal(worker.provider, "local-docker");
+  assert.equal((worker.capacity as { total: { container_slots: number } }).total.container_slots, 1);
   const accepted = await client.request("/v1/evals", { method: "POST", body: JSON.stringify(request(4)) });
   assert.match(accepted.eval_id as string, /^eval_[a-f0-9]{32}$/);
   const status = await waitForStatus(client, accepted.eval_id as string);

@@ -6,7 +6,7 @@ import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocal
 import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import { ensureControllerRuntime, writeRuntimeReference } from "../controller-runtime/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { EvalId, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
+import type { EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { EvalEventSink } from "./events.js";
 import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
@@ -14,41 +14,12 @@ import { infrastructureFailureTrials, runInfrastructureRetries } from "./infrast
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 import { invalidTrialSlots } from "./rerun-slots.js";
-import type { EvalRequestInput } from "./request.js";
 import { prepareEvalDirectory } from "./directory.js";
 import { buildEvalExecutionPlan } from "./execution-plan.js";
 import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
-export interface RunEvalOptions {
-  evalId?: EvalId;
-  request: EvalRequestInput;
-  root: string;
-  env?: NodeJS.ProcessEnv;
-  harborExecutable?: string;
-  signal?: AbortSignal;
-  onEvent?: (event: Record<string, unknown>) => void;
-  trialBundleGraceMs?: number;
-  /** Internal control-plane handoff for an eval directory created at admission. */
-  precreated?: boolean;
-  /** Internal normalized request paired with precreated request.json. */
-  normalizedRequest?: EvalRequest;
-  /** Internal control-plane grant; request.json retains the requested cap. */
-  maxConcurrentOverride?: number;
-  /** Internal operator reservation written into the immutable execution plan. */
-  executionResources?: import("../domain/index.js").ResourceVectorV1;
-  /** Internal execution strategy; direct mode retains the compatibility path. */
-  executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
-}
-export interface EvalResult extends Record<string, unknown> {
-  schema_version: string;
-  eval_id: EvalId;
-  status: string;
-  exit_code: number;
-  error?: { code: string; message: string };
-  started_at: string;
-  completed_at: string;
-}
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards" }: RunEvalOptions): Promise<EvalResult> {
+import type { EvalResult, RunEvalOptions } from "./service-types.js";
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -190,6 +161,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       tasks: localTaskIds,
       maxParallelism: normalized.max_concurrent,
       ...(executionResources ? { trialResources: executionResources } : {}),
+      ...(executionWorker ? { provider: executionWorker.provider } : {}),
       ...(executionStrategy === "local-task-slots-v1" && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
       createdAt: plan.created_at,
     });
@@ -224,7 +196,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(signal ? { signal } : {}),
       });
     }
-    const backendRuns: Array<{ attempt: number; run: HarborBackendResult; workId?: string; tasks?: string[] }> = [];
+    const backendRuns: Array<{ attempt: number; run: HarborBackendResult; workId?: string; tasks?: string[]; leaseId?: string }> = [];
     const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
     const plannedTaskExecution = executionStrategy === "local-task-slots-v1" && localTaskIds !== null;
     if (plannedTaskExecution) {
@@ -244,6 +216,11 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(signal ? { signal } : {}),
         ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
         sink,
+        worker: executionWorker || {
+          workerId: `worker_process_${process.pid}`,
+          provider: "local-docker",
+          collisionDomainId: `local-process:${process.pid}`,
+        },
       });
       progress = execution.progress;
       backendRuns.push(...execution.backendRuns.map((entry) => ({
@@ -251,6 +228,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         run: entry.run,
         workId: entry.workId,
         tasks: entry.tasks,
+        leaseId: entry.leaseId,
       })));
       infrastructureRetryRuns.push(...execution.infrastructureRetryRuns);
     } else for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
@@ -402,8 +380,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       exit_code: cancelled ? 9 : succeeded ? 0 : 13,
       ...(singleBackend ? { backend: singleBackend.backend, backend_summary: singleBackend.summary } : {}),
       ...(plannedTaskExecution ? {
-        backend_work_items: backendRuns.map(({ attempt, workId, tasks, run }) => ({
+        backend_work_items: backendRuns.map(({ attempt, workId, tasks, leaseId, run }) => ({
           work_id: workId,
+          lease_id: leaseId,
           attempt,
           tasks,
           backend: run.backend,

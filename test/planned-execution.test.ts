@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseEvalExecutionPlan, runEval } from "../src/evals/index.js";
+import { parseEvalExecutionPlan, readExecutionLeases, runEval } from "../src/evals/index.js";
 import { readJSON } from "../src/foundation/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 
@@ -41,6 +41,10 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const plan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(evalDirectory, "execution-plan.json")));
   assert.equal(plan.membership, "known");
   assert.equal(plan.work_items.length, 4);
+  const leases = await readExecutionLeases(evalDirectory);
+  assert.equal(leases.length, 4);
+  assert.ok(leases.every((lease) => lease.state === "released" && lease.terminal_at));
+  assert.deepEqual(new Set(leases.map((lease) => lease.work_id)), new Set(plan.work_items.map((item) => item.work_id)));
   for (const item of plan.work_items) {
     const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", item.work_id, "job.json"));
     const datasets = config.datasets as Array<Record<string, unknown>>;
