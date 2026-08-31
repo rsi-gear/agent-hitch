@@ -5,6 +5,8 @@ export type { HitchErrorOptions } from "./errors.js";
 export { appendLine, atomicWriteJSON, ensureDir, readJSON, removeIfExists, writePrivateFile } from "./fs.js";
 export { reclaimStaleLock } from "./locks.js";
 export { withFileLock } from "./locks.js";
+export { captureProcessIdentity, inspectProcessIdentity, validateProcessIdentity } from "./process-identity.js";
+export type { ProcessIdentityStatus, ProcessIdentityV1 } from "./process-identity.js";
 export type { FileLockOptions } from "./locks.js";
 export { consumeLines } from "./line-stream.js";
 export { packageRoot, packageVersion } from "./package-root.js";

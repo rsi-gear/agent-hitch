@@ -200,7 +200,7 @@ export class DaemonServer {
       return json(response, 200, { schema_version: SCHEMA_VERSION, [key]: this.agents });
     }
     if (request.method === "GET" && url.pathname === "/v1/workers") {
-      const worker = this.evalScheduler?.workerSnapshot();
+      const worker = this.evalScheduler?.providerSnapshot();
       return json(response, 200, { schema_version: SCHEMA_VERSION, workers: worker ? [worker] : [] });
     }
     if (request.method === "POST" && url.pathname === "/v1/runs") {

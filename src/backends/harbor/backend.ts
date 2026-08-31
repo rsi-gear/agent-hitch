@@ -1,14 +1,12 @@
-import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
-import type { WriteStream } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { HitchError, atomicWriteJSON, consumeLines, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths, terminateProcess } from "../../foundation/index.js";
+import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths } from "../../foundation/index.js";
 import type { EvalRequest, ResolvedRevision } from "../../domain/index.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
+import { invokeHarbor } from "./process.js";
 
 const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
@@ -35,6 +33,8 @@ export interface RunHarborBackendOptions {
   emit?: (event: Record<string, unknown>) => void;
   onTrialSettled?: (trial: Record<string, unknown>, context: HarborSettledTrialContext) => Promise<boolean>;
   trialBundleGraceMs?: number;
+  onProcessStarted?: (pid: number) => void | Promise<void>;
+  onProcessExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -88,6 +88,8 @@ export async function runHarborBackend({
   emit = () => {},
   onTrialSettled,
   trialBundleGraceMs = DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS,
+  onProcessStarted,
+  onProcessExited,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
@@ -137,6 +139,8 @@ export async function runHarborBackend({
       stdoutPath: path.join(backendDirectory, "stdout.log"),
       stderrPath: path.join(backendDirectory, "stderr.log"),
       ...(signal ? { signal } : {}),
+      ...(onProcessStarted ? { onStarted: onProcessStarted } : {}),
+      ...(onProcessExited ? { onExited: onProcessExited } : {}),
       emit,
     });
   } finally {
@@ -431,68 +435,6 @@ function withBridgePythonPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     ...env,
     PYTHONPATH: [BRIDGE_DIRECTORY, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
   };
-}
-
-function invokeHarbor(
-  executable: string,
-  args: string[],
-  { cwd, env, stdoutPath, stderrPath, signal, emit }: {
-    cwd: string;
-    env: NodeJS.ProcessEnv;
-    stdoutPath: string;
-    stderrPath: string;
-    signal?: AbortSignal;
-    emit: (event: Record<string, unknown>) => void;
-  },
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  return new Promise((resolve, reject) => {
-    const stdout = createWriteStream(stdoutPath, { flags: "w", mode: 0o600 });
-    const stderr = createWriteStream(stderrPath, { flags: "w", mode: 0o600 });
-    const child = spawn(executable, args, {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      windowsHide: true,
-    });
-    child.stdout.pipe(stdout);
-    child.stderr.pipe(stderr);
-    consumeLines(child.stdout, (line) => emit({ type: "eval.backend.output", stream: "stdout", text: line }));
-    consumeLines(child.stderr, (line) => emit({ type: "eval.backend.output", stream: "stderr", text: line }));
-    let settled = false;
-    const abort = () => terminateProcess(child).catch(() => {});
-    signal?.addEventListener("abort", abort, { once: true });
-    child.once("error", (error: Error) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", abort);
-      stdout.destroy();
-      stderr.destroy();
-      reject(new HitchError(`failed to launch Harbor: ${error.message}`, {
-        code: "harbor_launch_failed",
-        exitCode: 6,
-        cause: error,
-      }));
-    });
-    child.once("close", (code: number | null, processSignal: NodeJS.Signals | null) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", abort);
-      Promise.all([closeWriteStream(stdout), closeWriteStream(stderr)])
-        .then(() => resolve({ code, signal: processSignal }))
-        .catch(reject);
-    });
-    if (signal?.aborted) abort();
-  });
-}
-
-function closeWriteStream(stream: WriteStream): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (stream.closed) return resolve();
-    stream.once("error", reject);
-    stream.once("close", resolve);
-    stream.end();
-  });
 }
 
 function compact(value: Record<string, unknown>): Record<string, unknown> {

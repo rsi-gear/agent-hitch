@@ -63,12 +63,17 @@ test("planned local execution overlaps different tasks and serializes attempts o
   assert.ok(leases.every((lease) => lease.state === "released" && lease.terminal_at && lease.parent_allocation_id));
   assert.deepEqual(new Set(leases.map((lease) => lease.work_id)), new Set(plan.work_items.map((item) => item.work_id)));
   for (const item of plan.work_items) {
-    const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", item.work_id, "job.json"));
+    const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", item.work_id, "epoch-000001", "job.json"));
     const datasets = config.datasets as Array<Record<string, unknown>>;
     assert.equal(config.n_attempts, 1);
     assert.equal(config.n_concurrent_trials, 1);
     assert.deepEqual(datasets[0]?.task_names, item.task_ids);
   }
+  const providerRecords = await Promise.all(leases.map((lease) => readJSON<Record<string, unknown>>(
+    path.join(evalDirectory, "provider", "leases", `${lease.lease_id}.json`),
+  )));
+  assert.ok(providerRecords.every((record) => record.state === "released" && record.lease_epoch === 1));
+  assert.ok(providerRecords.every((record) => String(record.backend_directory).includes(`/epoch-000001`)));
 
   const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Activity);
   for (const task of ["one", "two"]) {

@@ -3,11 +3,12 @@ import type { ResolvedRevision } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalId, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalId, EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionLeaseV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease } from "./execution-leases.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
+import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord } from "./local-docker-provider.js";
 import { runInfrastructureRetries } from "./infrastructure-retry.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
@@ -162,6 +163,7 @@ async function executeWorkItem(
     ttlMs: DEFAULT_EXECUTION_LEASE_TTL_MS,
   });
   const epoch = lease.current().epoch;
+  const providerProcess = { recorded: false };
   await lease.markRunning(epoch);
   options.sink.emit({
     type: "eval.work-item.started",
@@ -189,7 +191,7 @@ async function executeWorkItem(
   }, DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS);
   heartbeatTimer.unref();
   try {
-    const completed = await executeLeasedWorkItem(options, publisher, item);
+    const completed = await executeLeasedWorkItem(options, publisher, item, lease.current(), providerProcess);
     await heartbeatTail;
     if (heartbeatFailure !== undefined) throw heartbeatFailure;
     return { ...completed, leaseId: lease.leaseId };
@@ -197,6 +199,7 @@ async function executeWorkItem(
     clearInterval(heartbeatTimer);
     await heartbeatTail;
     const released = await lease.release(epoch);
+    if (providerProcess.recorded) await releaseLocalDockerProcessRecord({ root: options.root, leaseId: lease.leaseId, epoch });
     options.sink.emit({
       type: "eval.work-item.lease-released",
       work_id: item.work_id,
@@ -211,10 +214,12 @@ async function executeLeasedWorkItem(
   options: ExecutePlannedHarborOptions,
   publisher: ProgressPublisher,
   item: BackendWorkItemV1,
+  lease: ExecutionLeaseV1,
+  providerProcess: { recorded: boolean },
 ): Promise<Omit<PlannedBackendRun, "leaseId">> {
   const logicalAttempt = item.logical_attempt as number;
   const taskId = item.task_ids[0] as string;
-  const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id);
+  const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(lease.epoch).padStart(6, "0")}`);
   const harborJobDirectory = path.join(backendDirectory, "job");
   const refs: EvalTrialRefV1[] = [];
   const publish = async (ref: EvalTrialRefV1): Promise<void> => {
@@ -249,6 +254,22 @@ async function executeLeasedWorkItem(
     ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
+    ...(options.worker.provider === "local-docker" && process.platform !== "win32" ? {
+      onProcessStarted: (pid: number) => recordLocalDockerProcessStart({
+        root: options.root,
+        workerId: options.worker.workerId,
+        evalDirectory: options.evalDirectory,
+        lease,
+        backendDirectory,
+        pid,
+      }).then(() => { providerProcess.recorded = true; }),
+      onProcessExited: (result: { code: number | null; signal: NodeJS.Signals | null }) => recordLocalDockerProcessExit({
+        root: options.root,
+        leaseId: lease.lease_id,
+        epoch: lease.epoch,
+        ...result,
+      }).then(() => undefined),
+    } : {}),
     emit: (event) => options.sink.emit({ ...event, work_id: item.work_id, task_id: taskId }),
     onTrialSettled: async (trial, context): Promise<boolean> => {
       try {

@@ -192,6 +192,15 @@ operations and share the daemon resource ledger and collision domain with new
 evals. The reserved resume/replay/collect types retain their distinct semantics
 and stable unavailable errors; they never fall back to `candidate-restart`.
 
+`GET /v1/workers` now returns the execution-provider status contract: provider
+and worker identity, collision domain, health heartbeat, platforms, backend
+versions/features, and vector capacity. For planned local work, Hitch stores a
+provider execution record under `evals/<eval-id>/provider/leases/`. The record
+pins the work/lease epoch, epoch-qualified backend directory, Harbor PID, and an
+OS process-start identity so PID reuse cannot be mistaken for a recovered run.
+The local probe distinguishes `running`, `terminal-uncollected`, `released`, and
+`ambiguous`; daemon orchestration does not yet reattach a probed process.
+
 ## Filesystem contract
 
 ```text

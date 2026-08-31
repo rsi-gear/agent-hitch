@@ -1,6 +1,6 @@
 import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { EvalControlV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalControlV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { EvalEventSink, newEvalId, readExecutionLeases, recoverExecutionLeases, resolveLocalDatasetTaskIds, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
 import type { EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
@@ -11,7 +11,7 @@ import type { CollisionLease } from "./collisions.js";
 import { evalTaskCollisionKey, idempotencyIndexPath, isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState, validateIdempotencyKey } from "./eval-records.js";
 import { WorkItemDispatcher } from "./work-dispatcher.js";
 import { workItemAdmission } from "./work-admission.js";
-import { localWorkerSnapshot } from "./local-worker.js";
+import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker.js";
 
 interface QueuedEval {
   evalId: EvalId;
@@ -261,6 +261,10 @@ export class EvalScheduler {
 
   workerSnapshot(): ExecutionWorkerV1 {
     return localWorkerSnapshot({ workerId: this.workerId, provider: this.provider, collisionDomainId: this.collisionDomainId, accepting: this.accepting, resources: this.resources });
+  }
+
+  providerSnapshot(): ExecutionProviderStatusV1 {
+    return localProviderStatusSnapshot({ workerId: this.workerId, provider: this.provider, collisionDomainId: this.collisionDomainId, accepting: this.accepting, resources: this.resources });
   }
 
   async shutdown(): Promise<void> {
