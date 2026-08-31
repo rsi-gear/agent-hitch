@@ -7,10 +7,11 @@ import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
 import { invokeHarbor } from "./process.js";
+import { harborEnvironmentConfig } from "./environment-config.js";
+import type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
 
 const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
-const HITCH_DOCKER_ENVIRONMENT = "hitch_harbor_environment:HitchHarborDockerEnvironment";
 export interface HarborSettledTrialContext {
   bundleWaitExpired: boolean;
 }
@@ -39,6 +40,7 @@ export interface RunHarborBackendOptions {
   recoverableProcess?: boolean;
   executionResources?: ResourceVectorV1;
   dockerOwnership?: DockerResourceOwnershipV1;
+  dockerServiceLimits?: HarborDockerServiceLimitsV1;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -97,6 +99,7 @@ export async function runHarborBackend({
   recoverableProcess = false,
   executionResources,
   dockerOwnership,
+  dockerServiceLimits,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
@@ -126,6 +129,7 @@ export async function runHarborBackend({
     env,
     ...(executionResources ? { executionResources } : {}),
     ...(dockerOwnership ? { dockerOwnership } : {}),
+    ...(dockerServiceLimits ? { dockerServiceLimits } : {}),
   });
   await atomicWriteJSON(configPath, config);
   emit({
@@ -276,6 +280,7 @@ export interface BuildHarborJobConfigOptions {
   env?: NodeJS.ProcessEnv;
   executionResources?: ResourceVectorV1;
   dockerOwnership?: DockerResourceOwnershipV1;
+  dockerServiceLimits?: HarborDockerServiceLimitsV1;
 }
 
 export async function buildHarborJobConfig({
@@ -294,6 +299,7 @@ export async function buildHarborJobConfig({
   env = process.env,
   executionResources,
   dockerOwnership,
+  dockerServiceLimits,
 }: BuildHarborJobConfigOptions): Promise<Record<string, unknown>> {
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
@@ -370,50 +376,12 @@ export async function buildHarborJobConfig({
     jobs_dir: backendDirectory,
     n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
-    environment: harborEnvironmentConfig(executionResources, dockerOwnership),
+    environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits),
     verifier: harborVerifierConfig(request),
     agents: [agent],
     datasets: [await harborDatasetConfig(request.dataset, taskNames)],
     tasks: [],
   });
-}
-
-export function harborEnvironmentConfig(resources?: ResourceVectorV1, ownership?: DockerResourceOwnershipV1): Record<string, unknown> {
-  const environment: Record<string, unknown> = { type: "docker", delete: true };
-  if (resources) {
-    if (Object.values(resources).some((value) => !Number.isSafeInteger(value) || value < 0)) throw invalidInput("Harbor execution resources are invalid");
-    const mib = 1024 * 1024;
-    if (resources.cpu_millis % 1_000 !== 0 || resources.memory_bytes % mib !== 0) {
-      throw new HitchError("Harbor cannot represent the requested CPU or memory limit", { code: "resource_limit_unrepresentable", exitCode: 10 });
-    }
-    const cpus = resources.cpu_millis / 1_000;
-    const memoryMb = resources.memory_bytes / mib;
-    if (cpus > 0) Object.assign(environment, { cpu_enforcement_policy: "limit", override_cpus: cpus });
-    if (memoryMb > 0) Object.assign(environment, { memory_enforcement_policy: "limit", override_memory_mb: memoryMb });
-  }
-  if (ownership) Object.assign(environment, {
-    import_path: HITCH_DOCKER_ENVIRONMENT,
-    kwargs: { hitch_ownership_labels: harborOwnershipLabels(ownership) },
-  });
-  return environment;
-}
-
-function harborOwnershipLabels(value: DockerResourceOwnershipV1): Record<string, string> {
-  if (!/^[a-f0-9]{24}$/.test(value.root_id) || value.provider !== "local-docker"
-    || !/^eval_[a-f0-9]{32}$/.test(value.eval_id) || !/^work_[a-f0-9]{32}$/.test(value.work_id)
-    || !/^lease_[a-f0-9]{32}$/.test(value.lease_id) || !Number.isSafeInteger(value.lease_epoch) || value.lease_epoch < 1
-    || (value.task_id !== undefined && (!value.task_id || value.task_id.length > 4_096 || /[\0\r\n]/.test(value.task_id)))) {
-    throw invalidInput("Harbor Docker ownership is invalid");
-  }
-  return {
-    "io.hitch.root-id": value.root_id,
-    "io.hitch.provider": value.provider,
-    "io.hitch.eval-id": value.eval_id,
-    "io.hitch.work-id": value.work_id,
-    "io.hitch.lease-id": value.lease_id,
-    "io.hitch.lease-epoch": String(value.lease_epoch),
-    ...(value.task_id === undefined ? {} : { "io.hitch.task-id": value.task_id }),
-  };
 }
 
 export function lockedHarnessRef(resolvedRevision: ResolvedRevision): string {

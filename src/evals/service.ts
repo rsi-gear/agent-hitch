@@ -15,7 +15,8 @@ import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 import { invalidTrialSlots } from "./rerun-slots.js";
 import { prepareEvalDirectory } from "./directory.js";
-import { buildEvalExecutionPlan } from "./execution-plan.js";
+import { buildEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
+import { resolveLocalTaskResourceRequirements } from "./task-resources.js";
 import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
@@ -118,6 +119,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       reference: runtimeRefFile,
     });
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
+    const taskResources = localTaskIds === null ? undefined : await resolveLocalTaskResourceRequirements({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: "operator-default", ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
     const plannedTasks = localTaskIds?.length ?? null;
     const plannedTrials = plannedTasks === null ? null : plannedTasks * normalized.attempts;
     if (plannedTrials !== null && !Number.isSafeInteger(plannedTrials)) throw invalidInput("planned trial count exceeds the safe integer range");
@@ -164,6 +166,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       tasks: localTaskIds,
       maxParallelism: normalized.max_concurrent,
       ...(executionResources ? { trialResources: executionResources } : {}),
+      ...(taskResources ? { taskResources } : {}),
       ...(executionWorker ? { provider: executionWorker.provider } : {}),
       ...(executionStrategy === "local-task-slots-v1" && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
       createdAt: plan.created_at,

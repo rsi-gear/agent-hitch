@@ -1,5 +1,6 @@
-import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalId, EvalRequest, ResourceVectorV1, Sha256, TrialSlotV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalId, EvalRequest, ResourceVectorV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
+import { parseTaskResourceRequirements, reservationForTasks } from "./execution-plan-resources.js";
 
 export const DEFAULT_EVAL_TRIAL_RESOURCES: ResourceVectorV1 = {
   cpu_millis: 1_000,
@@ -18,6 +19,7 @@ export interface BuildEvalExecutionPlanOptions {
   tasks: readonly string[] | null;
   maxParallelism: number;
   trialResources?: ResourceVectorV1;
+  taskResources?: readonly TaskResourceRequirementV1[];
   provider?: string;
   createdAt?: string;
   workItemMode?: "attempt-shards" | "task-slots";
@@ -34,6 +36,7 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
   const provider = options.provider || "local-docker";
   if (!provider) throw new TypeError("execution plan provider is invalid");
   const tasks = options.tasks === null ? null : canonicalTasks(options.tasks);
+  const taskResources = tasks === null ? undefined : parseTaskResourceRequirements(options.taskResources, tasks);
   const candidateIdentity = sha256JSON({
     harness_revision_identity: options.candidate.revisionIdentity,
     artifact_id: options.candidate.artifactId,
@@ -48,8 +51,8 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
   const workItems = tasks === null
     ? [opaqueWorkItem(options.evalId, options.maxParallelism, resources, provider)]
     : options.workItemMode === "task-slots"
-      ? buildTaskWorkItems(options.evalId, slots, resources, provider)
-      : buildAttemptWorkItems(options.evalId, tasks, slots, options.request.attempts, options.maxParallelism, resources, provider);
+      ? buildTaskWorkItems(options.evalId, slots, resources, provider, taskResources)
+      : buildAttemptWorkItems(options.evalId, tasks, slots, options.request.attempts, options.maxParallelism, resources, provider, taskResources);
   return parseEvalExecutionPlan({
     schema_version: "1",
     planner: "hitch-local-v1",
@@ -69,6 +72,7 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
     provider,
     max_parallelism: options.maxParallelism,
     default_trial_resources: resources,
+    ...(taskResources ? { task_resources: taskResources } : {}),
     slots,
     work_items: workItems,
     retry_policy: {
@@ -86,7 +90,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
   const plan = value;
   assertOnlyKeys(plan, [
     "schema_version", "planner", "eval_id", "membership", "candidate_identity", "benchmark", "provider",
-    "max_parallelism", "default_trial_resources", "slots", "work_items", "retry_policy", "created_at",
+    "max_parallelism", "default_trial_resources", "task_resources", "slots", "work_items", "retry_policy", "created_at",
   ], "eval execution plan");
   if (plan.schema_version !== "1" || plan.planner !== "hitch-local-v1" || !isEvalId(plan.eval_id)
     || (plan.membership !== "known" && plan.membership !== "opaque")
@@ -99,6 +103,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
   const resources = parseResourceVector(plan.default_trial_resources, "execution plan default trial resources");
   if (!Array.isArray(plan.slots) || !Array.isArray(plan.work_items)) throw new TypeError("eval execution plan work graph is invalid");
   const slots = plan.slots.map((slot, index) => parseSlot(slot, plan.eval_id as string, plan.candidate_identity as Sha256, index));
+  const taskResources = parseTaskResourceRequirements(plan.task_resources, slots.map((slot) => slot.task_id).filter((task, index, all) => all.indexOf(task) === index));
   const workItems = plan.work_items.map((item, index) => parseWorkItem(
     item,
     plan.eval_id as string,
@@ -106,7 +111,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
     plan.max_parallelism as number,
     index,
   ));
-  assertPlanGraph(plan.membership as "known" | "opaque", slots, workItems, resources);
+  assertPlanGraph(plan.membership as "known" | "opaque", slots, workItems, resources, taskResources);
   const retry = parseRetryPolicy(plan.retry_policy);
   return {
     schema_version: "1",
@@ -118,6 +123,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
     provider: plan.provider,
     max_parallelism: plan.max_parallelism as number,
     default_trial_resources: resources,
+    ...(taskResources ? { task_resources: taskResources } : {}),
     slots,
     work_items: workItems,
     retry_policy: retry,
@@ -153,6 +159,7 @@ function buildAttemptWorkItems(
   maxParallelism: number,
   resources: ResourceVectorV1,
   provider: string,
+  taskResources?: readonly TaskResourceRequirementV1[],
 ): BackendWorkItemV1[] {
   const items: BackendWorkItemV1[] = [];
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -169,14 +176,14 @@ function buildAttemptWorkItems(
       slots: selected,
       opaque_membership: false,
       requested_parallelism: requestedParallelism,
-      reservation: scaleResources(resources, requestedParallelism),
+      reservation: reservationForTasks(tasks, requestedParallelism, resources, taskResources),
       provider,
     });
   }
   return items;
 }
 
-function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: ResourceVectorV1, provider: string): BackendWorkItemV1[] {
+function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: ResourceVectorV1, provider: string, taskResources?: readonly TaskResourceRequirementV1[]): BackendWorkItemV1[] {
   return slots.map((slot) => {
     const identity = { eval_id: evalId, backend: "harbor", logical_attempt: slot.attempt, slots: [slot.slot_id] };
     return {
@@ -189,7 +196,7 @@ function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: Res
       slots: [slot.slot_id],
       opaque_membership: false,
       requested_parallelism: 1,
-      reservation: { ...resources },
+      reservation: reservationForTasks([slot.task_id], 1, resources, taskResources),
       provider,
     };
   });
@@ -253,7 +260,7 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
   return { ...value, reservation: parseResourceVector(value.reservation, `eval execution plan work item ${index} reservation`) } as BackendWorkItemV1;
 }
 
-function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], workItems: BackendWorkItemV1[], resources: ResourceVectorV1): void {
+function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], workItems: BackendWorkItemV1[], resources: ResourceVectorV1, taskResources?: readonly TaskResourceRequirementV1[]): void {
   if (new Set(slots.map((slot) => slot.slot_id)).size !== slots.length || new Set(workItems.map((item) => item.work_id)).size !== workItems.length) {
     throw new TypeError("eval execution plan identities are duplicated");
   }
@@ -261,6 +268,7 @@ function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], w
     const item = workItems[0];
     if (slots.length !== 0 || workItems.length !== 1 || item?.opaque_membership !== true || item.logical_attempt !== null
       || item.slots.length !== 0 || item.task_ids.length !== 0 || item.work_id !== opaqueWorkId(item.eval_id)
+      || taskResources !== undefined
       || JSON.stringify(item.reservation) !== JSON.stringify(scaleResources(resources, item.requested_parallelism))) {
       throw new TypeError("opaque execution plan shape is invalid");
     }
@@ -279,7 +287,7 @@ function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], w
     if (item.logical_attempt === null || members.some((slot) => slot.attempt !== item.logical_attempt)
       || JSON.stringify(item.task_ids) !== JSON.stringify(taskIds)
       || item.requested_parallelism > item.slots.length
-      || JSON.stringify(item.reservation) !== JSON.stringify(scaleResources(resources, item.requested_parallelism))) {
+      || JSON.stringify(item.reservation) !== JSON.stringify(reservationForTasks(item.task_ids, item.requested_parallelism, resources, taskResources))) {
       throw new TypeError(`eval execution plan work item does not match its slots: ${item.work_id}`);
     }
     const expected = workItemId(item.eval_id, item.logical_attempt, item.slots);

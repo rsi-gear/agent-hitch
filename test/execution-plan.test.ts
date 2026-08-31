@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildEvalExecutionPlan, parseEvalExecutionPlan, validateEvalId } from "../src/evals/index.js";
+import { buildEvalExecutionPlan, deriveTaskResourceRequirement, parseEvalExecutionPlan, validateEvalId } from "../src/evals/index.js";
 import type { EvalRequest } from "../src/domain/index.js";
 
 const request: EvalRequest = {
@@ -64,6 +64,36 @@ test("task-slot planning emits one schedulable work item per logical trial", () 
   assert.ok(plan.work_items.every((item) => item.slots.length === 1 && item.requested_parallelism === 1));
   assert.deepEqual(plan.work_items[0]?.reservation, input.trialResources);
   assert.deepEqual(parseEvalExecutionPlan(plan), plan);
+});
+
+test("execution plan persists per-task evidence and reserves heterogeneous tasks", () => {
+  const taskResources = [
+    deriveTaskResourceRequirement({
+      taskId: "one",
+      defaultResources: input.trialResources,
+      defaultSource: "operator-default",
+      declaration: { schema_version: "1", task: { cpu_millis: 3_000 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false } },
+    }),
+    deriveTaskResourceRequirement({
+      taskId: "two",
+      defaultResources: input.trialResources,
+      defaultSource: "operator-default",
+      declaration: { schema_version: "1", task: { memory_bytes: 8_192 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false } },
+    }),
+  ];
+  const taskPlan = buildEvalExecutionPlan({ ...input, tasks: ["two", "one"], taskResources, workItemMode: "task-slots" });
+  assert.deepEqual(taskPlan.task_resources, taskResources);
+  assert.deepEqual(taskPlan.work_items.map((entry) => entry.reservation), [
+    taskResources[0]!.reservation, taskResources[0]!.reservation,
+    taskResources[1]!.reservation, taskResources[1]!.reservation,
+  ]);
+  assert.deepEqual(parseEvalExecutionPlan(taskPlan), taskPlan);
+
+  const shardPlan = buildEvalExecutionPlan({ ...input, tasks: ["one", "two"], taskResources, maxParallelism: 1 });
+  assert.deepEqual(shardPlan.work_items[0]?.reservation, { cpu_millis: 3_000, memory_bytes: 8_192, container_slots: 1, build_slots: 0 });
+  const forged = structuredClone(taskPlan);
+  forged.task_resources![0]!.components[0]!.resources.cpu_millis += 1;
+  assert.throws(() => parseEvalExecutionPlan(forged), /resource totals are invalid/);
 });
 
 test("execution plan parser rejects slots assigned more than once", () => {

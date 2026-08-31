@@ -27,6 +27,10 @@
     "provider": { "type": "string", "minLength": 1 },
     "max_parallelism": { "type": "integer", "minimum": 1 },
     "default_trial_resources": { "$ref": "#/$defs/resources" },
+    "task_resources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/taskResources" }
+    },
     "slots": {
       "type": "array",
       "items": {
@@ -97,6 +101,62 @@
         "memory_bytes": { "type": "integer", "minimum": 0 },
         "container_slots": { "type": "integer", "minimum": 0 },
         "build_slots": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "resourceField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "source", "estimated"],
+      "properties": {
+        "value": { "type": "integer", "minimum": 0 },
+        "source": { "enum": ["task", "compose", "submission-default", "operator-default", "provider-policy", "derived-components"] },
+        "estimated": { "type": "boolean" }
+      }
+    },
+    "taskResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "reservation", "main_limits", "fields", "components", "diagnostics"],
+      "properties": {
+        "task_id": { "type": "string", "minLength": 1 },
+        "reservation": { "$ref": "#/$defs/resources" },
+        "main_limits": { "$ref": "#/$defs/resources" },
+        "fields": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+          "properties": {
+            "cpu_millis": { "$ref": "#/$defs/resourceField" },
+            "memory_bytes": { "$ref": "#/$defs/resourceField" },
+            "container_slots": { "$ref": "#/$defs/resourceField" },
+            "build_slots": { "$ref": "#/$defs/resourceField" }
+          }
+        },
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "role", "replicas", "resources", "fields"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "role": { "enum": ["main", "task-sidecar", "verifier", "provider-sidecar"] },
+              "replicas": { "type": "integer", "minimum": 1 },
+              "resources": { "$ref": "#/$defs/resources" },
+              "fields": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["cpu_millis", "memory_bytes"],
+                "properties": {
+                  "cpu_millis": { "$ref": "#/$defs/resourceField" },
+                  "memory_bytes": { "$ref": "#/$defs/resourceField" }
+                }
+              }
+            }
+          }
+        },
+        "diagnostics": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
       }
     }
   }

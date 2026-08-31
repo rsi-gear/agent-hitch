@@ -69,6 +69,20 @@ test("Harbor resource limits exactly mirror representable trial reservations", (
   assert.throws(() => harborEnvironmentConfig({
     cpu_millis: 2_500, memory_bytes: 4_500 * 1024 * 1024, container_slots: 1, build_slots: 0,
   }), (error: unknown) => (error as { code?: string }).code === "resource_limit_unrepresentable");
+  const ownership = {
+    root_id: "a".repeat(24), provider: "local-docker" as const,
+    eval_id: `eval_${"b".repeat(32)}`, work_id: `work_${"c".repeat(32)}`,
+    lease_id: `lease_${"d".repeat(32)}`, lease_epoch: 1,
+  };
+  const bounded = harborEnvironmentConfig({
+    cpu_millis: 2_000, memory_bytes: 512 * 1024 * 1024, container_slots: 1, build_slots: 0,
+  }, ownership, { database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024 } });
+  assert.deepEqual((bounded.kwargs as Record<string, unknown>).hitch_service_resource_limits, {
+    database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024 },
+  });
+  assert.throws(() => harborEnvironmentConfig(undefined, undefined, {
+    database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024 },
+  }), /require Docker ownership/);
 });
 
 test("verifier diagnostics distinguish masked bootstrap failures from executed tests", async (t) => {

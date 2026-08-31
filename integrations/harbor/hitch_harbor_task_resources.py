@@ -1,0 +1,149 @@
+"""Inspect Harbor task and Compose resource declarations without starting Docker."""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import tomllib
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+
+import yaml
+from harbor.models.task.config import TaskConfig, VerifierEnvironmentMode
+
+
+def inspect_task(task_dir: Path) -> dict[str, Any]:
+    task_file = task_dir / "task.toml"
+    if not task_file.is_file():
+        raise ValueError(f"task.toml is missing: {task_file}")
+    with task_file.open("rb") as handle:
+        config = TaskConfig.model_validate(tomllib.load(handle))
+    services = _compose_services(task_dir / "environment" / "docker-compose.yaml")
+    if "main" not in {service["name"] for service in services}:
+        services.append({"name": "main", "replicas": 1})
+    services.sort(key=lambda service: service["name"].encode("utf-8"))
+
+    verifier_mode = config.verifier.environment_mode
+    separate = verifier_mode == VerifierEnvironmentMode.SEPARATE or (
+        verifier_mode is None and config.verifier.environment is not None
+    )
+    verifier_environment = config.verifier.environment
+    if separate and verifier_environment is None:
+        verifier_environment = config.environment
+    main_egress = config.environment.os.value == "linux" and any(
+        mode is not None and mode.value != "public"
+        for mode in (
+            config.environment.network_mode,
+            config.agent.network_mode,
+            None if separate else config.verifier.network_mode,
+        )
+    )
+    verifier_egress = bool(
+        separate
+        and verifier_environment is not None
+        and verifier_environment.os.value == "linux"
+        and any(
+            mode is not None and mode.value != "public"
+            for mode in (verifier_environment.network_mode, config.verifier.network_mode)
+        )
+    )
+    return {
+        "schema_version": "1",
+        "task": _environment_resources(config.environment),
+        "verifier": {
+            "separate": separate,
+            **({"environment": _environment_resources(verifier_environment)} if verifier_environment is not None else {}),
+        },
+        "compose_services": services,
+        "provider_sidecars": {
+            "main_egress": main_egress,
+            "verifier_egress": verifier_egress,
+        },
+    }
+
+
+def _environment_resources(environment: Any) -> dict[str, Any]:
+    return {
+        **({"cpu_millis": environment.cpus * 1000} if environment.cpus is not None else {}),
+        **({"memory_bytes": environment.memory_mb * 1024 * 1024} if environment.memory_mb is not None else {}),
+    }
+
+
+def _compose_services(compose_file: Path) -> list[dict[str, Any]]:
+    if not compose_file.exists():
+        return []
+    document = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+    if document is None:
+        return []
+    if not isinstance(document, dict) or "include" in document:
+        raise ValueError("Compose resource discovery requires one mapping without include")
+    raw_services = document.get("services")
+    if not isinstance(raw_services, dict):
+        raise ValueError("Compose services must be a mapping")
+    result: list[dict[str, Any]] = []
+    for name, raw in raw_services.items():
+        if not isinstance(name, str) or not name or not isinstance(raw, dict):
+            raise ValueError("Compose service declaration is invalid")
+        if raw.get("profiles") or raw.get("extends"):
+            raise ValueError(f"Compose resource discovery does not support profiles/extends: {name}")
+        deploy = raw.get("deploy") if isinstance(raw.get("deploy"), dict) else {}
+        deploy_resources = deploy.get("resources") if isinstance(deploy.get("resources"), dict) else {}
+        limits = deploy_resources.get("limits") if isinstance(deploy_resources.get("limits"), dict) else {}
+        cpu_values = [_cpu_millis(value, name) for value in (raw.get("cpus"), limits.get("cpus")) if value is not None]
+        memory_values = [_memory_bytes(value, name) for value in (raw.get("mem_limit"), limits.get("memory")) if value is not None]
+        replicas = raw.get("scale", deploy.get("replicas", 1))
+        if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
+            raise ValueError(f"Compose service replicas must be a positive integer: {name}")
+        result.append({
+            "name": name,
+            "replicas": replicas,
+            **({"cpu_millis": max(cpu_values)} if cpu_values else {}),
+            **({"memory_bytes": max(memory_values)} if memory_values else {}),
+        })
+    return result
+
+
+def _cpu_millis(value: Any, service: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"Compose CPU limit is not numeric: {service}")
+    try:
+        decimal = Decimal(str(value).strip()) * 1000
+    except InvalidOperation as error:
+        raise ValueError(f"Compose CPU limit is not numeric: {service}") from error
+    if decimal != decimal.to_integral_value() or decimal <= 0:
+        raise ValueError(f"Compose CPU limit must be positive whole millicores: {service}")
+    return int(decimal)
+
+
+def _memory_bytes(value: Any, service: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"Compose memory limit is invalid: {service}")
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"Compose memory limit must be positive: {service}")
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"Compose memory limit is invalid: {service}")
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?i?b?)?\s*", value, re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Compose memory limit is not a fixed size: {service}")
+    unit = (match.group(2) or "b").lower()
+    powers = {"b": 0, "k": 1, "kb": 1, "ki": 1, "kib": 1, "m": 2, "mb": 2, "mi": 2, "mib": 2,
+              "g": 3, "gb": 3, "gi": 3, "gib": 3, "t": 4, "tb": 4, "ti": 4, "tib": 4,
+              "p": 5, "pb": 5, "pi": 5, "pib": 5, "e": 6, "eb": 6, "ei": 6, "eib": 6}
+    bytes_value = Decimal(match.group(1)) * (1024 ** powers[unit])
+    if bytes_value != bytes_value.to_integral_value() or bytes_value <= 0:
+        raise ValueError(f"Compose memory limit is not a whole positive byte size: {service}")
+    return int(bytes_value)
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: hitch_harbor_task_resources.py <task-directory>")
+    print(json.dumps(inspect_task(Path(sys.argv[1]).resolve()), separators=(",", ":"), sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

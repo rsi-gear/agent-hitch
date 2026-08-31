@@ -39,17 +39,24 @@ labels = {
   "io.hitch.eval-id": "eval_" + "b" * 32, "io.hitch.work-id": "work_" + "c" * 32,
   "io.hitch.lease-id": "lease_" + "d" * 32, "io.hitch.lease-epoch": "1", "io.hitch.task-id": "task-a"
 }
-env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels)
+limits = {"database": {"cpu_millis": 500, "memory_bytes": 67108864}}
+env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels, hitch_service_resource_limits=limits)
 overlay = json.loads(env._hitch_ownership_compose_path.read_text())
 assert set(overlay["services"]) == {"main", "database"}
 assert set(overlay["networks"]) == {"default", "private"}
 assert set(overlay["volumes"]) == {"data"}
 for group in overlay.values():
     for config in group.values(): assert config["labels"] == labels
+assert overlay["services"]["database"]["cpus"] == 0.5
+assert overlay["services"]["database"]["mem_limit"] == 67108864
+assert "cpus" not in overlay["services"]["main"]
 assert env._docker_compose_paths[-1] == env._hitch_ownership_compose_path
 try: module._validate_labels({**labels, "unexpected": "x"})
 except ValueError: pass
 else: raise AssertionError("unknown ownership label accepted")
+try: module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels, hitch_service_resource_limits={"other": limits["database"]})
+except ValueError: pass
+else: raise AssertionError("unbounded sidecar accepted")
 `;
   const result = spawnSync("python3", ["-c", script, directory, source], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);

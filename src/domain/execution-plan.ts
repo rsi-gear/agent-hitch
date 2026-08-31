@@ -41,6 +41,45 @@ export interface BackendWorkItemV1 {
   provider: string;
 }
 
+export type ResourceRequirementSourceV1 =
+  | "task"
+  | "compose"
+  | "submission-default"
+  | "operator-default"
+  | "provider-policy"
+  | "derived-components";
+
+export interface ResourceRequirementFieldV1 {
+  value: number;
+  source: ResourceRequirementSourceV1;
+  estimated: boolean;
+}
+
+export interface TaskResourceComponentV1 {
+  name: string;
+  role: "main" | "task-sidecar" | "verifier" | "provider-sidecar";
+  replicas: number;
+  resources: ResourceVectorV1;
+  fields: {
+    cpu_millis: ResourceRequirementFieldV1;
+    memory_bytes: ResourceRequirementFieldV1;
+  };
+}
+
+export interface TaskResourceRequirementV1 {
+  task_id: string;
+  reservation: ResourceVectorV1;
+  main_limits: ResourceVectorV1;
+  fields: {
+    cpu_millis: ResourceRequirementFieldV1;
+    memory_bytes: ResourceRequirementFieldV1;
+    container_slots: ResourceRequirementFieldV1;
+    build_slots: ResourceRequirementFieldV1;
+  };
+  components: TaskResourceComponentV1[];
+  diagnostics: string[];
+}
+
 export interface EvalExecutionPlanV1 {
   schema_version: "1";
   planner: "hitch-local-v1";
@@ -55,6 +94,7 @@ export interface EvalExecutionPlanV1 {
   provider: string;
   max_parallelism: number;
   default_trial_resources: ResourceVectorV1;
+  task_resources?: TaskResourceRequirementV1[];
   slots: TrialSlotV1[];
   work_items: BackendWorkItemV1[];
   retry_policy: {

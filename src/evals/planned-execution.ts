@@ -17,6 +17,7 @@ import { assertBackendTrialSet, localSourceBackendFailure } from "./result-helpe
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import type { WorkItemAdmissionController } from "./service-types.js";
 import type { EvalDockerResourceReaper } from "./service-types.js";
+import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
 
 export interface PlannedBackendRun {
   attempt: number;
@@ -139,7 +140,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       resolvedRevision: options.resolvedRevision,
       controllerRuntime: options.controllerRuntime,
       preparedArtifact: options.preparedArtifact,
-      executionResources: options.plan.default_trial_resources,
+      executionResources: resourceRequirementForTask(options.plan, completed.tasks[0] as string)?.main_limits ?? options.plan.default_trial_resources,
       ...(options.localTransport ? { localTransport: options.localTransport } : {}),
       env: options.env,
       ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
@@ -239,6 +240,7 @@ async function executeLeasedWorkItem(
 ): Promise<Omit<PlannedBackendRun, "leaseId">> {
   const logicalAttempt = item.logical_attempt as number;
   const taskId = item.task_ids[0] as string;
+  const runtimeResources = runtimeResourcesForTask(options.plan, taskId, item.reservation);
   const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(lease.epoch).padStart(6, "0")}`);
   const harborJobDirectory = path.join(backendDirectory, "job");
   const refs: EvalTrialRefV1[] = [];
@@ -269,7 +271,8 @@ async function executeLeasedWorkItem(
     runtimeDirectory: options.controllerRuntime.directory,
     runtimeId: options.controllerRuntime.runtime_id,
     preparedArtifact: options.preparedArtifact,
-    executionResources: item.reservation,
+    executionResources: runtimeResources.mainLimits,
+    ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
     dockerOwnership: dockerResourceOwnership(options.root, lease, taskId),
     ...(options.localTransport ? { localTransport: options.localTransport } : {}),
     env: options.env,

@@ -833,6 +833,30 @@ Planner 必须在 execution plan 中逐字段记录 `value`、`source` 和 `esti
 
 Harbor `0.21.0` 的 Docker override 只能精确表达整数 CPU 和整数 MiB。V1 在写入 JobConfig 前要求 `cpu_millis` 为 1000 的倍数、`memory_bytes` 为 MiB 的倍数；不能精确表达时返回 `resource_limit_unrepresentable`，不得静默向上取整突破 reservation，也不得只做 admission 而省略容器硬限制。
 
+V1 的已知本地 task 在 `execution-plan.json` 中使用以下附加结构；`main_limits` 是 Harbor 主环境及 separate Verifier 实际共享的硬限额，`reservation` 则是所有 component（含 replica）之和，两者不得混用：
+
+```ts
+interface TaskResourceRequirementV1 {
+  task_id: string
+  reservation: ResourceVectorV1
+  main_limits: ResourceVectorV1
+  fields: Record<keyof ResourceVectorV1, {
+    value: number
+    source: 'task' | 'compose' | 'submission-default' | 'operator-default' | 'provider-policy' | 'derived-components'
+    estimated: boolean
+  }>
+  components: Array<{
+    name: string
+    role: 'main' | 'task-sidecar' | 'verifier' | 'provider-sidecar'
+    replicas: number
+    resources: ResourceVectorV1
+  }>
+  diagnostics: string[]
+}
+```
+
+Compose sidecar 缺少声明时使用同一保守默认值而不是零；Harbor egress sidecar 使用 provider 固定 overhead。Planner 对 Compose 的动态 `include`、`profiles`、`extends` 或无法固定解析的 resource expression 失败关闭。最终 Docker environment overlay 必须把逐服务 CPU/memory hard limit 与 lease ownership label 一起写入。
+
 ## 11. 全局资源调度
 
 ### 11.1 资源池

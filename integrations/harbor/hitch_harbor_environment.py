@@ -37,13 +37,17 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         self,
         *args: Any,
         hitch_ownership_labels: Mapping[str, str] | None = None,
+        hitch_service_resource_limits: Mapping[str, Mapping[str, int]] | None = None,
         **kwargs: Any,
     ) -> None:
         self._hitch_ownership_labels = _validate_labels(hitch_ownership_labels)
+        self._hitch_service_resource_limits = _validate_resource_limits(
+            hitch_service_resource_limits
+        )
         self._hitch_ownership_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._hitch_ownership_compose_path: Path | None = None
         super().__init__(*args, **kwargs)
-        if self._hitch_ownership_labels:
+        if self._hitch_ownership_labels or self._hitch_service_resource_limits:
             self._hitch_ownership_compose_path = self._write_ownership_overlay()
 
     @property
@@ -75,8 +79,24 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             _collect_resources(document.get("volumes"), volumes, external_volumes, "volumes", source)
 
         labels = dict(self._hitch_ownership_labels)
+        service_overlays: dict[str, dict[str, Any]] = {}
+        for name in sorted(services):
+            config: dict[str, Any] = {}
+            if labels:
+                config["labels"] = labels
+            if name != MAIN_SERVICE_NAME and self._hitch_service_resource_limits:
+                limits = self._hitch_service_resource_limits.get(name)
+                if limits is None:
+                    raise ValueError(
+                        f"Docker Compose sidecar has no Hitch resource limit: {name}"
+                    )
+                config.update({
+                    "cpus": limits["cpu_millis"] / 1000,
+                    "mem_limit": limits["memory_bytes"],
+                })
+            service_overlays[name] = config
         overlay = {
-            "services": {name: {"labels": labels} for name in sorted(services)},
+            "services": service_overlays,
             "networks": {
                 name: {"labels": labels}
                 for name in sorted(networks - external_networks)
@@ -133,3 +153,35 @@ def _validate_labels(value: Mapping[str, str] | None) -> dict[str, str]:
     ):
         raise ValueError("Hitch Docker ownership label values are invalid")
     return dict(sorted(labels.items()))
+
+
+def _validate_resource_limits(
+    value: Mapping[str, Mapping[str, int]] | None,
+) -> dict[str, dict[str, int]]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("Hitch Docker service resource limits are invalid")
+    result: dict[str, dict[str, int]] = {}
+    for name, resources in value.items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or name == MAIN_SERVICE_NAME
+            or len(name) > 255
+            or any(character in name for character in ("\x00", "\n", "\r"))
+            or not isinstance(resources, Mapping)
+            or set(resources) != {"cpu_millis", "memory_bytes"}
+            or isinstance(resources.get("cpu_millis"), bool)
+            or not isinstance(resources.get("cpu_millis"), int)
+            or resources["cpu_millis"] < 1
+            or isinstance(resources.get("memory_bytes"), bool)
+            or not isinstance(resources.get("memory_bytes"), int)
+            or resources["memory_bytes"] < 1
+        ):
+            raise ValueError("Hitch Docker service resource limits are invalid")
+        result[name] = {
+            "cpu_millis": resources["cpu_millis"],
+            "memory_bytes": resources["memory_bytes"],
+        }
+    return dict(sorted(result.items()))
