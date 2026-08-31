@@ -20,7 +20,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const activityLog = path.join(root, "harbor-activity.jsonl");
   const harbor = await writeFakeHarbor(root, { delayMs: 150, activityLog });
   const npm = await writeFakeNpm(root);
-  const resources = new ResourceLedger({ cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 2, build_slots: 1 });
+  const resources = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 4 * 1024 * 1024 * 1024, container_slots: 2, build_slots: 1 });
   const dispatcher = new WorkItemDispatcher({ resources });
   t.after(() => dispatcher.close());
   const reapedLeases: string[] = [];
@@ -35,6 +35,8 @@ test("planned local execution overlaps different tasks and serializes attempts o
     root,
     harborExecutable: harbor,
     executionStrategy: "local-task-slots-v1",
+    executionResources: { cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 },
+    executionResourceSource: "submission-default",
     trialBundleGraceMs: 0,
     env: { ...process.env, HITCH_NPM_PATH: npm },
     dockerResourceReaper: async (input) => {
@@ -64,6 +66,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const plan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(evalDirectory, "execution-plan.json")));
   assert.equal(plan.membership, "known");
   assert.equal(plan.work_items.length, 4);
+  assert.ok(plan.task_resources?.every((entry) => entry.components[0]?.fields.cpu_millis.source === "submission-default"));
   const leases = await readExecutionLeases(evalDirectory);
   assert.equal(leases.length, 4);
   assert.ok(leases.every((lease) => lease.state === "released" && lease.terminal_at && lease.parent_allocation_id));
@@ -83,8 +86,8 @@ test("planned local execution overlaps different tasks and serializes attempts o
     assert.equal(config.n_concurrent_trials, 1);
     assert.deepEqual(config.environment, {
       type: "docker", delete: true,
-      cpu_enforcement_policy: "limit", override_cpus: 1,
-      memory_enforcement_policy: "limit", override_memory_mb: 1_024,
+      cpu_enforcement_policy: "limit", override_cpus: 2,
+      memory_enforcement_policy: "limit", override_memory_mb: 2_048,
       import_path: "hitch_harbor_environment:HitchHarborDockerEnvironment",
       kwargs: { hitch_ownership_labels: {
         "io.hitch.root-id": hitchRootId(root),
@@ -125,6 +128,8 @@ test("planned local execution overlaps different tasks and serializes attempts o
     resumeExisting: true,
     harborExecutable: harbor,
     executionStrategy: "local-task-slots-v1",
+    executionResources: { cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 },
+    executionResourceSource: "submission-default",
     trialBundleGraceMs: 0,
     env: { ...process.env, HITCH_NPM_PATH: npm },
   });

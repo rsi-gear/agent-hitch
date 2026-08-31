@@ -1,14 +1,15 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { EvalControlV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
-import { EvalEventSink, newEvalId, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
+import { EvalEventSink, newEvalId, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
 import type { EvalDockerResourceReaper, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
-import { evalTaskCollisionKey, idempotencyIndexPath, isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState, validateIdempotencyKey } from "./eval-records.js";
+import { assertExecutionPolicySupported, defaultEvalExecutionPolicy, evalTaskCollisionKey, idempotencyIndexPath, isTerminalControl, normalizeEvalSubmissionInput, parseEvalControl, reconcileIdempotencyKeys, terminalControlState, validateIdempotencyKey } from "./eval-records.js";
+import type { EvalSubmissionInputV1 } from "./eval-records.js";
 import { WorkItemDispatcher } from "./work-dispatcher.js";
 import { workItemAdmission } from "./work-admission.js";
 import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker.js";
@@ -18,6 +19,7 @@ import { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-c
 interface QueuedEval {
   evalId: EvalId;
   request: EvalRequest;
+  execution: EvalExecutionPolicyV1;
   directory: string;
   collisionKeys: string[];
   fineGrained: boolean;
@@ -51,6 +53,7 @@ export interface SubmitEvalOptions {
 
 export interface EvalSchedulerStatus {
   request: EvalRequest;
+  execution: EvalExecutionPolicyV1 | null;
   control: EvalControlV1;
   progress: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
@@ -117,19 +120,21 @@ export class EvalScheduler {
     this.scheduleDrain();
   }
 
-  async submit(request: EvalRequestInput, options: SubmitEvalOptions = {}): Promise<EvalId> {
+  async submit(input: EvalSubmissionInputV1 | EvalRequestInput, options: SubmitEvalOptions = {}): Promise<EvalId> {
     if (!this.accepting) throw new HitchError("daemon is shutting down", { code: "daemon_shutting_down", exitCode: 12 });
-    const normalized = await validateEvalRequest(request);
-    if (!this.resources.canEverFit(this.trialResources)) {
+    const normalized = await normalizeEvalSubmissionInput(input, { provider: this.provider, trialResources: this.trialResources });
+    assertExecutionPolicySupported(normalized.execution, this.provider);
+    const idempotencyKey = reconcileIdempotencyKeys(normalized.idempotencyKey, options.idempotencyKey);
+    if (!this.resources.canEverFit(normalized.execution.resources.default_trial)) {
       throw new HitchError("one eval trial exceeds the daemon resource capacity", {
         code: "resource_request_unsatisfiable",
         exitCode: 10,
       });
     }
-    const submissionDigest = sha256JSON(normalized);
-    if (options.idempotencyKey !== undefined) validateIdempotencyKey(options.idempotencyKey);
-    if (options.idempotencyKey) {
-      const keyHash = sha256Bytes(options.idempotencyKey);
+    const submissionDigest = sha256JSON({ request: normalized.request, execution: normalized.execution });
+    if (idempotencyKey !== undefined) validateIdempotencyKey(idempotencyKey);
+    if (idempotencyKey) {
+      const keyHash = sha256Bytes(idempotencyKey);
       return withFileLock(path.join(this.root, "locks", "eval-idempotency"), keyHash, async () => {
         const indexPath = idempotencyIndexPath(this.root, keyHash);
         const existing = await readJSON<{ eval_id?: unknown; submission_digest?: unknown } | null>(indexPath, null);
@@ -142,7 +147,7 @@ export class EvalScheduler {
           }
           return validateEvalId(existing.eval_id);
         }
-        const entry = await this.persistSubmission(normalized, submissionDigest, keyHash);
+        const entry = await this.persistSubmission(normalized.request, normalized.execution, submissionDigest, keyHash);
         try {
           await atomicWriteJSON(indexPath, { schema_version: "1", eval_id: entry.evalId, submission_digest: submissionDigest });
         } catch (error) {
@@ -152,10 +157,10 @@ export class EvalScheduler {
         return this.enqueue(entry);
       }, { timeoutCode: "idempotency_locked", timeoutExitCode: 12 });
     }
-    return this.enqueue(await this.persistSubmission(normalized, submissionDigest));
+    return this.enqueue(await this.persistSubmission(normalized.request, normalized.execution, submissionDigest));
   }
 
-  private async persistSubmission(normalized: EvalRequest, submissionDigest: `sha256:${string}`, keyHash?: `sha256:${string}`): Promise<QueuedEval> {
+  private async persistSubmission(normalized: EvalRequest, execution: EvalExecutionPolicyV1, submissionDigest: `sha256:${string}`, keyHash?: `sha256:${string}`): Promise<QueuedEval> {
     const evalId = newEvalId();
     const directory = path.join(this.evalsRoot, evalId);
     await mkdir(directory, { mode: 0o700 });
@@ -165,6 +170,7 @@ export class EvalScheduler {
         schema_version: "1",
         eval_id: evalId,
         request: normalized,
+        execution,
         submission_digest: submissionDigest,
         ...(keyHash ? { idempotency_key_hash: keyHash } : {}),
         submitted_at: now,
@@ -174,7 +180,7 @@ export class EvalScheduler {
         eval_id: evalId,
         generation: 0,
         state: "queued",
-        requested_parallelism: normalized.max_concurrent,
+        requested_parallelism: execution.max_parallelism,
         admitted_parallelism: 0,
         active_leases: [],
         queued_work_items: [],
@@ -185,8 +191,8 @@ export class EvalScheduler {
       await atomicWriteJSON(path.join(directory, "request.json"), normalized);
       await atomicWriteJSON(path.join(directory, "submission.json"), submission);
       await atomicWriteJSON(path.join(directory, "control.json"), control);
-      await this.emitPersisted(directory, evalId, { type: "eval.queued", requested_parallelism: normalized.max_concurrent });
-      return this.queuedEval(evalId, normalized, directory);
+      await this.emitPersisted(directory, evalId, { type: "eval.queued", requested_parallelism: execution.max_parallelism });
+      return this.queuedEval(evalId, normalized, execution, directory);
     } catch (error) {
       await rm(directory, { recursive: true, force: true });
       throw error;
@@ -203,6 +209,7 @@ export class EvalScheduler {
     const evalId = validateEvalId(evalIdValue);
     const directory = path.join(this.evalsRoot, evalId);
     const request = await readJSON<EvalRequest | null>(path.join(directory, "request.json"), null);
+    const submission = await readJSON<EvalSubmissionV1 | null>(path.join(directory, "submission.json"), null);
     const controlValue = await readJSON<unknown | null>(path.join(directory, "control.json"), null);
     if (!request || !controlValue) return null;
     const control = parseEvalControl(controlValue);
@@ -214,6 +221,7 @@ export class EvalScheduler {
     const admitted = active?.fineGrained ? workItems?.active ?? 0 : control.admitted_parallelism;
     return {
       request,
+      execution: submission?.execution ?? null,
       control,
       progress,
       result,
@@ -325,12 +333,13 @@ export class EvalScheduler {
   private selectRunnable(): { index: number; parallelism: number; fineGrained: boolean; lease?: ResourceLease; collisions?: CollisionLease } | null {
     for (let index = 0; index < this.queue.length; index += 1) {
       const entry = this.queue[index] as QueuedEval;
-      if (entry.fineGrained) return { index, parallelism: entry.request.max_concurrent, fineGrained: true };
-      const parallelism = this.resources.maximumUnits(this.trialResources, entry.request.max_concurrent);
+      if (entry.fineGrained) return { index, parallelism: entry.execution.max_parallelism, fineGrained: true };
+      const unit = entry.execution.resources.default_trial;
+      const parallelism = this.resources.maximumUnits(unit, entry.execution.max_parallelism);
       if (parallelism < 1) continue;
       const collisions = this.collisions.tryAcquire(entry.evalId, entry.collisionKeys);
       if (!collisions) continue;
-      const lease = this.resources.tryAcquire(entry.evalId, "eval", scaleResources(this.trialResources, parallelism));
+      const lease = this.resources.tryAcquire(entry.evalId, "eval", scaleResources(unit, parallelism));
       if (lease) return { index, parallelism, fineGrained: false, lease, collisions };
       collisions.release();
     }
@@ -365,11 +374,12 @@ export class EvalScheduler {
       request: entry.request,
       normalizedRequest: entry.request,
       maxConcurrentOverride: parallelism,
-      executionResources: this.trialResources,
+      executionResources: entry.execution.resources.default_trial,
+      executionResourceSource: "submission-default",
       executionStrategy: "local-task-slots-v1",
       executionWorker: {
         workerId: this.workerId,
-        provider: this.provider,
+        provider: entry.execution.provider,
         collisionDomainId: this.collisionDomainId,
         ...(lease ? { parentAllocationId: lease.allocation.allocation_id } : {}),
       },
@@ -419,15 +429,20 @@ export class EvalScheduler {
 
   private async recoverInterruptedEvals(): Promise<void> {
     const recovered = await recoverPersistedEvals({ root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent });
-    for (const entry of recovered) this.queue.push(await this.queuedEval(entry.evalId, entry.request, entry.directory, entry.resumeExisting));
+    for (const entry of recovered) {
+      const execution = entry.execution || defaultEvalExecutionPolicy(entry.request, { provider: this.provider, trialResources: this.trialResources });
+      assertExecutionPolicySupported(execution, this.provider);
+      this.queue.push(await this.queuedEval(entry.evalId, entry.request, execution, entry.directory, entry.resumeExisting));
+    }
   }
 
-  private async queuedEval(evalId: EvalId, request: EvalRequest, directory: string, resumeExisting = false): Promise<QueuedEval> {
+  private async queuedEval(evalId: EvalId, request: EvalRequest, execution: EvalExecutionPolicyV1, directory: string, resumeExisting = false): Promise<QueuedEval> {
     const taskIds = await resolveLocalDatasetTaskIds(request.dataset);
     const fineGrained = taskIds !== null;
     return {
       evalId,
       request,
+      execution,
       directory,
       fineGrained,
       resumeExisting,

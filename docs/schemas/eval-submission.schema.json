@@ -9,8 +9,58 @@
     "schema_version": { "const": "1" },
     "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
     "request": { "$ref": "eval-request.schema.json" },
+    "execution": { "$ref": "#/$defs/execution" },
     "submission_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "idempotency_key_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "submitted_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 },
+        "memory_bytes": { "type": "integer", "minimum": 0 },
+        "container_slots": { "type": "integer", "minimum": 0 },
+        "build_slots": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "max_parallelism", "resources", "build", "model_capture"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "max_parallelism": { "type": "integer", "minimum": 1 },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default_trial"],
+          "properties": {
+            "default_trial": { "$ref": "#/$defs/resources" },
+            "setup": { "$ref": "#/$defs/resources" }
+          }
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": { "enum": ["backend", "prebuild-preferred", "prebuild-required"] },
+            "remote_cache": { "type": "string", "minLength": 1 }
+          }
+        },
+        "model_capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "required"],
+          "properties": {
+            "mode": { "enum": ["off", "native", "proxy", "hybrid"] },
+            "required": { "type": "boolean" }
+          }
+        }
+      }
+    }
   }
 }

@@ -23,6 +23,7 @@ export interface RunEvalOptions {
   normalizedRequest?: EvalRequest;
   maxConcurrentOverride?: number;
   executionResources?: ResourceVectorV1;
+  executionResourceSource?: "submission-default" | "operator-default";
   executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
   executionWorker?: ExecutionWorkerIdentity;
   workItemAdmission?: WorkItemAdmissionController;

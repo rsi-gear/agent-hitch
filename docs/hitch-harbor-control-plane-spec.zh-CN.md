@@ -423,6 +423,8 @@ API 输入使用同结构的 `EvalSubmissionInputV1`，但 `request` 接受 `Eva
 - `request.json` 继续写入现有 EvalRequest，不加入调度字段。
 - 调度策略不参与 Harness、benchmark 或 observation identity。
 - `max_parallelism` 默认等于现有 `request.max_concurrent`，但仍受全局预算限制。
+- 服务端把缺省 execution policy 规范化后写入 `submission.json`；submission digest 同时覆盖 normalized request 与 execution policy，因此同一 idempotency key 不能被换成另一组资源或 provider 策略。
+- V1 本机 provider 已执行 `provider`、`max_parallelism` 和 `resources.default_trial`；尚不可执行的 remote provider、setup reservation、remote build cache、`prebuild-required` 或 proxy/hybrid capture 必须在 admission 明确拒绝，不能只持久化后忽略。
 
 ### 8.2 Resource vector
 
@@ -1540,6 +1542,8 @@ interface EvalRerunOperationV1 {
 canonical trajectory 是审计证据，不是进程 checkpoint。把历史消息重新发送给 LLM 只能称为 `trajectory-replay`，不能称为透明 `candidate-resume`，因为轨迹不能单独恢复容器文件系统、后台进程、未完成 tool call、凭据句柄或 provider-native session。`trajectory-replay` 必须同时满足：trajectory 完整性验证通过、来源 lineage 明确、sandbox checkpoint 可恢复、Adapter 明确支持 context replay；否则返回 `eval_trajectory_replay_unavailable`。
 
 `candidate-resume` 必须同时验证 Adapter `resume` capability、原生 session identity、sandbox checkpoint、来源 lease epoch 和模型/protocol identity。任一条件不满足时返回 `eval_candidate_resume_unavailable`，不得改跑 `candidate-restart`。所有新执行必须获得新 lease/epoch，并以 `retry_of` 或 `resume_of` 指向来源执行；旧 epoch 的迟到事件不得覆盖新执行。
+
+除 `collect-only` 的零资源导入外，rerun 默认继承来源 eval 已固定的 execution policy，包括 provider、`max_parallelism` 和 `default_trial` reservation；daemon operator 默认值的后续变化不得悄悄改变同一 eval 的 rerun 资源语义。
 
 ### 19.2 失败与重试矩阵
 

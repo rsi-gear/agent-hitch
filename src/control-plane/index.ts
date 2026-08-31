@@ -2,7 +2,8 @@ export { ResourceLedger, scaleResources, validateResourceVector, zeroResources }
 export type { ResourceKind, ResourceLedgerSnapshot, ResourceLease } from "./resources.js";
 export { EvalScheduler } from "./eval-scheduler.js";
 export type { CancelEvalOutcome, EvalSchedulerOptions, EvalSchedulerStatus, SubmitEvalOptions } from "./eval-scheduler.js";
-export { evalTaskCollisionKey, parseEvalControl } from "./eval-records.js";
+export { defaultEvalExecutionPolicy, evalTaskCollisionKey, normalizeEvalSubmissionInput, parseEvalControl, parseEvalExecutionPolicy } from "./eval-records.js";
+export type { EvalSubmissionInputV1, NormalizedEvalSubmissionInput } from "./eval-records.js";
 export { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
 export { CollisionLockManager } from "./collisions.js";
 export type { CollisionLease } from "./collisions.js";

@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { EvalControlV1, EvalId, EvalRequest } from "../domain/index.js";
+import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest } from "../domain/index.js";
 import { SCHEMA_VERSION, atomicWriteJSON, readJSON } from "../foundation/index.js";
 import { EvalEventSink, parseEvalExecutionPlan, readExecutionLeases, recoverLocalDockerEvalLeases } from "../evals/index.js";
 import { isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState } from "./eval-records.js";
@@ -8,6 +8,7 @@ import { isTerminalControl, parseEvalControl, parseEvalSubmission, terminalContr
 export interface RecoveredEvalEntry {
   evalId: EvalId;
   request: EvalRequest;
+  execution?: EvalExecutionPolicyV1;
   directory: string;
   resumeExisting: boolean;
 }
@@ -34,7 +35,7 @@ export async function recoverPersistedEvals(input: {
       continue;
     }
     if (control.state === "queued") {
-      queue.push({ evalId, request: submission.request, directory, resumeExisting: false });
+      queue.push({ evalId, request: submission.request, ...(submission.execution ? { execution: submission.execution } : {}), directory, resumeExisting: false });
       continue;
     }
     if (isTerminalControl(control.state)) continue;
@@ -75,7 +76,7 @@ export async function recoverPersistedEvals(input: {
       await updateControl(directory, (current) => ({ ...withoutAllocation(current), state: "failed", error: { code: "execution_state_ambiguous", message } }));
       sink.emit({ type: "eval.recovered", status: "failed", code: "execution_state_ambiguous" });
     } else {
-      queue.push({ evalId, request: submission.request, directory, resumeExisting: files === "complete" });
+      queue.push({ evalId, request: submission.request, ...(submission.execution ? { execution: submission.execution } : {}), directory, resumeExisting: files === "complete" });
       sink.emit({ type: "eval.recovered", status: "queued", recovery: files === "complete" ? "resume" : "restart-before-execution" });
     }
     await sink.close();

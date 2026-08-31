@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EvalRerunScheduler, ResourceLedger } from "../src/control-plane/index.js";
-import type { EvalControlV1, EvalId, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
+import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalRerunResult, RerunEvalOptions } from "../src/evals/index.js";
 import { evalRerunSemantics, validateEvalRequest } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
@@ -80,6 +80,33 @@ test("collect-only runs without candidate resource or collision reservations", a
   blocker.release();
 });
 
+test("candidate rerun inherits the source execution policy", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-source-policy-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceTrial = { cpu_millis: 2_000, memory_bytes: 2_048, container_slots: 1, build_slots: 0 };
+  const execution: EvalExecutionPolicyV1 = {
+    provider: "local-docker",
+    max_parallelism: 2,
+    resources: { default_trial: sourceTrial },
+    build: { mode: "backend" },
+    model_capture: { mode: "native", required: false },
+  };
+  await persistTerminalEval(root, EVAL_ID, execution);
+  let observed: RerunEvalOptions | undefined;
+  const scheduler = new EvalRerunScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 4_096, container_slots: 2, build_slots: 0 }),
+    trialResources: TRIAL,
+    executor: async (options) => { observed = options; return completedResult(options); },
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "candidate-restart", selector: { mode: "invalid" } });
+  await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
+  assert.equal(observed?.maxConcurrentOverride, 2);
+  assert.deepEqual(observed?.executionResources, sourceTrial);
+});
+
 test("daemon rerun API preserves requested semantics and rejects unavailable resume", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-rerun-"));
   const server = new DaemonServer({
@@ -146,7 +173,7 @@ test("rerun scheduler resumes queued operations but never replays ambiguous runn
   assert.equal((interrupted?.state.error as { code?: string }).code, "execution_state_ambiguous");
 });
 
-async function persistTerminalEval(root: string, evalId: EvalId): Promise<EvalRequest> {
+async function persistTerminalEval(root: string, evalId: EvalId, execution?: EvalExecutionPolicyV1): Promise<EvalRequest> {
   const directory = path.join(root, "evals", evalId);
   await mkdir(directory, { recursive: true });
   const request = await validateEvalRequest({ dataset: "demo@1.0", harness_ref: "pi@version:1.2.3", max_concurrent: 4 });
@@ -156,7 +183,8 @@ async function persistTerminalEval(root: string, evalId: EvalId): Promise<EvalRe
     schema_version: "1",
     eval_id: evalId,
     request,
-    submission_digest: sha256JSON(request),
+    ...(execution ? { execution } : {}),
+    submission_digest: execution ? sha256JSON({ request, execution }) : sha256JSON(request),
     submitted_at: now,
   });
   await atomicWriteJSON(path.join(directory, "control.json"), {
