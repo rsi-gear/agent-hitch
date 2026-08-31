@@ -14,7 +14,7 @@ export type { ExecutionLeaseHandle, ExecutionWorkerIdentity } from "./execution-
 export { runEval } from "./service.js";
 export { recoverLocalDockerEvalLeases } from "./recovery.js";
 export type { EvalLeaseRecoveryResult } from "./recovery.js";
-export type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageManifestLoader, EvalEnvironmentImageResolver, EvalExecutionPhase, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";
+export type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageManifestLoader, EvalEnvironmentImageResolver, EvalExecutionPhase, EvalInteractionCaptureExporter, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";
 export { inspectEval, listEvals } from "./records.js";
 export type { InspectedEval, ListedEval } from "./records.js";
 export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";

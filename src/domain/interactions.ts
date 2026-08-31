@@ -15,6 +15,15 @@ export interface ModelCapturePlanV1 {
   degraded_reason?: string;
 }
 
+export interface ModelProxyRouteV1 {
+  schema_version: "1";
+  mode: "proxy" | "hybrid";
+  required: boolean;
+  topology: "host-side";
+  base_url_template: string;
+  health_url_template: string;
+}
+
 export interface ModelInteractionV1 {
   schema_version: "1";
   interaction_id: string;

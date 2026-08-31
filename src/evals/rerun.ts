@@ -1,15 +1,11 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { loadPreparedArtifact, preparedArtifactDirectory } from "../artifacts/index.js";
-import type { ResolvedRevision } from "../artifacts/index.js";
 import {
   runHarborBackend,
-  validateLocalGitTransportManifest,
-  verifyLocalGitTransport,
 } from "../backends/index.js";
-import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
+import type { HarborBackendResult } from "../backends/index.js";
 import { useControllerRuntimeById } from "../controller-runtime/index.js";
-import type { EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
+import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ModelCapturePlanV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths, withFileLock } from "../foundation/index.js";
 import { readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { validateEvalId, validateEvalRequest } from "./request.js";
@@ -30,6 +26,10 @@ import type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 import { summarizeTrialRefs } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { collectOnlyEvalRerun } from "./collect-only-rerun.js";
+import { loadRerunLocalTransport, loadRerunPreparedArtifact, loadRerunResolvedRevision } from "./rerun-inputs.js";
+import { parseEvalExecutionPlan } from "./execution-plan.js";
+import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
+import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 interface RerunPlan {
@@ -108,18 +108,28 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
 
   const repaired = new Map<string, EvalTrialSlot>();
   const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
+  let captureRuntime: EvalModelCaptureRuntime | undefined;
   try {
     if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
     if (selectedTrials.length > 0) {
-      const resolvedRevision = await loadResolvedRevision(options.evalDirectory, plan);
-      const preparedArtifact = await loadRerunArtifact(options.root, plan);
+      const executionPlan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(options.evalDirectory, "execution-plan.json")));
+      if (executionPlan.eval_id !== options.evalId) throw unavailable("eval execution plan identity changed");
+      captureRuntime = await startEvalModelCaptureRuntime({
+        plan: executionPlan.model_capture ?? defaultModelCapturePlan(),
+        evalId: options.evalId,
+        evalDirectory: rerunDirectory,
+        env: options.env ?? process.env,
+      });
+      const activeCaptureRuntime = captureRuntime;
+      const resolvedRevision = await loadRerunResolvedRevision(options.evalDirectory, plan);
+      const preparedArtifact = await loadRerunPreparedArtifact(options.root, plan);
       const runtimeId = requiredString(plan.controllerRuntime.runtime_id, "plan controller runtime id");
       const runtime = await useControllerRuntimeById(statePaths(options.root), runtimeId.replace(/^sha256:/, ""));
       if (runtime.runtime_id !== runtimeId
         || runtime.manifest_digest !== requiredString(plan.controllerRuntime.manifest_digest, "plan controller runtime digest")) {
         throw unavailable("controller runtime identity changed");
       }
-      const localTransport = await loadLocalTransport(options.evalDirectory, plan, resolvedRevision, options.env, options.signal);
+      const localTransport = await loadRerunLocalTransport(options.evalDirectory, plan, resolvedRevision, options.env, options.signal);
       const groups = groupSlotsByAttempt(selectedTrials);
       for (const [logicalAttempt, slots] of groups) {
         if (options.signal?.aborted) throw new HitchError("eval rerun was aborted", { code: "eval_rerun_aborted", exitCode: 9 });
@@ -176,6 +186,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           preparedArtifact,
           ...(options.executionResources ? { executionResources: options.executionResources } : {}),
           ...(localTransport ? { localTransport } : {}),
+          ...(activeCaptureRuntime.route ? { modelProxy: activeCaptureRuntime.route } : {}),
           env: options.env ?? process.env,
           ...(options.harborExecutable === undefined ? {} : { harborExecutable: options.harborExecutable }),
           ...(options.signal ? { signal: options.signal } : {}),
@@ -193,6 +204,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
                 benchmarkId: request.benchmark_id,
                 benchmarkRevision: request.benchmark_revision,
                 runtimeId: runtime.runtime_id,
+                modelCapturePlan: activeCaptureRuntime.plan,
+                ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
                 requireCompleteMarker: true,
                 allowMissingBundleDiagnostic: context.bundleWaitExpired,
               }, trial, rerunRefs.length, rerunRefs);
@@ -216,6 +229,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           benchmarkId: request.benchmark_id,
           benchmarkRevision: request.benchmark_revision,
           runtimeId: runtime.runtime_id,
+          modelCapturePlan: activeCaptureRuntime.plan,
+          ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
           rawResult: backendRun.rawResult,
         }, rerunRefs);
         for (const ref of terminalRefs) await publish(ref);
@@ -280,7 +295,13 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
       errorCode: error instanceof HitchError ? error.code : "eval_rerun_failed",
     }).catch(() => {});
     throw error;
+  } finally {
+    await captureRuntime?.close().catch(() => undefined);
   }
+}
+
+function defaultModelCapturePlan(): ModelCapturePlanV1 {
+  return { requested_mode: "native", effective_mode: "native", required: false };
 }
 
 function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): RerunPlan {
@@ -339,70 +360,6 @@ async function loadPersistedRequest(value: unknown): Promise<EvalRequest> {
     throw unavailable("eval dataset identity changed since the original run");
   }
   return request;
-}
-
-async function loadResolvedRevision(evalDirectory: string, plan: RerunPlan): Promise<ResolvedRevision> {
-  const resolution = await readJSON<ResolvedRevision>(path.join(evalDirectory, "resolution.json"));
-  if (!resolution || resolution.identity !== requiredString(plan.candidate.revision_identity, "candidate revision identity")
-    || resolution.harness_id !== requiredString(plan.candidate.harness_id, "candidate harness id")) {
-    throw unavailable("eval resolution identity changed");
-  }
-  return resolution;
-}
-
-async function loadRerunArtifact(root: string, plan: RerunPlan): Promise<HarborPreparedArtifactUse> {
-  const summary = plan.preparedArtifact;
-  const artifactId = requiredString(summary.artifact_id, "prepared artifact id");
-  const artifact = await loadPreparedArtifact(preparedArtifactDirectory(root, artifactId), {
-    artifact_id: artifactId,
-    artifact_integrity: requiredString(summary.artifact_integrity, "prepared artifact integrity"),
-    entrypoint_integrity: requiredString(summary.entrypoint_integrity, "prepared artifact entrypoint integrity"),
-    harness_id: requiredString(summary.harness_id, "prepared artifact harness id"),
-    revision_identity: requiredString(summary.revision_identity, "prepared artifact revision identity"),
-    platform: requiredString(summary.platform, "prepared artifact platform"),
-  });
-  return {
-    directory: preparedArtifactDirectory(root, artifact.artifact_id),
-    artifact_id: artifact.artifact_id,
-    artifact_integrity: requiredString(artifact.artifact_integrity, "artifact integrity"),
-    entrypoint_integrity: requiredString(artifact.entrypoint_integrity, "artifact entrypoint integrity"),
-    harness_id: artifact.harness_id,
-    revision_identity: artifact.revision_identity,
-    adapter_version: artifact.adapter_version,
-    recipe_version: artifact.recipe_version,
-    platform: artifact.platform,
-    node_version: artifact.toolchain.node || process.version,
-    source_type: artifact.source_type,
-  };
-}
-
-async function loadLocalTransport(
-  evalDirectory: string,
-  plan: RerunPlan,
-  resolution: ResolvedRevision,
-  env: NodeJS.ProcessEnv | undefined,
-  signal: AbortSignal | undefined,
-): Promise<LocalGitTransportUse | undefined> {
-  if (plan.localSourceTransport === undefined) return undefined;
-  const directory = path.join(evalDirectory, "local-source");
-  const manifestPath = path.join(directory, "manifest.json");
-  const use: LocalGitTransportUse = {
-    directory,
-    manifestPath,
-    payloadPath: path.join(directory, "payload.pack"),
-    resolutionPath: path.join(directory, "resolution.json"),
-    manifest: validateLocalGitTransportManifest(await readJSON(manifestPath)),
-  };
-  await verifyLocalGitTransport(use, {
-    expected: {
-      harnessId: resolution.harness_id,
-      resolutionIdentity: resolution.identity,
-      commit: requiredString(resolution.revision.commit, "local source commit"),
-    },
-    env: env ?? process.env,
-    ...(signal ? { signal } : {}),
-  });
-  return use;
 }
 
 async function finalizeRerun(

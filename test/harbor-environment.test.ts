@@ -66,6 +66,10 @@ prebuilt_env = module.HitchHarborDockerEnvironment(environment_dir=root, task_en
 prebuilt_overlay = json.loads(prebuilt_env._hitch_ownership_compose_path.read_text())
 assert prebuilt_env.task_env_config.docker_image == prebuilt
 assert prebuilt_overlay["services"]["main"]["image"] == prebuilt
+gateway_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_model_proxy_host_gateway=True)
+gateway_overlay = json.loads(gateway_env._hitch_ownership_compose_path.read_text())
+assert gateway_overlay["services"]["main"] == {"extra_hosts": ["host.docker.internal:host-gateway"]}
+assert gateway_overlay["services"]["database"] == {}
 try: module._validate_labels({**labels, "unexpected": "x"})
 except ValueError: pass
 else: raise AssertionError("unknown ownership label accepted")

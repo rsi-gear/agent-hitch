@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalId, EvalRequest, InteractionCaptureRefV1, ModelCapturePlanV1, ModelProxyRouteV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
 import type { EvalRequestInput } from "./request.js";
@@ -92,6 +92,12 @@ export interface WorkItemAdmissionController {
     maxParallelism: number;
     signal?: AbortSignal;
   }): Promise<WorkItemAdmissionPermit>;
+}
+
+export interface EvalInteractionCaptureExporter {
+  route: ModelProxyRouteV1;
+  plan: ModelCapturePlanV1;
+  finalizeRun(runId: string, destinationRunDirectory: string): Promise<InteractionCaptureRefV1>;
 }
 
 export interface EvalResult extends Record<string, unknown> {

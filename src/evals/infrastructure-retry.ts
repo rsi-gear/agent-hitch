@@ -4,12 +4,13 @@ import type { ResolvedRevision } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse, RunHarborBackendOptions } from "../backends/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
+import type { EvalInteractionCaptureExporter } from "./service-types.js";
 
 const INFRASTRUCTURE_REASONS = new Set([
   "infrastructure_failure",
@@ -80,6 +81,8 @@ export interface RunInfrastructureRetriesOptions {
   resolvedImages?: Record<string, string>;
   environmentImages?: TrialEnvironmentImagesV1;
   beginRetry?: BeginInfrastructureRetry;
+  modelCapturePlan?: ModelCapturePlanV1;
+  interactionCaptureExporter?: EvalInteractionCaptureExporter;
 }
 
 export async function runInfrastructureRetries(
@@ -174,6 +177,7 @@ export async function runInfrastructureRetries(
         ...(options.executionResources ? { executionResources: options.executionResources } : {}),
         ...(options.resolvedImages ? { resolvedImages: options.resolvedImages } : {}),
         ...(options.localTransport ? { localTransport: options.localTransport } : {}),
+        ...(options.interactionCaptureExporter ? { modelProxy: options.interactionCaptureExporter.route } : {}),
         ...lifecycle?.backend,
         env: options.env,
         ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
@@ -194,6 +198,10 @@ export async function runInfrastructureRetries(
               benchmarkId: options.request.benchmark_id,
               benchmarkRevision: options.request.benchmark_revision,
               runtimeId: options.controllerRuntime.runtime_id,
+              ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
+              ...(options.interactionCaptureExporter ? {
+                interactionCaptureExporter: options.interactionCaptureExporter,
+              } : {}),
               ...await executionEvidence(),
               ...(environmentImages ? { environmentImages } : {}),
               requireCompleteMarker: true,
@@ -219,6 +227,10 @@ export async function runInfrastructureRetries(
         benchmarkId: options.request.benchmark_id,
         benchmarkRevision: options.request.benchmark_revision,
         runtimeId: options.controllerRuntime.runtime_id,
+        ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
+        ...(options.interactionCaptureExporter ? {
+          interactionCaptureExporter: options.interactionCaptureExporter,
+        } : {}),
         ...await executionEvidence(),
         ...(environmentImages ? { environmentImages } : {}),
         rawResult: run.rawResult,

@@ -51,7 +51,7 @@ export function localProviderStatusSnapshot(input: {
     features: {
       docker: true,
       buildkit: true,
-      model_proxy: false,
+      model_proxy: true,
       isolated_same_task_attempts: false,
     },
     capacity: {

@@ -69,6 +69,22 @@ test("result bundle index seals every run file and detects later mutation", asyn
   await atomicWriteJSON(path.join(directory, "bundle.index.json"), legacy);
   assert.equal((await verifyResultBundleIndex(directory)).environment, undefined);
 
+  await mkdir(path.join(directory, "interactions"));
+  await atomicWriteJSON(path.join(directory, "interactions", "capture.policy.json"), {
+    schema_version: "1",
+    requested_mode: "proxy",
+    effective_mode: "native",
+    required: false,
+    degraded_reason: "model-proxy-start-failed",
+  });
+  await atomicWriteJSON(path.join(directory, "trajectory.ref.json"), { schema_version: "2", redactions: [] });
+  const degraded = await writeResultBundleIndex(directory);
+  assert.deepEqual(degraded.capture, {
+    mode: "native", required: false, completeness: "partial", interaction_count: 0,
+    redaction: { policy: "hitch-provider-redaction-v1", status: "not-needed", rules: [] },
+  });
+  assert.ok(degraded.files.some((file) => file.path === "interactions/capture.policy.json" && file.role === "interaction-capture"));
+
   await atomicWriteJSON(path.join(directory, "result.json"), { schema_version: "1", run_id: runId, status: "failed", exit_code: 12 });
   await assert.rejects(verifyResultBundleIndex(directory), /file set or integrity does not match/);
 });

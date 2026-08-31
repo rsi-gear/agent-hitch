@@ -1,9 +1,9 @@
 import path from "node:path";
-import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../artifacts/index.js";
+import { prepareHarness, resolveHarness } from "../artifacts/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, statePaths } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
-import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
+import type { HarborBackendResult, LocalGitTransportUse } from "../backends/index.js";
 import { ensureControllerRuntime, writeRuntimeReference } from "../controller-runtime/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
 import type { EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
@@ -24,6 +24,8 @@ import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } fr
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
 import { modelCaptureDegradationEvent, resolveEvalModelCapturePlan } from "./model-capture-plan.js";
 import { finalizeEvalResult } from "./eval-finalization.js";
+import { harborPreparedArtifact, preparedHarnessEvent } from "./prepared-harness.js";
+import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
@@ -40,6 +42,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   let result: EvalResult;
   let trialRefs: import("../domain/index.js").EvalTrialRefV1[] = [];
   let progress: EvalProgressV1 | null = null;
+  let captureRuntime: Awaited<ReturnType<typeof startEvalModelCaptureRuntime>> | undefined;
   try {
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
     await onControlPhase?.("planning");
@@ -85,32 +88,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(signal ? { signal } : {}),
       ...(verifiedLocalGitSource ? { verifiedLocalGitSource } : {}),
     });
-    if (!artifact.artifact_integrity || !artifact.entrypoint_integrity) {
-      throw new HitchError("host-prepared harness artifact has no complete integrity metadata", {
-        code: "artifact_integrity_mismatch",
-        exitCode: 5,
-      });
-    }
-    const preparedArtifact: HarborPreparedArtifactUse = {
-      directory: preparedArtifactDirectory(root, artifact.artifact_id),
-      artifact_id: artifact.artifact_id,
-      artifact_integrity: artifact.artifact_integrity,
-      entrypoint_integrity: artifact.entrypoint_integrity,
-      harness_id: artifact.harness_id,
-      revision_identity: artifact.revision_identity,
-      adapter_version: artifact.adapter_version,
-      recipe_version: artifact.recipe_version,
-      platform: artifact.platform,
-      node_version: artifact.toolchain.node || process.version,
-      source_type: artifact.source_type,
-    };
-    sink.emit({
-      type: "eval.harness-artifact.prepared",
-      harness: artifact.harness_id,
-      artifact_id: artifact.artifact_id,
-      platform: artifact.platform,
-      cache_hit: artifact.cache_hit,
-    });
+    const preparedArtifact = harborPreparedArtifact(root, artifact);
+    sink.emit(preparedHarnessEvent(artifact));
     const controllerRuntime: ControllerRuntimeUseResult = await ensureControllerRuntime({ root });
     const runtimeRefFile = await writeRuntimeReference(evalDirectory, controllerRuntime);
     sink.emit({
@@ -128,6 +107,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     if (plannedTrials !== null && !Number.isSafeInteger(plannedTrials)) throw invalidInput("planned trial count exceeds the safe integer range");
     if (resume) startedAt = new Date(resume.progress.started_at);
     const capture = resolveEvalModelCapturePlan({ requested: modelCapturePlan, resumed: resume?.executionPlan.model_capture, resuming: Boolean(resume) });
+    const activeCaptureRuntime = await startEvalModelCaptureRuntime({ plan: capture.plan, evalId, evalDirectory, env });
+    captureRuntime = activeCaptureRuntime;
+    capture.plan = activeCaptureRuntime.plan;
     const plan = {
       schema_version: SCHEMA_VERSION,
       eval_id: evalId,
@@ -246,6 +228,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(onWorkItemState ? { onWorkItemState } : {}),
         ...(dockerResourceReaper ? { dockerResourceReaper } : {}),
         ...(environmentImageManifestLoader ? { environmentImageManifestLoader } : {}),
+        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
       });
       progress = execution.progress;
       backendRuns.push(...execution.backendRuns.map((entry) => ({
@@ -302,6 +285,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtimeDirectory: controllerRuntime.directory,
         runtimeId: controllerRuntime.runtime_id,
         preparedArtifact,
+        ...(activeCaptureRuntime.exporter ? { modelProxy: activeCaptureRuntime.exporter.route } : {}),
         resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
         ...(executionResources ? { executionResources } : {}),
         ...(localTransport ? { localTransport } : {}),
@@ -323,6 +307,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
               benchmarkId: normalized.benchmark_id,
               benchmarkRevision: normalized.benchmark_revision,
               runtimeId: controllerRuntime.runtime_id,
+              modelCapturePlan: activeCaptureRuntime.plan,
+              ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
               requireCompleteMarker: true,
               allowMissingBundleDiagnostic: context.bundleWaitExpired,
             }, trial, shardRefs.length, shardRefs);
@@ -346,6 +332,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         benchmarkId: normalized.benchmark_id,
         benchmarkRevision: normalized.benchmark_revision,
         runtimeId: controllerRuntime.runtime_id,
+        modelCapturePlan: activeCaptureRuntime.plan,
+        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
         rawResult: backendRun.rawResult,
       }, shardRefs);
       for (const ref of terminalRefs) await publish(ref);
@@ -370,6 +358,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         preparedArtifact,
         resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
         ...(executionResources ? { executionResources } : {}),
+        modelCapturePlan: activeCaptureRuntime.plan,
+        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
         ...(localTransport ? { localTransport } : {}),
         env,
         ...(harborExecutable !== undefined ? { harborExecutable } : {}),
@@ -496,5 +486,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       completed_at: new Date().toISOString(),
     };
   }
+  if (captureRuntime) await captureRuntime.close().catch((error) => sink.emit({ type: "interaction.capture.close-failed", code: (error as { code?: string }).code || "model_capture_close_failed" }));
   return finalizeEvalResult(evalDirectory, sink, result);
 }

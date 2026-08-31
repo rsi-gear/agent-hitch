@@ -19,6 +19,7 @@ import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, valid
 import type { WorkItemAdmissionController } from "./service-types.js";
 import type { EvalDockerResourceReaper } from "./service-types.js";
 import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
+import type { EvalInteractionCaptureExporter } from "./service-types.js";
 import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
@@ -56,6 +57,7 @@ export interface ExecutePlannedHarborOptions {
   onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
   dockerResourceReaper?: EvalDockerResourceReaper;
   environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
+  interactionCaptureExporter?: EvalInteractionCaptureExporter;
 }
 
 export async function executePlannedHarborTasks(options: ExecutePlannedHarborOptions): Promise<{
@@ -157,6 +159,8 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
         ...(completed.environmentImages ? { environmentImages: completed.environmentImages } : {}),
       }),
       ...(options.localTransport ? { localTransport: options.localTransport } : {}),
+      ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),
+      ...(options.interactionCaptureExporter ? { interactionCaptureExporter: options.interactionCaptureExporter } : {}),
       env: options.env,
       ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
@@ -290,6 +294,7 @@ async function executeLeasedWorkItem(
     runtimeDirectory: options.controllerRuntime.directory,
     runtimeId: options.controllerRuntime.runtime_id,
     preparedArtifact: options.preparedArtifact,
+    ...(options.interactionCaptureExporter ? { modelProxy: options.interactionCaptureExporter.route } : {}),
     executionResources: runtimeResources.mainLimits,
     ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
     dockerOwnership: ownership,
@@ -331,6 +336,10 @@ async function executeLeasedWorkItem(
           benchmarkId: options.request.benchmark_id,
           benchmarkRevision: options.request.benchmark_revision,
           runtimeId: options.controllerRuntime.runtime_id,
+          ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),
+          ...(options.interactionCaptureExporter ? {
+            interactionCaptureExporter: options.interactionCaptureExporter,
+          } : {}),
           executionEvidence: verifyTrialEnvironmentImageExecution(await resourceObserver.capture(), environmentImages),
           ...(environmentImages ? { environmentImages } : {}),
           requireCompleteMarker: true,
@@ -355,6 +364,10 @@ async function executeLeasedWorkItem(
     benchmarkId: options.request.benchmark_id,
     benchmarkRevision: options.request.benchmark_revision,
     runtimeId: options.controllerRuntime.runtime_id,
+    ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),
+    ...(options.interactionCaptureExporter ? {
+      interactionCaptureExporter: options.interactionCaptureExporter,
+    } : {}),
     executionEvidence: verifyTrialEnvironmentImageExecution(await resourceObserver.capture(), environmentImages),
     ...(environmentImages ? { environmentImages } : {}),
     rawResult: run.rawResult,

@@ -3,7 +3,7 @@ import path from "node:path";
 import { atomicWriteJSON, ensureDir, readJSON, statePaths, writePrivateFile } from "../foundation/index.js";
 import type { ResolvedRevision } from "../artifacts/index.js";
 import { validateRunContext } from "../domain/index.js";
-import type { EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, RunObservationV1, Sha256 } from "../domain/index.js";
+import type { EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, RunObservationV1, Sha256 } from "../domain/index.js";
 import { newRunId, safeAgentArgsForPersistence } from "../runs/index.js";
 import {
   benchmarkTaskDigest,
@@ -19,6 +19,9 @@ import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObs
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
+import type { EvalInteractionCaptureExporter } from "./service-types.js";
+import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./interaction-capture-import.js";
+import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-import-identity.js";
 
 export interface ImportEvalRunsOptions {
   root: string;
@@ -34,6 +37,8 @@ export interface ImportEvalRunsOptions {
   rawResult: Record<string, unknown> | null;
   executionEvidence?: ExecutionEvidenceV1;
   environmentImages?: TrialEnvironmentImagesV1;
+  modelCapturePlan?: ModelCapturePlanV1;
+  interactionCaptureExporter?: EvalInteractionCaptureExporter;
 }
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
   requireCompleteMarker?: boolean;
@@ -60,12 +65,12 @@ export async function importEvalTrialRun(
   index = 0,
   existingRefs: readonly EvalTrialRefV1[] = [],
 ): Promise<EvalTrialRefV1> {
-  const fallbackTaskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
-  const trialId = nonEmpty(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
-  const attempt = options.expectedAttempt ?? trialAttempt(trialId);
+  const fallbackTaskId = nonEmptyString(trial.task_name) || `trial-${index + 1}`;
+  const trialId = nonEmptyString(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
+  const attempt = options.expectedAttempt ?? trialAttemptFromId(trialId);
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new TypeError("expected eval attempt must be a positive safe integer");
   const trialDirectory = path.join(options.harborJobDirectory ?? path.join(options.evalDirectory, "harbor", "job"), trialId);
-  const taskId = await lockedTaskId(trialDirectory) || fallbackTaskId;
+  const taskId = await lockedHarborTaskId(trialDirectory) || fallbackTaskId;
   const existing = existingRefs.find((ref) => ref.trial_id === trialId);
   if (existing !== undefined) {
     if (existing.task_id !== taskId || existing.attempt !== attempt) throw new TrialIdentityConflictError(`existing eval trial identity changed: ${trialId}`);
@@ -126,27 +131,6 @@ export class TrialIdentityConflictError extends Error {
     super(message);
     this.name = "TrialIdentityConflictError";
   }
-}
-
-async function lockedTaskId(trialDirectory: string): Promise<string | null> {
-  const lockPath = path.join(trialDirectory, "lock.json");
-  let lock: unknown;
-  try {
-    lock = await readJSON(lockPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw new Error(`Harbor trial lock is unreadable: ${lockPath}`, { cause: error });
-  }
-  if (!lock || typeof lock !== "object" || Array.isArray(lock)) {
-    throw new Error(`Harbor trial lock is invalid: ${lockPath}`);
-  }
-  const task = (lock as Record<string, unknown>).task;
-  if (!task || typeof task !== "object" || Array.isArray(task)) {
-    throw new Error(`Harbor trial lock has no task.name: ${lockPath}`);
-  }
-  const taskId = nonEmpty((task as Record<string, unknown>).name);
-  if (!taskId) throw new Error(`Harbor trial lock has no task.name: ${lockPath}`);
-  return taskId;
 }
 
 interface TrialInput extends ImportEvalRunOptions {
@@ -211,6 +195,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     await rm(path.join(staging, "bundle.index.json"), { force: true });
     await readJSON(path.join(staging, "resolution.json"));
     await validateJSONLines(path.join(staging, "events.jsonl"));
+    await importTrialInteractionCapture(input, record.run_id, staging);
     const verifier = verifierResult(input.trial);
     const verifierRef = verifier ? "verifier/result.json" : undefined;
     if (verifier) await atomicWriteJSON(path.join(staging, verifierRef as string), verifier);
@@ -322,6 +307,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   await atomicWriteJSON(path.join(runDirectory, "resolution.json"), input.resolvedRevision);
   await writeTrialExecutionEvidence(runDirectory, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
   await writeTrialEnvironmentImageEvidence(runDirectory, input.taskId, input.environmentImages);
+  await writeTrialCapturePolicy(runDirectory, input.modelCapturePlan);
   await writePrivateFile(path.join(runDirectory, "events.jsonl"), `${JSON.stringify({
     schema_version: "1",
     sequence: 1,
@@ -428,16 +414,6 @@ async function validateBundleTree(root: string): Promise<void> {
     }
   };
   await walk(root);
-}
-
-function trialAttempt(trialId: string): number {
-  const match = trialId.match(/__(\d+)$/);
-  const value = Number(match?.[1]);
-  return Number.isInteger(value) && value > 0 ? value : 1;
-}
-
-function nonEmpty(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function isWithin(root: string, candidate: string): boolean {

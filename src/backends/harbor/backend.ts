@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths } from "../../foundation/index.js";
-import type { DockerResourceOwnershipV1, EvalRequest, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
+import type { DockerResourceOwnershipV1, EvalRequest, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
@@ -9,6 +9,7 @@ import { harborVerifierConfig } from "./verifier-config.js";
 import { invokeHarbor } from "./process.js";
 import { harborEnvironmentConfig } from "./environment-config.js";
 import type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
+import { parseHarborModelProxyRoute } from "./model-proxy-config.js";
 
 const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
@@ -43,6 +44,7 @@ export interface RunHarborBackendOptions {
   dockerServiceLimits?: HarborDockerServiceLimitsV1;
   resolvedImages?: Record<string, string>;
   prebuiltTaskImage?: string;
+  modelProxy?: ModelProxyRouteV1;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -104,6 +106,7 @@ export async function runHarborBackend({
   dockerServiceLimits,
   resolvedImages,
   prebuiltTaskImage,
+  modelProxy,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
@@ -136,6 +139,7 @@ export async function runHarborBackend({
     ...(dockerServiceLimits ? { dockerServiceLimits } : {}),
     ...(resolvedImages ? { resolvedImages } : {}),
     ...(prebuiltTaskImage ? { prebuiltTaskImage } : {}),
+    ...(modelProxy ? { modelProxy } : {}),
   });
   await atomicWriteJSON(configPath, config);
   emit({
@@ -289,6 +293,7 @@ export interface BuildHarborJobConfigOptions {
   dockerServiceLimits?: HarborDockerServiceLimitsV1;
   resolvedImages?: Record<string, string>;
   prebuiltTaskImage?: string;
+  modelProxy?: ModelProxyRouteV1;
 }
 
 export async function buildHarborJobConfig({
@@ -310,6 +315,7 @@ export async function buildHarborJobConfig({
   dockerServiceLimits,
   resolvedImages,
   prebuiltTaskImage,
+  modelProxy,
 }: BuildHarborJobConfigOptions): Promise<Record<string, unknown>> {
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
@@ -374,6 +380,7 @@ export async function buildHarborJobConfig({
       } : {}),
       hitch_timeout_ms: request.timeout_ms,
       agent_args: request.agent_args,
+      ...(modelProxy ? { model_capture: parseHarborModelProxyRoute(modelProxy) } : {}),
     },
     env: credentialEnvironment(request.pass_env, env),
     include_logs: ["hitch-*"],
@@ -386,7 +393,7 @@ export async function buildHarborJobConfig({
     jobs_dir: backendDirectory,
     n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
-    environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits, resolvedImages, prebuiltTaskImage),
+    environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits, resolvedImages, prebuiltTaskImage, Boolean(modelProxy && process.platform === "linux")),
     verifier: harborVerifierConfig(request),
     agents: [agent],
     datasets: [await harborDatasetConfig(request.dataset, taskNames)],

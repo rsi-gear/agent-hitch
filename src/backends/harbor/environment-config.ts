@@ -11,6 +11,7 @@ export function harborEnvironmentConfig(
   serviceLimits?: HarborDockerServiceLimitsV1,
   resolvedImages?: Record<string, string>,
   prebuiltTaskImage?: string,
+  modelProxyHostGateway = false,
 ): Record<string, unknown> {
   const environment: Record<string, unknown> = { type: "docker", delete: true };
   if (resources) {
@@ -27,13 +28,14 @@ export function harborEnvironmentConfig(
   if (serviceLimits && !ownership) throw invalidInput("Harbor sidecar limits require Docker ownership");
   const images = resolvedImages ? parseResolvedImages(resolvedImages) : {};
   if (prebuiltTaskImage !== undefined && !/^sha256:[a-f0-9]{64}$/.test(prebuiltTaskImage)) throw invalidInput("Harbor prebuilt task image is invalid");
-  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage) Object.assign(environment, {
+  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage || modelProxyHostGateway) Object.assign(environment, {
     import_path: HITCH_DOCKER_ENVIRONMENT,
     kwargs: {
       ...(ownership ? { hitch_ownership_labels: harborOwnershipLabels(ownership) } : {}),
       ...(serviceLimits && Object.keys(serviceLimits).length > 0 ? { hitch_service_resource_limits: parseServiceLimits(serviceLimits) } : {}),
       ...(Object.keys(images).length > 0 ? { hitch_resolved_images: images } : {}),
       ...(prebuiltTaskImage ? { hitch_prebuilt_task_image: prebuiltTaskImage } : {}),
+      ...(modelProxyHostGateway ? { hitch_model_proxy_host_gateway: true } : {}),
     },
   });
   if (ownership) environment.delete = false;

@@ -151,15 +151,20 @@ async function bundleSummaries(root: string): Promise<Pick<ResultBundleIndexV1, 
 async function captureSummary(root: string): Promise<NonNullable<ResultBundleIndexV1["capture"]>> {
   const trajectory = await readJSON<Record<string, unknown> | null>(path.join(root, "trajectory.ref.json"), null);
   const interaction = await readJSON<Record<string, unknown> | null>(path.join(root, "interactions", "interaction.ref.json"), null);
+  const policy = parseCapturePolicy(await readJSON<unknown | null>(path.join(root, "interactions", "capture.policy.json"), null));
   const rules = redactionRules(trajectory?.redactions);
   if (!interaction) return {
-    mode: trajectory ? "native" : "off",
-    required: false,
-    completeness: trajectory ? "complete" : "none",
+    mode: policy?.effective_mode ?? (trajectory ? "native" : "off"),
+    required: policy?.required ?? false,
+    completeness: trajectory ? policy?.degraded_reason ? "partial" : "complete" : "none",
     interaction_count: 0,
     redaction: { policy: "hitch-provider-redaction-v1", status: rules.length > 0 ? "applied" : "not-needed", rules },
   };
   const parsed = (await loadInteractionCapture(root)).ref;
+  if (policy && (policy.effective_mode !== parsed.mode || policy.required !== parsed.required
+    || policy.topology !== parsed.topology || policy.degraded_reason !== undefined)) {
+    throw new TypeError("result bundle capture policy does not match interaction evidence");
+  }
   return {
     mode: parsed.mode,
     required: parsed.required,
@@ -170,6 +175,36 @@ async function captureSummary(root: string): Promise<NonNullable<ResultBundleInd
       status: parsed.redaction.status,
       rules: canonicalRules([...rules, ...parsed.redaction.rules]),
     },
+  };
+}
+
+function parseCapturePolicy(value: unknown | null): {
+  requested_mode: "off" | "native" | "proxy" | "hybrid";
+  effective_mode: "off" | "native" | "proxy" | "hybrid";
+  required: boolean;
+  topology?: "host-side" | "in-sandbox";
+  degraded_reason?: string;
+} | undefined {
+  if (value === null) return undefined;
+  const record = asRecord(value);
+  const allowed = new Set(["schema_version", "requested_mode", "effective_mode", "required", "topology", "degraded_reason"]);
+  const modes = new Set(["off", "native", "proxy", "hybrid"]);
+  if (Object.keys(record).some((key) => !allowed.has(key)) || record.schema_version !== "1"
+    || !modes.has(String(record.requested_mode)) || !modes.has(String(record.effective_mode))
+    || typeof record.required !== "boolean"
+    || record.topology !== undefined && record.topology !== "host-side" && record.topology !== "in-sandbox"
+    || record.degraded_reason !== undefined && (typeof record.degraded_reason !== "string" || !record.degraded_reason)
+    || (record.effective_mode === "proxy" || record.effective_mode === "hybrid") !== (record.topology !== undefined)
+    || (record.requested_mode !== record.effective_mode) !== (record.degraded_reason !== undefined)
+    || record.required === true && record.degraded_reason !== undefined) {
+    throw new TypeError("result bundle capture policy is invalid");
+  }
+  return {
+    requested_mode: record.requested_mode as "off" | "native" | "proxy" | "hybrid",
+    effective_mode: record.effective_mode as "off" | "native" | "proxy" | "hybrid",
+    required: record.required,
+    ...(record.topology === undefined ? {} : { topology: record.topology }),
+    ...(record.degraded_reason === undefined ? {} : { degraded_reason: record.degraded_reason }),
   };
 }
 

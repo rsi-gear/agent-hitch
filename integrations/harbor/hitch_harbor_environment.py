@@ -40,6 +40,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         hitch_service_resource_limits: Mapping[str, Mapping[str, int]] | None = None,
         hitch_resolved_images: Mapping[str, str] | None = None,
         hitch_prebuilt_task_image: str | None = None,
+        hitch_model_proxy_host_gateway: bool = False,
         **kwargs: Any,
     ) -> None:
         self._hitch_ownership_labels = _validate_labels(hitch_ownership_labels)
@@ -50,6 +51,9 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         self._hitch_prebuilt_task_image = _validate_prebuilt_task_image(
             hitch_prebuilt_task_image
         )
+        if not isinstance(hitch_model_proxy_host_gateway, bool):
+            raise ValueError("Hitch model proxy host gateway flag is invalid")
+        self._hitch_model_proxy_host_gateway = hitch_model_proxy_host_gateway
         self._hitch_ownership_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._hitch_ownership_compose_path: Path | None = None
         positional = list(args)
@@ -73,6 +77,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             or self._hitch_service_resource_limits
             or self._hitch_resolved_images
             or self._hitch_prebuilt_task_image
+            or self._hitch_model_proxy_host_gateway
         ):
             self._hitch_ownership_compose_path = self._write_ownership_overlay()
 
@@ -124,6 +129,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 resolved_image = self._hitch_prebuilt_task_image
             if resolved_image is not None:
                 config["image"] = resolved_image
+            if name == MAIN_SERVICE_NAME and self._hitch_model_proxy_host_gateway:
+                config["extra_hosts"] = ["host.docker.internal:host-gateway"]
             if name != MAIN_SERVICE_NAME and self._hitch_service_resource_limits:
                 limits = self._hitch_service_resource_limits.get(name)
                 if limits is None:

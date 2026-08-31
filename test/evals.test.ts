@@ -69,6 +69,12 @@ test("Harbor resource limits exactly mirror representable trial reservations", (
   assert.throws(() => harborEnvironmentConfig({
     cpu_millis: 2_500, memory_bytes: 4_500 * 1024 * 1024, container_slots: 1, build_slots: 0,
   }), (error: unknown) => (error as { code?: string }).code === "resource_limit_unrepresentable");
+  assert.deepEqual(harborEnvironmentConfig(undefined, undefined, undefined, undefined, undefined, true), {
+    type: "docker",
+    delete: true,
+    import_path: "hitch_harbor_environment:HitchHarborDockerEnvironment",
+    kwargs: { hitch_model_proxy_host_gateway: true },
+  });
   const ownership = {
     root_id: "a".repeat(24), provider: "local-docker" as const,
     eval_id: `eval_${"b".repeat(32)}`, work_id: `work_${"c".repeat(32)}`,
@@ -535,6 +541,16 @@ test("Harbor bridge source is valid Python", () => {
     });
     assert.equal(result.status, 0, result.stderr || undefined);
   }
+});
+
+test("Harbor bridge fails closed for required model proxy and degrades optional capture", async (t) => {
+  const logs = await mkdtemp(path.join(tmpdir(), "hitch-model-proxy-bridge-"));
+  t.after(() => forceRemove(logs));
+  const smoke = path.resolve("test-support", "model_proxy_bridge_smoke.py");
+  const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
+  const result = spawnSync("python3", [smoke, bridge, logs], { encoding: "utf8" });
+  assert.equal(result.status, 0, `model proxy bridge smoke failed:\n${result.stderr || result.stdout}`);
+  assert.match(result.stdout, /model proxy bridge smoke OK/);
 });
 
 test("Harbor verifier retries only its test phase and preserves real zero rewards", () => {

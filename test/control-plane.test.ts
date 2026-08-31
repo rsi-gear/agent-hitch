@@ -185,7 +185,7 @@ test("eval admission distinguishes optional model-capture degradation from requi
     build: { mode: "backend" as const },
   };
   const evalId = await scheduler.submit({
-    request: { ...request(1), harness_ref: "codex@version:1.2.3" },
+    request: { ...request(1), harness_ref: "pi@version:1.2.3" },
     execution: { ...baseExecution, model_capture: { mode: "proxy" as const, required: false } },
   });
   await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null));
@@ -193,11 +193,22 @@ test("eval admission distinguishes optional model-capture degradation from requi
     requested_mode: "proxy",
     effective_mode: "native",
     required: false,
-    degraded_reason: "provider-model-proxy-unavailable",
+    degraded_reason: "adapter-endpoint-override-unsupported",
+  });
+  const proxyEval = await scheduler.submit({
+    request: { ...request(1), harness_ref: "codex@version:1.2.3" },
+    execution: { ...baseExecution, model_capture: { mode: "proxy" as const, required: true } },
+  });
+  await waitFor(() => scheduler.status(proxyEval).then((status) => status?.result !== null));
+  assert.deepEqual(observed?.modelCapturePlan, {
+    requested_mode: "proxy",
+    effective_mode: "proxy",
+    required: true,
+    topology: "host-side",
   });
   await assert.rejects(
     scheduler.submit({
-      request: { ...request(1), harness_ref: "codex@version:1.2.3" },
+      request: { ...request(1), harness_ref: "pi@version:1.2.3" },
       execution: { ...baseExecution, model_capture: { mode: "proxy", required: true } },
     }),
     (error: unknown) => (error as { code?: string }).code === "model_capture_unsupported",

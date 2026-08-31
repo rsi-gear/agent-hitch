@@ -13,6 +13,7 @@ import shutil
 import stat as stat_module
 import tempfile
 import uuid
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -66,6 +67,7 @@ class HitchHarborAgent(BaseAgent):
         benchmark_revision: str | None = None,
         verifier_identity: str | None = None,
         logical_attempt: int | None = None,
+        model_capture: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, **kwargs)
@@ -90,6 +92,7 @@ class HitchHarborAgent(BaseAgent):
         if logical_attempt is not None and (isinstance(logical_attempt, bool) or not isinstance(logical_attempt, int) or logical_attempt < 1):
             raise ValueError("logical_attempt must be a positive integer")
         self.logical_attempt = logical_attempt
+        self.model_capture = _validate_model_capture(model_capture)
         self._hitch_version: str | None = None
         self._entrypoint: str | None = None
         self._artifact_manifest: dict[str, Any] | None = None
@@ -1006,12 +1009,14 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             if parent_temporary is not None:
                 parent_temporary.unlink(missing_ok=True)
 
+        proxy_environment, proxy_health = await self._model_proxy_environment(environment, run_id)
         if self._entrypoint is None:
             raise RuntimeError("Hitch agent setup() must run before run() to resolve the runtime entrypoint")
         entry = self._remote_entry(self._entrypoint)
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
+            *proxy_environment,
             *(["HITCH_HARBOR_INTERNAL=1"] if self._local_manifest is not None or self._artifact_uploaded or parent_payload is not None else []),
             f"node {entry} run",
             "--harness",
@@ -1138,6 +1143,7 @@ mv "$stage_dir" "$target_dir"
             "trial_id": trial_id,
             "task_id": task_id,
             "attempt": attempt,
+            "model_capture_health": proxy_health,
             "hitch_status": hitch_result.get("status") if hitch_result else None,
             "hitch_artifact_id": hitch_result.get("artifact_id") if hitch_result else None,
         }
@@ -1180,6 +1186,32 @@ mv "$stage_dir" "$target_dir"
             )
             await self._write_bridge_error(environment, evidence)
             raise HitchBridgeError(primary_code, primary_message or primary_code, evidence)
+
+    async def _model_proxy_environment(
+        self,
+        environment: BaseEnvironment,
+        run_id: str,
+    ) -> tuple[list[str], str]:
+        if self.model_capture is None:
+            return [], "not-configured"
+        health = self.model_capture["health_url_template"].replace("{run_id}", run_id)
+        script = (
+            "fetch(process.argv[1],{signal:AbortSignal.timeout(5000)})"
+            ".then(r=>{if(!r.ok)throw new Error('status '+r.status)})"
+            ".catch(()=>{console.error('model proxy health check failed');process.exit(1)})"
+        )
+        probe = await environment.exec(
+            f"{self._node_prefix()} node -e {shlex.quote(script)} {shlex.quote(health)}"
+        )
+        if probe.return_code != 0:
+            if self.model_capture["required"]:
+                raise RuntimeError("hitch-model-proxy-health: required model proxy is unreachable")
+            return [], "degraded-unreachable"
+        base = self.model_capture["base_url_template"].replace("{run_id}", run_id)
+        return [
+            f"OPENAI_BASE_URL={shlex.quote(base.replace('{provider}', 'openai'))}",
+            f"ANTHROPIC_BASE_URL={shlex.quote(base.replace('{provider}', 'anthropic'))}",
+        ], "healthy"
 
     @staticmethod
     def _parse_hitch_result(
@@ -1493,6 +1525,39 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)
             if value and value.strip():
                 return value.strip()
         return "no diagnostic output"
+
+
+def _validate_model_capture(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "mode", "required", "topology", "base_url_template", "health_url_template"
+    }:
+        raise ValueError("model_capture fields are invalid")
+    if (
+        value.get("schema_version") != "1"
+        or value.get("mode") not in {"proxy", "hybrid"}
+        or not isinstance(value.get("required"), bool)
+        or value.get("topology") != "host-side"
+    ):
+        raise ValueError("model_capture identity is invalid")
+    for field, provider_count in (("base_url_template", 1), ("health_url_template", 0)):
+        template = value.get(field)
+        if (
+            not isinstance(template, str)
+            or not template
+            or len(template) > 2048
+            or any(character in template for character in ("\x00", "\r", "\n"))
+            or template.count("{run_id}") != 1
+            or template.count("{provider}") != provider_count
+        ):
+            raise ValueError(f"model_capture {field} is invalid")
+        parsed = urlparse(
+            template.replace("{run_id}", "run_" + "a" * 32).replace("{provider}", "openai")
+        )
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError(f"model_capture {field} URL is invalid")
+    return dict(value)
 
 
 def canonical_manifest_json(manifest: dict[str, Any]) -> str:
