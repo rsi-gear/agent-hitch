@@ -28,7 +28,7 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
     || !Number.isSafeInteger(observedRecord.sample_count) || (observedRecord.sample_count as number) < 0
     || !Array.isArray(observedRecord.containers) || observedRecord.containers.length > 256
     || !Array.isArray(observedRecord.unavailable_fields)
-    || observedRecord.unavailable_fields.some((entry) => !["cpu_time_ns", "peak_memory_bytes", "exit_status"].includes(entry as string))
+    || observedRecord.unavailable_fields.some((entry) => !["cpu_time_ns", "peak_memory_bytes", "exit_status", "image_identity"].includes(entry as string))
     || new Set(observedRecord.unavailable_fields).size !== observedRecord.unavailable_fields.length
     || !Array.isArray(observedRecord.issues) || observedRecord.issues.length > 32
     || observedRecord.issues.some((entry) => !validText(entry, 512))) throw new TypeError("execution evidence observation is invalid");
@@ -61,10 +61,12 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
 
 function container(value: unknown, index: number): ObservedContainerResourcesV1 {
   const record = exact(value, ["container_id", "first_observed_at", "last_observed_at"], `execution evidence container ${index}`, [
-    "name", "peak_memory_bytes", "oom_killed", "exit_code", "exit_reason",
+    "name", "image_reference", "image_config_digest", "peak_memory_bytes", "oom_killed", "exit_code", "exit_reason",
   ]);
   if (typeof record.container_id !== "string" || !/^[a-f0-9]{12,64}$/.test(record.container_id)
     || (record.name !== undefined && !validText(record.name, 256)) || !timestamp(record.first_observed_at) || !timestamp(record.last_observed_at)
+    || (record.image_reference !== undefined && !validText(record.image_reference, 1_024))
+    || (record.image_config_digest !== undefined && (typeof record.image_config_digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(record.image_config_digest)))
     || Date.parse(record.last_observed_at as string) < Date.parse(record.first_observed_at as string)
     || (record.peak_memory_bytes !== undefined && (!Number.isSafeInteger(record.peak_memory_bytes) || (record.peak_memory_bytes as number) < 0))
     || (record.oom_killed !== undefined && typeof record.oom_killed !== "boolean")

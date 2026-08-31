@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EnvironmentImageManifestV1, EnvironmentImageUseV1 } from "../src/domain/index.js";
 import { readJSON } from "../src/foundation/index.js";
-import { loadTrialEnvironmentImages, writeTrialEnvironmentImageEvidence } from "../src/evals/trial-environment-evidence.js";
+import { loadTrialEnvironmentImages, verifyTrialEnvironmentImageExecution, writeTrialEnvironmentImageEvidence } from "../src/evals/trial-environment-evidence.js";
 
 const imageId = `sha256:${"a".repeat(64)}` as const;
 const manifestDigest = `sha256:${"b".repeat(64)}` as const;
@@ -41,4 +41,15 @@ test("trial environment evidence rejects a manifest that differs from the plan",
     uses: [use],
     loader: async () => ({ ...manifest, output: { ...manifest.output, manifest_digest: `sha256:${"e".repeat(64)}` } }),
   }), /does not match/);
+});
+
+test("trial environment execution requires the planned image config digest", async () => {
+  const evidence = await loadTrialEnvironmentImages({ taskId: "task-a", uses: [use], loader: async () => manifest });
+  const execution = {
+    observed: { containers: [{ image_config_digest: manifest.output.config_digest }] },
+  } as never;
+  assert.equal(verifyTrialEnvironmentImageExecution(execution, evidence), execution);
+  assert.throws(() => verifyTrialEnvironmentImageExecution({
+    observed: { containers: [{ image_config_digest: `sha256:${"f".repeat(64)}` }] },
+  } as never, evidence), (error: unknown) => (error as { code?: string }).code === "environment_image_mismatch");
 });

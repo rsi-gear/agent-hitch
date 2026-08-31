@@ -1,4 +1,4 @@
-import type { DockerResourceOwnershipV1, ExecutionEvidenceV1, ObservedContainerResourcesV1, ResourceVectorV1 } from "../domain/index.js";
+import type { DockerResourceOwnershipV1, ExecutionEvidenceV1, ObservedContainerResourcesV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import { runCommand } from "../foundation/index.js";
 import { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, validateDockerResourceOwnership } from "./docker-ownership.js";
 import { parseExecutionEvidence } from "./execution-evidence.js";
@@ -24,6 +24,8 @@ export interface DockerResourceObserver {
 interface MutableContainer {
   container_id: string;
   name?: string;
+  image_reference?: string;
+  image_config_digest?: Sha256;
   first_observed_at: string;
   last_observed_at: string;
   peak_memory_bytes?: number;
@@ -152,6 +154,8 @@ async function observeContainer(
   const observed: MutableContainer = previous ?? { container_id: item.Id, first_observed_at: now, last_observed_at: now };
   observed.last_observed_at = now;
   if (typeof item.Name === "string" && item.Name.replace(/^\//, "")) observed.name = item.Name.replace(/^\//, "").replace(/[\0\r\n]/g, " ").slice(0, 256);
+  if (typeof config.Image === "string" && config.Image && config.Image.length <= 1_024 && !/[\0\r\n]/.test(config.Image)) observed.image_reference = config.Image;
+  if (typeof item.Image === "string" && /^sha256:[a-f0-9]{64}$/.test(item.Image)) observed.image_config_digest = item.Image as Sha256;
   const state = record(item.State) ? item.State : {};
   if (typeof state.OOMKilled === "boolean") observed.oom_killed = Boolean(observed.oom_killed || state.OOMKilled);
   if (state.Running === false && Number.isSafeInteger(state.ExitCode) && (state.ExitCode as number) >= 0 && (state.ExitCode as number) <= 255) {
@@ -183,6 +187,7 @@ function observation(
   const unavailable: ExecutionEvidenceV1["observed"]["unavailable_fields"] = ["cpu_time_ns"];
   if (!containers.some((entry) => entry.peak_memory_bytes !== undefined)) unavailable.push("peak_memory_bytes");
   if (!containers.some((entry) => entry.exit_code !== undefined || entry.oom_killed !== undefined)) unavailable.push("exit_status");
+  if (!containers.some((entry) => entry.image_reference !== undefined || entry.image_config_digest !== undefined)) unavailable.push("image_identity");
   return {
     status: containers.length > 0 ? "partial" : "unavailable",
     started_at: startedAt,

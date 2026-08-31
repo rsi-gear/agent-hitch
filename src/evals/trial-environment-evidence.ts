@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { EnvironmentImageManifestV1, EnvironmentImageUseV1, RunEnvironmentImagesV1 } from "../domain/index.js";
+import type { EnvironmentImageManifestV1, EnvironmentImageUseV1, ExecutionEvidenceV1, RunEnvironmentImagesV1 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir } from "../foundation/index.js";
 import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
 
@@ -51,6 +51,24 @@ export async function writeTrialEnvironmentImageEvidence(
   await atomicWriteJSON(path.join(runDirectory, "environment", "image.manifest.json"), persisted);
 }
 
+export function verifyTrialEnvironmentImageExecution(
+  execution: ExecutionEvidenceV1,
+  evidence?: TrialEnvironmentImagesV1,
+): ExecutionEvidenceV1 {
+  if (!evidence) return execution;
+  const manifests = new Map(evidence.manifests.map((manifest) => [manifest.image_id, manifest]));
+  for (const use of evidence.uses) {
+    const manifest = manifests.get(use.image_id);
+    if (!manifest) throw imageMismatch();
+    const expectedConfig = manifest.output.config_digest;
+    const matched = execution.observed.containers.some((container) => expectedConfig
+      ? container.image_config_digest === expectedConfig
+      : container.image_reference === use.reference);
+    if (!matched) throw imageMismatch();
+  }
+  return execution;
+}
+
 function validatePair(taskId: string, use: EnvironmentImageUseV1, manifest: EnvironmentImageManifestV1): void {
   if (!use.task_ids.includes(taskId) || manifest.schema_version !== "1" || manifest.image_id !== use.image_id
     || manifest.output.reference !== use.reference || manifest.output.manifest_digest !== use.manifest_digest
@@ -61,4 +79,8 @@ function validatePair(taskId: string, use: EnvironmentImageUseV1, manifest: Envi
 
 function compare(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left), Buffer.from(right));
+}
+
+function imageMismatch(): HitchError {
+  return new HitchError("observed trial container image does not match the immutable image plan", { code: "environment_image_mismatch", exitCode: 12 });
 }

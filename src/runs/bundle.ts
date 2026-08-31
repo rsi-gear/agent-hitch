@@ -111,7 +111,8 @@ async function bundleSummaries(root: string): Promise<Pick<ResultBundleIndexV1, 
   const imageEvidence = await readJSON<Record<string, unknown> | null>(path.join(root, "environment", "image.manifest.json"), null);
   const resources = execution ? resourcesFromExecution(execution) : undefined;
   if (!imageEvidence) return { ...(resources ? { resources } : {}) };
-  if (!execution || typeof execution.provider !== "string" || !execution.provider) throw new TypeError("result bundle environment has no provider evidence");
+  if (!execution) return {};
+  if (typeof execution.provider !== "string" || !execution.provider) throw new TypeError("result bundle environment has no provider evidence");
   if (imageEvidence.schema_version !== "1" || !Array.isArray(imageEvidence.manifests)) throw new TypeError("result bundle environment image evidence is invalid");
   const images = imageEvidence.manifests.map((value, index) => {
     const manifest = asRecord(value);

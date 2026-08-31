@@ -21,7 +21,7 @@ import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
 import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
-import { loadTrialEnvironmentImages } from "./trial-environment-evidence.js";
+import { loadTrialEnvironmentImages, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 
 export interface PlannedBackendRun {
@@ -323,7 +323,7 @@ async function executeLeasedWorkItem(
           benchmarkId: options.request.benchmark_id,
           benchmarkRevision: options.request.benchmark_revision,
           runtimeId: options.controllerRuntime.runtime_id,
-          executionEvidence: await resourceObserver.capture(),
+          executionEvidence: verifyTrialEnvironmentImageExecution(await resourceObserver.capture(), environmentImages),
           ...(environmentImages ? { environmentImages } : {}),
           requireCompleteMarker: true,
           allowMissingBundleDiagnostic: context.bundleWaitExpired,
@@ -347,7 +347,7 @@ async function executeLeasedWorkItem(
     benchmarkId: options.request.benchmark_id,
     benchmarkRevision: options.request.benchmark_revision,
     runtimeId: options.controllerRuntime.runtime_id,
-    executionEvidence: await resourceObserver.capture(),
+    executionEvidence: verifyTrialEnvironmentImageExecution(await resourceObserver.capture(), environmentImages),
     ...(environmentImages ? { environmentImages } : {}),
     rawResult: run.rawResult,
   }, refs);

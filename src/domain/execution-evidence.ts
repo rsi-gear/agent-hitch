@@ -1,8 +1,11 @@
 import type { ResourceVectorV1 } from "./resources.js";
+import type { Sha256 } from "./ids.js";
 
 export interface ObservedContainerResourcesV1 {
   container_id: string;
   name?: string;
+  image_reference?: string;
+  image_config_digest?: Sha256;
   first_observed_at: string;
   last_observed_at: string;
   peak_memory_bytes?: number;
@@ -32,7 +35,7 @@ export interface ExecutionEvidenceV1 {
     collected_at: string;
     sample_count: number;
     containers: ObservedContainerResourcesV1[];
-    unavailable_fields: Array<"cpu_time_ns" | "peak_memory_bytes" | "exit_status">;
+    unavailable_fields: Array<"cpu_time_ns" | "peak_memory_bytes" | "exit_status" | "image_identity">;
     issues: string[];
   };
 }

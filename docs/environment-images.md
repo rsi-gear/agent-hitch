@@ -50,6 +50,10 @@ reloaded and matched against the immutable plan. Each imported or diagnostic
 run then embeds the uses and full, de-duplicated manifests in
 `environment/image.manifest.json`; the sealed bundle index records their OCI
 digests together with provider/worker/lease and requested/observed resources.
+Owned Harbor environments retain containers until the fenced Hitch reaper runs.
+The resource observer records Docker's configured image reference and config
+digest, and a planned immutable image is accepted only when that config digest
+was actually observed during the trial.
 
 Remaining work:
 
@@ -57,7 +61,8 @@ Remaining work:
   contexts;
 - version-canary-backed removal of a Harbor/Compose build stanza after a
   successful prebuild;
-- post-start verification of the actual trial container image/config digest;
+- a real-Docker, version-specific canary for post-start image/config digest
+  verification across task, sidecar, and separate-Verifier containers;
 - image reference GC.
 
 Successful, failed, and in-progress records have a stable `build_<id>` index.

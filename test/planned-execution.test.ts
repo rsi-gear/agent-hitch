@@ -85,7 +85,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
     assert.equal(config.n_attempts, 1);
     assert.equal(config.n_concurrent_trials, 1);
     assert.deepEqual(config.environment, {
-      type: "docker", delete: true,
+      type: "docker", delete: false,
       cpu_enforcement_policy: "limit", override_cpus: 2,
       memory_enforcement_policy: "limit", override_memory_mb: 2_048,
       import_path: "hitch_harbor_environment:HitchHarborDockerEnvironment",

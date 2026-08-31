@@ -33,6 +33,7 @@ export function harborEnvironmentConfig(
       ...(Object.keys(images).length > 0 ? { hitch_resolved_images: images } : {}),
     },
   });
+  if (ownership) environment.delete = false;
   return environment;
 }
 
