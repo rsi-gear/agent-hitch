@@ -13,3 +13,5 @@ export { EvalRerunScheduler, parseEvalRerunSubmissionInput } from "./rerun-sched
 export type { EvalRerunExecutor, EvalRerunSchedulerOptions, EvalRerunStatus, EvalRerunSubmissionInput } from "./rerun-scheduler.js";
 export { BuildSlotAdmission } from "./build-admission.js";
 export { inspectBuild } from "./build-records.js";
+export { RemoteWorkerRegistry, parseRemoteWorkerHeartbeat, parseRemoteWorkerRegistration } from "./remote-workers.js";
+export type { RemoteWorkerRegistrationResult } from "./remote-workers.js";

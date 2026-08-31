@@ -5,12 +5,13 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
-import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
+import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, RemoteWorkerRegistry, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
 import type { EvalRerunExecutor, EvalSchedulerOptions } from "../control-plane/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
 import type { EvalId, ResourceVectorV1, RunId } from "../domain/index.js";
 import { acquireInstanceLock, authorized, ensureToken, releaseInstanceLock } from "./auth.js";
+import { handleWorkerProtocolRoute } from "./worker-routes.js";
 
 export interface DaemonServerOptions {
   root: string;
@@ -46,6 +47,7 @@ export class DaemonServer {
   private evalRerunScheduler: EvalRerunScheduler | undefined;
   private resources: ResourceLedger | undefined;
   private server: ReturnType<typeof createServer> | undefined;
+  private readonly remoteWorkers: RemoteWorkerRegistry;
   private readonly resourceCapacity: ResourceVectorV1;
   private readonly runResources: ResourceVectorV1;
   private readonly evalTrialResources: ResourceVectorV1;
@@ -65,6 +67,7 @@ export class DaemonServer {
     this.evalTrialResources = validateResourceVector(evalTrialResources || { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 }, "daemon eval trial reservation");
     this.evalExecutor = evalExecutor;
     this.evalRerunExecutor = evalRerunExecutor;
+    this.remoteWorkers = new RemoteWorkerRegistry({ root: this.paths.root });
     this.startedAt = new Date();
     this.closedPromise = new Promise((resolve) => { this.resolveClosed = resolve; });
   }
@@ -79,6 +82,7 @@ export class DaemonServer {
     this.ownsLock = true;
     try {
       this.token = await ensureToken(this.paths.token);
+      await this.remoteWorkers.initialize();
       this.agents = await this.discoverHarnesses();
       this.resources = new ResourceLedger(this.resourceCapacity);
       this.scheduler = new Scheduler({
@@ -190,6 +194,8 @@ export class DaemonServer {
       return json(response, 200, this.health());
     }
 
+    if (await handleWorkerProtocolRoute({ request, response, url, registry: this.remoteWorkers, adminToken: this.token || "" })) return;
+
     if (!authorized(request, this.token || "")) {
       return json(response, 401, { error: { code: "unauthorized", message: "missing or invalid daemon token" } });
     }
@@ -200,8 +206,16 @@ export class DaemonServer {
       return json(response, 200, { schema_version: SCHEMA_VERSION, [key]: this.agents });
     }
     if (request.method === "GET" && url.pathname === "/v1/workers") {
-      const worker = this.evalScheduler?.providerSnapshot();
-      return json(response, 200, { schema_version: SCHEMA_VERSION, workers: worker ? [worker] : [] });
+      const local = this.evalScheduler?.providerSnapshot();
+      const remote = (await this.remoteWorkers.list()).map((record) => ({
+        ...record.provider_status,
+        generation: record.generation,
+        status: record.worker.status,
+        capabilities: record.worker.capabilities,
+        active_leases: record.active_leases,
+        ...(record.revoked_at ? { revoked_at: record.revoked_at } : {}),
+      }));
+      return json(response, 200, { schema_version: SCHEMA_VERSION, workers: [...(local ? [local] : []), ...remote] });
     }
     const buildMatch = url.pathname.match(/^\/v1\/builds\/(build_[a-f0-9]{32})$/);
     if (request.method === "GET" && buildMatch) {

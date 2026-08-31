@@ -31,6 +31,8 @@ export interface StatePaths {
   buildLocks: string;
   buildIndexes: string;
   trainingDataCandidates: string;
+  workers: string;
+  workerLocks: string;
   workspaces: string;
   temporary: string;
   indexes: string;
@@ -83,6 +85,8 @@ export function statePaths(root: string): StatePaths {
     buildLocks: path.join(root, "locks", "builds"),
     buildIndexes: path.join(root, "indexes", "builds"),
     trainingDataCandidates: path.join(root, "derived", "training-data-candidates", "sha256"),
+    workers: path.join(root, "workers"),
+    workerLocks: path.join(root, "locks", "workers"),
     workspaces: path.join(root, "workspaces"),
     temporary: path.join(root, "tmp"),
     indexes: path.join(root, "indexes"),

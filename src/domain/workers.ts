@@ -52,3 +52,40 @@ export interface ExecutionWorkerV1 {
   };
   capacity: WorkerCapacityV1;
 }
+
+export interface RemoteWorkerRegistrationV1 {
+  schema_version: "1";
+  worker_id: string;
+  provider: string;
+  collision_domain_id: string;
+  platforms: string[];
+  backends: Array<{ id: string; version: string }>;
+  features: {
+    docker: boolean;
+    buildkit: boolean;
+    model_proxy: boolean;
+    isolated_same_task_attempts: boolean;
+  };
+  task_membership: Array<"known" | "opaque">;
+  capacity: Omit<WorkerCapacityV1, "allocated">;
+}
+
+export interface RemoteWorkerHeartbeatV1 {
+  schema_version: "1";
+  generation: number;
+  health: "healthy" | "degraded" | "unavailable";
+  allocated: ResourceVectorV1;
+  active_leases: Array<{ lease_id: string; epoch: number }>;
+  sent_at: string;
+}
+
+export interface RemoteWorkerPublicRecordV1 {
+  schema_version: "1";
+  generation: number;
+  worker: ExecutionWorkerV1;
+  provider_status: import("./providers.js").ExecutionProviderStatusV1;
+  active_leases: Array<{ lease_id: string; epoch: number }>;
+  registered_at: string;
+  heartbeat_at: string;
+  revoked_at?: string;
+}
