@@ -22,6 +22,7 @@ test("task resources include Compose sidecars, separate verifier, and provider o
       provider_sidecars: { main_egress: true, verifier_egress: true },
       environment_images: [],
       environment_image_fallbacks: [],
+      environment_builds: [],
     },
   });
 
@@ -55,6 +56,7 @@ test("missing task and sidecar declarations use conservative non-zero defaults",
       provider_sidecars: { main_egress: false, verifier_egress: false },
       environment_images: [],
       environment_image_fallbacks: [],
+      environment_builds: [],
     },
   });
   assert.deepEqual(requirement.reservation, { cpu_millis: 2_000, memory_bytes: 2 * GIB, container_slots: 2, build_slots: 0 });

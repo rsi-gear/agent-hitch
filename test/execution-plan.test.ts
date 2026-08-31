@@ -72,13 +72,13 @@ test("execution plan persists per-task evidence and reserves heterogeneous tasks
       taskId: "one",
       defaultResources: input.trialResources,
       defaultSource: "operator-default",
-      declaration: { schema_version: "1", task: { cpu_millis: 3_000 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [] },
+      declaration: { schema_version: "1", task: { cpu_millis: 3_000 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [] },
     }),
     deriveTaskResourceRequirement({
       taskId: "two",
       defaultResources: input.trialResources,
       defaultSource: "operator-default",
-      declaration: { schema_version: "1", task: { memory_bytes: 8_192 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [] },
+      declaration: { schema_version: "1", task: { memory_bytes: 8_192 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [] },
     }),
   ];
   const taskPlan = buildEvalExecutionPlan({ ...input, tasks: ["two", "one"], taskResources, workItemMode: "task-slots" });

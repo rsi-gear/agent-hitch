@@ -8,7 +8,7 @@ import type { InfrastructureRetryLifecycle } from "./infrastructure-retry.js";
 import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord } from "./local-docker-provider.js";
 import type { ExecutePlannedHarborOptions } from "./planned-execution.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
-import { verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
+import { prebuiltTaskImage, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 
 export async function beginPlannedInfrastructureRetry(input: {
@@ -120,6 +120,7 @@ function retryLifecycle(
   }, DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS);
   timer.unref();
   let closed: Promise<void> | undefined;
+  const prebuiltImage = prebuiltTaskImage(input.environmentImages);
   const close = (): Promise<void> => closed ??= closeRetryLifecycle({ input, lease, permit, observer, timer, heartbeatTail: () => heartbeatTail, heartbeatFailure: () => heartbeatFailure, processRecorded: () => processRecorded, runningAnnounced });
   return {
     leaseId: lease.leaseId,
@@ -134,6 +135,7 @@ function retryLifecycle(
       ...(Object.keys(runtime.sidecarLimits).length > 0 ? { dockerServiceLimits: runtime.sidecarLimits } : {}),
       dockerOwnership: ownership,
       resolvedImages: resolvedImageMapping(item.image_refs ?? []),
+      ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
       ...(options.worker.provider === "local-docker" && process.platform !== "win32" ? {
         recoverableProcess: true,
         onProcessStarted: (pid: number) => recordLocalDockerProcessStart({

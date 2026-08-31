@@ -424,7 +424,7 @@ API 输入使用同结构的 `EvalSubmissionInputV1`，但 `request` 接受 `Eva
 - 调度策略不参与 Harness、benchmark 或 observation identity。
 - `max_parallelism` 默认等于现有 `request.max_concurrent`，但仍受全局预算限制。
 - 服务端把缺省 execution policy 规范化后写入 `submission.json`；submission digest 同时覆盖 normalized request 与 execution policy，因此同一 idempotency key 不能被换成另一组资源或 provider 策略。
-- V1 本机 provider 已执行 `provider`、`max_parallelism`、`resources.default_trial` 和 build mode。`prebuild-required` 只接受能够在 trial 前解析并安全注入 digest 的固定 registry 引用，任何 build/dynamic/resolution fallback 都失败；尚不可执行的 remote provider、setup reservation、remote build cache 或 proxy/hybrid capture 必须在 admission 明确拒绝，不能只持久化后忽略。
+- V1 本机 provider 已执行 `provider`、`max_parallelism`、`resources.default_trial` 和 build mode。`prebuild-required` 接受能够在 trial 前解析并安全注入 digest 的固定 registry 引用，以及满足保守 Dockerfile eligibility 的 task 主环境；Compose build、独立 verifier build、dynamic/resolution fallback 仍失败。尚不可执行的 remote provider、setup reservation、remote build cache 或 proxy/hybrid capture 必须在 admission 明确拒绝，不能只持久化后忽略。
 
 ### 8.2 Resource vector
 
@@ -604,9 +604,9 @@ interface EnvironmentImageUseV1 {
 }
 ```
 
-`requested_reference` 保存 benchmark/Compose 原始镜像引用，`reference` 必须是同一 repository 下以
-`@sha256:...` 固定的执行引用。执行计划将成功解析项写入 work item 的 `image_refs`；build context、
-动态 Compose 引用、显式 backend build 策略和 registry 解析失败则写入 `image_fallbacks`。因此
+registry image 的 `requested_reference` 保存 benchmark/Compose 原始镜像引用；task Dockerfile build 则保存 Hitch 生成的内容寻址兼容 tag。`reference` 必须是同一 repository 下以
+`@sha256:...` 固定的证据引用。执行计划将成功解析或预构建项写入 work item 的 `image_refs`；不受支持的 build context、
+动态 Compose 引用、显式 backend build 策略和 resolution/build 失败则写入 `image_fallbacks`。因此
 `prebuild-preferred` 的降级是可审计的，`prebuild-required` 遇到任何 fallback 必须在启动 trial 前失败。
 
 对于非空 `image_refs`，本机 provider 必须在 trial 生命周期内观察带相同 lease ownership 的容器，至少核对 manifest 的 `config_digest`；未观察到对应 digest 或观察到不一致时以 `environment_image_mismatch` 失败。为避免 Harbor 在采样前删除容器，受 Hitch lease 管理的环境由 Hitch reaper 在证据封存后清理，而不是让 Harbor 提前删除。
@@ -614,6 +614,8 @@ interface EnvironmentImageUseV1 {
 `image_id` 的 canonical identity 排除 `created_at`、本地 tag、builder hostname 和 cache hit 状态，包含 source digest、platform、构建参数摘要、base image digest 和 output manifest digest。secret 只记录名称，不记录值或值摘要。
 
 `build.cache_key` 在构建前计算，对规范化后的 `{source inputs, platform, frontend, target, build args digest, base image digests, secret names}` 做 canonical SHA-256。Build secret 只能用于认证不可变输入；如果 secret 会改变输出内容且没有不泄密的外部版本 identity，则必须禁用该构建的跨请求缓存，不能把 secret value 或可供离线猜测的 value digest 放入 key。
+
+V1 task Dockerfile prebuild 只处理顶层 `environment/Dockerfile` 对应的 main service。所有外部 `FROM` 和 `COPY/ADD --from` image 必须已用 `@sha256:` 固定；pre-FROM `ARG`、continuation、external `RUN --mount from=` 等当前不能完整规范化的语法必须形成 `resolution-failed` fallback。独立 verifier environment 与 Compose `build` 继续由 Harbor 构建并显式留痕，直到 Hitch 能规范化其真实 context/target/args。相同 cache key 通过跨请求 keyed lock 合并，并且 BuildKit invocation 必须取得全局 `build_slots`，不占用 container slot。
 
 ### 8.7 Result Bundle index
 
@@ -1012,7 +1014,7 @@ resolve immutable inputs
 优先级：
 
 1. backend 能安全把环境替换为预构建 digest 时，写入 `image: <ref>@sha256:...` 并移除对应 build stanza。
-2. 只能使用本地镜像时，创建由 digest 派生的只读兼容 tag，同时把真实 digest 写入 plan 和 bundle。
+2. 只能使用本地 `buildx --load` 镜像时，运行配置直接使用 immutable image config ID；由 cache key 派生的兼容 tag只用于 cache probe，真实 manifest/config digest 写入 plan 和 bundle。
 3. 当前 Harbor/Compose 版本无法安全 overlay 时，降级到 backend build，但仍必须取得 Hitch build mutex，并限制 build concurrency。
 
 不得宣称预构建成功却让 Compose 再次从 mutable context 构建。

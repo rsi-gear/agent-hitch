@@ -22,7 +22,7 @@ import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
 import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
-import { loadTrialEnvironmentImages, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
+import { loadTrialEnvironmentImages, prebuiltTaskImage, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 
 export interface PlannedBackendRun {
@@ -261,6 +261,7 @@ async function executeLeasedWorkItem(
   const resourceObserver = startDockerResourceObserver({ ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
   const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(lease.epoch).padStart(6, "0")}`);
   const harborJobDirectory = path.join(backendDirectory, "job");
+  const prebuiltImage = prebuiltTaskImage(environmentImages);
   const refs: EvalTrialRefV1[] = [];
   const publish = async (ref: EvalTrialRefV1): Promise<void> => {
     if (ref.attempt !== logicalAttempt || ref.task_id !== taskId) {
@@ -293,6 +294,7 @@ async function executeLeasedWorkItem(
     ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
     dockerOwnership: ownership,
     resolvedImages: resolvedImageMapping(item.image_refs ?? []),
+    ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
     ...(options.localTransport ? { localTransport: options.localTransport } : {}),
     env: options.env,
     ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),

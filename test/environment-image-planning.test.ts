@@ -12,6 +12,7 @@ function task(overrides: Partial<LocalTaskPlanningInputV1> = {}): LocalTaskPlann
     resources: {} as LocalTaskPlanningInputV1["resources"],
     environment_images: [{ source: "task", service: "main", reference: "registry.test/task:latest" }],
     environment_image_fallbacks: [],
+    environment_builds: [],
     ...overrides,
   };
 }
@@ -46,6 +47,7 @@ test("preferred prebuild records fallback while required prebuild rejects it", a
   const unavailable = task({
     environment_images: [],
     environment_image_fallbacks: [{ source: "compose", service: "database", code: "backend-build" }],
+    environment_builds: [],
   });
   const preferred = await planEnvironmentImages({
     tasks: [unavailable], mode: "prebuild-preferred", benchmarkId: "demo", benchmarkRevision: "1",
@@ -65,4 +67,29 @@ test("backend build policy does not invoke the registry resolver", async () => {
   assert.equal(calls, 0);
   assert.deepEqual(result.uses, []);
   assert.equal(result.fallbacks[0]?.code, "policy-backend");
+});
+
+test("task Dockerfile planning records an immutable prebuilt image without registry overlay mapping", async () => {
+  const requested = "hitch-environment:0123456789abcdef0123456789abcdef";
+  const result = await planEnvironmentImages({
+    tasks: [task({
+      environment_images: [],
+      environment_builds: [{ source: "task", service: "main", context: "environment", dockerfile: "Dockerfile", context_directory: "/dataset/task-a/environment" }],
+    })],
+    mode: "prebuild-preferred",
+    benchmarkId: "demo",
+    benchmarkRevision: "1",
+    builder: async (input) => ({
+      image_id: imageId,
+      requested_reference: requested,
+      reference: `${requested}@${digest}`,
+      manifest_digest: digest,
+      platform: input.platform,
+      cache_hit: false,
+    }),
+  });
+  assert.deepEqual(result.fallbacks, []);
+  assert.equal(result.uses[0]?.resolution, "prebuilt");
+  assert.equal(result.uses[0]?.reference, `${requested}@${digest}`);
+  assert.deepEqual(resolvedImageMapping(result.uses), {});
 });

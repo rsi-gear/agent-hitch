@@ -49,13 +49,16 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
             for mode in (verifier_environment.network_mode, config.verifier.network_mode)
         )
     )
-    images, fallbacks = _environment_images(config.environment, "task")
+    images, fallbacks, builds = _environment_images(
+        config.environment, "task", task_dir / "environment"
+    )
     if separate and verifier_environment is not None:
-        verifier_images, verifier_fallbacks = _environment_images(
-            verifier_environment, "verifier"
+        verifier_images, verifier_fallbacks, verifier_builds = _environment_images(
+            verifier_environment, "verifier", None
         )
         images.extend(verifier_images)
         fallbacks.extend(verifier_fallbacks)
+        builds.extend(verifier_builds)
     compose_images, compose_fallbacks = _compose_images(
         task_dir / "environment" / "docker-compose.yaml"
     )
@@ -79,6 +82,9 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
         "environment_image_fallbacks": sorted(
             fallbacks, key=lambda entry: (entry["source"], entry["service"])
         ),
+        "environment_builds": sorted(
+            builds, key=lambda entry: (entry["source"], entry["service"])
+        ),
     }
 
 
@@ -90,14 +96,21 @@ def _environment_resources(environment: Any) -> dict[str, Any]:
 
 
 def _environment_images(
-    environment: Any, source: str
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    environment: Any, source: str, context_dir: Path | None
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
     reference = getattr(environment, "docker_image", None)
     if reference is None:
-        return [], [{"source": source, "service": "main", "code": "backend-build"}]
+        if context_dir is not None and (context_dir / "Dockerfile").is_file():
+            return [], [], [{
+                "source": source,
+                "service": "main",
+                "context": "environment",
+                "dockerfile": "Dockerfile",
+            }]
+        return [], [{"source": source, "service": "main", "code": "backend-build"}], []
     if not isinstance(reference, str) or not reference or "$" in reference:
-        return [], [{"source": source, "service": "main", "code": "dynamic-image"}]
-    return [{"source": source, "service": "main", "reference": reference}], []
+        return [], [{"source": source, "service": "main", "code": "dynamic-image"}], []
+    return [{"source": source, "service": "main", "reference": reference}], [], []
 
 
 def _compose_images(

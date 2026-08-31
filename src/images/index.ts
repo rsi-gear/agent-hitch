@@ -1,5 +1,6 @@
 export { resolveBuildContext } from "./context.js";
 export type { ResolvedBuildContextV1 } from "./context.js";
+export { inspectPinnedDockerfileBases } from "./dockerfile.js";
 export { environmentImageIdentity, parseEnvironmentBuildRecord, parseEnvironmentImageManifest } from "./manifest.js";
 export { EnvironmentImageService, loadEnvironmentImageManifest } from "./service.js";
 export type { BuildEnvironmentImageInput, EnvironmentImageBuilder, EnvironmentImageBuilderOutput, EnvironmentImageServiceOptions } from "./service.js";

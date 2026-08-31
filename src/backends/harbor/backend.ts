@@ -42,6 +42,7 @@ export interface RunHarborBackendOptions {
   dockerOwnership?: DockerResourceOwnershipV1;
   dockerServiceLimits?: HarborDockerServiceLimitsV1;
   resolvedImages?: Record<string, string>;
+  prebuiltTaskImage?: string;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -102,6 +103,7 @@ export async function runHarborBackend({
   dockerOwnership,
   dockerServiceLimits,
   resolvedImages,
+  prebuiltTaskImage,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
@@ -133,6 +135,7 @@ export async function runHarborBackend({
     ...(dockerOwnership ? { dockerOwnership } : {}),
     ...(dockerServiceLimits ? { dockerServiceLimits } : {}),
     ...(resolvedImages ? { resolvedImages } : {}),
+    ...(prebuiltTaskImage ? { prebuiltTaskImage } : {}),
   });
   await atomicWriteJSON(configPath, config);
   emit({
@@ -285,6 +288,7 @@ export interface BuildHarborJobConfigOptions {
   dockerOwnership?: DockerResourceOwnershipV1;
   dockerServiceLimits?: HarborDockerServiceLimitsV1;
   resolvedImages?: Record<string, string>;
+  prebuiltTaskImage?: string;
 }
 
 export async function buildHarborJobConfig({
@@ -305,6 +309,7 @@ export async function buildHarborJobConfig({
   dockerOwnership,
   dockerServiceLimits,
   resolvedImages,
+  prebuiltTaskImage,
 }: BuildHarborJobConfigOptions): Promise<Record<string, unknown>> {
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
@@ -381,7 +386,7 @@ export async function buildHarborJobConfig({
     jobs_dir: backendDirectory,
     n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
-    environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits, resolvedImages),
+    environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits, resolvedImages, prebuiltTaskImage),
     verifier: harborVerifierConfig(request),
     agents: [agent],
     datasets: [await harborDatasetConfig(request.dataset, taskNames)],

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Sha256 } from "../src/domain/index.js";
 import { BuildSlotAdmission, ResourceLedger } from "../src/control-plane/index.js";
-import { DockerBuildKitBuilder, DockerRegistryResolver, EnvironmentImageService, inspectEnvironmentBuild, parseEnvironmentImageManifest, resolveBuildContext, resolveRegistryEnvironmentImage } from "../src/images/index.js";
+import { DockerBuildKitBuilder, DockerRegistryResolver, EnvironmentImageService, inspectEnvironmentBuild, inspectPinnedDockerfileBases, parseEnvironmentImageManifest, resolveBuildContext, resolveRegistryEnvironmentImage } from "../src/images/index.js";
 import type { EnvironmentImageBuilder } from "../src/images/index.js";
 import { delay, sha256JSON, statePaths } from "../src/foundation/index.js";
 
@@ -102,6 +102,22 @@ test("environment image context rejects symlinks and manifest identity drift", a
     base_images: [],
     created_at: now,
   }), /secret names/);
+});
+
+test("Dockerfile prebuild accepts only immutable external image inputs", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-dockerfile-bases-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const base = `registry.test/base@sha256:${"1".repeat(64)}`;
+  const tool = `registry.test/tool@sha256:${"2".repeat(64)}`;
+  await writeFile(path.join(root, "Dockerfile"), `FROM ${base} AS build\nCOPY --from=${tool} /tool /tool\nFROM build AS final\n`);
+  assert.deepEqual(await inspectPinnedDockerfileBases(root), [
+    { reference: "registry.test/base", digest: `sha256:${"1".repeat(64)}` },
+    { reference: "registry.test/tool", digest: `sha256:${"2".repeat(64)}` },
+  ]);
+  await writeFile(path.join(root, "Dockerfile"), "FROM ubuntu:latest\n");
+  await assert.rejects(inspectPinnedDockerfileBases(root), (error: unknown) => (error as { code?: string }).code === "environment_build_context_unsupported");
+  await writeFile(path.join(root, "Dockerfile"), `ARG BASE=${base}\nFROM $BASE\n`);
+  await assert.rejects(inspectPinnedDockerfileBases(root), /ARG before FROM/);
 });
 
 test("Docker BuildKit builder records verified digests without putting secret values in argv", async (t) => {

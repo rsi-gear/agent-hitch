@@ -69,9 +69,22 @@ export function verifyTrialEnvironmentImageExecution(
   return execution;
 }
 
+export function prebuiltTaskImage(evidence?: TrialEnvironmentImagesV1): string | undefined {
+  if (!evidence) return undefined;
+  const uses = evidence.uses.filter((use) => use.resolution === "prebuilt");
+  if (uses.length === 0) return undefined;
+  if (uses.length !== 1) throw new TypeError("one trial cannot use multiple prebuilt task images");
+  const manifest = evidence.manifests.find((entry) => entry.image_id === uses[0]?.image_id);
+  if (!manifest?.output.config_digest) throw new HitchError("prebuilt task image has no immutable local config digest", { code: "environment_image_manifest_unavailable", exitCode: 12 });
+  return manifest.output.config_digest;
+}
+
 function validatePair(taskId: string, use: EnvironmentImageUseV1, manifest: EnvironmentImageManifestV1): void {
+  const referenceMatches = use.resolution === "prebuilt"
+    ? use.requested_reference === manifest.output.reference && use.reference === `${manifest.output.reference}@${manifest.output.manifest_digest}`
+    : manifest.output.reference === use.reference;
   if (!use.task_ids.includes(taskId) || manifest.schema_version !== "1" || manifest.image_id !== use.image_id
-    || manifest.output.reference !== use.reference || manifest.output.manifest_digest !== use.manifest_digest
+    || !referenceMatches || manifest.output.manifest_digest !== use.manifest_digest
     || manifest.platform !== use.platform || manifest.source.task_id !== undefined && manifest.source.task_id !== taskId) {
     throw new TypeError("environment image manifest does not match the planned trial image");
   }

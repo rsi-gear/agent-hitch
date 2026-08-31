@@ -62,11 +62,25 @@ print(json.dumps(module.inspect_task(root)))
     { source: "verifier", service: "main", reference: "registry.test/verifier:v1" },
   ]);
   assert.deepEqual(declaration.environment_image_fallbacks, []);
+  assert.deepEqual(declaration.environment_builds, []);
 });
 
 test("task resource declaration parser rejects unknown evidence", () => {
   assert.throws(() => parseHarborTaskResourceDeclaration({
     schema_version: "1", task: {}, verifier: { separate: false }, compose_services: [],
-    provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], surprise: true,
+    provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [], surprise: true,
   }), /fields are invalid/);
+});
+
+test("task resource declaration accepts only the supported main Dockerfile build", () => {
+  const declaration = parseHarborTaskResourceDeclaration({
+    schema_version: "1", task: {}, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }],
+    provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [],
+    environment_builds: [{ source: "task", service: "main", context: "environment", dockerfile: "Dockerfile" }],
+  });
+  assert.deepEqual(declaration.environment_builds, [{ source: "task", service: "main", context: "environment", dockerfile: "Dockerfile" }]);
+  assert.throws(() => parseHarborTaskResourceDeclaration({
+    ...declaration,
+    environment_builds: [{ source: "compose", service: "database", context: "..", dockerfile: "Otherfile" }],
+  }), /environment build 0 is invalid/);
 });

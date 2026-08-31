@@ -33,6 +33,7 @@ export interface RunEvalOptions {
   dockerResourceReaper?: EvalDockerResourceReaper;
   environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
   environmentImageResolver?: EvalEnvironmentImageResolver;
+  environmentImageBuilder?: EvalEnvironmentImageBuilder;
   environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
 }
 
@@ -47,6 +48,23 @@ export type EvalEnvironmentImageResolver = (input: {
   signal?: AbortSignal;
 }) => Promise<{
   image_id: Sha256;
+  reference: string;
+  manifest_digest: Sha256;
+  platform: string;
+  cache_hit: boolean;
+}>;
+
+export type EvalEnvironmentImageBuilder = (input: {
+  benchmarkId: string;
+  benchmarkRevision: string;
+  taskId: string;
+  contextDirectory: string;
+  dockerfile: string;
+  platform: string;
+  signal?: AbortSignal;
+}) => Promise<{
+  image_id: Sha256;
+  requested_reference: string;
   reference: string;
   manifest_digest: Sha256;
   platform: string;

@@ -1,6 +1,6 @@
 import type { EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, ResourceVectorV1, TaskResourceRequirementV1 } from "../domain/index.js";
 import { planEnvironmentImages } from "./environment-image-planning.js";
-import type { EvalEnvironmentImageResolver } from "./service-types.js";
+import type { EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver } from "./service-types.js";
 import { resolveLocalTaskPlanningInputs } from "./task-resources.js";
 
 export interface LocalEvalPlanningResultV1 {
@@ -19,6 +19,7 @@ export async function planLocalEvalInputs(input: {
   benchmarkRevision: string;
   buildMode: "backend" | "prebuild-preferred" | "prebuild-required";
   resolver?: EvalEnvironmentImageResolver;
+  builder?: EvalEnvironmentImageBuilder;
   resumePlan?: EvalExecutionPlanV1;
   harborExecutable?: string;
   env?: NodeJS.ProcessEnv;
@@ -47,6 +48,7 @@ export async function planLocalEvalInputs(input: {
     benchmarkId: input.benchmarkId,
     benchmarkRevision: input.benchmarkRevision,
     ...(input.resolver ? { resolver: input.resolver } : {}),
+    ...(input.builder ? { builder: input.builder } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   });
   return { taskResources, environmentImages: planned.uses, environmentImageFallbacks: planned.fallbacks };

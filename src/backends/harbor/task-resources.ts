@@ -13,6 +13,7 @@ export interface HarborTaskResourceDeclarationV1 {
   provider_sidecars: { main_egress: boolean; verifier_egress: boolean };
   environment_images: HarborEnvironmentImageDeclarationV1[];
   environment_image_fallbacks: HarborEnvironmentImageFallbackV1[];
+  environment_builds: HarborEnvironmentBuildDeclarationV1[];
 }
 
 export interface HarborEnvironmentImageDeclarationV1 {
@@ -25,6 +26,13 @@ export interface HarborEnvironmentImageFallbackV1 {
   source: "task" | "verifier" | "compose";
   service: string;
   code: "backend-build" | "dynamic-image";
+}
+
+export interface HarborEnvironmentBuildDeclarationV1 {
+  source: "task";
+  service: "main";
+  context: "environment";
+  dockerfile: "Dockerfile";
 }
 
 export async function inspectHarborTaskResources(input: {
@@ -67,6 +75,7 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
   const root = exactRecord(value, [
     "schema_version", "task", "verifier", "compose_services", "provider_sidecars",
     "environment_images", "environment_image_fallbacks",
+    "environment_builds",
   ], "task resource declaration");
   if (root.schema_version !== "1") throw new TypeError("task resource declaration schema is invalid");
   const task = resourcePair(root.task, "task resources");
@@ -89,6 +98,7 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
   if (typeof sidecars.main_egress !== "boolean" || typeof sidecars.verifier_egress !== "boolean") throw new TypeError("provider sidecar declaration is invalid");
   const environmentImages = imageDeclarations(root.environment_images);
   const environmentImageFallbacks = imageFallbacks(root.environment_image_fallbacks);
+  const environmentBuilds = imageBuilds(root.environment_builds);
   return {
     schema_version: "1",
     task,
@@ -97,7 +107,19 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
     provider_sidecars: { main_egress: sidecars.main_egress, verifier_egress: sidecars.verifier_egress },
     environment_images: environmentImages,
     environment_image_fallbacks: environmentImageFallbacks,
+    environment_builds: environmentBuilds,
   };
+}
+
+function imageBuilds(value: unknown): HarborEnvironmentBuildDeclarationV1[] {
+  if (!Array.isArray(value)) throw new TypeError("environment build declarations are invalid");
+  return value.map((entry, index) => {
+    const record = exactRecord(entry, ["source", "service", "context", "dockerfile"], `environment build ${index}`);
+    if (record.source !== "task" || record.service !== "main" || record.context !== "environment" || record.dockerfile !== "Dockerfile") {
+      throw new TypeError(`environment build ${index} is invalid`);
+    }
+    return record as unknown as HarborEnvironmentBuildDeclarationV1;
+  });
 }
 
 function imageDeclarations(value: unknown): HarborEnvironmentImageDeclarationV1[] {

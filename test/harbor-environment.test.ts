@@ -61,6 +61,11 @@ assert overlay["services"]["database"]["image"] == resolved["registry.test/datab
 assert env.task_env_config.docker_image == resolved["registry.test/task:v1"]
 assert "cpus" not in overlay["services"]["main"]
 assert env._docker_compose_paths[-1] == env._hitch_ownership_compose_path
+prebuilt = "sha256:" + "c" * 64
+prebuilt_env = module.HitchHarborDockerEnvironment(environment_dir=root, task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt)
+prebuilt_overlay = json.loads(prebuilt_env._hitch_ownership_compose_path.read_text())
+assert prebuilt_env.task_env_config.docker_image == prebuilt
+assert prebuilt_overlay["services"]["main"]["image"] == prebuilt
 try: module._validate_labels({**labels, "unexpected": "x"})
 except ValueError: pass
 else: raise AssertionError("unknown ownership label accepted")
@@ -70,6 +75,9 @@ else: raise AssertionError("unbounded sidecar accepted")
 try: module._validate_resolved_images({"registry.test/database:16": "other.test/database@sha256:" + "a" * 64})
 except ValueError: pass
 else: raise AssertionError("cross-repository image mapping accepted")
+try: module._validate_prebuilt_task_image("hitch-environment:mutable")
+except ValueError: pass
+else: raise AssertionError("mutable prebuilt task image accepted")
 `;
   const result = spawnSync("python3", ["-c", script, directory, source], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);

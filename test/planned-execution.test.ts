@@ -4,8 +4,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ResourceLedger, WorkItemDispatcher } from "../src/control-plane/index.js";
+import { localEnvironmentImageBuild } from "../src/control-plane/eval-image-resolution.js";
 import { parseEvalExecutionPlan, readExecutionLeases, runEval } from "../src/evals/index.js";
 import { hitchRootId, readJSON } from "../src/foundation/index.js";
+import { loadEnvironmentImageManifest } from "../src/images/index.js";
+import type { EnvironmentImageBuilder } from "../src/images/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 
 test("planned local execution overlaps different tasks and serializes attempts of the same task", async (t) => {
@@ -213,6 +216,63 @@ test("planned infrastructure retries reacquire admission and use a new owned lea
   assert.deepEqual(resources.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
 });
 
+test("planned task Dockerfiles are built once and injected as immutable prebuilt images", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-prebuilt-image-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  const environment = path.join(dataset, "one", "environment");
+  await mkdir(environment, { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  await writeFile(path.join(environment, "Dockerfile"), "FROM scratch\n");
+  const harbor = await writeFakeHarbor(root);
+  const npm = await writeFakeNpm(root);
+  const inspector = await writeBuildInspector(root);
+  const manifestDigest = `sha256:${"7".repeat(64)}` as const;
+  const configDigest = `sha256:${"8".repeat(64)}` as const;
+  const docker = await writeObservedImageDocker(root, configDigest);
+  let builds = 0;
+  let buildSlots = 0;
+  const built = new Map<string, typeof manifestDigest>();
+  const builder: EnvironmentImageBuilder = {
+    id: "planned-prebuild-test",
+    probe: async (reference, digest) => built.get(reference.split("@", 1)[0] as string) === digest,
+    build: async (input) => {
+      builds += 1;
+      built.set(input.outputReference, manifestDigest);
+      return { reference: input.outputReference, manifest_digest: manifestDigest, config_digest: configDigest, platform: input.platform };
+    },
+  };
+  const imageBuilder = localEnvironmentImageBuild(root, async () => {
+    buildSlots += 1;
+    return { release: () => { buildSlots -= 1; } };
+  }, builder);
+  const result = await runEval({
+    root,
+    harborExecutable: harbor,
+    executionStrategy: "local-task-slots-v1",
+    executionResources: { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 },
+    environmentBuildMode: "prebuild-preferred",
+    environmentImageBuilder: imageBuilder,
+    environmentImageManifestLoader: (imageId) => loadEnvironmentImageManifest(root, imageId),
+    trialBundleGraceMs: 0,
+    dockerResourceReaper: async () => ({ schema_version: "1", root_id: hitchRootId(root), scanned: 0, deleted: [], retained: [], issues: [] }),
+    env: { ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector, HITCH_DOCKER_PATH: docker },
+    request: { dataset, harness_ref: "pi@version:1.2.3", attempts: 1, max_concurrent: 1, infrastructure_retries: 0 },
+  });
+  assert.equal(builds, 1);
+  assert.equal(buildSlots, 0);
+  const evalDirectory = path.join(root, "evals", result.eval_id as string);
+  const plan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(evalDirectory, "execution-plan.json")));
+  const image = plan.work_items[0]?.image_refs?.[0];
+  assert.equal(image?.resolution, "prebuilt");
+  assert.equal(image?.manifest_digest, manifestDigest);
+  const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", plan.work_items[0]!.work_id, "epoch-000001", "job.json"));
+  const kwargs = (config.environment as Record<string, Record<string, unknown>>).kwargs;
+  assert.ok(kwargs);
+  assert.equal(kwargs.hitch_prebuilt_task_image, configDigest);
+  assert.equal(kwargs.hitch_resolved_images, undefined);
+});
+
 interface Activity {
   type: "start" | "end";
   time: number;
@@ -251,6 +311,49 @@ fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
 fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
   n_total_trials:1, stats:{n_completed_trials:0,n_errored_trials:1,n_cancelled_trials:0}
 }));
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeBuildInspector(directory: string): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-python-inspector");
+  const declaration = {
+    schema_version: "1", task: {}, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }],
+    provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [],
+    environment_builds: [{ source: "task", service: "main", context: "environment", dockerfile: "Dockerfile" }],
+  };
+  await writeFile(executable, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(declaration))});\n`, { mode: 0o755 });
+  return executable;
+}
+
+async function writeObservedImageDocker(directory: string, configDigest: string): Promise<string> {
+  const executable = path.join(directory, "fake-observed-image-docker");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+function jobs(dir) {
+  let result = [];
+  try { for (const entry of fs.readdirSync(dir, {withFileTypes:true})) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) result = result.concat(jobs(file));
+    else if (entry.name === "job.json") result.push(file);
+  } } catch {}
+  return result;
+}
+function labels() {
+  const file = jobs(${JSON.stringify(path.join(directory, "evals"))}).sort().pop();
+  if (!file) return null;
+  const config = JSON.parse(fs.readFileSync(file, "utf8"));
+  return config.environment?.kwargs?.hitch_ownership_labels || null;
+}
+if (args[0] === "container" && args[1] === "ls") { if (labels()) process.stdout.write("abcdefabcdef\\n"); process.exit(0); }
+if (args[0] === "container" && args[1] === "inspect") {
+  process.stdout.write(JSON.stringify([{Id:"abcdefabcdef",Name:"/main",Image:${JSON.stringify(configDigest)},Config:{Labels:labels(),Image:${JSON.stringify(configDigest)}},State:{Running:false,OOMKilled:false,ExitCode:0,Error:""}}]));
+  process.exit(0);
+}
+process.exit(2);
 `;
   await writeFile(executable, source, { mode: 0o755 });
   return executable;

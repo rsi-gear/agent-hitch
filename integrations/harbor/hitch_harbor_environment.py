@@ -39,6 +39,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         hitch_ownership_labels: Mapping[str, str] | None = None,
         hitch_service_resource_limits: Mapping[str, Mapping[str, int]] | None = None,
         hitch_resolved_images: Mapping[str, str] | None = None,
+        hitch_prebuilt_task_image: str | None = None,
         **kwargs: Any,
     ) -> None:
         self._hitch_ownership_labels = _validate_labels(hitch_ownership_labels)
@@ -46,6 +47,9 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             hitch_service_resource_limits
         )
         self._hitch_resolved_images = _validate_resolved_images(hitch_resolved_images)
+        self._hitch_prebuilt_task_image = _validate_prebuilt_task_image(
+            hitch_prebuilt_task_image
+        )
         self._hitch_ownership_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._hitch_ownership_compose_path: Path | None = None
         positional = list(args)
@@ -56,7 +60,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             task_env_config = positional[task_env_position]
         if task_env_config is not None:
             requested = getattr(task_env_config, "docker_image", None)
-            resolved = self._hitch_resolved_images.get(requested)
+            resolved = self._hitch_prebuilt_task_image or self._hitch_resolved_images.get(requested)
             if resolved is not None:
                 updated = task_env_config.model_copy(update={"docker_image": resolved})
                 if task_env_position is None:
@@ -68,6 +72,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             self._hitch_ownership_labels
             or self._hitch_service_resource_limits
             or self._hitch_resolved_images
+            or self._hitch_prebuilt_task_image
         ):
             self._hitch_ownership_compose_path = self._write_ownership_overlay()
 
@@ -115,6 +120,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             if labels:
                 config["labels"] = labels
             resolved_image = image_overlays.get(name)
+            if name == MAIN_SERVICE_NAME and self._hitch_prebuilt_task_image:
+                resolved_image = self._hitch_prebuilt_task_image
             if resolved_image is not None:
                 config["image"] = resolved_image
             if name != MAIN_SERVICE_NAME and self._hitch_service_resource_limits:
@@ -236,6 +243,14 @@ def _validate_resolved_images(value: Mapping[str, str] | None) -> dict[str, str]
             raise ValueError("Hitch resolved image mapping is invalid")
         result[requested] = resolved
     return dict(sorted(result.items()))
+
+
+def _validate_prebuilt_task_image(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or re.fullmatch(r"sha256:[a-f0-9]{64}", value) is None:
+        raise ValueError("Hitch prebuilt task image is invalid")
+    return value
 
 
 def _valid_image_reference(value: Any) -> bool:

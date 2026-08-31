@@ -24,6 +24,7 @@ export interface LocalTaskPlanningInputV1 {
   resources: TaskResourceRequirementV1;
   environment_images: HarborTaskResourceDeclarationV1["environment_images"];
   environment_image_fallbacks: HarborTaskResourceDeclarationV1["environment_image_fallbacks"];
+  environment_builds: Array<HarborTaskResourceDeclarationV1["environment_builds"][number] & { context_directory: string }>;
 }
 
 export async function resolveLocalTaskResourceRequirements(input: {
@@ -77,6 +78,7 @@ export async function resolveLocalTaskPlanningInputs(input: {
       resources,
       environment_images: declaration.environment_images,
       environment_image_fallbacks: declaration.environment_image_fallbacks,
+      environment_builds: declaration.environment_builds.map((build) => ({ ...build, context_directory: path.join(taskDirectory, build.context) })),
     };
   }));
 }
@@ -225,6 +227,7 @@ function emptyDeclaration(): HarborTaskResourceDeclarationV1 {
     provider_sidecars: { main_egress: false, verifier_egress: false },
     environment_images: [],
     environment_image_fallbacks: [],
+    environment_builds: [],
   };
 }
 
