@@ -22,7 +22,9 @@ export interface RerunEvalOptions {
   evalId: string;
   selector: RerunSelector;
   root: string;
+  rerunId?: string;
   rerunType?: EvalRerunType;
+  maxConcurrentOverride?: number;
   env?: NodeJS.ProcessEnv;
   harborExecutable?: string;
   signal?: AbortSignal;

@@ -5,8 +5,8 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
-import { EvalScheduler, ResourceLedger, validateResourceVector } from "../control-plane/index.js";
-import type { EvalSchedulerOptions } from "../control-plane/index.js";
+import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, ResourceLedger, validateResourceVector } from "../control-plane/index.js";
+import type { EvalRerunExecutor, EvalSchedulerOptions } from "../control-plane/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
 import type { EvalId, ResourceVectorV1, RunId } from "../domain/index.js";
@@ -22,6 +22,7 @@ export interface DaemonServerOptions {
   runResources?: ResourceVectorV1;
   evalTrialResources?: ResourceVectorV1;
   evalExecutor?: EvalSchedulerOptions["executor"];
+  evalRerunExecutor?: EvalRerunExecutor;
 }
 
 export class DaemonServer {
@@ -42,14 +43,16 @@ export class DaemonServer {
   private agents: unknown[] | undefined;
   private scheduler: Scheduler | undefined;
   private evalScheduler: EvalScheduler | undefined;
+  private evalRerunScheduler: EvalRerunScheduler | undefined;
   private resources: ResourceLedger | undefined;
   private server: ReturnType<typeof createServer> | undefined;
   private readonly resourceCapacity: ResourceVectorV1;
   private readonly runResources: ResourceVectorV1;
   private readonly evalTrialResources: ResourceVectorV1;
   private readonly evalExecutor: EvalSchedulerOptions["executor"] | undefined;
+  private readonly evalRerunExecutor: EvalRerunExecutor | undefined;
 
-  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor }: DaemonServerOptions) {
+  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor }: DaemonServerOptions) {
     this.paths = statePaths(root);
     this.rootId = createHash("sha256").update(this.paths.root).digest("hex").slice(0, 24);
     this.instanceId = randomBytes(16).toString("hex");
@@ -61,6 +64,7 @@ export class DaemonServer {
     this.runResources = validateResourceVector(runResources || { cpu_millis: 1_000, memory_bytes: 512 * 1024 * 1024, container_slots: 0, build_slots: 0 }, "daemon run reservation");
     this.evalTrialResources = validateResourceVector(evalTrialResources || { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 }, "daemon eval trial reservation");
     this.evalExecutor = evalExecutor;
+    this.evalRerunExecutor = evalRerunExecutor;
     this.startedAt = new Date();
     this.closedPromise = new Promise((resolve) => { this.resolveClosed = resolve; });
   }
@@ -86,14 +90,25 @@ export class DaemonServer {
         onEvent: (event) => this.logger("event", { type: event.type, run_id: event.run_id }),
       });
       await this.scheduler.initialize();
+      const collisions = new CollisionLockManager();
       this.evalScheduler = new EvalScheduler({
         root: this.paths.root,
         resources: this.resources,
         trialResources: this.evalTrialResources,
+        collisions,
         ...(this.evalExecutor ? { executor: this.evalExecutor } : {}),
         onEvent: (event) => this.logger("event", { type: event.type, eval_id: event.eval_id }),
       });
       await this.evalScheduler.initialize();
+      this.evalRerunScheduler = new EvalRerunScheduler({
+        root: this.paths.root,
+        resources: this.resources,
+        trialResources: this.evalTrialResources,
+        collisions,
+        ...(this.evalRerunExecutor ? { executor: this.evalRerunExecutor } : {}),
+        onEvent: (event) => this.logger("event", { type: event.type, eval_id: event.eval_id, rerun_id: event.rerun_id }),
+      });
+      await this.evalRerunScheduler.initialize();
 
       this.server = createServer((request, response) => {
         this.handle(request, response).catch((error) => {
@@ -134,6 +149,7 @@ export class DaemonServer {
       await Promise.all([
         this.scheduler?.shutdown().catch(() => {}),
         this.evalScheduler?.shutdown().catch(() => {}),
+        this.evalRerunScheduler?.shutdown().catch(() => {}),
       ]);
       await releaseInstanceLock(this.paths.lock, this.instanceId);
       this.ownsLock = false;
@@ -147,7 +163,7 @@ export class DaemonServer {
     this.ready = false;
     let failure: Error | undefined;
     try {
-      await Promise.all([this.scheduler?.shutdown(), this.evalScheduler?.shutdown()]);
+      await Promise.all([this.scheduler?.shutdown(), this.evalScheduler?.shutdown(), this.evalRerunScheduler?.shutdown()]);
       if (this.server) await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     } catch (error) {
       failure = error as Error;
@@ -203,6 +219,36 @@ export class DaemonServer {
       json(response, 202, { schema_version: SCHEMA_VERSION, status: "shutting_down" });
       setImmediate(() => this.close().catch((error) => this.logger("shutdown_error", { error: (error as Error).message })));
       return;
+    }
+
+    const rerunsCollectionMatch = url.pathname.match(/^\/v1\/evals\/(eval_[a-f0-9]+)\/reruns$/);
+    if (request.method === "POST" && rerunsCollectionMatch) {
+      const evalId = rerunsCollectionMatch[1] as EvalId;
+      const accepted = await this.evalRerunScheduler?.submit(evalId, await readBodyJSON(request));
+      return json(response, 202, {
+        schema_version: SCHEMA_VERSION,
+        eval_id: accepted?.evalId,
+        rerun_id: accepted?.rerunId,
+        rerun_type: accepted?.rerunType,
+        status: "queued",
+        links: {
+          self: `/v1/evals/${accepted?.evalId}/reruns/${accepted?.rerunId}`,
+          events: `/v1/evals/${accepted?.evalId}/reruns/${accepted?.rerunId}/events`,
+        },
+      });
+    }
+    const rerunMatch = url.pathname.match(/^\/v1\/evals\/(eval_[a-f0-9]+)\/reruns\/(rerun_[a-f0-9]+)(?:\/(events))?$/);
+    if (rerunMatch) {
+      const [, evalId, rerunId, action] = rerunMatch;
+      if (request.method === "GET" && !action) {
+        const status = await this.evalRerunScheduler?.status(evalId as EvalId, rerunId as string);
+        return status
+          ? json(response, 200, { schema_version: SCHEMA_VERSION, eval_id: evalId, rerun_id: rerunId, ...status })
+          : json(response, 404, { error: { code: "eval_rerun_not_found", message: `eval rerun not found: ${rerunId}` } });
+      }
+      if (request.method === "GET" && action === "events") {
+        return this.streamEvents(response, path.join(this.paths.evals, evalId as string, "reruns", rerunId as string, "events.jsonl"), url.searchParams.get("offset") || "0");
+      }
     }
 
     const evalMatch = url.pathname.match(/^\/v1\/evals\/(eval_[a-f0-9]+)(?:\/(events|cancel))?$/);
@@ -265,6 +311,7 @@ export class DaemonServer {
       harnesses: this.agents?.filter((agent) => (agent as { status?: string }).status === "available").map((agent) => (agent as { id: string }).id) || [],
       scheduler: this.scheduler?.snapshot() || null,
       eval_scheduler: this.evalScheduler?.snapshot() || null,
+      eval_rerun_scheduler: this.evalRerunScheduler?.snapshot() || null,
       resources: this.resources?.snapshot() || null,
       resource_policy: this.resourcePolicy(),
     };
@@ -307,7 +354,7 @@ export class DaemonServer {
 }
 
 function errorStatus(error: unknown): number {
-  if ((error as { code?: unknown }).code === "idempotency_conflict") return 409;
+  if (new Set(["idempotency_conflict", "eval_rerun_source_not_terminal", "eval_rerun_cancelled"]).has(String((error as { code?: unknown }).code))) return 409;
   const exitCode = (error as { exitCode?: unknown }).exitCode;
   if (exitCode === 2) return 400;
   if (exitCode === 3) return 404;

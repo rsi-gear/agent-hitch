@@ -1174,11 +1174,14 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
 
   const rerun = await rerunEval({
     evalId,
+    rerunId: "rerun_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     root,
     selector: { mode: "invalid" },
+    maxConcurrentOverride: 1,
     harborExecutable: harbor,
     env,
   });
+  assert.equal(rerun.rerun_id, "rerun_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
   assert.deepEqual(rerun.selected_tasks, ["task-b"]);
   assert.equal(rerun.rerun_type, "candidate-restart");
   assert.deepEqual(rerun.semantics, {
@@ -1198,10 +1201,19 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
   assert.equal(trials.find((trial) => trial.task_id === "task-b")?.reward, 0.75);
   const rerunConfig = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "reruns", rerun.rerun_id, "harbor", "job.json"));
   assert.deepEqual(rerunConfig.datasets, [{ path: dataset, task_names: ["task-b"] }]);
+  assert.equal(rerunConfig.n_concurrent_trials, 1);
   const rerunRequest = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "reruns", rerun.rerun_id, "request.json"));
   const rerunState = await readJSON<Record<string, unknown>>(path.join(root, "evals", evalId, "reruns", rerun.rerun_id, "state.json"));
   assert.equal(rerunRequest.rerun_type, "candidate-restart");
   assert.equal(rerunState.rerun_type, "candidate-restart");
+  await assert.rejects(rerunEval({
+    evalId,
+    rerunId: rerun.rerun_id,
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    env,
+  }), (error: unknown) => (error as { code?: string }).code === "eval_rerun_id_conflict");
 });
 
 test("multi-attempt rerun repairs only invalid logical slots", async (t) => {

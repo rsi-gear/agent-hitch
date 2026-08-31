@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/eval-rerun-result.schema.json",
+  "title": "Hitch eval rerun result V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "rerun_id", "rerun_type", "semantics", "eval_id", "status",
+    "selected_tasks", "repaired_tasks", "remaining_invalid_tasks", "selected_trials", "repaired_trials",
+    "remaining_invalid_trials", "eval_status", "started_at", "completed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "eval-rerun" },
+    "rerun_id": { "type": "string", "pattern": "^rerun_[a-f0-9]{32}$" },
+    "rerun_type": { "enum": ["candidate-restart", "candidate-resume", "trajectory-replay", "verifier-only", "collect-only"] },
+    "semantics": { "$ref": "eval-rerun-submission.schema.json#/$defs/semantics" },
+    "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+    "status": { "const": "completed" },
+    "selected_tasks": { "type": "array", "items": { "type": "string" } },
+    "repaired_tasks": { "type": "array", "items": { "type": "string" } },
+    "remaining_invalid_tasks": { "type": "array", "items": { "type": "string" } },
+    "selected_trials": { "type": "array", "items": { "$ref": "#/$defs/trial" } },
+    "repaired_trials": { "type": "array", "items": { "$ref": "#/$defs/trial" } },
+    "remaining_invalid_trials": { "type": "array", "items": { "$ref": "#/$defs/trial" } },
+    "eval_status": { "enum": ["succeeded", "failed"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "trial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "attempt"],
+      "properties": {
+        "task_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

@@ -162,6 +162,9 @@ Run requests are validated against the contract represented by
 | `GET` | `/v1/evals/{id}` | Read admission state, progress, and final result |
 | `GET` | `/v1/evals/{id}/events?offset={byte}` | Incrementally read eval NDJSON events |
 | `POST` | `/v1/evals/{id}/cancel` | Cancel a queued or active eval |
+| `POST` | `/v1/evals/{id}/reruns` | Persist and enqueue a typed rerun operation |
+| `GET` | `/v1/evals/{id}/reruns/{rerun-id}` | Read rerun submission, state, and result |
+| `GET` | `/v1/evals/{id}/reruns/{rerun-id}/events?offset={byte}` | Incrementally read rerun NDJSON events |
 | `POST` | `/shutdown` | Gracefully stop the daemon |
 
 `POST /v1/evals` accepts an optional `Idempotency-Key` header. The key is
@@ -177,6 +180,17 @@ then fail closed. The current local provider does not yet persist enough
 process identity to make that proof after daemon restart, so accepted/running
 leases are conservatively marked `lost` at a higher epoch and the enclosing
 eval follows the no-blind-replay recovery rule.
+
+The rerun submission body uses one explicit selector:
+
+```json
+{"rerun_type":"candidate-restart","selector":{"mode":"invalid"}}
+```
+
+or `{"mode":"tasks","task_names":["task-a"]}`. Reruns are durable queued
+operations and share the daemon resource ledger and collision domain with new
+evals. The reserved resume/replay/collect types retain their distinct semantics
+and stable unavailable errors; they never fall back to `candidate-restart`.
 
 ## Filesystem contract
 

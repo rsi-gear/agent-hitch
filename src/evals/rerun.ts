@@ -47,23 +47,32 @@ export async function rerunEval(options: RerunEvalOptions): Promise<EvalRerunRes
   const rerunType = parseEvalRerunType(options.rerunType ?? "candidate-restart");
   assertEvalRerunTypeSupported(rerunType);
   const evalId = validateEvalId(options.evalId);
+  const rerunId = options.rerunId ?? `rerun_${randomUUID().replaceAll("-", "")}`;
+  if (!/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
   const evalDirectory = path.join(statePaths(options.root).evals, evalId);
   return withFileLock(
     path.join(evalDirectory, "reruns"),
     "active",
-    () => rerunEvalLocked({ ...options, rerunType, evalId, evalDirectory }),
+    () => rerunEvalLocked({ ...options, rerunId, rerunType, evalId, evalDirectory }),
     { timeoutCode: "eval_rerun_active", timeoutExitCode: 2, ...(options.signal ? { signal: options.signal } : {}) },
   );
 }
 
-async function rerunEvalLocked(options: RerunEvalOptions & { rerunType: EvalRerunType; evalId: string; evalDirectory: string }): Promise<EvalRerunResult> {
+async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; rerunType: EvalRerunType; evalId: string; evalDirectory: string }): Promise<EvalRerunResult> {
   const startedAt = new Date().toISOString();
-  const rerunId = `rerun_${randomUUID().replaceAll("-", "")}`;
-  const rerunDirectory = await ensureDir(path.join(options.evalDirectory, "reruns", rerunId));
+  const rerunId = options.rerunId;
+  const rerunDirectory = path.join(options.evalDirectory, "reruns", rerunId);
   const statePath = path.join(rerunDirectory, "state.json");
+  const existingState = await readJSON<{ status?: unknown } | null>(statePath, null);
+  if (existingState && existingState.status !== "queued" && existingState.status !== "running") throw new HitchError("eval rerun id already reached a terminal state", { code: "eval_rerun_id_conflict", exitCode: 2 });
+  await ensureDir(rerunDirectory);
   const requestValue = await readJSON<unknown | null>(path.join(options.evalDirectory, "request.json"), null);
   if (requestValue === null) throw new HitchError(`eval not found: ${options.evalId}`, { code: "eval_not_found", exitCode: 3 });
   const request = await loadPersistedRequest(requestValue);
+  if (options.maxConcurrentOverride !== undefined && (!Number.isSafeInteger(options.maxConcurrentOverride)
+    || options.maxConcurrentOverride < 1 || options.maxConcurrentOverride > request.max_concurrent)) {
+    throw invalidInput("eval rerun concurrency override is invalid");
+  }
   const plan = parseRerunPlan(await readJSON<unknown>(path.join(options.evalDirectory, "plan.json")), options.evalId, request);
   const initialProgress = await readEvalProgress(options.evalDirectory);
   if (initialProgress === null) throw unavailable("eval has no task-level progress");
@@ -158,7 +167,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunType: EvalReru
           backendDirectory,
           logicalAttempt,
           taskNames,
-          request: { ...request, attempts: 1 },
+          request: { ...request, attempts: 1, max_concurrent: options.maxConcurrentOverride ?? request.max_concurrent },
           root: options.root,
           resolvedRevision,
           runtimeDirectory: runtime.directory,

@@ -3,7 +3,7 @@ import { inspectEval, listEvals, parseEvalRerunType, rerunEval, runEval, validat
 import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput } from "../../foundation/index.js";
 import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
-import { waitForDaemonEval } from "../output.js";
+import { waitForDaemonEval, waitForDaemonEvalRerun } from "../output.js";
 
 export async function evalCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();
@@ -26,6 +26,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   if (!evalIdValue) throw invalidInput("eval rerun requires an eval ID");
   const evalId = validateEvalId(evalIdValue);
   const invalid = takeFlag(args, "--invalid");
+  const useDaemon = takeFlag(args, "--daemon");
   const taskNames = takeRepeatedOption(args, "--task");
   const rerunType = parseEvalRerunType(takeOption(args, "--type") || "candidate-restart");
   const output = takeOption(args, "--output") || "json";
@@ -33,6 +34,19 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   assertNoArgs(args);
   if (output !== "json") throw invalidInput("eval rerun --output must be json");
   if (invalid === (taskNames.length > 0)) throw invalidInput("eval rerun requires exactly one of --invalid or --task");
+  if (useDaemon) {
+    if (harborExecutable !== undefined) throw invalidInput("eval rerun --harbor cannot be combined with --daemon");
+    const client = await daemonClient(root);
+    const accepted = await client.request(`/v1/evals/${evalId}/reruns`, {
+      method: "POST",
+      body: JSON.stringify({
+        rerun_type: rerunType,
+        selector: invalid ? { mode: "invalid" } : { mode: "tasks", task_names: taskNames },
+      }),
+    });
+    await waitForDaemonEvalRerun(client, evalId, accepted.rerun_id as string);
+    return;
+  }
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);

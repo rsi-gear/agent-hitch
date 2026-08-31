@@ -12,8 +12,8 @@ Last audited: 2026-08-31 on branch `codex/harbor-control-plane`.
 
 | Spec area | Status | Current evidence | Remaining work |
 | --- | --- | --- | --- |
-| Stage 0: contracts and compatibility | Partial | Strict eval submission/control/execution-plan/lease/worker/bundle schemas; direct Harbor fixtures; architecture checker | Execution policy, environment image, interaction, provider protocol, rerun operation and training-candidate schemas/capabilities |
-| Stage 1: daemon eval and durable queue | Partial | `/v1/evals`, status/events/cancel, idempotency, persisted control, shared resource ledger, work-item DRR, ambiguous-execution recovery | Daemon rerun endpoint, complete control states/work-item lists and provider-aware recovery |
+| Stage 0: contracts and compatibility | Partial | Strict eval submission/control/execution-plan/lease/worker/bundle/rerun-operation schemas; direct Harbor fixtures; architecture checker | Execution policy, environment image, interaction, provider protocol and training-candidate schemas/capabilities |
+| Stage 1: daemon eval and durable queue | Partial | `/v1/evals`, status/events/cancel/rerun, idempotency, persisted control and rerun queues, shared resource ledger, work-item DRR, ambiguous-execution recovery | Complete control states/work-item lists and provider-aware recovery |
 | Stage 2: vector scheduling and sharding | Partial | Atomic CPU/memory/container/build ledger, local task slots, cross-eval DRR, per-work-item task mutex, ordered same-task attempts, heartbeat-renewed execution leases with epoch fencing, opaque fallback | Provider-driven lease recovery integration, Docker labels/reaper, resource derivation and hard limits |
 | Stage 3: environment image service | Missing | Harbor still owns its existing environment build path | Image resolver/manifest/store, keyed BuildKit execution, registry cache, digest overlay/verification and image GC |
 | Stage 4: execution providers | Partial | `/v1/workers` exposes one local worker identity and capacity | Provider interface, local-docker implementation boundary, registration/heartbeat, remote transport, worker selection and recovery probes |
@@ -23,7 +23,7 @@ Last audited: 2026-08-31 on branch `codex/harbor-control-plane`.
 
 | Acceptance requirement | Status | Evidence or contradiction |
 | --- | --- | --- |
-| Daemon submit/query/follow/cancel/recover | Partial | API and restart classification tests exist; active physical execution cannot yet be reattached or collected |
+| Daemon submit/query/follow/cancel/rerun/recover | Partial | Eval and typed rerun APIs, durable queues, event streams and restart classification tests exist; active physical execution cannot yet be reattached or collected |
 | Global reservations across evals | Implemented | Known local tasks acquire atomic per-work-item vector permits through shared DRR; opaque datasets retain one conservative coarse allocation |
 | `max_concurrent` bounded by all resources | Partial | Logical admission is bounded; Docker/cgroup hard limits and task-declared resource derivation are absent |
 | Different tasks parallel; same-task attempts mutexed | Implemented | Planned execution and dispatcher tests cover parallel different tasks, ordered attempts and cross-eval collision keys |

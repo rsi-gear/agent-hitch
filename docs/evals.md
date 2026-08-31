@@ -311,6 +311,7 @@ logical trial or the invalid/missing trials belonging to explicit task names:
 ```bash
 hitch eval rerun <eval-id> --invalid --type candidate-restart --output json
 hitch eval rerun <eval-id> --task task-a --task task-b --type candidate-restart --output json
+hitch eval rerun <eval-id> --invalid --type candidate-restart --daemon --output json
 ```
 
 `--type` is explicit in audit records and defaults to `candidate-restart` for

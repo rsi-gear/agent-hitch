@@ -1,4 +1,4 @@
-import { delay } from "../foundation/index.js";
+import { HitchError, delay } from "../foundation/index.js";
 
 export function revisionLabel(resolved: { revision: { type: string; version?: string | null; commit?: string }; source: { integrity?: string } }): string {
   if (resolved.revision.type === "commit") return resolved.revision.commit || "";
@@ -55,6 +55,24 @@ export async function waitForDaemonEval(client: { request: (pathname: string, op
   }
 }
 
+export async function waitForDaemonEvalRerun(client: { request: (pathname: string, options?: RequestInit) => Promise<Record<string, unknown>> }, evalId: string, rerunId: string): Promise<Record<string, unknown>> {
+  for (;;) {
+    const status = await client.request(`/v1/evals/${evalId}/reruns/${rerunId}`);
+    if (status.result) {
+      process.stdout.write(`${JSON.stringify(status.result, null, 2)}\n`);
+      return status.result as Record<string, unknown>;
+    }
+    const state = status.state as { status?: unknown; error?: { code?: unknown; message?: unknown } } | undefined;
+    if (state?.status === "failed") {
+      throw new HitchError(typeof state.error?.message === "string" ? state.error.message : "eval rerun failed", {
+        code: typeof state.error?.code === "string" ? state.error.code : "eval_rerun_failed",
+        exitCode: 12,
+      });
+    }
+    await delay(200);
+  }
+}
+
 export function helpText(): string {
   return `Hitch — content-addressed version control and evidence storage for agent harnesses
 
@@ -74,7 +92,7 @@ Usage:
   hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>]
   hitch eval watch <eval-id> [--output json|jsonl]
   hitch eval cancel <eval-id>
-  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--output json]
+  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--daemon] [--output json]
   hitch eval list [--json]
   hitch eval inspect <eval-id> [--json]
   hitch workspace inspect <run-id> [--json]
