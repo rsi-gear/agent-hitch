@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { DaemonServer, daemonClient, probeDaemonHealth, readDaemonLogs, startDetachedDaemon } from "../../daemon/index.js";
+import type { DaemonResourcePolicy } from "../../daemon/index.js";
 import { discoverAgents } from "../../adapters/index.js";
 import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger } from "../../foundation/index.js";
 import { assertNoArgs, parseRunRequest, takeFlag, takeOption } from "../arguments.js";
@@ -24,9 +25,22 @@ export async function daemonCommand(args: string[], root: string): Promise<void>
 async function daemonServe(args: string[], root: string): Promise<void> {
   const port = Number(takeOption(args, "--port") || DEFAULT_PORT);
   const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
+  const resourcePolicy = parseDaemonResourcePolicy(args, maxConcurrent);
   assertNoArgs(args);
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw invalidInput("--port must be between 0 and 65535");
-  const server = new DaemonServer({ root, port, maxConcurrent, discoverHarnesses: discoverAgents });
+  validatePort(port);
+  return serveDaemon(root, port, maxConcurrent, resourcePolicy);
+}
+
+async function serveDaemon(root: string, port: number, maxConcurrent: number, resourcePolicy: DaemonResourcePolicy): Promise<void> {
+  const server = new DaemonServer({
+    root,
+    port,
+    maxConcurrent,
+    discoverHarnesses: discoverAgents,
+    resourceCapacity: resourcePolicy.capacity,
+    runResources: resourcePolicy.run,
+    evalTrialResources: resourcePolicy.eval_trial,
+  });
   await server.start();
   const shutdown = () => server.close().catch((error) => process.stderr.write(`shutdown error: ${(error as Error).message}\n`));
   process.once("SIGINT", shutdown);
@@ -38,12 +52,14 @@ async function daemonStart(args: string[], root: string): Promise<void> {
   const foreground = takeFlag(args, "--foreground");
   const port = Number(takeOption(args, "--port") || DEFAULT_PORT);
   const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
+  const resourcePolicy = parseDaemonResourcePolicy(args, maxConcurrent);
   assertNoArgs(args);
+  validatePort(port);
   const health = await probeDaemonHealth(root);
   if (health?.status === "running") throw new HitchError(`daemon is already running (pid ${health.pid})`, { code: "already_running", exitCode: 2 });
-  if (foreground) return daemonServe(["--port", String(port), "--max-concurrent", String(maxConcurrent)], root);
+  if (foreground) return serveDaemon(root, port, maxConcurrent, resourcePolicy);
 
-  const child = await startDetachedDaemon({ root, executable, port, maxConcurrent });
+  const child = await startDetachedDaemon({ root, executable, port, maxConcurrent, resourcePolicy });
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
     await delay(100);
@@ -54,6 +70,44 @@ async function daemonStart(args: string[], root: string): Promise<void> {
     }
   }
   throw new HitchError(`daemon did not become ready; see ${child.errorLog}`, { code: "daemon_start_failed", exitCode: 12 });
+}
+
+function parseDaemonResourcePolicy(args: string[], maxConcurrent: number): DaemonResourcePolicy {
+  const capacityCpu = parsePositive(takeOption(args, "--capacity-cpu-millis"), maxConcurrent * 1_000, "--capacity-cpu-millis");
+  const capacityMemory = mib(parsePositive(takeOption(args, "--capacity-memory-mib"), maxConcurrent * 1_024, "--capacity-memory-mib"), "--capacity-memory-mib");
+  const containerSlots = parseNonNegative(takeOption(args, "--container-slots"), maxConcurrent, "--container-slots");
+  const buildSlots = parseNonNegative(takeOption(args, "--build-slots"), 1, "--build-slots");
+  const runCpu = parsePositive(takeOption(args, "--run-cpu-millis"), 1_000, "--run-cpu-millis");
+  const runMemory = mib(parsePositive(takeOption(args, "--run-memory-mib"), 512, "--run-memory-mib"), "--run-memory-mib");
+  const evalCpu = parsePositive(takeOption(args, "--eval-cpu-millis"), 1_000, "--eval-cpu-millis");
+  const evalMemory = mib(parsePositive(takeOption(args, "--eval-memory-mib"), 1_024, "--eval-memory-mib"), "--eval-memory-mib");
+  return {
+    capacity: { cpu_millis: capacityCpu, memory_bytes: capacityMemory, container_slots: containerSlots, build_slots: buildSlots },
+    run: { cpu_millis: runCpu, memory_bytes: runMemory, container_slots: 0, build_slots: 0 },
+    eval_trial: { cpu_millis: evalCpu, memory_bytes: evalMemory, container_slots: 1, build_slots: 0 },
+  };
+}
+
+function parsePositive(value: string | undefined, fallback: number, name: string): number {
+  const parsed = Number(value === undefined ? fallback : value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw invalidInput(`${name} must be a positive integer`);
+  return parsed;
+}
+
+function parseNonNegative(value: string | undefined, fallback: number, name: string): number {
+  const parsed = Number(value === undefined ? fallback : value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw invalidInput(`${name} must be a non-negative integer`);
+  return parsed;
+}
+
+function mib(value: number, name: string): number {
+  const bytes = value * 1024 * 1024;
+  if (!Number.isSafeInteger(bytes)) throw invalidInput(`${name} is too large`);
+  return bytes;
+}
+
+function validatePort(port: number): void {
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw invalidInput("--port must be between 0 and 65535");
 }
 
 async function daemonStop(args: string[], root: string): Promise<void> {
@@ -74,7 +128,25 @@ async function daemonStatus(args: string[], root: string): Promise<void> {
     return;
   }
   if (json) process.stdout.write(`${JSON.stringify(health, null, 2)}\n`);
-  else process.stdout.write(`Hitch daemon is ${health.status} (pid ${health.pid}, port ${health.port}, ${(health.scheduler as Record<string, unknown>)?.running} running, ${(health.scheduler as Record<string, unknown>)?.queued} queued)\n`);
+  else {
+    const scheduler = health.scheduler as Record<string, unknown>;
+    const evalScheduler = health.eval_scheduler as Record<string, unknown>;
+    const resourceUsage = formatResourceUsage(health.resources);
+    process.stdout.write(`Hitch daemon is ${health.status} (pid ${health.pid}, port ${health.port}, ${scheduler?.running} runs/${evalScheduler?.running} evals running, ${scheduler?.queued} runs/${evalScheduler?.queued} evals queued${resourceUsage})\n`);
+  }
+}
+
+function formatResourceUsage(value: unknown): string {
+  const snapshot = value as { allocated?: Record<string, unknown>; capacity?: Record<string, unknown> } | null;
+  if (!snapshot?.allocated || !snapshot.capacity) return "";
+  const allocated = snapshot.allocated;
+  const capacity = snapshot.capacity;
+  const memory = `${toMib(allocated.memory_bytes)}/${toMib(capacity.memory_bytes)} MiB`;
+  return `, resources ${allocated.cpu_millis}/${capacity.cpu_millis}m CPU, ${memory}, ${allocated.container_slots}/${capacity.container_slots} containers, ${allocated.build_slots}/${capacity.build_slots} builds`;
+}
+
+function toMib(value: unknown): number {
+  return Math.round(Number(value) / (1024 * 1024));
 }
 
 async function daemonSubmit(args: string[], root: string): Promise<void> {

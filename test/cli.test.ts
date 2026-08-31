@@ -42,6 +42,11 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /hitch eval rerun <eval-id> \(--invalid \| --task <name>/);
   assert.match(help.stdout, /hitch eval setup harbor/);
   assert.match(help.stdout, /hitch eval doctor/);
+  assert.match(help.stdout, /--capacity-cpu-millis <n>/);
+  assert.match(help.stdout, /--capacity-memory-mib <n>/);
+  assert.match(help.stdout, /--container-slots <n>/);
+  assert.match(help.stdout, /--build-slots <n>/);
+  assert.match(help.stdout, /--eval-memory-mib <n>/);
 
   const result = spawnSync(process.execPath, [
     executable,
@@ -80,6 +85,24 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   ], { encoding: "utf8" });
   assert.equal(mixedRerunSelector.status, 2);
   assert.match(mixedRerunSelector.stderr, /exactly one of --invalid or --task/);
+
+  const invalidDaemonPolicy = spawnSync(process.execPath, [
+    executable,
+    "--root", path.join(tmpdir(), `hitch-invalid-daemon-policy-${process.pid}`),
+    "daemon", "start",
+    "--build-slots", "-1",
+  ], { encoding: "utf8" });
+  assert.equal(invalidDaemonPolicy.status, 2);
+  assert.match(invalidDaemonPolicy.stderr, /--build-slots must be a non-negative integer/);
+
+  const invalidDaemonPort = spawnSync(process.execPath, [
+    executable,
+    "--root", path.join(tmpdir(), `hitch-invalid-daemon-port-${process.pid}`),
+    "daemon", "start",
+    "--port", "65536",
+  ], { encoding: "utf8" });
+  assert.equal(invalidDaemonPort.status, 2);
+  assert.match(invalidDaemonPort.stderr, /--port must be between 0 and 65535/);
 });
 
 test("CLI sets up and diagnoses a managed Harbor backend", async (t) => {

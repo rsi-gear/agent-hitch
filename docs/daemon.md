@@ -80,6 +80,40 @@ separate `eval submit`, `eval watch`, and `eval cancel` commands. Daemon runs
 and evals reserve capacity from one vector ledger so aggregate CPU, memory, and
 container admission stays bounded.
 
+## Resource policy
+
+The daemon owns one resource policy for its complete state root. Capacity and
+per-unit reservations are configured when it starts:
+
+```bash
+hitch daemon start \
+  --max-concurrent 8 \
+  --capacity-cpu-millis 8000 \
+  --capacity-memory-mib 16384 \
+  --container-slots 8 \
+  --build-slots 2 \
+  --run-cpu-millis 1000 \
+  --run-memory-mib 512 \
+  --eval-cpu-millis 1000 \
+  --eval-memory-mib 1024
+```
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| CPU capacity | `max-concurrent * 1000` millicores | Shared admission budget |
+| Memory capacity | `max-concurrent * 1024` MiB | Shared admission budget |
+| Container slots | `max-concurrent` | Maximum admitted Harbor trials |
+| Build slots | `1` | Reserved lane for later managed image builds |
+| Direct run reservation | `1000` millicores, `512` MiB | Cost of one daemon agent run |
+| Harbor trial reservation | `1000` millicores, `1024` MiB, one container | Cost of one admitted local trial |
+
+All values are non-overcommitted logical reservations. They gate dispatch but
+do not yet set Docker cgroup CPU/memory limits. `hitch daemon status --json`
+returns both `resource_policy` and the live `resources` ledger; human-readable
+status prints allocated versus total CPU, memory, container, and build slots.
+The selected policy is also persisted in `daemon.json`, so detached startup and
+operators inspecting the state root see the same configuration.
+
 ## Lifecycle
 
 ```text
@@ -163,8 +197,9 @@ test profiles and isolated callers possible.
 
 ## Current limitations
 
-- The daemon currently hosts direct agent runs only; benchmark jobs have not
-  yet been connected to the scheduler.
+- Local Harbor evals are connected to the daemon scheduler and share its
+  resource ledger with direct agent runs. Registry datasets with opaque task
+  membership still use the conservative single-Harbor-job compatibility path.
 - Codex, Claude, Pi, OpenCode, and DeepSeek Harness have native adapters. Codex
   and Pi use ephemeral execution to avoid shared session writes, while DeepSeek
   uses a per-run `DSH_HOME`. Full per-run credential/config homes and resume
@@ -180,6 +215,9 @@ test profiles and isolated callers possible.
   stable common meaning are preserved as `provider.event`.
 - Run-history/artifact/workspace GC, durable queue replay policy, and push-based
   SSE/WebSocket delivery are not implemented yet.
+- Reservations currently control admission only; Docker/cgroup hard limits,
+  live resource metering, managed BuildKit image jobs, and remote workers remain
+  future provider work.
 - Loopback plus a file token protects the local control API from accidental
   cross-process use; it is not an OS sandbox for the launched coding agent.
 

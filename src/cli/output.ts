@@ -85,6 +85,10 @@ Usage:
   hitch feedback put <run-id> --message <id> --rating positive|negative [--note <text>] [--if-version <v>] [--json]
   hitch feedback delete <run-id> --message <id> [--if-version <v>] [--json]
   hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]
+    [--capacity-cpu-millis <n>] [--capacity-memory-mib <n>]
+    [--container-slots <n>] [--build-slots <n>]
+    [--run-cpu-millis <n>] [--run-memory-mib <n>]
+    [--eval-cpu-millis <n>] [--eval-memory-mib <n>]
   hitch daemon stop | status [--json] | logs [-n <lines>]
   hitch daemon submit --harness <ref> --prompt <text> [--workspace-mode <mode>] [--wait]
   hitch daemon cancel <run-id>

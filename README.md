@@ -152,7 +152,11 @@ portability rules.
 Start a queue when you need long-lived execution:
 
 ```bash
-hitch daemon start --max-concurrent 4
+hitch daemon start \
+  --max-concurrent 4 \
+  --capacity-cpu-millis 4000 \
+  --capacity-memory-mib 8192 \
+  --container-slots 4
 hitch run --daemon --harness codex@version:0.92.0 --prompt-file task.md
 ```
 

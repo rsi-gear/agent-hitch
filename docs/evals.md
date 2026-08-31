@@ -23,7 +23,11 @@ currently available CPU, memory, and container capacity instead of allowing
 independent `--max-concurrent` values to oversubscribe the host.
 
 ```bash
-hitch daemon start --max-concurrent 8
+hitch daemon start \
+  --max-concurrent 8 \
+  --capacity-cpu-millis 8000 \
+  --capacity-memory-mib 16384 \
+  --container-slots 8
 
 # Submit and wait for the terminal result.
 hitch eval run --daemon \

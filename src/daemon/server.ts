@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
-import { EvalScheduler, ResourceLedger } from "../control-plane/index.js";
+import { EvalScheduler, ResourceLedger, validateResourceVector } from "../control-plane/index.js";
 import type { EvalSchedulerOptions } from "../control-plane/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
@@ -57,9 +57,9 @@ export class DaemonServer {
     this.maxConcurrent = maxConcurrent;
     this.logger = logger;
     this.discoverHarnesses = discoverHarnesses;
-    this.resourceCapacity = resourceCapacity || defaultResourceCapacity(maxConcurrent);
-    this.runResources = runResources || { cpu_millis: 1_000, memory_bytes: 512 * 1024 * 1024, container_slots: 0, build_slots: 0 };
-    this.evalTrialResources = evalTrialResources || { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 };
+    this.resourceCapacity = validateResourceVector(resourceCapacity || defaultResourceCapacity(maxConcurrent), "daemon resource capacity");
+    this.runResources = validateResourceVector(runResources || { cpu_millis: 1_000, memory_bytes: 512 * 1024 * 1024, container_slots: 0, build_slots: 0 }, "daemon run reservation");
+    this.evalTrialResources = validateResourceVector(evalTrialResources || { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 }, "daemon eval trial reservation");
     this.evalExecutor = evalExecutor;
     this.startedAt = new Date();
     this.closedPromise = new Promise((resolve) => { this.resolveClosed = resolve; });
@@ -124,6 +124,7 @@ export class DaemonServer {
         instance_id: this.instanceId,
         root: this.paths.root,
         started_at: this.startedAt.toISOString(),
+        resource_policy: this.resourcePolicy(),
       });
       this.ready = true;
       this.logger("started", { pid: process.pid, port: this.port, instance_id: this.instanceId });
@@ -265,6 +266,15 @@ export class DaemonServer {
       scheduler: this.scheduler?.snapshot() || null,
       eval_scheduler: this.evalScheduler?.snapshot() || null,
       resources: this.resources?.snapshot() || null,
+      resource_policy: this.resourcePolicy(),
+    };
+  }
+
+  private resourcePolicy(): Record<string, ResourceVectorV1> {
+    return {
+      capacity: { ...this.resourceCapacity },
+      run: { ...this.runResources },
+      eval_trial: { ...this.evalTrialResources },
     };
   }
 

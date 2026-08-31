@@ -11,6 +11,18 @@ export interface DaemonClient {
   }>;
 }
 
+export interface DaemonHealth {
+  status: string;
+  pid: number;
+  port: number;
+  instance_id: string;
+  scheduler?: unknown;
+  eval_scheduler?: unknown;
+  resources?: unknown;
+  resource_policy?: unknown;
+  [key: string]: unknown;
+}
+
 export async function daemonClient(root: string): Promise<DaemonClient> {
   const paths = statePaths(root);
   const state = await readJSON<{ port?: number; instance_id?: string } | null>(paths.daemon, null);
@@ -43,14 +55,14 @@ export async function daemonClient(root: string): Promise<DaemonClient> {
   return { state, request, requestWithMetadata: performRequest };
 }
 
-export async function probeDaemonHealth(root: string): Promise<{ status: string; pid: number; port: number; instance_id: string; scheduler?: unknown } | null> {
+export async function probeDaemonHealth(root: string): Promise<DaemonHealth | null> {
   const state = await readJSON<{ port?: number; instance_id?: string } | null>(statePaths(root).daemon, null);
   if (!state?.port) return null;
   try {
     const response = await fetch(`http://127.0.0.1:${state.port}/health`, { signal: AbortSignal.timeout(1_000) });
     if (!response.ok) return null;
     const health = await response.json() as { instance_id?: string } & Record<string, unknown>;
-    return health.instance_id === state.instance_id ? health as never : null;
+    return health.instance_id === state.instance_id ? health as unknown as DaemonHealth : null;
   } catch {
     return null;
   }
