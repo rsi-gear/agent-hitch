@@ -72,13 +72,13 @@ test("execution plan persists per-task evidence and reserves heterogeneous tasks
       taskId: "one",
       defaultResources: input.trialResources,
       defaultSource: "operator-default",
-      declaration: { schema_version: "1", task: { cpu_millis: 3_000 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false } },
+      declaration: { schema_version: "1", task: { cpu_millis: 3_000 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [] },
     }),
     deriveTaskResourceRequirement({
       taskId: "two",
       defaultResources: input.trialResources,
       defaultSource: "operator-default",
-      declaration: { schema_version: "1", task: { memory_bytes: 8_192 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false } },
+      declaration: { schema_version: "1", task: { memory_bytes: 8_192 }, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [] },
     }),
   ];
   const taskPlan = buildEvalExecutionPlan({ ...input, tasks: ["two", "one"], taskResources, workItemMode: "task-slots" });
@@ -109,4 +109,31 @@ test("execution plan parser rejects unknown fields and forged reservations", () 
   const forged = structuredClone(plan);
   forged.work_items[0]!.reservation.cpu_millis += 1;
   assert.throws(() => parseEvalExecutionPlan(forged), /does not match its slots/);
+});
+
+test("execution plan pins environment images into each matching work item", () => {
+  const manifestDigest = `sha256:${"d".repeat(64)}` as const;
+  const image = {
+    task_ids: ["one"],
+    image_id: `sha256:${"e".repeat(64)}` as const,
+    requested_reference: "registry.test/task:latest",
+    reference: `registry.test/task@${manifestDigest}`,
+    manifest_digest: manifestDigest,
+    platform: "linux/amd64",
+    resolution: "registry" as const,
+    cache_hit: false,
+  };
+  const plan = buildEvalExecutionPlan({
+    ...input,
+    tasks: ["one"],
+    workItemMode: "task-slots",
+    environmentImages: [image],
+    environmentImageFallbacks: [{ task_id: "one", source: "compose", service: "database", code: "backend-build" }],
+  });
+  assert.deepEqual(plan.work_items[0]?.image_refs, [image]);
+  assert.deepEqual(plan.image_fallbacks, [{ task_id: "one", source: "compose", service: "database", code: "backend-build" }]);
+  assert.deepEqual(parseEvalExecutionPlan(plan), plan);
+  const forged = structuredClone(plan);
+  forged.work_items[0]!.image_refs![0]!.reference = `registry.test/task@sha256:${"f".repeat(64)}`;
+  assert.throws(() => parseEvalExecutionPlan(forged), /image refs 0 is invalid/);
 });

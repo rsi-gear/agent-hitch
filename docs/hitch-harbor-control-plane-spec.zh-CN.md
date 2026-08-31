@@ -424,7 +424,7 @@ API 输入使用同结构的 `EvalSubmissionInputV1`，但 `request` 接受 `Eva
 - 调度策略不参与 Harness、benchmark 或 observation identity。
 - `max_parallelism` 默认等于现有 `request.max_concurrent`，但仍受全局预算限制。
 - 服务端把缺省 execution policy 规范化后写入 `submission.json`；submission digest 同时覆盖 normalized request 与 execution policy，因此同一 idempotency key 不能被换成另一组资源或 provider 策略。
-- V1 本机 provider 已执行 `provider`、`max_parallelism` 和 `resources.default_trial`；尚不可执行的 remote provider、setup reservation、remote build cache、`prebuild-required` 或 proxy/hybrid capture 必须在 admission 明确拒绝，不能只持久化后忽略。
+- V1 本机 provider 已执行 `provider`、`max_parallelism`、`resources.default_trial` 和 build mode。`prebuild-required` 只接受能够在 trial 前解析并安全注入 digest 的固定 registry 引用，任何 build/dynamic/resolution fallback 都失败；尚不可执行的 remote provider、setup reservation、remote build cache 或 proxy/hybrid capture 必须在 admission 明确拒绝，不能只持久化后忽略。
 
 ### 8.2 Resource vector
 
@@ -595,6 +595,7 @@ interface EnvironmentImageManifestV1 {
 interface EnvironmentImageUseV1 {
   task_ids: string[]
   image_id: `sha256:${string}`
+  requested_reference: string
   reference: string
   manifest_digest: `sha256:${string}`
   platform: string
@@ -602,6 +603,11 @@ interface EnvironmentImageUseV1 {
   cache_hit: boolean
 }
 ```
+
+`requested_reference` 保存 benchmark/Compose 原始镜像引用，`reference` 必须是同一 repository 下以
+`@sha256:...` 固定的执行引用。执行计划将成功解析项写入 work item 的 `image_refs`；build context、
+动态 Compose 引用、显式 backend build 策略和 registry 解析失败则写入 `image_fallbacks`。因此
+`prebuild-preferred` 的降级是可审计的，`prebuild-required` 遇到任何 fallback 必须在启动 trial 前失败。
 
 `image_id` 的 canonical identity 排除 `created_at`、本地 tag、builder hostname 和 cache hit 状态，包含 source digest、platform、构建参数摘要、base image digest 和 output manifest digest。secret 只记录名称，不记录值或值摘要。
 

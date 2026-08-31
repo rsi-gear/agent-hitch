@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EvalId, EvalRequest, ResourceVectorV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, EvalId, EvalRequest, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
 import type { EvalRequestInput } from "./request.js";
@@ -31,7 +31,24 @@ export interface RunEvalOptions {
   onControlPhase?: (phase: EvalExecutionPhase, work?: EvalWorkStateSnapshot) => Promise<void>;
   onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
   dockerResourceReaper?: EvalDockerResourceReaper;
+  environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
+  environmentImageResolver?: EvalEnvironmentImageResolver;
 }
+
+export type EvalEnvironmentImageResolver = (input: {
+  benchmarkId: string;
+  benchmarkRevision: string;
+  taskId: string;
+  reference: string;
+  platform: string;
+  signal?: AbortSignal;
+}) => Promise<{
+  image_id: Sha256;
+  reference: string;
+  manifest_digest: Sha256;
+  platform: string;
+  cache_hit: boolean;
+}>;
 
 export type EvalExecutionPhase = "planning" | "preparing" | "running" | "finalizing";
 

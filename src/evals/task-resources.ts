@@ -19,6 +19,13 @@ export const HARBOR_EGRESS_SIDECAR_RESOURCES: ResourceVectorV1 = {
   build_slots: 0,
 };
 
+export interface LocalTaskPlanningInputV1 {
+  task_id: string;
+  resources: TaskResourceRequirementV1;
+  environment_images: HarborTaskResourceDeclarationV1["environment_images"];
+  environment_image_fallbacks: HarborTaskResourceDeclarationV1["environment_image_fallbacks"];
+}
+
 export async function resolveLocalTaskResourceRequirements(input: {
   root: string;
   dataset: string;
@@ -29,6 +36,19 @@ export async function resolveLocalTaskResourceRequirements(input: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }): Promise<TaskResourceRequirementV1[]> {
+  return (await resolveLocalTaskPlanningInputs(input)).map((entry) => entry.resources);
+}
+
+export async function resolveLocalTaskPlanningInputs(input: {
+  root: string;
+  dataset: string;
+  taskIds: readonly string[];
+  defaultResources: ResourceVectorV1;
+  defaultSource: "submission-default" | "operator-default";
+  harborExecutable?: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}): Promise<LocalTaskPlanningInputV1[]> {
   const dataset = path.resolve(input.dataset);
   const singleTask = await exists(path.join(dataset, "task.toml"));
   return Promise.all(input.taskIds.map(async (taskId) => {
@@ -46,12 +66,18 @@ export async function resolveLocalTaskResourceRequirements(input: {
       if (!await mayUseDefaultOnly(taskDirectory, error)) throw error;
       declaration = emptyDeclaration();
     }
-    return deriveTaskResourceRequirement({
+    const resources = deriveTaskResourceRequirement({
       taskId,
       declaration,
       defaultResources: input.defaultResources,
       defaultSource: input.defaultSource,
     });
+    return {
+      task_id: taskId,
+      resources,
+      environment_images: declaration.environment_images,
+      environment_image_fallbacks: declaration.environment_image_fallbacks,
+    };
   }));
 }
 
@@ -183,7 +209,7 @@ async function mayUseDefaultOnly(taskDirectory: string, error: unknown): Promise
   if ((error as { code?: string }).code !== "task_resource_inspection_unavailable") return false;
   if (await exists(path.join(taskDirectory, "environment", "docker-compose.yaml"))) return false;
   const task = await import("node:fs/promises").then(({ readFile }) => readFile(path.join(taskDirectory, "task.toml"), "utf8"));
-  return !/(^|\n)\s*(cpus|memory_mb|network_mode|environment_mode)\s*=/m.test(task);
+  return !/(^|\n)\s*(cpus|memory_mb|network_mode|environment_mode|docker_image)\s*=/m.test(task);
 }
 
 async function exists(file: string): Promise<boolean> {
@@ -197,6 +223,8 @@ function emptyDeclaration(): HarborTaskResourceDeclarationV1 {
     verifier: { separate: false },
     compose_services: [{ name: "main", replicas: 1 }],
     provider_sidecars: { main_egress: false, verifier_egress: false },
+    environment_images: [],
+    environment_image_fallbacks: [],
   };
 }
 

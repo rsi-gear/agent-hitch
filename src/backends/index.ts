@@ -2,7 +2,7 @@ export type { BackendArtifactReference, BackendResult } from "./contract.js";
 export { buildHarborJobConfig, lockedHarnessRef, normalizeHarborResult, readHarborRawResult, runHarborBackend } from "./harbor/index.js";
 export type { BuildHarborJobConfigOptions, HarborBackendResult, HarborPreparedArtifactUse, RunHarborBackendOptions } from "./harbor/index.js";
 export { harborEnvironmentConfig, inspectHarborTaskResources, parseHarborTaskResourceDeclaration } from "./harbor/index.js";
-export type { HarborDockerServiceLimitsV1, HarborTaskResourceDeclarationV1 } from "./harbor/index.js";
+export type { HarborDockerServiceLimitsV1, HarborEnvironmentImageDeclarationV1, HarborEnvironmentImageFallbackV1, HarborTaskResourceDeclarationV1 } from "./harbor/index.js";
 export { readHarborProcessExitStatus } from "./harbor/index.js";
 export { DEFAULT_LOCAL_GIT_TRANSPORT_LIMITS, LOCAL_GIT_TRANSPORT_MANIFEST, LOCAL_GIT_TRANSPORT_PAYLOAD, LOCAL_GIT_TRANSPORT_SCHEMA_VERSION, buildLocalGitTransport, localGitTransportLimitsFromEnv, validateLocalGitTransportManifest, verifyLocalGitTransport, verifyMaterializedLocalGitSource } from "./harbor/index.js";
 export type { LocalGitTransportLimits, LocalGitTransportManifest, LocalGitTransportUse, VerifiedLocalGitSource } from "./harbor/index.js";

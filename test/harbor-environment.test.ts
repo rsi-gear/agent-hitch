@@ -9,7 +9,7 @@ test("Harbor ownership environment labels every controlled Compose resource and 
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-harbor-environment-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(path.join(directory, "docker-compose.yaml"), JSON.stringify({
-    services: { main: {}, database: {} },
+    services: { main: {}, database: { image: "registry.test/database:16" } },
     networks: { private: {}, shared: { external: true } },
     volumes: { data: {}, shared_data: { external: true } },
   }));
@@ -23,6 +23,7 @@ class DockerEnvironment:
         self._environment_docker_compose_path = pathlib.Path(environment_dir) / "docker-compose.yaml"
         self.extra_docker_compose_paths = [pathlib.Path(p) for p in (extra_docker_compose or [])]
         self._enable_egress_control = False
+        self.task_env_config = kwargs.get("task_env_config")
     @property
     def _docker_compose_paths(self): return [pathlib.Path("base.json")]
 harbor = types.ModuleType("harbor")
@@ -40,7 +41,14 @@ labels = {
   "io.hitch.lease-id": "lease_" + "d" * 32, "io.hitch.lease-epoch": "1", "io.hitch.task-id": "task-a"
 }
 limits = {"database": {"cpu_millis": 500, "memory_bytes": 67108864}}
-env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels, hitch_service_resource_limits=limits)
+class TaskEnvironment:
+    def __init__(self, docker_image): self.docker_image = docker_image
+    def model_copy(self, update): return TaskEnvironment(update["docker_image"])
+resolved = {
+  "registry.test/database:16": "registry.test/database@sha256:" + "a" * 64,
+  "registry.test/task:v1": "registry.test/task@sha256:" + "b" * 64,
+}
+env = module.HitchHarborDockerEnvironment(environment_dir=root, task_env_config=TaskEnvironment("registry.test/task:v1"), hitch_ownership_labels=labels, hitch_service_resource_limits=limits, hitch_resolved_images=resolved)
 overlay = json.loads(env._hitch_ownership_compose_path.read_text())
 assert set(overlay["services"]) == {"main", "database"}
 assert set(overlay["networks"]) == {"default", "private"}
@@ -49,6 +57,8 @@ for group in overlay.values():
     for config in group.values(): assert config["labels"] == labels
 assert overlay["services"]["database"]["cpus"] == 0.5
 assert overlay["services"]["database"]["mem_limit"] == 67108864
+assert overlay["services"]["database"]["image"] == resolved["registry.test/database:16"]
+assert env.task_env_config.docker_image == resolved["registry.test/task:v1"]
 assert "cpus" not in overlay["services"]["main"]
 assert env._docker_compose_paths[-1] == env._hitch_ownership_compose_path
 try: module._validate_labels({**labels, "unexpected": "x"})
@@ -57,6 +67,9 @@ else: raise AssertionError("unknown ownership label accepted")
 try: module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels, hitch_service_resource_limits={"other": limits["database"]})
 except ValueError: pass
 else: raise AssertionError("unbounded sidecar accepted")
+try: module._validate_resolved_images({"registry.test/database:16": "other.test/database@sha256:" + "a" * 64})
+except ValueError: pass
+else: raise AssertionError("cross-repository image mapping accepted")
 `;
   const result = spawnSync("python3", ["-c", script, directory, source], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);

@@ -16,12 +16,13 @@ import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequ
 import { invalidTrialSlots } from "./rerun-slots.js";
 import { prepareEvalDirectory } from "./directory.js";
 import { buildEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
-import { resolveLocalTaskResourceRequirements } from "./task-resources.js";
+import { planLocalEvalInputs } from "./local-eval-planning.js";
+import { resolvedImageMapping } from "./environment-image-planning.js";
 import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -119,11 +120,12 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       reference: runtimeRefFile,
     });
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
-    const taskResources = localTaskIds === null ? undefined : await resolveLocalTaskResourceRequirements({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
+    const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
+    const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
+    const taskResources = localPlanning.taskResources;
     const plannedTasks = localTaskIds?.length ?? null;
     const plannedTrials = plannedTasks === null ? null : plannedTasks * normalized.attempts;
     if (plannedTrials !== null && !Number.isSafeInteger(plannedTrials)) throw invalidInput("planned trial count exceeds the safe integer range");
-    const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
     if (resume) startedAt = new Date(resume.progress.started_at);
     const plan = {
       schema_version: SCHEMA_VERSION,
@@ -167,6 +169,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       maxParallelism: normalized.max_concurrent,
       ...(executionResources ? { trialResources: executionResources } : {}),
       ...(taskResources ? { taskResources } : {}),
+      ...(localPlanning.environmentImages.length > 0 ? { environmentImages: localPlanning.environmentImages } : {}),
+      ...(localPlanning.environmentImageFallbacks.length > 0 ? { environmentImageFallbacks: localPlanning.environmentImageFallbacks } : {}),
       ...(executionWorker ? { provider: executionWorker.provider } : {}),
       ...(executionStrategy === "local-task-slots-v1" && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
       createdAt: plan.created_at,
@@ -293,6 +297,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtimeDirectory: controllerRuntime.directory,
         runtimeId: controllerRuntime.runtime_id,
         preparedArtifact,
+        resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
         ...(executionResources ? { executionResources } : {}),
         ...(localTransport ? { localTransport } : {}),
         env,
@@ -358,6 +363,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         resolvedRevision,
         controllerRuntime,
         preparedArtifact,
+        resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
         ...(executionResources ? { executionResources } : {}),
         ...(localTransport ? { localTransport } : {}),
         env,

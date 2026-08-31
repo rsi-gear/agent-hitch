@@ -11,6 +11,20 @@ export interface HarborTaskResourceDeclarationV1 {
   verifier: { separate: boolean; environment?: { cpu_millis?: number; memory_bytes?: number } };
   compose_services: Array<{ name: string; replicas: number; cpu_millis?: number; memory_bytes?: number }>;
   provider_sidecars: { main_egress: boolean; verifier_egress: boolean };
+  environment_images: HarborEnvironmentImageDeclarationV1[];
+  environment_image_fallbacks: HarborEnvironmentImageFallbackV1[];
+}
+
+export interface HarborEnvironmentImageDeclarationV1 {
+  source: "task" | "verifier" | "compose";
+  service: string;
+  reference: string;
+}
+
+export interface HarborEnvironmentImageFallbackV1 {
+  source: "task" | "verifier" | "compose";
+  service: string;
+  code: "backend-build" | "dynamic-image";
 }
 
 export async function inspectHarborTaskResources(input: {
@@ -50,7 +64,10 @@ export async function inspectHarborTaskResources(input: {
 }
 
 export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskResourceDeclarationV1 {
-  const root = exactRecord(value, ["schema_version", "task", "verifier", "compose_services", "provider_sidecars"], "task resource declaration");
+  const root = exactRecord(value, [
+    "schema_version", "task", "verifier", "compose_services", "provider_sidecars",
+    "environment_images", "environment_image_fallbacks",
+  ], "task resource declaration");
   if (root.schema_version !== "1") throw new TypeError("task resource declaration schema is invalid");
   const task = resourcePair(root.task, "task resources");
   const verifierRecord = exactRecord(root.verifier, ["separate"], "verifier resources", ["environment"]);
@@ -70,13 +87,50 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
   if (new Set(composeServices.map((service) => service.name)).size !== composeServices.length) throw new TypeError("Compose service names are duplicated");
   const sidecars = exactRecord(root.provider_sidecars, ["main_egress", "verifier_egress"], "provider sidecars");
   if (typeof sidecars.main_egress !== "boolean" || typeof sidecars.verifier_egress !== "boolean") throw new TypeError("provider sidecar declaration is invalid");
+  const environmentImages = imageDeclarations(root.environment_images);
+  const environmentImageFallbacks = imageFallbacks(root.environment_image_fallbacks);
   return {
     schema_version: "1",
     task,
     verifier,
     compose_services: composeServices,
     provider_sidecars: { main_egress: sidecars.main_egress, verifier_egress: sidecars.verifier_egress },
+    environment_images: environmentImages,
+    environment_image_fallbacks: environmentImageFallbacks,
   };
+}
+
+function imageDeclarations(value: unknown): HarborEnvironmentImageDeclarationV1[] {
+  if (!Array.isArray(value)) throw new TypeError("environment image declarations are invalid");
+  const result = value.map((entry, index) => {
+    const record = exactRecord(entry, ["source", "service", "reference"], `environment image ${index}`);
+    if (!new Set(["task", "verifier", "compose"]).has(record.source as string)
+      || typeof record.service !== "string" || !record.service
+      || typeof record.reference !== "string" || !validImageReference(record.reference)) {
+      throw new TypeError(`environment image ${index} is invalid`);
+    }
+    return record as unknown as HarborEnvironmentImageDeclarationV1;
+  });
+  const keys = result.map((entry) => `${entry.source}\0${entry.service}`);
+  if (new Set(keys).size !== keys.length) throw new TypeError("environment image declarations are duplicated");
+  return result;
+}
+
+function imageFallbacks(value: unknown): HarborEnvironmentImageFallbackV1[] {
+  if (!Array.isArray(value)) throw new TypeError("environment image fallbacks are invalid");
+  return value.map((entry, index) => {
+    const record = exactRecord(entry, ["source", "service", "code"], `environment image fallback ${index}`);
+    if (!new Set(["task", "verifier", "compose"]).has(record.source as string)
+      || typeof record.service !== "string" || !record.service
+      || (record.code !== "backend-build" && record.code !== "dynamic-image")) {
+      throw new TypeError(`environment image fallback ${index} is invalid`);
+    }
+    return record as unknown as HarborEnvironmentImageFallbackV1;
+  });
+}
+
+function validImageReference(value: string): boolean {
+  return value.length <= 1_024 && !/[\s\0]/.test(value) && !value.includes("://") && !value.includes("$");
 }
 
 async function harborPython(harborExecutable: string, env: NodeJS.ProcessEnv): Promise<string | null> {

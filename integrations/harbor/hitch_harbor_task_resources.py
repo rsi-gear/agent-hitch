@@ -49,6 +49,18 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
             for mode in (verifier_environment.network_mode, config.verifier.network_mode)
         )
     )
+    images, fallbacks = _environment_images(config.environment, "task")
+    if separate and verifier_environment is not None:
+        verifier_images, verifier_fallbacks = _environment_images(
+            verifier_environment, "verifier"
+        )
+        images.extend(verifier_images)
+        fallbacks.extend(verifier_fallbacks)
+    compose_images, compose_fallbacks = _compose_images(
+        task_dir / "environment" / "docker-compose.yaml"
+    )
+    images.extend(compose_images)
+    fallbacks.extend(compose_fallbacks)
     return {
         "schema_version": "1",
         "task": _environment_resources(config.environment),
@@ -61,6 +73,12 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
             "main_egress": main_egress,
             "verifier_egress": verifier_egress,
         },
+        "environment_images": sorted(
+            images, key=lambda entry: (entry["source"], entry["service"])
+        ),
+        "environment_image_fallbacks": sorted(
+            fallbacks, key=lambda entry: (entry["source"], entry["service"])
+        ),
     }
 
 
@@ -69,6 +87,43 @@ def _environment_resources(environment: Any) -> dict[str, Any]:
         **({"cpu_millis": environment.cpus * 1000} if environment.cpus is not None else {}),
         **({"memory_bytes": environment.memory_mb * 1024 * 1024} if environment.memory_mb is not None else {}),
     }
+
+
+def _environment_images(
+    environment: Any, source: str
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    reference = getattr(environment, "docker_image", None)
+    if reference is None:
+        return [], [{"source": source, "service": "main", "code": "backend-build"}]
+    if not isinstance(reference, str) or not reference or "$" in reference:
+        return [], [{"source": source, "service": "main", "code": "dynamic-image"}]
+    return [{"source": source, "service": "main", "reference": reference}], []
+
+
+def _compose_images(
+    compose_file: Path,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    if not compose_file.exists():
+        return [], []
+    document = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+    if document is None or not isinstance(document, dict):
+        return [], []
+    raw_services = document.get("services")
+    if not isinstance(raw_services, dict):
+        return [], []
+    images: list[dict[str, str]] = []
+    fallbacks: list[dict[str, str]] = []
+    for name, raw in raw_services.items():
+        if not isinstance(name, str) or not isinstance(raw, dict):
+            continue
+        reference = raw.get("image")
+        if raw.get("build") is not None:
+            fallbacks.append({"source": "compose", "service": name, "code": "backend-build"})
+        elif isinstance(reference, str) and reference and "$" not in reference:
+            images.append({"source": "compose", "service": name, "reference": reference})
+        elif reference is not None:
+            fallbacks.append({"source": "compose", "service": name, "code": "dynamic-image"})
+    return images, fallbacks
 
 
 def _compose_services(compose_file: Path) -> list[dict[str, Any]]:

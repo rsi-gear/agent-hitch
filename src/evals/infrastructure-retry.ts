@@ -53,6 +53,7 @@ export interface RunInfrastructureRetriesOptions {
   sink: EvalEventSink;
   stopAfterResult?: (rawResult: Record<string, unknown> | null) => boolean;
   executionResources?: ResourceVectorV1;
+  resolvedImages?: Record<string, string>;
 }
 
 export async function runInfrastructureRetries(
@@ -135,6 +136,7 @@ export async function runInfrastructureRetries(
       runtimeId: options.controllerRuntime.runtime_id,
       preparedArtifact: options.preparedArtifact,
       ...(options.executionResources ? { executionResources: options.executionResources } : {}),
+      ...(options.resolvedImages ? { resolvedImages: options.resolvedImages } : {}),
       ...(options.localTransport ? { localTransport: options.localTransport } : {}),
       env: options.env,
       ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),

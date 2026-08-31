@@ -1,5 +1,6 @@
 import type { Sha256 } from "./ids.js";
 import type { ResourceVectorV1 } from "./resources.js";
+import type { EnvironmentImageFallbackV1, EnvironmentImageUseV1 } from "./images.js";
 
 export type TrialSlotStateV1 =
   | "pending"
@@ -39,6 +40,7 @@ export interface BackendWorkItemV1 {
   requested_parallelism: number;
   reservation: ResourceVectorV1;
   provider: string;
+  image_refs?: EnvironmentImageUseV1[];
 }
 
 export type ResourceRequirementSourceV1 =
@@ -95,6 +97,7 @@ export interface EvalExecutionPlanV1 {
   max_parallelism: number;
   default_trial_resources: ResourceVectorV1;
   task_resources?: TaskResourceRequirementV1[];
+  image_fallbacks?: EnvironmentImageFallbackV1[];
   slots: TrialSlotV1[];
   work_items: BackendWorkItemV1[];
   retry_policy: {

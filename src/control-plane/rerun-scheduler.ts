@@ -295,7 +295,7 @@ export class EvalRerunScheduler {
     }
     return {
       request: submission.request,
-      execution: submission.execution || defaultEvalExecutionPolicy(submission.request, { provider: "local-docker", trialResources: this.trialResources }),
+      execution: submission.execution || defaultEvalExecutionPolicy(submission.request, { provider: "local-docker", trialResources: this.trialResources, buildMode: "backend" }),
     };
   }
 

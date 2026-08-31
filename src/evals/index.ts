@@ -3,7 +3,8 @@ export type { EvalRequestInput } from "./request.js";
 export type { EvalRequest } from "../domain/index.js";
 export { EvalEventSink } from "./events.js";
 export { buildEvalExecutionPlan, parseEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
-export { deriveTaskResourceRequirement, resolveLocalTaskResourceRequirements, HARBOR_EGRESS_SIDECAR_RESOURCES } from "./task-resources.js";
+export { deriveTaskResourceRequirement, resolveLocalTaskPlanningInputs, resolveLocalTaskResourceRequirements, HARBOR_EGRESS_SIDECAR_RESOURCES } from "./task-resources.js";
+export type { LocalTaskPlanningInputV1 } from "./task-resources.js";
 export { parseExecutionEvidence } from "./execution-evidence.js";
 export { parseDockerMemoryBytes, startDockerResourceObserver } from "./docker-resource-observer.js";
 export type { DockerResourceObserver, DockerResourceObserverOptions } from "./docker-resource-observer.js";
@@ -13,7 +14,7 @@ export type { ExecutionLeaseHandle, ExecutionWorkerIdentity } from "./execution-
 export { runEval } from "./service.js";
 export { recoverLocalDockerEvalLeases } from "./recovery.js";
 export type { EvalLeaseRecoveryResult } from "./recovery.js";
-export type { EvalDockerResourceReaper, EvalExecutionPhase, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";
+export type { EvalDockerResourceReaper, EvalEnvironmentImageResolver, EvalExecutionPhase, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";
 export { inspectEval, listEvals } from "./records.js";
 export type { InspectedEval, ListedEval } from "./records.js";
 export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";

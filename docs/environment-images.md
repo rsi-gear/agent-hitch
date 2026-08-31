@@ -1,9 +1,11 @@
 # Environment image service
 
 Hitch's environment image service turns an explicit Docker build context into
-an immutable, verified manifest before backend execution. It is additive: the
-current Harbor adapter still uses its compatibility backend-build path until a
-version-specific digest-overlay canary is available.
+an immutable, verified manifest before backend execution. Fixed task,
+Verifier, and Compose registry references can be resolved before backend
+execution and injected into Harbor as immutable digest references. Build
+contexts keep their compatibility backend-build path until a safe build-stanza
+replacement and version canary are available.
 
 The service hashes every regular context file (path, content digest, executable
 bit), the Dockerfile, non-secret build arguments, platform, target, immutable
@@ -37,11 +39,19 @@ digest are verified before promotion. A later request for a mutable tag still
 resolves the tag again, so a moved tag creates a new content identity instead
 of returning a stale tag-based cache entry.
 
-Not yet wired into eval execution:
+Eval planning discovers fixed `docker_image` and Compose `image` references,
+persists successful resolutions in work-item `image_refs`, and persists every
+fallback reason separately. `prebuild-preferred` can fall back; a
+`prebuild-required` request fails before Harbor starts if any service cannot be
+prebuilt. Harbor's final Compose overlay replaces only exact discovered image
+references and the same mapping is reused by infrastructure retries.
 
-- Harbor task/Compose environment discovery and Dockerfile base-image
-  resolution;
-- version-canary-backed replacement of a Harbor build stanza with a digest;
+Remaining work:
+
+- Dockerfile base-image resolution and BuildKit planning for discovered build
+  contexts;
+- version-canary-backed removal of a Harbor/Compose build stanza after a
+  successful prebuild;
 - post-start verification of the actual trial container image digest;
 - image reference GC.
 
@@ -49,5 +59,5 @@ Successful, failed, and in-progress records have a stable `build_<id>` index.
 An authenticated daemon exposes them at `GET /v1/builds/{build-id}` together
 with the verified manifest when one has been promoted.
 
-Until those are implemented, status and result records must describe the
-existing path as `backend-build`, not `prebuilt`.
+Any unresolved or build-context path remains explicitly `backend-build`; it is
+never described as prebuilt.

@@ -103,6 +103,7 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
   const firstStatus = await scheduler.status(first);
   assert.equal(firstStatus?.control.requested_parallelism, 8);
   assert.equal(firstStatus?.control.admitted_parallelism, 2);
+  assert.equal(firstStatus?.execution?.build.mode, "prebuild-preferred");
   assert.equal((await scheduler.status(second))?.control.state, "queued");
   assert.equal((await readJSON<EvalRequest>(path.join(root, "evals", first, "request.json"))).max_concurrent, 8);
 

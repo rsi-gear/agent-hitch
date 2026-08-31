@@ -38,16 +38,37 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         *args: Any,
         hitch_ownership_labels: Mapping[str, str] | None = None,
         hitch_service_resource_limits: Mapping[str, Mapping[str, int]] | None = None,
+        hitch_resolved_images: Mapping[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
         self._hitch_ownership_labels = _validate_labels(hitch_ownership_labels)
         self._hitch_service_resource_limits = _validate_resource_limits(
             hitch_service_resource_limits
         )
+        self._hitch_resolved_images = _validate_resolved_images(hitch_resolved_images)
         self._hitch_ownership_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._hitch_ownership_compose_path: Path | None = None
-        super().__init__(*args, **kwargs)
-        if self._hitch_ownership_labels or self._hitch_service_resource_limits:
+        positional = list(args)
+        task_env_config = kwargs.get("task_env_config")
+        task_env_position: int | None = None
+        if task_env_config is None and len(positional) >= 5:
+            task_env_position = 4
+            task_env_config = positional[task_env_position]
+        if task_env_config is not None:
+            requested = getattr(task_env_config, "docker_image", None)
+            resolved = self._hitch_resolved_images.get(requested)
+            if resolved is not None:
+                updated = task_env_config.model_copy(update={"docker_image": resolved})
+                if task_env_position is None:
+                    kwargs["task_env_config"] = updated
+                else:
+                    positional[task_env_position] = updated
+        super().__init__(*positional, **kwargs)
+        if (
+            self._hitch_ownership_labels
+            or self._hitch_service_resource_limits
+            or self._hitch_resolved_images
+        ):
             self._hitch_ownership_compose_path = self._write_ownership_overlay()
 
     @property
@@ -65,6 +86,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         volumes: set[str] = set()
         external_networks: set[str] = set()
         external_volumes: set[str] = set()
+        image_overlays: dict[str, str] = {}
         sources = [self._environment_docker_compose_path, *self.extra_docker_compose_paths]
         for source in sources:
             if not source.exists():
@@ -75,6 +97,14 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             if not isinstance(document, dict):
                 raise ValueError(f"Docker Compose ownership source must be a mapping: {source}")
             services.update(_mapping_names(document.get("services"), "services", source))
+            for name, config in (document.get("services") or {}).items():
+                if isinstance(config, dict):
+                    reference = config.get("image")
+                    resolved = self._hitch_resolved_images.get(reference)
+                    if resolved is not None:
+                        image_overlays[name] = resolved
+                    elif reference is not None:
+                        image_overlays.pop(name, None)
             _collect_resources(document.get("networks"), networks, external_networks, "networks", source)
             _collect_resources(document.get("volumes"), volumes, external_volumes, "volumes", source)
 
@@ -84,6 +114,9 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             config: dict[str, Any] = {}
             if labels:
                 config["labels"] = labels
+            resolved_image = image_overlays.get(name)
+            if resolved_image is not None:
+                config["image"] = resolved_image
             if name != MAIN_SERVICE_NAME and self._hitch_service_resource_limits:
                 limits = self._hitch_service_resource_limits.get(name)
                 if limits is None:
@@ -185,3 +218,39 @@ def _validate_resource_limits(
             "memory_bytes": resources["memory_bytes"],
         }
     return dict(sorted(result.items()))
+
+
+def _validate_resolved_images(value: Mapping[str, str] | None) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("Hitch resolved image mapping is invalid")
+    result: dict[str, str] = {}
+    for requested, resolved in value.items():
+        if (
+            not _valid_image_reference(requested)
+            or not _valid_image_reference(resolved)
+            or re.search(r"@sha256:[a-f0-9]{64}$", resolved) is None
+            or _image_repository(requested) != _image_repository(resolved)
+        ):
+            raise ValueError("Hitch resolved image mapping is invalid")
+        result[requested] = resolved
+    return dict(sorted(result.items()))
+
+
+def _valid_image_reference(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= 1024
+        and not any(character.isspace() or character == "\x00" for character in value)
+        and "://" not in value
+        and "$" not in value
+    )
+
+
+def _image_repository(reference: str) -> str:
+    without_digest = reference.split("@", 1)[0]
+    slash = without_digest.rfind("/")
+    colon = without_digest.rfind(":")
+    return without_digest[:colon] if colon > slash else without_digest

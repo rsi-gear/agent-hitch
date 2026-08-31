@@ -3,7 +3,7 @@ import path from "node:path";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { EvalEventSink, newEvalId, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
-import type { EvalDockerResourceReaper, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
+import type { EvalDockerResourceReaper, EvalEnvironmentImageResolver, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 import { CollisionLockManager } from "./collisions.js";
@@ -15,6 +15,7 @@ import { workItemAdmission } from "./work-admission.js";
 import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker.js";
 import { recoverPersistedEvals } from "./eval-recovery.js";
 import { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
+import { localRegistryImageResolution } from "./eval-image-resolution.js";
 
 interface QueuedEval {
   evalId: EvalId;
@@ -45,6 +46,7 @@ export interface EvalSchedulerOptions {
   provider?: string;
   collisionDomainId?: string;
   dockerResourceReaper?: EvalDockerResourceReaper;
+  environmentImageResolver?: EvalEnvironmentImageResolver;
 }
 
 export interface SubmitEvalOptions {
@@ -82,13 +84,14 @@ export class EvalScheduler {
   private readonly collisions: CollisionLockManager;
   private readonly workItems: WorkItemDispatcher;
   private readonly dockerResourceReaper: EvalDockerResourceReaper;
+  private readonly environmentImageResolver: EvalEnvironmentImageResolver;
   private queue: QueuedEval[] = [];
   private active = new Map<EvalId, ActiveEval>();
   private completions = new Map<EvalId, Promise<void>>();
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources }: EvalSchedulerOptions) {
+  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver }: EvalSchedulerOptions) {
     this.root = root;
     this.evalsRoot = statePaths(root).evals;
     this.resources = resources;
@@ -102,6 +105,7 @@ export class EvalScheduler {
     this.collisions = collisions;
     this.workItems = new WorkItemDispatcher({ resources, collisions });
     this.dockerResourceReaper = dockerResourceReaper;
+    this.environmentImageResolver = environmentImageResolver ?? localRegistryImageResolution(root);
     this.unsubscribe = resources.subscribe(() => this.scheduleDrain());
     this.unsubscribeCollisions = collisions.subscribe(() => this.scheduleDrain());
   }
@@ -377,6 +381,8 @@ export class EvalScheduler {
       executionResources: entry.execution.resources.default_trial,
       executionResourceSource: "submission-default",
       executionStrategy: "local-task-slots-v1",
+      environmentBuildMode: entry.execution.build.mode,
+      environmentImageResolver: this.environmentImageResolver,
       executionWorker: {
         workerId: this.workerId,
         provider: entry.execution.provider,
@@ -430,7 +436,7 @@ export class EvalScheduler {
   private async recoverInterruptedEvals(): Promise<void> {
     const recovered = await recoverPersistedEvals({ root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent });
     for (const entry of recovered) {
-      const execution = entry.execution || defaultEvalExecutionPolicy(entry.request, { provider: this.provider, trialResources: this.trialResources });
+      const execution = entry.execution || defaultEvalExecutionPolicy(entry.request, { provider: this.provider, trialResources: this.trialResources, buildMode: "backend" });
       assertExecutionPolicySupported(execution, this.provider);
       this.queue.push(await this.queuedEval(entry.evalId, entry.request, execution, entry.directory, entry.resumeExisting));
     }

@@ -34,11 +34,19 @@ export interface EnvironmentImageManifestV1 {
 export interface EnvironmentImageUseV1 {
   task_ids: string[];
   image_id: Sha256;
+  requested_reference: string;
   reference: string;
   manifest_digest: Sha256;
   platform: string;
   resolution: "registry" | "prebuilt" | "backend-build";
   cache_hit: boolean;
+}
+
+export interface EnvironmentImageFallbackV1 {
+  task_id: string;
+  source: "task" | "verifier" | "compose";
+  service: string;
+  code: "backend-build" | "dynamic-image" | "policy-backend" | "resolver-unavailable" | "resolution-failed";
 }
 
 export interface EnvironmentBuildRecordV1 {

@@ -9,6 +9,7 @@ export function harborEnvironmentConfig(
   resources?: ResourceVectorV1,
   ownership?: DockerResourceOwnershipV1,
   serviceLimits?: HarborDockerServiceLimitsV1,
+  resolvedImages?: Record<string, string>,
 ): Record<string, unknown> {
   const environment: Record<string, unknown> = { type: "docker", delete: true };
   if (resources) {
@@ -23,14 +24,39 @@ export function harborEnvironmentConfig(
     if (memoryMb > 0) Object.assign(environment, { memory_enforcement_policy: "limit", override_memory_mb: memoryMb });
   }
   if (serviceLimits && !ownership) throw invalidInput("Harbor sidecar limits require Docker ownership");
-  if (ownership) Object.assign(environment, {
+  const images = resolvedImages ? parseResolvedImages(resolvedImages) : {};
+  if (ownership || Object.keys(images).length > 0) Object.assign(environment, {
     import_path: HITCH_DOCKER_ENVIRONMENT,
     kwargs: {
-      hitch_ownership_labels: harborOwnershipLabels(ownership),
+      ...(ownership ? { hitch_ownership_labels: harborOwnershipLabels(ownership) } : {}),
       ...(serviceLimits && Object.keys(serviceLimits).length > 0 ? { hitch_service_resource_limits: parseServiceLimits(serviceLimits) } : {}),
+      ...(Object.keys(images).length > 0 ? { hitch_resolved_images: images } : {}),
     },
   });
   return environment;
+}
+
+function parseResolvedImages(value: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [requested, resolved] of Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) {
+    if (!validImageReference(requested) || !validImageReference(resolved)
+      || !/@sha256:[a-f0-9]{64}$/.test(resolved) || repositoryOf(requested) !== repositoryOf(resolved)) {
+      throw invalidInput("Harbor resolved image mapping is invalid");
+    }
+    result[requested] = resolved;
+  }
+  return result;
+}
+
+function validImageReference(value: string): boolean {
+  return Boolean(value) && value.length <= 1_024 && !/[\s\0]/.test(value) && !value.includes("://") && !value.includes("$");
+}
+
+function repositoryOf(reference: string): string {
+  const withoutDigest = reference.split("@")[0] as string;
+  const slash = withoutDigest.lastIndexOf("/");
+  const colon = withoutDigest.lastIndexOf(":");
+  return colon > slash ? withoutDigest.slice(0, colon) : withoutDigest;
 }
 
 function parseServiceLimits(value: HarborDockerServiceLimitsV1): HarborDockerServiceLimitsV1 {

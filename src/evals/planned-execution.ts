@@ -19,6 +19,7 @@ import type { WorkItemAdmissionController } from "./service-types.js";
 import type { EvalDockerResourceReaper } from "./service-types.js";
 import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
+import { resolvedImageMapping } from "./environment-image-planning.js";
 
 export interface PlannedBackendRun {
   attempt: number;
@@ -142,6 +143,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       controllerRuntime: options.controllerRuntime,
       preparedArtifact: options.preparedArtifact,
       executionResources: resourceRequirementForTask(options.plan, completed.tasks[0] as string)?.main_limits ?? options.plan.default_trial_resources,
+      resolvedImages: resolvedImageMapping(options.plan.work_items.find((entry) => entry.work_id === completed.workId)?.image_refs ?? []),
       ...(options.localTransport ? { localTransport: options.localTransport } : {}),
       env: options.env,
       ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
@@ -277,6 +279,7 @@ async function executeLeasedWorkItem(
     executionResources: runtimeResources.mainLimits,
     ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
     dockerOwnership: ownership,
+    resolvedImages: resolvedImageMapping(item.image_refs ?? []),
     ...(options.localTransport ? { localTransport: options.localTransport } : {}),
     env: options.env,
     ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),

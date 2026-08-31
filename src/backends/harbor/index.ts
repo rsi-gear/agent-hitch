@@ -7,6 +7,6 @@ export { DEFAULT_LOCAL_GIT_TRANSPORT_LIMITS, LOCAL_GIT_TRANSPORT_MANIFEST, LOCAL
 export type { LocalGitTransportLimits, LocalGitTransportManifest, LocalGitTransportUse } from "./local-git-transport.js";
 export type { VerifiedLocalGitSource } from "../../domain/index.js";
 export { inspectHarborTaskResources, parseHarborTaskResourceDeclaration } from "./task-resources.js";
-export type { HarborTaskResourceDeclarationV1 } from "./task-resources.js";
+export type { HarborEnvironmentImageDeclarationV1, HarborEnvironmentImageFallbackV1, HarborTaskResourceDeclarationV1 } from "./task-resources.js";
 export { DEFAULT_HARBOR_VERSION, HARBOR_CREDENTIAL_ENV, doctorHarbor, locateHarbor, managedHarborExecutable, setupHarbor } from "./tools.js";
 export type { DoctorCheck, DoctorHarborOptions, DoctorResult, HarborLocation, LocateHarborOptions, HarborSetupResult, SetupHarborOptions } from "./tools.js";

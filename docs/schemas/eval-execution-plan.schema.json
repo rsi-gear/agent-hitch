@@ -31,6 +31,10 @@
       "type": "array",
       "items": { "$ref": "#/$defs/taskResources" }
     },
+    "image_fallbacks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/imageFallback" }
+    },
     "slots": {
       "type": "array",
       "items": {
@@ -72,7 +76,11 @@
           "opaque_membership": { "type": "boolean" },
           "requested_parallelism": { "type": "integer", "minimum": 1 },
           "reservation": { "$ref": "#/$defs/resources" },
-          "provider": { "type": "string", "minLength": 1 }
+          "provider": { "type": "string", "minLength": 1 },
+          "image_refs": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/imageUse" }
+          }
         }
       }
     },
@@ -111,6 +119,32 @@
         "value": { "type": "integer", "minimum": 0 },
         "source": { "enum": ["task", "compose", "submission-default", "operator-default", "provider-policy", "derived-components"] },
         "estimated": { "type": "boolean" }
+      }
+    },
+    "imageUse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_ids", "image_id", "requested_reference", "reference", "manifest_digest", "platform", "resolution", "cache_hit"],
+      "properties": {
+        "task_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "image_id": { "$ref": "#/$defs/sha256" },
+        "requested_reference": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "reference": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "manifest_digest": { "$ref": "#/$defs/sha256" },
+        "platform": { "type": "string", "minLength": 1 },
+        "resolution": { "enum": ["registry", "prebuilt", "backend-build"] },
+        "cache_hit": { "type": "boolean" }
+      }
+    },
+    "imageFallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "source", "service", "code"],
+      "properties": {
+        "task_id": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["task", "verifier", "compose"] },
+        "service": { "type": "string", "minLength": 1 },
+        "code": { "enum": ["backend-build", "dynamic-image", "policy-backend", "resolver-unavailable", "resolution-failed"] }
       }
     },
     "taskResources": {

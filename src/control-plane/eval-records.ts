@@ -42,13 +42,13 @@ export async function normalizeEvalSubmissionInput(
 
 export function defaultEvalExecutionPolicy(
   request: EvalRequest,
-  defaults: { provider: string; trialResources: ResourceVectorV1 },
+  defaults: { provider: string; trialResources: ResourceVectorV1; buildMode?: EvalExecutionPolicyV1["build"]["mode"] },
 ): EvalExecutionPolicyV1 {
   return parseEvalExecutionPolicy({
     provider: defaults.provider,
     max_parallelism: request.max_concurrent,
     resources: { default_trial: defaults.trialResources },
-    build: { mode: "backend" },
+    build: { mode: defaults.buildMode ?? "prebuild-preferred" },
     model_capture: { mode: "native", required: false },
   }, request);
 }
@@ -89,7 +89,6 @@ export function assertExecutionPolicySupported(policy: EvalExecutionPolicyV1, pr
   if (policy.provider !== provider) throw new HitchError(`execution provider is unavailable: ${policy.provider}`, { code: "execution_provider_unavailable", exitCode: 10 });
   if (policy.resources.setup) throw new HitchError("setup resource reservations are not supported by the local provider yet", { code: "execution_setup_resources_unsupported", exitCode: 10 });
   if (policy.build.remote_cache) throw new HitchError("remote build cache is not supported by the local image service yet", { code: "build_remote_cache_unsupported", exitCode: 10 });
-  if (policy.build.mode === "prebuild-required") throw new HitchError("prebuild-required needs task image planning before admission", { code: "environment_prebuild_unavailable", exitCode: 10 });
   if (policy.model_capture.mode === "proxy" || policy.model_capture.mode === "hybrid") {
     throw new HitchError(`${policy.model_capture.mode} model capture is unavailable`, { code: "model_capture_unsupported", exitCode: 10 });
   }
