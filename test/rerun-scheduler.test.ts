@@ -55,6 +55,31 @@ test("rerun scheduler persists a typed operation and waits for shared capacity",
   assert.deepEqual(ledger.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
 });
 
+test("collect-only runs without candidate resource or collision reservations", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-collect-scheduler-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID);
+  const ledger = new ResourceLedger(TRIAL);
+  const blocker = ledger.tryAcquire("running-candidate", "eval", TRIAL);
+  assert.ok(blocker);
+  let observed: RerunEvalOptions | undefined;
+  const scheduler = new EvalRerunScheduler({
+    root,
+    resources: ledger,
+    trialResources: TRIAL,
+    executor: async (options) => { observed = options; return completedResult(options); },
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "collect-only", selector: { mode: "invalid" } });
+  await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
+  assert.equal(observed?.rerunType, "collect-only");
+  assert.equal(observed?.maxConcurrentOverride, 1);
+  assert.deepEqual(observed?.executionResources, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
+  assert.deepEqual(ledger.snapshot().allocated, TRIAL);
+  blocker.release();
+});
+
 test("daemon rerun API preserves requested semantics and rejects unavailable resume", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-rerun-"));
   const server = new DaemonServer({
@@ -166,13 +191,8 @@ function completedResult(options: RerunEvalOptions): EvalRerunResult {
     schema_version: "1",
     kind: "eval-rerun",
     rerun_id: options.rerunId as string,
-    rerun_type: options.rerunType as "candidate-restart",
-    semantics: {
-      candidate_action: "restart",
-      conversation_source: "original-instruction",
-      sandbox_source: "clean",
-      candidate_executes: true,
-    },
+    rerun_type: options.rerunType as NonNullable<RerunEvalOptions["rerunType"]>,
+    semantics: evalRerunSemantics(options.rerunType as NonNullable<RerunEvalOptions["rerunType"]>),
     eval_id: options.evalId,
     status: "completed",
     selected_tasks: [],

@@ -1509,7 +1509,7 @@ ready -> offered -> accepted -> running -> releasing -> released
 | `candidate-resume` | 继续原 Candidate | provider-native session | 可验证 checkpoint | 保留；条件不满足时拒绝 |
 | `trajectory-replay` | 新 physical execution 重放上下文 | 已验证 canonical trajectory | 可验证 checkpoint | 保留；条件不满足时拒绝 |
 | `verifier-only` | 不执行 Candidate | 无 | 原 live/retained sandbox | 仅原环境仍可用时允许 |
-| `collect-only` | 不执行 Candidate | 无 | 无 | 用于 terminal-but-uncollected 导入恢复 |
+| `collect-only` | 不执行 Candidate | 无 | 无 | 已实现；仅导入 terminal-but-uncollected 原结果 |
 
 持久化的 rerun request、state、event 和 result 至少记录：
 
@@ -1534,6 +1534,8 @@ interface EvalRerunOperationV1 {
   source_checkpoint_digest?: `sha256:${string}`
 }
 ```
+
+`collect-only` 不是新的 physical execution，也不是轨迹续聊。它只能读取原 execution plan 中选中 Trial Slot 对应的隔离 work item，并从原 `work_id/lease_epoch` backend directory 导入已有 Harbor result。导入必须同时通过完整 bundle marker、Eval/Trial/Candidate/benchmark identity 和 verifier evidence 校验；成功后在 rerun state/result 中记录 `source_trial_id`、`source_run_id`、`source_work_id` 和 `source_backend_directory`。该类型不调用 Candidate/Harbor，不取得 Candidate 资源预留或 task collision mutex；缺少完整结果时返回 `eval_collect_only_result_unavailable`，不得退化为 `candidate-restart` 或仅凭历史 trajectory 构造成功结果。
 
 canonical trajectory 是审计证据，不是进程 checkpoint。把历史消息重新发送给 LLM 只能称为 `trajectory-replay`，不能称为透明 `candidate-resume`，因为轨迹不能单独恢复容器文件系统、后台进程、未完成 tool call、凭据句柄或 provider-native session。`trajectory-replay` 必须同时满足：trajectory 完整性验证通过、来源 lineage 明确、sandbox checkpoint 可恢复、Adapter 明确支持 context replay；否则返回 `eval_trajectory_replay_unavailable`。
 

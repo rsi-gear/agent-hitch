@@ -114,7 +114,7 @@ Usage:
 Eval:
   Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.
   Rerun type candidate-restart is supported and is the compatibility default.
-  candidate-resume, trajectory-replay, verifier-only, and collect-only fail explicitly until their recovery prerequisites exist.
+  collect-only imports an already-finished Harbor result without executing Candidate. candidate-resume, trajectory-replay, and verifier-only fail explicitly until their recovery prerequisites exist.
   Use 'hitch eval setup harbor' for an isolated managed install and 'hitch eval doctor' to verify it.
   Eval accepts exact version:, registered commit:, or full lowercase local git+file commit refs.
   Local Git evals transport only committed Git objects; the source repository must be clean.

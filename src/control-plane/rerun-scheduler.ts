@@ -15,7 +15,7 @@ import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, r
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
 import { evalCollisionKeys, isTerminalControl, parseEvalControl, parseEvalSubmission } from "./eval-records.js";
-import { ResourceLedger, scaleResources } from "./resources.js";
+import { ResourceLedger, scaleResources, zeroResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 
 export type EvalRerunExecutor = (options: RerunEvalOptions) => Promise<EvalRerunResult>;
@@ -98,7 +98,7 @@ export class EvalRerunScheduler {
     const evalId = validateEvalId(evalIdValue);
     const input = parseEvalRerunSubmissionInput(value);
     assertEvalRerunTypeSupported(input.rerun_type);
-    if (!this.resources.canEverFit(this.trialResources)) {
+    if (!this.resources.canEverFit(rerunResourceUnit(input.rerun_type, this.trialResources))) {
       throw new HitchError("one rerun trial exceeds the daemon resource capacity", { code: "resource_request_unsatisfiable", exitCode: 10 });
     }
     const source = await this.loadSource(evalId);
@@ -188,11 +188,12 @@ export class EvalRerunScheduler {
   private selectRunnable(): { index: number; parallelism: number; resources: ResourceLease; collisions: CollisionLease } | null {
     for (let index = 0; index < this.queue.length; index += 1) {
       const entry = this.queue[index] as QueuedRerun;
-      const parallelism = this.resources.maximumUnits(this.trialResources, entry.request.max_concurrent);
+      const unit = rerunResourceUnit(entry.rerunType, this.trialResources);
+      const parallelism = entry.rerunType === "collect-only" ? 1 : this.resources.maximumUnits(unit, entry.request.max_concurrent);
       if (parallelism < 1) continue;
       const collisions = this.collisions.tryAcquire(entry.rerunId, entry.collisionKeys);
       if (!collisions) continue;
-      const resources = this.resources.tryAcquire(entry.rerunId, "eval", scaleResources(this.trialResources, parallelism));
+      const resources = this.resources.tryAcquire(entry.rerunId, "eval", scaleResources(unit, parallelism));
       if (resources) return { index, parallelism, resources, collisions };
       collisions.release();
     }
@@ -229,7 +230,7 @@ export class EvalRerunScheduler {
       selector: entry.selector,
       root: this.root,
       maxConcurrentOverride: parallelism,
-      executionResources: this.trialResources,
+      executionResources: rerunResourceUnit(entry.rerunType, this.trialResources),
       signal: controller.signal,
     });
     await atomicWriteJSON(path.join(entry.directory, "result.json"), result);
@@ -302,7 +303,7 @@ export class EvalRerunScheduler {
       selector,
       request,
       directory,
-      collisionKeys: await evalCollisionKeys(request, this.collisionDomainId),
+      collisionKeys: rerunType === "collect-only" ? [] : await evalCollisionKeys(request, this.collisionDomainId),
     };
   }
 
@@ -403,4 +404,8 @@ function errorCode(error: unknown): string {
 function boundedMessage(error: unknown): string {
   const message = (error as Error)?.message || String(error);
   return message.slice(0, 4_096);
+}
+
+function rerunResourceUnit(type: EvalRerunType, trialResources: ResourceVectorV1): ResourceVectorV1 {
+  return type === "collect-only" ? zeroResources() : trialResources;
 }

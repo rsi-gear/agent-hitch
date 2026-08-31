@@ -23,6 +23,7 @@
     "selected_trials": { "type": "array", "items": { "$ref": "#/$defs/trial" } },
     "repaired_trials": { "type": "array", "items": { "$ref": "#/$defs/trial" } },
     "remaining_invalid_trials": { "type": "array", "items": { "$ref": "#/$defs/trial" } },
+    "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
     "eval_status": { "enum": ["succeeded", "failed"] },
     "started_at": { "type": "string", "format": "date-time" },
     "completed_at": { "type": "string", "format": "date-time" }
@@ -35,6 +36,17 @@
       "properties": {
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_trial_id", "source_run_id", "source_work_id", "source_backend_directory"],
+      "properties": {
+        "source_trial_id": { "type": "string", "minLength": 1 },
+        "source_run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+        "source_work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
+        "source_backend_directory": { "type": "string", "pattern": "^harbor/work-items/work_[a-f0-9]{32}/epoch-[0-9]{6}$" }
       }
     }
   }

@@ -47,6 +47,12 @@ export interface EvalRerunResult {
   selected_trials: Array<{ task_id: string; attempt: number }>;
   repaired_trials: Array<{ task_id: string; attempt: number }>;
   remaining_invalid_trials: Array<{ task_id: string; attempt: number }>;
+  sources?: Array<{
+    source_trial_id: string;
+    source_run_id: string;
+    source_work_id: string;
+    source_backend_directory: string;
+  }>;
   eval_status: "succeeded" | "failed";
   started_at: string;
   completed_at: string;
@@ -75,8 +81,8 @@ export function evalRerunSemantics(type: EvalRerunType): EvalRerunSemanticsV1 {
 }
 
 export function assertEvalRerunTypeSupported(type: EvalRerunType): void {
-  if (type === "candidate-restart") return;
-  const unavailable: Record<Exclude<EvalRerunType, "candidate-restart">, { code: string; message: string }> = {
+  if (type === "candidate-restart" || type === "collect-only") return;
+  const unavailable: Record<Exclude<EvalRerunType, "candidate-restart" | "collect-only">, { code: string; message: string }> = {
     "candidate-resume": {
       code: "eval_candidate_resume_unavailable",
       message: "candidate-resume requires both a restorable sandbox checkpoint and adapter-native session resume; the current Harbor execution does not retain both",
@@ -88,10 +94,6 @@ export function assertEvalRerunTypeSupported(type: EvalRerunType): void {
     "verifier-only": {
       code: "eval_verifier_only_rerun_unavailable",
       message: "verifier-only requires the original retained sandbox; current verifier retries run only while that sandbox is live",
-    },
-    "collect-only": {
-      code: "eval_collect_only_unavailable",
-      message: "collect-only recovery is not exposed as a rerun operation yet",
     },
   };
   const failure = unavailable[type];

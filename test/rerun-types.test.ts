@@ -35,13 +35,13 @@ test("eval rerun types have explicit candidate, conversation, and sandbox semant
   });
 });
 
-test("only candidate-restart is executable until resume prerequisites exist", () => {
+test("restart and collection are executable while resume prerequisites remain explicit", () => {
   assert.doesNotThrow(() => assertEvalRerunTypeSupported("candidate-restart"));
+  assert.doesNotThrow(() => assertEvalRerunTypeSupported("collect-only"));
   const expected = new Map([
     ["candidate-resume", "eval_candidate_resume_unavailable"],
     ["trajectory-replay", "eval_trajectory_replay_unavailable"],
     ["verifier-only", "eval_verifier_only_rerun_unavailable"],
-    ["collect-only", "eval_collect_only_unavailable"],
   ]);
   for (const [type, code] of expected) {
     assert.throws(

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1249,6 +1249,108 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
   }), (error: unknown) => (error as { code?: string }).code === "eval_rerun_id_conflict");
 });
 
+test("collect-only imports a late terminal result without executing the candidate again", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-collect-only-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  const taskId = "task-late-result";
+  await mkdir(path.join(dataset, taskId), { recursive: true });
+  await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  const normalized = await validateEvalRequest(evalRequest({ dataset }));
+  const trialId = "task-late-result__original";
+  const runId = "run_99999999999999999999999999999999";
+  const exportedBundle = path.join(root, "late-run-bundle");
+  await writeExportedEvalRunBundle({
+    bundle: exportedBundle,
+    runId,
+    evalId,
+    trialId,
+    taskId,
+    benchmarkId: normalized.benchmark_id,
+    benchmarkRevision: normalized.benchmark_revision,
+  });
+  const harbor = await writeLateResultFakeHarbor(root, { taskId, trialId });
+  const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  const initial = await runEval({
+    evalId,
+    root,
+    harborExecutable: harbor,
+    env,
+    executionStrategy: "local-task-slots-v1",
+    trialBundleGraceMs: 0,
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      timeout_ms: 5_000,
+      infrastructure_retries: 0,
+    },
+  });
+  assert.equal(initial.status, "failed");
+  assert.equal(await readFile(path.join(root, "fake-harbor-late-result.count"), "utf8"), "1");
+
+  const evalDirectory = path.join(root, "evals", evalId);
+  const executionPlan = await readJSON<{
+    work_items: Array<{ work_id: string; task_ids: string[] }>;
+  }>(path.join(evalDirectory, "execution-plan.json"));
+  const work = executionPlan.work_items.find((item) => item.task_ids[0] === taskId);
+  assert.ok(work);
+  const sourceEpoch = path.join(evalDirectory, "harbor", "work-items", work.work_id, "epoch-000001");
+  const trialDirectory = path.join(sourceEpoch, "job", trialId);
+  await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+  await cp(exportedBundle, path.join(trialDirectory, "agent", "hitch-run-bundle"), { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "result.json"), {
+    task_name: taskId,
+    trial_name: trialId,
+    verifier_result: { rewards: { reward: 0.75 } },
+  });
+
+  const rerun = await rerunEval({
+    evalId,
+    rerunId: "rerun_99999999999999999999999999999999",
+    rerunType: "collect-only",
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    env,
+  });
+  assert.equal(rerun.rerun_type, "collect-only");
+  assert.deepEqual(rerun.semantics, {
+    candidate_action: "none",
+    conversation_source: "none",
+    sandbox_source: "none",
+    candidate_executes: false,
+  });
+  assert.deepEqual(rerun.repaired_trials, [{ task_id: taskId, attempt: 1 }]);
+  assert.equal(rerun.eval_status, "succeeded");
+  assert.deepEqual(rerun.sources, [{
+    source_trial_id: trialId,
+    source_run_id: runId,
+    source_work_id: work.work_id,
+    source_backend_directory: `harbor/work-items/${work.work_id}/epoch-000001`,
+  }]);
+  assert.equal(await readFile(path.join(root, "fake-harbor-late-result.count"), "utf8"), "1");
+  await assert.rejects(
+    stat(path.join(evalDirectory, "reruns", rerun.rerun_id, "harbor", "job.json")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
+  const final = await readJSON<{ status: string; trials: Array<{ run_id: string; reward?: number }> }>(path.join(evalDirectory, "result.json"));
+  assert.equal(final.status, "succeeded");
+  assert.deepEqual(final.trials, [{
+    trial_id: trialId,
+    run_id: runId,
+    task_id: taskId,
+    attempt: 1,
+    observation_status: "valid",
+    reward: 0.75,
+    verifier_result_ref: "verifier/result.json",
+  }]);
+  const state = await readJSON<{ sources: unknown[] }>(path.join(evalDirectory, "reruns", rerun.rerun_id, "state.json"));
+  assert.deepEqual(state.sources, rerun.sources);
+});
+
 test("multi-attempt rerun repairs only invalid logical slots", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-multi-rerun-"));
   t.after(() => forceRemove(root));
@@ -1682,6 +1784,46 @@ if (Array.isArray(selected)) {
     stats: {n_completed_trials:1,n_errored_trials:1,n_cancelled_trials:0}
   }));
 }
+process.stdout.write("Results written\\n");
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeLateResultFakeHarbor(directory: string, options: {
+  taskId: string;
+  trialId: string;
+}): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-late-result");
+  const count = path.join(directory, "fake-harbor-late-result.count");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("harbor 0.21.0\\n");
+  process.exit(0);
+}
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const countFile = ${JSON.stringify(count)};
+const previous = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, "utf8")) : 0;
+fs.writeFileSync(countFile, String(previous + 1));
+const output = path.join(config.jobs_dir, config.job_name);
+const trialDirectory = path.join(output, ${JSON.stringify(options.trialId)});
+fs.mkdirSync(path.join(trialDirectory, "agent"), {recursive:true});
+fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:${JSON.stringify(options.taskId)}}}));
+fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+  task_name: ${JSON.stringify(options.taskId)},
+  trial_name: ${JSON.stringify(options.trialId)},
+  exception_info: {exception_type:"AgentTimeoutError"},
+  verifier_result: {rewards:{reward:0}}
+}));
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials: 1,
+  stats: {n_completed_trials:0,n_errored_trials:1,n_cancelled_trials:0}
+}));
 process.stdout.write("Results written\\n");
 `;
   await writeFile(executable, source, { mode: 0o755 });

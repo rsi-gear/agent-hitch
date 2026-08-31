@@ -29,7 +29,7 @@ import {
 import type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 import { summarizeTrialRefs } from "./service.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
-
+import { collectOnlyEvalRerun } from "./collect-only-rerun.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 interface RerunPlan {
@@ -80,7 +80,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   validateProgressPlan(progress, plan, request, options.evalId);
   const previousResult = await readJSON<Record<string, unknown> | null>(path.join(options.evalDirectory, "result.json"), null);
   if (previousResult?.status === "cancelled") throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 2 });
-  const selectedTrials = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector);
+  const selectedTrials = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector, { allowVerifierFailures: options.rerunType === "collect-only" });
   const selectedTasks = uniqueTasks(selectedTrials);
   await atomicWriteJSON(path.join(rerunDirectory, "request.json"), {
     schema_version: SCHEMA_VERSION,
@@ -109,6 +109,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   const repaired = new Map<string, EvalTrialSlot>();
   const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
   try {
+    if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
     if (selectedTrials.length > 0) {
       const resolvedRevision = await loadResolvedRevision(options.evalDirectory, plan);
       const preparedArtifact = await loadRerunArtifact(options.root, plan);
