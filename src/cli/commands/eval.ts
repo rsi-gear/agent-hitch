@@ -1,18 +1,23 @@
 import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "../../backends/index.js";
 import { inspectEval, listEvals, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
-import { SCHEMA_VERSION, invalidInput } from "../../foundation/index.js";
+import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
+import { HitchError, SCHEMA_VERSION, invalidInput } from "../../foundation/index.js";
 import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
+import { waitForDaemonEval } from "../output.js";
 
 export async function evalCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();
   switch (action) {
     case "run": return evalRunCommand(args, root);
+    case "submit": return evalSubmitCommand(args, root);
+    case "watch": return evalWatchCommand(args, root);
+    case "cancel": return evalCancelCommand(args, root);
     case "rerun": return evalRerunCommand(args, root);
     case "list": return evalListCommand(args, root);
     case "inspect": return evalInspectCommand(args, root);
     case "setup": return evalSetupCommand(args, root);
     case "doctor": return evalDoctorCommand(args, root);
-    default: throw invalidInput("eval requires run, rerun, list, inspect, setup, or doctor");
+    default: throw invalidInput("eval requires run, submit, watch, cancel, rerun, list, inspect, setup, or doctor");
   }
 }
 
@@ -90,12 +95,34 @@ async function evalDoctorCommand(args: string[], root: string): Promise<void> {
 }
 
 async function evalRunCommand(args: string[], root: string): Promise<void> {
+  const useDaemon = takeFlag(args, "--daemon");
+  const idempotencyKey = takeOption(args, "--idempotency-key");
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
   const requestedEvalId = takeOption(args, "--eval-id");
   const request = parseEvalRequest(args);
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
+  if (useDaemon) {
+    if (requestedEvalId !== undefined) throw invalidInput("--eval-id is unavailable with --daemon; submission IDs are server-assigned");
+    if (harborExecutable !== undefined) throw invalidInput("--harbor is unavailable with --daemon; configure Harbor for the daemon environment");
+    const client = await daemonClient(root);
+    const accepted = await client.request("/v1/evals", {
+      method: "POST",
+      body: JSON.stringify(request),
+      ...(idempotencyKey ? { headers: { "idempotency-key": idempotencyKey } } : {}),
+    });
+    const result = await waitForDaemonEval(client, accepted.eval_id as string, output);
+    process.exitCode = result.exit_code as number;
+    return;
+  }
+  if (idempotencyKey !== undefined) throw invalidInput("--idempotency-key requires --daemon");
+  if ((await probeDaemonHealth(root))?.status === "running") {
+    throw new HitchError("the daemon controls this root; use hitch eval run --daemon or a separate --root", {
+      code: "control_plane_active",
+      exitCode: 2,
+    });
+  }
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
@@ -115,6 +142,39 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
   }
+}
+
+async function evalSubmitCommand(args: string[], root: string): Promise<void> {
+  const idempotencyKey = takeOption(args, "--idempotency-key");
+  const request = parseEvalRequest(args);
+  assertNoArgs(args);
+  const client = await daemonClient(root);
+  const accepted = await client.request("/v1/evals", {
+    method: "POST",
+    body: JSON.stringify(request),
+    ...(idempotencyKey ? { headers: { "idempotency-key": idempotencyKey } } : {}),
+  });
+  process.stdout.write(`${JSON.stringify(accepted, null, 2)}\n`);
+}
+
+async function evalWatchCommand(args: string[], root: string): Promise<void> {
+  const output = takeOption(args, "--output") || "jsonl";
+  const evalIdValue = args.shift();
+  if (!evalIdValue) throw invalidInput("eval watch requires an eval ID");
+  const evalId = validateEvalId(evalIdValue);
+  assertNoArgs(args);
+  if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
+  const result = await waitForDaemonEval(await daemonClient(root), evalId, output);
+  process.exitCode = result.exit_code as number;
+}
+
+async function evalCancelCommand(args: string[], root: string): Promise<void> {
+  const evalIdValue = args.shift();
+  if (!evalIdValue) throw invalidInput("eval cancel requires an eval ID");
+  const evalId = validateEvalId(evalIdValue);
+  assertNoArgs(args);
+  const result = await (await daemonClient(root)).request(`/v1/evals/${evalId}/cancel`, { method: "POST" });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
 async function evalListCommand(args: string[], root: string): Promise<void> {
@@ -146,7 +206,7 @@ async function evalInspectCommand(args: string[], root: string): Promise<void> {
     return;
   }
   const result = evaluation.result;
-  process.stdout.write(`${evaluation.eval_id}: ${result?.status || "running"}\n`);
+  process.stdout.write(`${evaluation.eval_id}: ${result?.status || evaluation.control?.state || "running"}\n`);
   process.stdout.write(`  dataset: ${evaluation.request?.dataset}\n`);
   process.stdout.write(`  harness: ${(evaluation.plan?.candidate as Record<string, unknown>)?.harness_ref || evaluation.request?.harness_ref}\n`);
   process.stdout.write(`  primary reward: ${(result?.summary as Record<string, unknown>)?.primary_reward ?? "-"}\n`);

@@ -7,5 +7,8 @@ export * from "./controller-runtime.js";
 export * from "./revisions.js";
 export * from "./artifacts.js";
 export * from "./workspaces.js";
+export * from "./resources.js";
+export * from "./control-plane.js";
+export * from "./bundles.js";
 export * from "./validation.js";
 export type { EvalRequest } from "./evals.js";

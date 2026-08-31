@@ -14,6 +14,45 @@ hitch eval run \
   --setup-timeout 30m
 ```
 
+## Shared daemon control plane
+
+When several evals share one Docker host, start one Hitch daemon and submit the
+evals through it. Runs and Harbor trials then use the same vector resource
+ledger; the daemon lowers each eval's effective Harbor parallelism to the
+currently available CPU, memory, and container capacity instead of allowing
+independent `--max-concurrent` values to oversubscribe the host.
+
+```bash
+hitch daemon start --max-concurrent 8
+
+# Submit and wait for the terminal result.
+hitch eval run --daemon \
+  --dataset terminal-bench@2.0 \
+  --harness codex@version:0.92.0 \
+  --max-concurrent 8
+
+# Or decouple submission from observation.
+hitch eval submit \
+  --dataset terminal-bench@2.0 \
+  --harness codex@version:0.92.0 \
+  --max-concurrent 8 \
+  --idempotency-key nightly-terminal-bench
+hitch eval watch eval_<id>
+hitch eval cancel eval_<id>
+```
+
+The idempotency key is scoped to the Hitch state root. Reusing it with the same
+normalized request returns the original eval ID; reusing it with a different
+request fails with `idempotency_conflict`. A direct Harbor eval is rejected
+while a daemon owns the same root so it cannot bypass the shared quota. Use a
+separate `--root` when deliberate isolation is required.
+
+The initial local provider uses conservative logical reservations per Harbor
+trial (one CPU, 1 GiB memory, and one container slot). These reservations bound
+admission; they do not yet configure Docker cgroup limits or inspect live host
+memory. The complete target architecture and its later provider/build/cache
+phases are specified in `hitch-harbor-control-plane-spec.zh-CN.md`.
+
 ## Setup and diagnostics
 
 Hitch can install its pinned Harbor version into its own state directory:
@@ -156,6 +195,8 @@ Each eval is stored at `~/.hitch/evals/eval_<id>/` (or below `--root`):
 
 ```text
 request.json
+submission.json               # daemon admission envelope and request digest
+control.json                  # queued/running/cancelling/terminal control state
 resolution.json
 plan.json
 runtime.ref.json
@@ -174,6 +215,10 @@ harbor/
     stderr.log
     job/result.json
 ```
+
+Every sealed run bundle also contains `bundle.index.json`, which lists the
+canonical relative path, role, size, and SHA-256 digest of every retained file.
+`verifyResultBundleIndex` detects later file mutation, addition, or removal.
 
 `result.json` includes the benchmark identity and one `run_id` reference per
 trial. Every referenced run is published through the ordinary

@@ -1,5 +1,6 @@
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
+import { open, stat } from "node:fs/promises";
 import path from "node:path";
 import type { EvalId } from "../domain/index.js";
 import { SCHEMA_VERSION, ensureDir } from "../foundation/index.js";
@@ -21,6 +22,7 @@ export class EvalEventSink {
 
   async open(): Promise<void> {
     await ensureDir(path.dirname(this.path));
+    this.sequence = await lastCommittedSequence(this.path);
     this.stream = createWriteStream(this.path, { flags: "a", mode: 0o600 });
     this.stream.on("error", (error: Error) => { this.streamError ||= error; });
   }
@@ -44,6 +46,34 @@ export class EvalEventSink {
     try { await closeStream(this.stream); } catch (error) { failure ||= error as Error; }
     failure ||= this.streamError;
     if (failure) throw failure;
+  }
+}
+
+async function lastCommittedSequence(file: string): Promise<number> {
+  let size: number;
+  try {
+    size = (await stat(file)).size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  if (size === 0) return 0;
+  const handle = await open(file, "r");
+  try {
+    const length = Math.min(size, 64 * 1024);
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, size - length);
+    const committed = buffer.subarray(0, bytesRead).toString("utf8").replace(/[^\n]*$/, "");
+    const lines = committed.trimEnd().split("\n");
+    const last = lines.at(-1);
+    if (!last) return 0;
+    const parsed = JSON.parse(last) as { sequence?: unknown };
+    if (!Number.isSafeInteger(parsed.sequence) || (parsed.sequence as number) < 0) {
+      throw new TypeError("eval event sequence is invalid");
+    }
+    return parsed.sequence as number;
+  } finally {
+    await handle.close();
   }
 }
 

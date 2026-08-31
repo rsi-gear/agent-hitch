@@ -1,13 +1,12 @@
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../artifacts/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, statePaths } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import { ensureControllerRuntime, writeRuntimeReference } from "../controller-runtime/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { EvalId, EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
+import type { EvalId, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { EvalEventSink } from "./events.js";
 import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
@@ -16,6 +15,7 @@ import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 import { invalidTrialSlots } from "./rerun-slots.js";
 import type { EvalRequestInput } from "./request.js";
+import { prepareEvalDirectory } from "./directory.js";
 export interface RunEvalOptions {
   evalId?: EvalId;
   request: EvalRequestInput;
@@ -25,8 +25,13 @@ export interface RunEvalOptions {
   signal?: AbortSignal;
   onEvent?: (event: Record<string, unknown>) => void;
   trialBundleGraceMs?: number;
+  /** Internal control-plane handoff for an eval directory created at admission. */
+  precreated?: boolean;
+  /** Internal normalized request paired with precreated request.json. */
+  normalizedRequest?: EvalRequest;
+  /** Internal control-plane grant; request.json retains the requested cap. */
+  maxConcurrentOverride?: number;
 }
-
 export interface EvalResult extends Record<string, unknown> {
   schema_version: string;
   eval_id: EvalId;
@@ -36,24 +41,19 @@ export interface EvalResult extends Record<string, unknown> {
   started_at: string;
   completed_at: string;
 }
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
-  const normalized = await validateEvalRequest(request);
-  const evalsDirectory = await ensureDir(statePaths(root).evals);
-  const evalDirectory = path.join(evalsDirectory, evalId);
-  try {
-    await mkdir(evalDirectory, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new HitchError(`eval ID already exists: ${evalId}`, { code: "eval_id_conflict", exitCode: 2 });
-    }
-    throw error;
+  const persistedRequest = normalizedRequest || await validateEvalRequest(request);
+  if (maxConcurrentOverride !== undefined && (!Number.isSafeInteger(maxConcurrentOverride) || maxConcurrentOverride < 1 || maxConcurrentOverride > persistedRequest.max_concurrent)) {
+    throw invalidInput("control-plane max concurrency override is invalid");
   }
+  const normalized = maxConcurrentOverride === undefined ? persistedRequest : { ...persistedRequest, max_concurrent: maxConcurrentOverride };
+  const evalsDirectory = await ensureDir(statePaths(root).evals);
+  const evalDirectory = await prepareEvalDirectory({ evalsDirectory, evalId, request: persistedRequest, precreated });
   const startedAt = new Date();
   const sink = new EvalEventSink(evalDirectory, evalId, onEvent);
   await sink.open();
-  await atomicWriteJSON(path.join(evalDirectory, "request.json"), normalized);
   let result: EvalResult;
   let trialRefs: import("../domain/index.js").EvalTrialRefV1[] = [];
   let progress: EvalProgressV1 | null = null;

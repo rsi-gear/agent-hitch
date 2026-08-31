@@ -23,6 +23,7 @@
     "./artifacts": "./dist/src/artifacts/index.js",
     "./backends": "./dist/src/backends/index.js",
     "./controller-runtime": "./dist/src/controller-runtime/index.js",
+    "./control-plane": "./dist/src/control-plane/index.js",
     "./daemon": "./dist/src/daemon/index.js",
     "./domain": "./dist/src/domain/index.js",
     "./evals": "./dist/src/evals/index.js",

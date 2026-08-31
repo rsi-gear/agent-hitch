@@ -31,6 +31,7 @@ import type { RunRequestInput } from "./request.js";
 import { buildManifest, safeAgentArgsForPersistence } from "./manifest.js";
 import { assertQueuedRunIdentity } from "./queued.js";
 import { adapterFidelity, failureResult, mergeRedactions, providerModelId } from "./outcome.js";
+import { writeResultBundleIndex } from "./bundle.js";
 export interface ExecuteRunOptions {
   runId: RunId;
   request: RunRequestInput;
@@ -484,14 +485,16 @@ export async function executeRun({
             : "infrastructure_failure",
       }
     : undefined;
-  await atomicWriteJSON(manifestPath, {
+  const terminalManifest = {
     ...manifest,
     status: terminalStatus,
     result_ref: "result.json",
     ...(observation ? { observation } : {}),
     completed_at: (result as { completed_at?: string }).completed_at,
     sealed: !normalized.defer_benchmark_observation,
-  });
+  };
+  await atomicWriteJSON(manifestPath, terminalManifest);
+  if (terminalManifest.sealed) await writeResultBundleIndex(runDirectory);
   return result;
 }
 export type { NormalizedEvent };

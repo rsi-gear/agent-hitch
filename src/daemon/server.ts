@@ -5,9 +5,11 @@ import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
+import { EvalScheduler, ResourceLedger } from "../control-plane/index.js";
+import type { EvalSchedulerOptions } from "../control-plane/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
-import type { RunId } from "../domain/index.js";
+import type { EvalId, ResourceVectorV1, RunId } from "../domain/index.js";
 import { acquireInstanceLock, authorized, ensureToken, releaseInstanceLock } from "./auth.js";
 
 export interface DaemonServerOptions {
@@ -16,6 +18,10 @@ export interface DaemonServerOptions {
   maxConcurrent: number;
   logger?: (type: string, fields: Record<string, unknown>) => void;
   discoverHarnesses?: () => Promise<unknown[]>;
+  resourceCapacity?: ResourceVectorV1;
+  runResources?: ResourceVectorV1;
+  evalTrialResources?: ResourceVectorV1;
+  evalExecutor?: EvalSchedulerOptions["executor"];
 }
 
 export class DaemonServer {
@@ -35,9 +41,15 @@ export class DaemonServer {
   private token: string | undefined;
   private agents: unknown[] | undefined;
   private scheduler: Scheduler | undefined;
+  private evalScheduler: EvalScheduler | undefined;
+  private resources: ResourceLedger | undefined;
   private server: ReturnType<typeof createServer> | undefined;
+  private readonly resourceCapacity: ResourceVectorV1;
+  private readonly runResources: ResourceVectorV1;
+  private readonly evalTrialResources: ResourceVectorV1;
+  private readonly evalExecutor: EvalSchedulerOptions["executor"] | undefined;
 
-  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [] }: DaemonServerOptions) {
+  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor }: DaemonServerOptions) {
     this.paths = statePaths(root);
     this.rootId = createHash("sha256").update(this.paths.root).digest("hex").slice(0, 24);
     this.instanceId = randomBytes(16).toString("hex");
@@ -45,6 +57,10 @@ export class DaemonServer {
     this.maxConcurrent = maxConcurrent;
     this.logger = logger;
     this.discoverHarnesses = discoverHarnesses;
+    this.resourceCapacity = resourceCapacity || defaultResourceCapacity(maxConcurrent);
+    this.runResources = runResources || { cpu_millis: 1_000, memory_bytes: 512 * 1024 * 1024, container_slots: 0, build_slots: 0 };
+    this.evalTrialResources = evalTrialResources || { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 };
+    this.evalExecutor = evalExecutor;
     this.startedAt = new Date();
     this.closedPromise = new Promise((resolve) => { this.resolveClosed = resolve; });
   }
@@ -60,13 +76,24 @@ export class DaemonServer {
     try {
       this.token = await ensureToken(this.paths.token);
       this.agents = await this.discoverHarnesses();
+      this.resources = new ResourceLedger(this.resourceCapacity);
       this.scheduler = new Scheduler({
         runsRoot: this.paths.runs,
         root: this.paths.root,
         maxConcurrent: this.maxConcurrent,
+        resources: this.resources,
+        runResources: this.runResources,
         onEvent: (event) => this.logger("event", { type: event.type, run_id: event.run_id }),
       });
       await this.scheduler.initialize();
+      this.evalScheduler = new EvalScheduler({
+        root: this.paths.root,
+        resources: this.resources,
+        trialResources: this.evalTrialResources,
+        ...(this.evalExecutor ? { executor: this.evalExecutor } : {}),
+        onEvent: (event) => this.logger("event", { type: event.type, eval_id: event.eval_id }),
+      });
+      await this.evalScheduler.initialize();
 
       this.server = createServer((request, response) => {
         this.handle(request, response).catch((error) => {
@@ -103,7 +130,10 @@ export class DaemonServer {
       return this;
     } catch (error) {
       if (this.server?.listening) await new Promise<void>((resolve) => this.server?.close(() => resolve()));
-      await this.scheduler?.shutdown().catch(() => {});
+      await Promise.all([
+        this.scheduler?.shutdown().catch(() => {}),
+        this.evalScheduler?.shutdown().catch(() => {}),
+      ]);
       await releaseInstanceLock(this.paths.lock, this.instanceId);
       this.ownsLock = false;
       throw error;
@@ -116,7 +146,7 @@ export class DaemonServer {
     this.ready = false;
     let failure: Error | undefined;
     try {
-      await this.scheduler?.shutdown();
+      await Promise.all([this.scheduler?.shutdown(), this.evalScheduler?.shutdown()]);
       if (this.server) await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     } catch (error) {
       failure = error as Error;
@@ -157,10 +187,41 @@ export class DaemonServer {
       const runId = await this.scheduler?.submit(requestBody as RunRequestInput);
       return json(response, 202, { schema_version: SCHEMA_VERSION, run_id: runId, status: "queued" });
     }
+    if (request.method === "POST" && url.pathname === "/v1/evals") {
+      const requestBody = await readBodyJSON(request);
+      const header = request.headers["idempotency-key"];
+      if (Array.isArray(header)) throw invalidInput("idempotency-key header must appear once");
+      const evalId = await this.evalScheduler?.submit(requestBody as EvalRequestInput, header ? { idempotencyKey: header } : {});
+      return json(response, 202, { schema_version: SCHEMA_VERSION, eval_id: evalId, status: "queued" });
+    }
     if (request.method === "POST" && url.pathname === "/shutdown") {
       json(response, 202, { schema_version: SCHEMA_VERSION, status: "shutting_down" });
       setImmediate(() => this.close().catch((error) => this.logger("shutdown_error", { error: (error as Error).message })));
       return;
+    }
+
+    const evalMatch = url.pathname.match(/^\/v1\/evals\/(eval_[a-f0-9]+)(?:\/(events|cancel))?$/);
+    if (evalMatch) {
+      const [, evalId, action] = evalMatch;
+      if (request.method === "GET" && !action) {
+        const status = await this.evalScheduler?.status(evalId as EvalId);
+        return status
+          ? json(response, 200, { schema_version: SCHEMA_VERSION, eval_id: evalId, ...status })
+          : json(response, 404, { error: { code: "eval_not_found", message: `eval not found: ${evalId}` } });
+      }
+      if (request.method === "GET" && action === "events") {
+        return this.streamEvents(response, path.join(this.paths.evals, evalId as string, "events.jsonl"), url.searchParams.get("offset") || "0");
+      }
+      if (request.method === "POST" && action === "cancel") {
+        const outcome = await this.evalScheduler?.cancel(evalId as EvalId);
+        if (outcome === "accepted") return json(response, 202, { schema_version: SCHEMA_VERSION, eval_id: evalId, status: "cancelling" });
+        if (outcome === "terminal") {
+          const status = await this.evalScheduler?.status(evalId as EvalId);
+          return json(response, 200, { schema_version: SCHEMA_VERSION, eval_id: evalId, status: status?.control.state || "terminal" });
+        }
+        if (outcome === "not_found") return json(response, 404, { error: { code: "eval_not_found", message: `eval not found: ${evalId}` } });
+        return json(response, 409, { error: { code: "not_cancellable", message: "eval is not queued or running" } });
+      }
     }
 
     const runMatch = url.pathname.match(/^\/v1\/runs\/(run_[a-f0-9]+)(?:\/(events|cancel))?$/);
@@ -173,40 +234,7 @@ export class DaemonServer {
           : json(response, 404, { error: { code: "run_not_found", message: `run not found: ${runId}` } });
       }
       if (request.method === "GET" && action === "events") {
-        const offsetValue = url.searchParams.get("offset") || "0";
-        if (!/^\d+$/.test(offsetValue)) throw invalidInput("events offset must be a non-negative integer");
-        const offset = Number(offsetValue);
-        if (!Number.isSafeInteger(offset)) throw invalidInput("events offset is too large");
-        const eventsPath = path.join(this.paths.runs, runId as string, "events.jsonl");
-        try {
-          const info = await stat(eventsPath);
-          if (offset > info.size) throw invalidInput(`events offset ${offset} exceeds current size ${info.size}`);
-          const completeSize = await completeLineSize(eventsPath, info.size);
-          if (offset > completeSize) {
-            throw invalidInput(`events offset ${offset} exceeds committed size ${completeSize}`);
-          }
-          if (!await isLineBoundary(eventsPath, offset)) {
-            throw invalidInput(`events offset ${offset} is not at an event boundary`);
-          }
-          response.writeHead(200, {
-            "content-type": "application/x-ndjson",
-            "x-hitch-next-offset": String(completeSize),
-            "accept-ranges": "bytes",
-          });
-          if (offset === completeSize) {
-            response.end();
-          } else {
-            await streamFileRange(eventsPath, offset, completeSize - 1, response);
-          }
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return json(response, 404, { error: { code: "events_not_found", message: "events not available" } });
-          if (response.headersSent) {
-            response.destroy(error as Error);
-            return;
-          }
-          throw error;
-        }
-        return;
+        return this.streamEvents(response, path.join(this.paths.runs, runId as string, "events.jsonl"), url.searchParams.get("offset") || "0");
       }
       if (request.method === "POST" && action === "cancel") {
         const cancelled = await this.scheduler?.cancel(runId as RunId);
@@ -231,11 +259,41 @@ export class DaemonServer {
       agents: this.agents?.filter((agent) => (agent as { status?: string }).status === "available").map((agent) => (agent as { id: string }).id) || [],
       harnesses: this.agents?.filter((agent) => (agent as { status?: string }).status === "available").map((agent) => (agent as { id: string }).id) || [],
       scheduler: this.scheduler?.snapshot() || null,
+      eval_scheduler: this.evalScheduler?.snapshot() || null,
+      resources: this.resources?.snapshot() || null,
     };
+  }
+
+  private async streamEvents(response: ServerResponse, eventsPath: string, offsetValue: string): Promise<void> {
+    if (!/^\d+$/.test(offsetValue)) throw invalidInput("events offset must be a non-negative integer");
+    const offset = Number(offsetValue);
+    if (!Number.isSafeInteger(offset)) throw invalidInput("events offset is too large");
+    try {
+      const info = await stat(eventsPath);
+      if (offset > info.size) throw invalidInput(`events offset ${offset} exceeds current size ${info.size}`);
+      const completeSize = await completeLineSize(eventsPath, info.size);
+      if (offset > completeSize) throw invalidInput(`events offset ${offset} exceeds committed size ${completeSize}`);
+      if (!await isLineBoundary(eventsPath, offset)) throw invalidInput(`events offset ${offset} is not at an event boundary`);
+      response.writeHead(200, {
+        "content-type": "application/x-ndjson",
+        "x-hitch-next-offset": String(completeSize),
+        "accept-ranges": "bytes",
+      });
+      if (offset === completeSize) response.end();
+      else await streamFileRange(eventsPath, offset, completeSize - 1, response);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return json(response, 404, { error: { code: "events_not_found", message: "events not available" } });
+      if (response.headersSent) {
+        response.destroy(error as Error);
+        return;
+      }
+      throw error;
+    }
   }
 }
 
 function errorStatus(error: unknown): number {
+  if ((error as { code?: unknown }).code === "idempotency_conflict") return 409;
   const exitCode = (error as { exitCode?: unknown }).exitCode;
   if (exitCode === 2) return 400;
   if (exitCode === 3) return 404;
@@ -318,3 +376,13 @@ function defaultLogger(type: string, fields: Record<string, unknown>): void {
 }
 
 type RunRequestInput = import("../runs/index.js").RunRequestInput;
+type EvalRequestInput = import("../evals/index.js").EvalRequestInput;
+
+function defaultResourceCapacity(maxConcurrent: number): ResourceVectorV1 {
+  return {
+    cpu_millis: maxConcurrent * 1_000,
+    memory_bytes: maxConcurrent * 1024 * 1024 * 1024,
+    container_slots: maxConcurrent,
+    build_slots: 1,
+  };
+}

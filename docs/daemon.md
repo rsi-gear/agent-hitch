@@ -75,7 +75,10 @@ CLI / local caller
 
 Direct `hitch run` calls the shared run engine without going through HTTP.
 `hitch run --daemon` submits to the queue and follows the same persisted run.
-This keeps daemon and direct behavior from drifting.
+Harbor evals can use the same daemon through `hitch eval run --daemon` or the
+separate `eval submit`, `eval watch`, and `eval cancel` commands. Daemon runs
+and evals reserve capacity from one vector ledger so aggregate CPU, memory, and
+container admission stays bounded.
 
 ## Lifecycle
 
@@ -115,7 +118,14 @@ Run requests are validated against the contract represented by
 | `GET` | `/v1/runs/{id}` | Read manifest and final result when present |
 | `GET` | `/v1/runs/{id}/events?offset={byte}` | Incrementally read normalized NDJSON events and receive the next offset |
 | `POST` | `/v1/runs/{id}/cancel` | Cancel queued or active work |
+| `POST` | `/v1/evals` | Validate, persist, and enqueue a Harbor eval |
+| `GET` | `/v1/evals/{id}` | Read admission state, progress, and final result |
+| `GET` | `/v1/evals/{id}/events?offset={byte}` | Incrementally read eval NDJSON events |
+| `POST` | `/v1/evals/{id}/cancel` | Cancel a queued or active eval |
 | `POST` | `/shutdown` | Gracefully stop the daemon |
+
+`POST /v1/evals` accepts an optional `Idempotency-Key` header. The key is
+hashed before persistence and is scoped to the daemon's state root.
 
 ## Filesystem contract
 

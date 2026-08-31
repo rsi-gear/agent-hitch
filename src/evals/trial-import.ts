@@ -13,6 +13,7 @@ import {
   loadRunRecord,
   projectRunRecord,
   sha256JSON,
+  writeResultBundleIndex,
 } from "../runs/index.js";
 import { readHarborBridgeError } from "./harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
@@ -210,6 +211,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
   try {
     await cp(input.bundle, staging, { recursive: true, errorOnExist: true, force: false });
     await rm(path.join(staging, "bundle.complete.json"), { force: true });
+    await rm(path.join(staging, "bundle.index.json"), { force: true });
     await readJSON(path.join(staging, "resolution.json"));
     await validateJSONLines(path.join(staging, "events.jsonl"));
     const verifier = verifierResult(input.trial);
@@ -246,6 +248,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       ...(manifest.trajectory_ref ? {} : { trajectory_ref: "trajectory.ref.json" }),
       sealed: true,
     });
+    await writeResultBundleIndex(staging);
     const verified = await loadRunRecord(staging, { verifyTrajectory: true });
     if (verified.record.observation?.status !== observation.status) throw new Error(`failed to seal observation for ${record.run_id}`);
     await ensureDir(path.dirname(destination));
@@ -367,6 +370,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     sealed: true,
     ...(bridgeErrorRef ? { diagnostics: { harbor_bridge_error_ref: bridgeErrorRef } } : {}),
   });
+  await writeResultBundleIndex(runDirectory);
   return evalTrialRef(input, runId, observation);
 }
 

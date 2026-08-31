@@ -36,6 +36,9 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /--workspace-mode <mode>/);
   assert.match(help.stdout, /hitch workspace inspect <run-id>/);
   assert.match(help.stdout, /hitch eval run \[--backend harbor\] --dataset <ref>/);
+  assert.match(help.stdout, /hitch eval submit \[--backend harbor\]/);
+  assert.match(help.stdout, /hitch eval watch <eval-id>/);
+  assert.match(help.stdout, /hitch eval cancel <eval-id>/);
   assert.match(help.stdout, /hitch eval rerun <eval-id> \(--invalid \| --task <name>/);
   assert.match(help.stdout, /hitch eval setup harbor/);
   assert.match(help.stdout, /hitch eval doctor/);

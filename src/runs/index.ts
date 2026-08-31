@@ -16,3 +16,4 @@ export { queryRuns, rebuildRunIndexes } from "./query.js";
 export type { RebuiltRunIndex, RunQuery } from "./query.js";
 export { compareRunRecords, compareRuns } from "./compare.js";
 export type { ComparisonDimension, ComparisonExclusion, ComparisonGroup, StrictComparisonResult } from "./compare.js";
+export { parseResultBundleIndex, verifyResultBundleIndex, writeResultBundleIndex } from "./bundle.js";

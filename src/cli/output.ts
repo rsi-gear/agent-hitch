@@ -31,6 +31,30 @@ export async function waitForDaemonRun(client: { request: (pathname: string, opt
   }
 }
 
+export async function waitForDaemonEval(client: { request: (pathname: string, options?: RequestInit) => Promise<Record<string, unknown>>; requestWithMetadata: (pathname: string, options?: RequestInit) => Promise<{ payload: Record<string, unknown> | string; headers: Headers }> }, evalId: string, output: string): Promise<Record<string, unknown>> {
+  let eventOffset = 0;
+  for (;;) {
+    const status = await client.request(`/v1/evals/${evalId}`);
+    if (output === "jsonl") {
+      try {
+        const response = await client.requestWithMetadata(`/v1/evals/${evalId}/events?offset=${eventOffset}`);
+        for (const line of String(response.payload).trim().split(/\r?\n/).filter(Boolean)) {
+          JSON.parse(line);
+          process.stdout.write(`${line}\n`);
+        }
+        eventOffset = Number(response.headers.get("x-hitch-next-offset") || eventOffset);
+      } catch (error) {
+        if ((error as { status?: number }).status !== 404) throw error;
+      }
+    }
+    if (status.result) {
+      if (output === "json") process.stdout.write(`${JSON.stringify(status.result, null, 2)}\n`);
+      return status.result as Record<string, unknown>;
+    }
+    await delay(200);
+  }
+}
+
 export function helpText(): string {
   return `Hitch — content-addressed version control and evidence storage for agent harnesses
 
@@ -46,7 +70,10 @@ Usage:
   hitch compare model|harness [filters] [--reference-run <run-id>] [--json]
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
-  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>]
+  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>]
+  hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>]
+  hitch eval watch <eval-id> [--output json|jsonl]
+  hitch eval cancel <eval-id>
   hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--output json]
   hitch eval list [--json]
   hitch eval inspect <eval-id> [--json]

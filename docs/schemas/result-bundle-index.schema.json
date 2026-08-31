@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/result-bundle-index.schema.json",
+  "title": "Hitch sealed result bundle index V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "sealed", "context_identity", "files", "provenance", "bundle_digest", "created_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "sealed": { "const": true },
+    "context_identity": { "$ref": "#/$defs/sha256" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "size", "sha256"],
+        "properties": {
+          "role": {
+            "enum": [
+              "request", "resolution", "manifest", "result", "runtime-ref", "environment-manifest",
+              "execution-evidence", "control-events", "process-log", "workspace-evidence", "trajectory",
+              "provider-evidence", "verifier-evidence", "interaction-capture", "diagnostic"
+            ]
+          },
+          "path": { "$ref": "#/$defs/relativePath" },
+          "size": { "type": "integer", "minimum": 0 },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness_revision": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "artifact_id": { "$ref": "#/$defs/sha256" },
+        "benchmark_id": { "type": "string" },
+        "benchmark_revision": { "type": "string" },
+        "verifier_identity": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "bundle_digest": { "$ref": "#/$defs/sha256" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "relativePath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
+  }
+}
+
