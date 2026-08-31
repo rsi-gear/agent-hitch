@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths } from "../../foundation/index.js";
-import type { EvalRequest, ResolvedRevision } from "../../domain/index.js";
+import type { EvalRequest, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
 import type { LocalGitTransportUse } from "./local-git-transport.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
@@ -36,6 +36,7 @@ export interface RunHarborBackendOptions {
   onProcessStarted?: (pid: number) => void | Promise<void>;
   onProcessExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
   recoverableProcess?: boolean;
+  executionResources?: ResourceVectorV1;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -92,6 +93,7 @@ export async function runHarborBackend({
   onProcessStarted,
   onProcessExited,
   recoverableProcess = false,
+  executionResources,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
@@ -119,6 +121,7 @@ export async function runHarborBackend({
     ...(logicalAttempt === undefined ? {} : { logicalAttempt }),
     jobName,
     env,
+    ...(executionResources ? { executionResources } : {}),
   });
   await atomicWriteJSON(configPath, config);
   emit({
@@ -267,6 +270,7 @@ export interface BuildHarborJobConfigOptions {
   logicalAttempt?: number;
   jobName?: string;
   env?: NodeJS.ProcessEnv;
+  executionResources?: ResourceVectorV1;
 }
 
 export async function buildHarborJobConfig({
@@ -283,6 +287,7 @@ export async function buildHarborJobConfig({
   logicalAttempt,
   jobName = "job",
   env = process.env,
+  executionResources,
 }: BuildHarborJobConfigOptions): Promise<Record<string, unknown>> {
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
@@ -359,12 +364,27 @@ export async function buildHarborJobConfig({
     jobs_dir: backendDirectory,
     n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
-    environment: { type: "docker", delete: true },
+    environment: harborEnvironmentConfig(executionResources),
     verifier: harborVerifierConfig(request),
     agents: [agent],
     datasets: [await harborDatasetConfig(request.dataset, taskNames)],
     tasks: [],
   });
+}
+
+export function harborEnvironmentConfig(resources?: ResourceVectorV1): Record<string, unknown> {
+  const environment: Record<string, unknown> = { type: "docker", delete: true };
+  if (!resources) return environment;
+  if (Object.values(resources).some((value) => !Number.isSafeInteger(value) || value < 0)) throw invalidInput("Harbor execution resources are invalid");
+  const mib = 1024 * 1024;
+  if (resources.cpu_millis % 1_000 !== 0 || resources.memory_bytes % mib !== 0) {
+    throw new HitchError("Harbor cannot represent the requested CPU or memory limit", { code: "resource_limit_unrepresentable", exitCode: 10 });
+  }
+  const cpus = resources.cpu_millis / 1_000;
+  const memoryMb = resources.memory_bytes / mib;
+  if (cpus > 0) Object.assign(environment, { cpu_enforcement_policy: "limit", override_cpus: cpus });
+  if (memoryMb > 0) Object.assign(environment, { memory_enforcement_policy: "limit", override_memory_mb: memoryMb });
+  return environment;
 }
 
 export function lockedHarnessRef(resolvedRevision: ResolvedRevision): string {

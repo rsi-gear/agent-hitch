@@ -229,6 +229,7 @@ export class EvalRerunScheduler {
       selector: entry.selector,
       root: this.root,
       maxConcurrentOverride: parallelism,
+      executionResources: this.trialResources,
       signal: controller.signal,
     });
     await atomicWriteJSON(path.join(entry.directory, "result.json"), result);

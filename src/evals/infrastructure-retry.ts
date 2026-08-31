@@ -4,7 +4,7 @@ import type { ResolvedRevision } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
+import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
@@ -52,6 +52,7 @@ export interface RunInfrastructureRetriesOptions {
   trialBundleGraceMs?: number;
   sink: EvalEventSink;
   stopAfterResult?: (rawResult: Record<string, unknown> | null) => boolean;
+  executionResources?: ResourceVectorV1;
 }
 
 export async function runInfrastructureRetries(
@@ -133,6 +134,7 @@ export async function runInfrastructureRetries(
       runtimeDirectory: options.controllerRuntime.directory,
       runtimeId: options.controllerRuntime.runtime_id,
       preparedArtifact: options.preparedArtifact,
+      ...(options.executionResources ? { executionResources: options.executionResources } : {}),
       ...(options.localTransport ? { localTransport: options.localTransport } : {}),
       env: options.env,
       ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),

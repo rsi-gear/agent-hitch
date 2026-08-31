@@ -829,6 +829,8 @@ Planner 必须在 execution plan 中逐字段记录 `value`、`source` 和 `esti
 
 如果 task 声明与 Compose hard limit 冲突，取更大的 admission reservation，并产生 `resource_declaration_conflict` 诊断；provider 实际施加的硬限制必须记录在 `execution.json`。缺失 resource 声明不是零成本。
 
+Harbor `0.21.0` 的 Docker override 只能精确表达整数 CPU 和整数 MiB。V1 在写入 JobConfig 前要求 `cpu_millis` 为 1000 的倍数、`memory_bytes` 为 MiB 的倍数；不能精确表达时返回 `resource_limit_unrepresentable`，不得静默向上取整突破 reservation，也不得只做 admission 而省略容器硬限制。
+
 ## 11. 全局资源调度
 
 ### 11.1 资源池

@@ -1,4 +1,5 @@
 import type { RerunSelector } from "./rerun-slots.js";
+import type { ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, invalidInput } from "../foundation/index.js";
 
 export const EVAL_RERUN_TYPES = [
@@ -29,6 +30,7 @@ export interface RerunEvalOptions {
   harborExecutable?: string;
   signal?: AbortSignal;
   trialBundleGraceMs?: number;
+  executionResources?: ResourceVectorV1;
 }
 
 export interface EvalRerunResult {

@@ -68,6 +68,11 @@ test("planned local execution overlaps different tasks and serializes attempts o
     const datasets = config.datasets as Array<Record<string, unknown>>;
     assert.equal(config.n_attempts, 1);
     assert.equal(config.n_concurrent_trials, 1);
+    assert.deepEqual(config.environment, {
+      type: "docker", delete: true,
+      cpu_enforcement_policy: "limit", override_cpus: 1,
+      memory_enforcement_policy: "limit", override_memory_mb: 1_024,
+    });
     assert.deepEqual(datasets[0]?.task_names, item.task_ids);
   }
   const providerRecords = await Promise.all(leases.map((lease) => readJSON<Record<string, unknown>>(

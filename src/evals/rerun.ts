@@ -173,6 +173,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           runtimeDirectory: runtime.directory,
           runtimeId: runtime.runtime_id,
           preparedArtifact,
+          ...(options.executionResources ? { executionResources: options.executionResources } : {}),
           ...(localTransport ? { localTransport } : {}),
           env: options.env ?? process.env,
           ...(options.harborExecutable === undefined ? {} : { harborExecutable: options.harborExecutable }),

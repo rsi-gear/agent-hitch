@@ -10,7 +10,7 @@ import { importEvalTrialRuns } from "../src/evals/index.js";
 import { readHarborBridgeError } from "../src/evals/harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure } from "../src/evals/verifier-diagnostics.js";
 import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
-import { lockedHarnessRef } from "../src/backends/harbor/index.js";
+import { harborEnvironmentConfig, lockedHarnessRef } from "../src/backends/harbor/index.js";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
 import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
@@ -56,6 +56,19 @@ test("eval requests require immutable container-portable harness revisions", asy
     revision: { type: "commit", commit: "0123456789abcdef0123456789abcdef01234567" },
     source: { type: "git", url: "https://example.test/pi.git", registered: true },
   } as never), "pi@commit:0123456789abcdef0123456789abcdef01234567");
+});
+
+test("Harbor resource limits exactly mirror representable trial reservations", () => {
+  assert.deepEqual(harborEnvironmentConfig({
+    cpu_millis: 2_000, memory_bytes: 4_500 * 1024 * 1024, container_slots: 1, build_slots: 0,
+  }), {
+    type: "docker", delete: true,
+    cpu_enforcement_policy: "limit", override_cpus: 2,
+    memory_enforcement_policy: "limit", override_memory_mb: 4_500,
+  });
+  assert.throws(() => harborEnvironmentConfig({
+    cpu_millis: 2_500, memory_bytes: 4_500 * 1024 * 1024, container_slots: 1, build_slots: 0,
+  }), (error: unknown) => (error as { code?: string }).code === "resource_limit_unrepresentable");
 });
 
 test("verifier diagnostics distinguish masked bootstrap failures from executed tests", async (t) => {
@@ -339,6 +352,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
     root,
     harborExecutable: fakeHarbor,
     env,
+    executionResources: { cpu_millis: 2_000, memory_bytes: 4_500 * 1024 * 1024, container_slots: 1, build_slots: 0 },
     request: {
       dataset: "demo@1.0",
       harness_ref: "pi@version:1.2.3",
@@ -372,6 +386,11 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const config = await readJSON<Record<string, unknown>>(path.join(directory, "harbor", "attempt-0001", "job.json"));
   const agent = (config.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
   const kwargs = agent.kwargs as Record<string, unknown>;
+  assert.deepEqual(config.environment, {
+    type: "docker", delete: true,
+    cpu_enforcement_policy: "limit", override_cpus: 2,
+    memory_enforcement_policy: "limit", override_memory_mb: 4_500,
+  });
   assert.equal(agent.import_path, "hitch_harbor_agent:HitchHarborAgent");
   assert.equal(kwargs.harness_ref, "pi@version:1.2.3");
   assert.equal(kwargs.workdir, undefined, "Harbor must preserve the task/image WORKDIR");
