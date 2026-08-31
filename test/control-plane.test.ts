@@ -1,14 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EvalScheduler, ResourceLedger, scaleResources } from "../src/control-plane/index.js";
 import type { BackendWorkItemV1, EvalControlV1, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
-import { createExecutionLease, readExecutionLeases } from "../src/evals/index.js";
+import { createExecutionLease, readExecutionLeases, runEval } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256JSON } from "../src/foundation/index.js";
+import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 
 const GIB = 1024 * 1024 * 1024;
 const TRIAL: ResourceVectorV1 = { cpu_millis: 2_000, memory_bytes: 4 * GIB, container_slots: 1, build_slots: 0 };
@@ -225,6 +228,61 @@ test("eval scheduler fails an ambiguous interrupted execution without replaying 
   assert.equal((await readExecutionLeases(directory))[0]?.state, "lost");
 });
 
+test("eval scheduler reattaches a live local Harbor process and does not rerun the candidate", async (t) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-live-recovery-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const activityLog = path.join(root, "activity.jsonl");
+  const harbor = await writeFakeHarbor(root, { delayMs: 1_000, activityLog });
+  const npm = await writeFakeNpm(root);
+  const child = spawn(process.execPath, [
+    path.join(import.meta.dirname, "..", "test-support", "recovery-scheduler-child.js"),
+    root,
+    harbor,
+    npm,
+    dataset,
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const evalId = await childEvalId(child);
+  const evalDirectory = path.join(root, "evals", evalId);
+  await waitFor(async () => {
+    try { return (await readdir(path.join(evalDirectory, "provider", "leases"))).length === 1; } catch { return false; }
+  }, 10_000);
+  child.kill("SIGKILL");
+  await new Promise<void>((resolve) => child.once("close", () => resolve()));
+
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
+    trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
+    executor: (options) => runEval({
+      ...options,
+      harborExecutable: harbor,
+      env: { ...process.env, HITCH_NPM_PATH: npm },
+      trialBundleGraceMs: 0,
+    }),
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null), 10_000);
+  const status = await scheduler.status(evalId);
+  assert.ok(status?.result);
+  assert.notEqual((status.result.error as { code?: string } | undefined)?.code, "execution_state_ambiguous", JSON.stringify(status.result));
+  await waitFor(async () => readFile(activityLog, "utf8").then(() => true).catch(() => false), 1_000);
+  const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
+  assert.equal(activity.filter((entry) => entry.type === "start").length, 1);
+  const leases = await readExecutionLeases(evalDirectory);
+  assert.equal(leases.length, 1);
+  assert.equal(leases[0]?.state, "released");
+  assert.equal(leases[0]?.epoch, 2);
+  const events = await readFile(path.join(evalDirectory, "events.jsonl"), "utf8");
+  assert.match(events, /"type":"eval\.lease\.reissued"/);
+  assert.match(events, /"type":"eval\.work-item\.recovered"/);
+});
+
 test("daemon exposes queued eval status and terminal result", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-eval-"));
   const server = new DaemonServer({
@@ -284,6 +342,24 @@ async function waitFor(predicate: () => Promise<boolean>, attempts = 200): Promi
     await delay(10);
   }
   throw new Error("timed out waiting for control-plane state");
+}
+
+function childEvalId(child: ChildProcess): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      const line = stdout.split("\n")[0];
+      if (!line) return;
+      try {
+        const value = JSON.parse(line) as { eval_id?: unknown };
+        if (typeof value.eval_id === "string") resolve(value.eval_id);
+      } catch { /* wait for a complete line */ }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_192); });
+    child.once("close", (code, signal) => reject(new Error(`recovery fixture exited before submission: ${code ?? signal}: ${stderr}`)));
+  });
 }
 
 async function waitForStatus(client: Awaited<ReturnType<typeof daemonClient>>, evalId: string): Promise<{ control: Record<string, unknown>; result: Record<string, unknown> }> {

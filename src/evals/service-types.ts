@@ -18,6 +18,7 @@ export interface RunEvalOptions {
   executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
   executionWorker?: ExecutionWorkerIdentity;
   workItemAdmission?: WorkItemAdmissionController;
+  resumeExisting?: boolean;
 }
 
 export interface WorkItemAdmissionPermit {

@@ -109,6 +109,20 @@ export async function heartbeatExecutionLease(input: {
   });
 }
 
+export async function releaseExecutionLease(input: {
+  evalDirectory: string;
+  leaseId: string;
+  expectedEpoch: number;
+}): Promise<ExecutionLeaseV1> {
+  const { file } = leaseMutationInput(input);
+  return mutateLease(file, input.leaseId, input.expectedEpoch, async (current) => {
+    if (current.state === "released" || current.state === "lost" || current.state === "expired") return current;
+    const now = new Date().toISOString();
+    const releasing = await writeLease(file, { ...current, state: "releasing", heartbeat_at: now });
+    return writeLease(file, { ...releasing, state: "released", heartbeat_at: now, terminal_at: now });
+  });
+}
+
 export async function reissueExecutionLease(input: {
   evalDirectory: string;
   leaseId: string;

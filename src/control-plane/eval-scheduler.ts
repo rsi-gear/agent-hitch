@@ -1,8 +1,8 @@
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
-import { EvalEventSink, newEvalId, readExecutionLeases, recoverExecutionLeases, resolveLocalDatasetTaskIds, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
+import { EvalEventSink, newEvalId, readExecutionLeases, resolveLocalDatasetTaskIds, runEval, validateEvalId, validateEvalRequest } from "../evals/index.js";
 import type { EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
@@ -12,6 +12,7 @@ import { evalTaskCollisionKey, idempotencyIndexPath, isTerminalControl, parseEva
 import { WorkItemDispatcher } from "./work-dispatcher.js";
 import { workItemAdmission } from "./work-admission.js";
 import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker.js";
+import { recoverPersistedEvals } from "./eval-recovery.js";
 
 interface QueuedEval {
   evalId: EvalId;
@@ -19,6 +20,7 @@ interface QueuedEval {
   directory: string;
   collisionKeys: string[];
   fineGrained: boolean;
+  resumeExisting: boolean;
 }
 
 interface ActiveEval {
@@ -358,6 +360,7 @@ export class EvalScheduler {
         workItemAdmission: workItemAdmission({ dispatcher: this.workItems, request: entry.request, collisionDomainId: this.collisionDomainId }),
       } : {}),
       precreated: true,
+      resumeExisting: entry.resumeExisting,
       root: this.root,
       signal: controller.signal,
       onEvent: this.onEvent,
@@ -391,54 +394,11 @@ export class EvalScheduler {
   }
 
   private async recoverInterruptedEvals(): Promise<void> {
-    const entries = await readdir(this.evalsRoot, { withFileTypes: true });
-    for (const item of entries) {
-      if (!item.isDirectory() || !/^eval_[a-f0-9]{32}$/.test(item.name)) continue;
-      const evalId = item.name as EvalId;
-      const directory = path.join(this.evalsRoot, evalId);
-      const submissionValue = await readJSON<unknown | null>(path.join(directory, "submission.json"), null);
-      const controlValue = await readJSON<unknown | null>(path.join(directory, "control.json"), null);
-      if (!submissionValue || !controlValue) continue;
-      const submission = await parseEvalSubmission(submissionValue, evalId);
-      const control = parseEvalControl(controlValue);
-      const lostLeases = await recoverExecutionLeases(directory);
-      if (lostLeases.length > 0) {
-        await this.emitPersisted(directory, evalId, {
-          type: "eval.leases.recovered",
-          state: "lost",
-          lease_ids: lostLeases.map((lease) => lease.lease_id),
-        });
-      }
-      const result = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
-      if (result) {
-        if (!isTerminalControl(control.state)) {
-          await this.updateControl(directory, (current) => {
-            const { allocation_id: _allocationId, ...released } = current;
-            return { ...released, state: terminalControlState(result.status) };
-          });
-        }
-        continue;
-      }
-      if (control.state === "queued") {
-        this.queue.push(await this.queuedEval(evalId, submission.request, directory));
-        continue;
-      }
-      if (isTerminalControl(control.state)) continue;
-      const cancelled = control.state === "cancelling";
-      const now = new Date().toISOString();
-      const entry = await this.queuedEval(evalId, submission.request, directory);
-      const code = cancelled ? "cancelled" : "execution_state_ambiguous";
-      const message = cancelled ? "eval cancellation was recovered after daemon restart" : "daemon restarted while eval execution state was ambiguous";
-      await this.writeSyntheticResult(entry, cancelled ? "cancelled" : "failed", code, message, now);
-      await this.updateControl(directory, (current) => {
-        const { allocation_id: _allocationId, ...released } = current;
-        return { ...released, state: cancelled ? "cancelled" : "failed", error: { code, message } };
-      });
-      await this.emitPersisted(directory, evalId, { type: "eval.recovered", status: cancelled ? "cancelled" : "failed", code });
-    }
+    const recovered = await recoverPersistedEvals({ root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent });
+    for (const entry of recovered) this.queue.push(await this.queuedEval(entry.evalId, entry.request, entry.directory, entry.resumeExisting));
   }
 
-  private async queuedEval(evalId: EvalId, request: EvalRequest, directory: string): Promise<QueuedEval> {
+  private async queuedEval(evalId: EvalId, request: EvalRequest, directory: string, resumeExisting = false): Promise<QueuedEval> {
     const taskIds = await resolveLocalDatasetTaskIds(request.dataset);
     const fineGrained = taskIds !== null;
     return {
@@ -446,6 +406,7 @@ export class EvalScheduler {
       request,
       directory,
       fineGrained,
+      resumeExisting,
       collisionKeys: fineGrained ? [] : [evalTaskCollisionKey(request, "*", this.collisionDomainId)],
     };
   }

@@ -2,18 +2,23 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { closeSync, createWriteStream, openSync } from "node:fs";
 import type { WriteStream } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { HitchError, consumeLines, terminateProcess } from "../../foundation/index.js";
+
+const SUPERVISOR_PATH = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 
 export interface HarborProcessCallbacks {
   onStarted?: (pid: number) => void | Promise<void>;
   onExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
   persistAcrossParentExit?: boolean;
+  exitStatusPath?: string;
 }
 
 export function invokeHarbor(
   executable: string,
   args: string[],
-  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, persistAcrossParentExit }: {
+  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, persistAcrossParentExit, exitStatusPath }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     stdoutPath: string;
@@ -23,6 +28,7 @@ export function invokeHarbor(
   } & HarborProcessCallbacks,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   if (onStarted && persistAcrossParentExit) {
+    if (!exitStatusPath) throw new TypeError("recoverable Harbor process requires an exit status path");
     return invokeRecoverableHarbor(executable, args, {
       cwd,
       env,
@@ -30,6 +36,7 @@ export function invokeHarbor(
       stderrPath,
       emit,
       onStarted,
+      exitStatusPath,
       ...(signal ? { signal } : {}),
       ...(onExited ? { onExited } : {}),
     });
@@ -93,7 +100,7 @@ export function invokeHarbor(
 function invokeRecoverableHarbor(
   executable: string,
   args: string[],
-  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited }: {
+  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, exitStatusPath }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     stdoutPath: string;
@@ -102,6 +109,7 @@ function invokeRecoverableHarbor(
     emit: (event: Record<string, unknown>) => void;
     onStarted: (pid: number) => void | Promise<void>;
     onExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
+    exitStatusPath: string;
   },
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
@@ -110,7 +118,7 @@ function invokeRecoverableHarbor(
     let child: ChildProcess;
     try {
       stderr = openSync(stderrPath, "w", 0o600);
-      child = spawn(executable, args, {
+      child = spawn(process.execPath, [SUPERVISOR_PATH, exitStatusPath, executable, ...args], {
         cwd,
         env,
         stdio: ["ignore", stdout, stderr],
@@ -148,11 +156,33 @@ function invokeRecoverableHarbor(
       if (settled) return;
       settled = true;
       signal?.removeEventListener("abort", abort);
-      const result = { code, signal: processSignal };
-      started.then(async () => { await onExited?.(result); resolve(result); }).catch(reject);
+      started.then(async () => {
+        const result = await readHarborProcessExitStatus(exitStatusPath) ?? { code, signal: processSignal };
+        await onExited?.(result);
+        resolve(result);
+      }).catch(reject);
     });
     if (signal?.aborted) abort();
   });
+}
+
+export async function readHarborProcessExitStatus(file: string): Promise<{ code: number | null; signal: NodeJS.Signals | null } | null> {
+  let value: unknown;
+  try { value = JSON.parse(await readFile(file, "utf8")); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof SyntaxError) throw new TypeError("Harbor process exit status is invalid");
+    throw error;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Harbor process exit status is invalid");
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !new Set(["schema_version", "process_exit_code", "signal", "completed_at"]).has(key))
+    || record.schema_version !== "1"
+    || (record.process_exit_code !== null && !Number.isSafeInteger(record.process_exit_code))
+    || (record.signal !== null && typeof record.signal !== "string")
+    || typeof record.completed_at !== "string" || !Number.isFinite(Date.parse(record.completed_at))) {
+    throw new TypeError("Harbor process exit status is invalid");
+  }
+  return { code: record.process_exit_code as number | null, signal: record.signal as NodeJS.Signals | null };
 }
 
 function closeWriteStream(stream: WriteStream): Promise<void> {

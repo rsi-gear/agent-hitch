@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ResourceLedger, WorkItemDispatcher } from "../src/control-plane/index.js";
@@ -23,6 +23,13 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const resources = new ResourceLedger({ cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 2, build_slots: 1 });
   const dispatcher = new WorkItemDispatcher({ resources });
   t.after(() => dispatcher.close());
+  const request = {
+    dataset,
+    harness_ref: "pi@version:1.2.3",
+    attempts: 2,
+    max_concurrent: 2,
+    infrastructure_retries: 0,
+  };
   const result = await runEval({
     root,
     harborExecutable: harbor,
@@ -42,13 +49,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
         return { allocationId: permit.allocation.allocation_id, collisionKeys: permit.collision_keys, release: permit.release };
       },
     },
-    request: {
-      dataset,
-      harness_ref: "pi@version:1.2.3",
-      attempts: 2,
-      max_concurrent: 2,
-      infrastructure_retries: 0,
-    },
+    request,
   });
 
   assert.equal((result.trials as unknown[]).length, 4);
@@ -85,6 +86,23 @@ test("planned local execution overlaps different tasks and serializes attempts o
   const firstEnds = [event(activity, "end", "one", 1).time, event(activity, "end", "two", 1).time];
   assert.ok(Math.max(...firstStarts) < Math.min(...firstEnds), "different tasks did not overlap");
   assert.deepEqual(resources.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
+
+  const activityBeforeResume = activity.length;
+  await rm(path.join(evalDirectory, "result.json"));
+  const resumed = await runEval({
+    root,
+    evalId: result.eval_id,
+    request,
+    precreated: true,
+    resumeExisting: true,
+    harborExecutable: harbor,
+    executionStrategy: "local-task-slots-v1",
+    trialBundleGraceMs: 0,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+  });
+  assert.equal(resumed.status, result.status, JSON.stringify(resumed.error));
+  assert.equal((await readFile(activityLog, "utf8")).trim().split("\n").length, activityBeforeResume);
+  assert.equal((await readExecutionLeases(evalDirectory)).length, 4);
 });
 
 interface Activity {

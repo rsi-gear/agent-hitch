@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { invokeHarbor } from "../src/backends/harbor/process.js";
+import { invokeHarbor, readHarborProcessExitStatus } from "../src/backends/harbor/process.js";
 
 test("recoverable Harbor process writes directly to durable log files", async (t) => {
   if (process.platform === "win32") return;
@@ -14,6 +14,7 @@ test("recoverable Harbor process writes directly to durable log files", async (t
   await chmod(executable, 0o700);
   const events: Record<string, unknown>[] = [];
   let processId: number | undefined;
+  const exitStatusPath = path.join(directory, "process-exit.json");
   const result = await invokeHarbor(executable, [], {
     cwd: directory,
     env: { PATH: process.env.PATH },
@@ -21,9 +22,11 @@ test("recoverable Harbor process writes directly to durable log files", async (t
     stderrPath: path.join(directory, "stderr.log"),
     emit: (event) => events.push(event),
     persistAcrossParentExit: true,
+    exitStatusPath,
     onStarted: (pid) => { processId = pid; },
   });
   assert.equal(result.code, 0);
+  assert.deepEqual(await readHarborProcessExitStatus(exitStatusPath), { code: 0, signal: null });
   assert.ok(processId);
   assert.equal(await readFile(path.join(directory, "stdout.log"), "utf8"), "durable stdout\n");
   assert.equal(await readFile(path.join(directory, "stderr.log"), "utf8"), "durable stderr\n");

@@ -18,8 +18,9 @@ import { prepareEvalDirectory } from "./directory.js";
 import { buildEvalExecutionPlan } from "./execution-plan.js";
 import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
+import { assertEvalResumeState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -29,7 +30,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   const normalized = maxConcurrentOverride === undefined ? persistedRequest : { ...persistedRequest, max_concurrent: maxConcurrentOverride };
   const evalsDirectory = await ensureDir(statePaths(root).evals);
   const evalDirectory = await prepareEvalDirectory({ evalsDirectory, evalId, request: persistedRequest, precreated });
-  const startedAt = new Date();
+  let startedAt = new Date();
   const sink = new EvalEventSink(evalDirectory, evalId, onEvent);
   await sink.open();
   let result: EvalResult;
@@ -118,6 +119,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     const plannedTasks = localTaskIds?.length ?? null;
     const plannedTrials = plannedTasks === null ? null : plannedTasks * normalized.attempts;
     if (plannedTrials !== null && !Number.isSafeInteger(plannedTrials)) throw invalidInput("planned trial count exceeds the safe integer range");
+    const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
+    if (resume) startedAt = new Date(resume.progress.started_at);
     const plan = {
       schema_version: SCHEMA_VERSION,
       eval_id: evalId,
@@ -147,11 +150,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       },
       prepared_artifact: preparedArtifactSummary(preparedArtifact),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
-      created_at: new Date().toISOString(),
+      created_at: typeof resume?.plan.created_at === "string" ? resume.plan.created_at : new Date().toISOString(),
     };
-    await atomicWriteJSON(path.join(evalDirectory, "resolution.json"), resolvedRevision);
-    await atomicWriteJSON(path.join(evalDirectory, "plan.json"), plan);
-    const executionPlan = buildEvalExecutionPlan({
+    const expectedExecutionPlan = buildEvalExecutionPlan({
       evalId,
       request: normalized,
       candidate: {
@@ -165,8 +166,14 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(executionStrategy === "local-task-slots-v1" && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
       createdAt: plan.created_at,
     });
-    await atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), executionPlan);
-    progress = createEvalProgress({
+    if (resume) assertEvalResumeState({ state: resume, expectedPlan: plan, expectedExecutionPlan, expectedResolutionIdentity: resolvedRevision.identity, plannedTasks, plannedTrials });
+    else await Promise.all([
+      atomicWriteJSON(path.join(evalDirectory, "resolution.json"), resolvedRevision),
+      atomicWriteJSON(path.join(evalDirectory, "plan.json"), plan),
+      atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), expectedExecutionPlan),
+    ]);
+    const executionPlan = resume?.executionPlan ?? expectedExecutionPlan;
+    progress = resume?.progress ?? createEvalProgress({
       evalId,
       benchmarkId: normalized.benchmark_id,
       benchmarkRevision: normalized.benchmark_revision,
@@ -174,7 +181,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       plannedTrials,
       startedAt: startedAt.toISOString(),
     });
-    await writeEvalProgress(evalDirectory, progress);
+    if (!resume) await writeEvalProgress(evalDirectory, progress);
     sink.emit({
       type: "eval.planned",
       harness: resolvedRevision.harness_id,
@@ -361,8 +368,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         || infrastructureRetryRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
       : false;
     const expectedBackendRuns = plannedTaskExecution ? executionPlan.work_items.length : normalized.attempts;
-    const backendsSucceeded = backendRuns.length === expectedBackendRuns
-      && backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null);
+    const backendsSucceeded = backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null)
+      && (plannedTaskExecution ? progress.trials.length === plannedTrials : backendRuns.length === expectedBackendRuns);
     const invalidTrials = localTaskIds === null
       ? trialRefs.filter((trial) => trial.observation_status !== "valid").map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }))
       : invalidTrialSlots(localTaskIds, normalized.attempts, progress);

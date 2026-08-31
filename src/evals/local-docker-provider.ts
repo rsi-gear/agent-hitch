@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import path from "node:path";
+import { readHarborProcessExitStatus } from "../backends/index.js";
 import type {
   BackendWorkItemV1,
   ExecutionLeaseV1,
@@ -226,7 +227,18 @@ export async function readLocalDockerProcessRecord(input: { root: string; leaseI
   return (await locateProviderRecord(input.root, input.leaseId, input.epoch)).record;
 }
 
+export async function readLocalDockerProcessRecordByLease(input: { root: string; leaseId: string }): Promise<LocalProviderExecutionRecordV1> {
+  validateLeaseMutation(input.leaseId, 1, false);
+  const index = await readLeaseIndex(input.root, input.leaseId);
+  if (!index) throw new HitchError(`local provider lease not found: ${input.leaseId}`, { code: "provider_lease_not_found", exitCode: 3 });
+  const record = await readRecord(evalDirectoryFor(input.root, index.eval_id), input.leaseId);
+  if (!record) throw new HitchError(`local provider record not found: ${input.leaseId}`, { code: "provider_record_not_found", exitCode: 3 });
+  return record;
+}
+
 export async function reconcileLocalDockerProcess(input: { root: string; leaseId: string; epoch: number }): Promise<LocalProviderExecutionRecordV1> {
+  const located = await locateProviderRecord(input.root, input.leaseId, input.epoch);
+  const exit = await readHarborProcessExitStatus(path.join(located.evalDirectory, located.record.backend_directory, "process-exit.json"));
   return mutateProviderRecord(input.root, input.leaseId, input.epoch, async (record) => {
     if (record.state !== "running") return record;
     const status = await inspectProcessIdentity(record.process);
@@ -234,8 +246,8 @@ export async function reconcileLocalDockerProcess(input: { root: string; leaseId
     return {
       ...record,
       state: "terminal",
-      process_exit_code: null,
-      signal: null,
+      process_exit_code: exit?.code ?? null,
+      signal: exit?.signal ?? null,
       completed_at: new Date().toISOString(),
     };
   });

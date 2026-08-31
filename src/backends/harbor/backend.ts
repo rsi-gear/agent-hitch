@@ -144,13 +144,13 @@ export async function runHarborBackend({
       ...(onProcessStarted ? { onStarted: onProcessStarted } : {}),
       ...(onProcessExited ? { onExited: onProcessExited } : {}),
       ...(recoverableProcess ? { persistAcrossParentExit: true } : {}),
+      ...(recoverableProcess ? { exitStatusPath: path.join(backendDirectory, "process-exit.json") } : {}),
       emit,
     });
   } finally {
     await monitor?.stop();
   }
-  const jobResult = await readJSON<Record<string, unknown> | null>(resultPath, null);
-  const rawResult = jobResult ? await attachTrialResults(jobDirectory, jobResult) : null;
+  const rawResult = await readHarborRawResult(jobDirectory);
   emit({
     type: "eval.backend.completed",
     backend: "harbor",
@@ -177,6 +177,11 @@ export async function runHarborBackend({
     rawResult,
     summary: rawResult ? normalizeHarborResult(rawResult) : null,
   };
+}
+
+export async function readHarborRawResult(jobDirectory: string): Promise<Record<string, unknown> | null> {
+  const jobResult = await readJSON<Record<string, unknown> | null>(path.join(jobDirectory, "result.json"), null);
+  return jobResult ? attachTrialResults(jobDirectory, jobResult) : null;
 }
 
 function monitorHarborTrials(

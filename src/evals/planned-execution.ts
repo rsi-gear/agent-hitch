@@ -56,6 +56,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
   const byTask = new Map<string, BackendWorkItemV1[]>();
   for (const item of options.plan.work_items) {
     const taskId = item.task_ids[0] as string;
+    if (options.progress.trials.some((trial) => trial.task_id === taskId && trial.attempt === item.logical_attempt)) continue;
     const items = byTask.get(taskId) || [];
     items.push(item);
     byTask.set(taskId, items);
@@ -198,8 +199,8 @@ async function executeWorkItem(
   } finally {
     clearInterval(heartbeatTimer);
     await heartbeatTail;
-    const released = await lease.release(epoch);
     if (providerProcess.recorded) await releaseLocalDockerProcessRecord({ root: options.root, leaseId: lease.leaseId, epoch });
+    const released = await lease.release(epoch);
     options.sink.emit({
       type: "eval.work-item.lease-released",
       work_id: item.work_id,
