@@ -2,9 +2,9 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ResolvedRevision } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
-import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
+import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse, RunHarborBackendOptions } from "../backends/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
@@ -32,7 +32,30 @@ export interface InfrastructureRetryRun {
   triggers: EvalTrialRefV1[];
   refs: EvalTrialRefV1[];
   run: HarborBackendResult;
+  leaseId?: string;
+  workId?: string;
 }
+
+type RetryBackendOverrides = Pick<RunHarborBackendOptions,
+  "executionResources" | "dockerOwnership" | "dockerServiceLimits" | "resolvedImages"
+  | "recoverableProcess" | "onProcessStarted" | "onProcessExited">;
+
+export interface InfrastructureRetryLifecycle {
+  leaseId: string;
+  workId: string;
+  backend: RetryBackendOverrides;
+  environmentImages?: TrialEnvironmentImagesV1;
+  captureExecutionEvidence?: () => Promise<ExecutionEvidenceV1>;
+  close(): Promise<void>;
+}
+
+export type BeginInfrastructureRetry = (input: {
+  retry: number;
+  logicalAttempt: number;
+  taskNames: string[];
+  triggers: EvalTrialRefV1[];
+  backendDirectory: string;
+}) => Promise<InfrastructureRetryLifecycle>;
 
 export interface RunInfrastructureRetriesOptions {
   evalId: string;
@@ -56,6 +79,7 @@ export interface RunInfrastructureRetriesOptions {
   executionResources?: ResourceVectorV1;
   resolvedImages?: Record<string, string>;
   environmentImages?: TrialEnvironmentImagesV1;
+  beginRetry?: BeginInfrastructureRetry;
 }
 
 export async function runInfrastructureRetries(
@@ -71,6 +95,8 @@ export async function runInfrastructureRetries(
     const backoffMs = options.request.infrastructure_retry_backoff_ms * retry;
     options.sink.emit({
       type: "eval.infrastructure-retry.scheduled",
+      execution_kind: "physical-infrastructure-retry",
+      candidate_executes: true,
       attempt: options.logicalAttempt,
       retry,
       tasks: taskNames,
@@ -90,6 +116,11 @@ export async function runInfrastructureRetries(
     const harborJobDirectory = path.join(backendDirectory, "job");
     const retryRefs: EvalTrialRefV1[] = [];
     const selectedTasks = new Set(taskNames);
+    let lifecycle: InfrastructureRetryLifecycle | undefined;
+    const retryEnvironmentImages = (): TrialEnvironmentImagesV1 | undefined => lifecycle?.environmentImages ?? options.environmentImages;
+    const executionEvidence = async (): Promise<{ executionEvidence?: ExecutionEvidenceV1 }> => lifecycle?.captureExecutionEvidence
+      ? { executionEvidence: await lifecycle.captureExecutionEvidence() }
+      : {};
     const publish = async (ref: EvalTrialRefV1): Promise<void> => {
       if (ref.attempt !== options.logicalAttempt || !selectedTasks.has(ref.task_id)) {
         throw new HitchError(`Harbor infrastructure retry returned an unselected trial: ${ref.task_id}#${ref.attempt}`, {
@@ -125,70 +156,83 @@ export async function runInfrastructureRetries(
         generation: progress.generation,
       });
     };
-    const run = await runHarborBackend({
-      evalId: options.evalId,
-      evalDirectory: options.evalDirectory,
-      backendDirectory,
-      logicalAttempt: options.logicalAttempt,
-      taskNames,
-      request: { ...options.request, attempts: 1 },
-      root: options.root,
-      resolvedRevision: options.resolvedRevision,
-      runtimeDirectory: options.controllerRuntime.directory,
-      runtimeId: options.controllerRuntime.runtime_id,
-      preparedArtifact: options.preparedArtifact,
-      ...(options.executionResources ? { executionResources: options.executionResources } : {}),
-      ...(options.resolvedImages ? { resolvedImages: options.resolvedImages } : {}),
-      ...(options.localTransport ? { localTransport: options.localTransport } : {}),
-      env: options.env,
-      ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
-      ...(options.signal ? { signal: options.signal } : {}),
-      ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
-      emit: (event) => options.sink.emit({ ...event, infrastructure_retry: retry, logical_attempt: options.logicalAttempt }),
-      onTrialSettled: async (trial, context): Promise<boolean> => {
-        try {
-          const ref = await importEvalTrialRun({
-            root: options.root,
-            evalId: options.evalId,
-            evalDirectory: options.evalDirectory,
-            harborJobDirectory,
-            expectedAttempt: options.logicalAttempt,
-            request: options.request,
-            resolvedRevision: options.resolvedRevision,
-            benchmarkId: options.request.benchmark_id,
-            benchmarkRevision: options.request.benchmark_revision,
-            runtimeId: options.controllerRuntime.runtime_id,
-            ...(options.environmentImages ? { environmentImages: options.environmentImages } : {}),
-            requireCompleteMarker: true,
-            allowMissingBundleDiagnostic: context.bundleWaitExpired,
-          }, trial, retryRefs.length, retryRefs);
-          await publish(ref);
-          return true;
-        } catch (error) {
-          if (error instanceof TrialBundlePendingError) return false;
-          throw error;
-        }
-      },
-    });
-    const terminalRefs = await importEvalTrialRuns({
-      root: options.root,
-      evalId: options.evalId,
-      evalDirectory: options.evalDirectory,
-      harborJobDirectory,
-      expectedAttempt: options.logicalAttempt,
-      request: options.request,
-      resolvedRevision: options.resolvedRevision,
-      benchmarkId: options.request.benchmark_id,
-      benchmarkRevision: options.request.benchmark_revision,
-      runtimeId: options.controllerRuntime.runtime_id,
-      ...(options.environmentImages ? { environmentImages: options.environmentImages } : {}),
-      rawResult: run.rawResult,
-    }, retryRefs);
-    for (const ref of terminalRefs) await publish(ref);
-    if (run.rawResult !== null) assertBackendTrialSet(run.rawResult, retryRefs);
-    runs.push({ attempt: options.logicalAttempt, retry, tasks: taskNames, triggers: retryTriggers, refs: retryRefs, run });
+    let run: HarborBackendResult;
+    try {
+      lifecycle = await options.beginRetry?.({ retry, logicalAttempt: options.logicalAttempt, taskNames, triggers: retryTriggers, backendDirectory });
+      run = await runHarborBackend({
+        evalId: options.evalId,
+        evalDirectory: options.evalDirectory,
+        backendDirectory,
+        logicalAttempt: options.logicalAttempt,
+        taskNames,
+        request: { ...options.request, attempts: 1 },
+        root: options.root,
+        resolvedRevision: options.resolvedRevision,
+        runtimeDirectory: options.controllerRuntime.directory,
+        runtimeId: options.controllerRuntime.runtime_id,
+        preparedArtifact: options.preparedArtifact,
+        ...(options.executionResources ? { executionResources: options.executionResources } : {}),
+        ...(options.resolvedImages ? { resolvedImages: options.resolvedImages } : {}),
+        ...(options.localTransport ? { localTransport: options.localTransport } : {}),
+        ...lifecycle?.backend,
+        env: options.env,
+        ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
+        emit: (event) => options.sink.emit({ ...event, execution_kind: "physical-infrastructure-retry", infrastructure_retry: retry, logical_attempt: options.logicalAttempt, ...(lifecycle ? { work_id: lifecycle.workId, lease_id: lifecycle.leaseId } : {}) }),
+        onTrialSettled: async (trial, context): Promise<boolean> => {
+          try {
+            const environmentImages = retryEnvironmentImages();
+            const ref = await importEvalTrialRun({
+              root: options.root,
+              evalId: options.evalId,
+              evalDirectory: options.evalDirectory,
+              harborJobDirectory,
+              expectedAttempt: options.logicalAttempt,
+              request: options.request,
+              resolvedRevision: options.resolvedRevision,
+              benchmarkId: options.request.benchmark_id,
+              benchmarkRevision: options.request.benchmark_revision,
+              runtimeId: options.controllerRuntime.runtime_id,
+              ...await executionEvidence(),
+              ...(environmentImages ? { environmentImages } : {}),
+              requireCompleteMarker: true,
+              allowMissingBundleDiagnostic: context.bundleWaitExpired,
+            }, trial, retryRefs.length, retryRefs);
+            await publish(ref);
+            return true;
+          } catch (error) {
+            if (error instanceof TrialBundlePendingError) return false;
+            throw error;
+          }
+        },
+      });
+      const environmentImages = retryEnvironmentImages();
+      const terminalRefs = await importEvalTrialRuns({
+        root: options.root,
+        evalId: options.evalId,
+        evalDirectory: options.evalDirectory,
+        harborJobDirectory,
+        expectedAttempt: options.logicalAttempt,
+        request: options.request,
+        resolvedRevision: options.resolvedRevision,
+        benchmarkId: options.request.benchmark_id,
+        benchmarkRevision: options.request.benchmark_revision,
+        runtimeId: options.controllerRuntime.runtime_id,
+        ...await executionEvidence(),
+        ...(environmentImages ? { environmentImages } : {}),
+        rawResult: run.rawResult,
+      }, retryRefs);
+      for (const ref of terminalRefs) await publish(ref);
+      if (run.rawResult !== null) assertBackendTrialSet(run.rawResult, retryRefs);
+      runs.push({ attempt: options.logicalAttempt, retry, tasks: taskNames, triggers: retryTriggers, refs: retryRefs, run, ...(lifecycle ? { leaseId: lifecycle.leaseId, workId: lifecycle.workId } : {}) });
+    } finally {
+      await lifecycle?.close();
+    }
     options.sink.emit({
       type: "eval.infrastructure-retry.completed",
+      execution_kind: "physical-infrastructure-retry",
+      candidate_executes: true,
       attempt: options.logicalAttempt,
       retry,
       tasks: taskNames,

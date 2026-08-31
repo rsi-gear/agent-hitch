@@ -12,6 +12,7 @@ import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLoc
 import { dockerResourceOwnership } from "./docker-ownership.js";
 import { runInfrastructureRetries } from "./infrastructure-retry.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
+import { beginPlannedInfrastructureRetry } from "./planned-retry-lifecycle.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { assertBackendTrialSet, localSourceBackendFailure } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
@@ -135,6 +136,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
   for (const completed of results) {
     if (options.signal?.aborted || completed.run.backend.process_exit_code !== 0 || completed.run.rawResult === null) break;
     if (options.localTransport && localSourceBackendFailure(completed.run.rawResult)) break;
+    const workItem = options.plan.work_items.find((entry) => entry.work_id === completed.workId) as BackendWorkItemV1;
     const retries = await runInfrastructureRetries({
       evalId: options.evalId,
       evalDirectory: options.evalDirectory,
@@ -150,6 +152,10 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       executionResources: resourceRequirementForTask(options.plan, completed.tasks[0] as string)?.main_limits ?? options.plan.default_trial_resources,
       resolvedImages: resolvedImageMapping(options.plan.work_items.find((entry) => entry.work_id === completed.workId)?.image_refs ?? []),
       ...(completed.environmentImages ? { environmentImages: completed.environmentImages } : {}),
+      beginRetry: ({ retry, triggers, backendDirectory }) => beginPlannedInfrastructureRetry({
+        options, item: workItem, retry, triggers, backendDirectory,
+        ...(completed.environmentImages ? { environmentImages: completed.environmentImages } : {}),
+      }),
       ...(options.localTransport ? { localTransport: options.localTransport } : {}),
       env: options.env,
       ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),

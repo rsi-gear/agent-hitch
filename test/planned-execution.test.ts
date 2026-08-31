@@ -138,6 +138,81 @@ test("planned local execution overlaps different tasks and serializes attempts o
   assert.equal((await readExecutionLeases(evalDirectory)).length, 4);
 });
 
+test("planned infrastructure retries reacquire admission and use a new owned lease", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-physical-retry-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const harbor = await writeInfrastructureFailureHarbor(root);
+  const npm = await writeFakeNpm(root);
+  const reservation = { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 };
+  const resources = new ResourceLedger({ ...reservation, build_slots: 1 });
+  const dispatcher = new WorkItemDispatcher({ resources });
+  t.after(() => dispatcher.close());
+  const allocations: string[] = [];
+  const reaped: string[] = [];
+  const result = await runEval({
+    root,
+    harborExecutable: harbor,
+    executionStrategy: "local-task-slots-v1",
+    executionResources: reservation,
+    executionResourceSource: "submission-default",
+    trialBundleGraceMs: 0,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    dockerResourceReaper: async (input) => {
+      reaped.push(...(input.leaseIds ?? []));
+      return { schema_version: "1", root_id: hitchRootId(root), scanned: 0, deleted: [], retained: [], issues: [] };
+    },
+    workItemAdmission: {
+      acquire: async ({ evalId, workItem, maxParallelism, signal }) => {
+        const permit = await dispatcher.acquire({
+          evalId, workId: workItem.work_id, maxParallelism, reservation: workItem.reservation,
+          collisionKeys: workItem.task_ids.map((taskId) => `test-task:${taskId}`),
+          ...(signal ? { signal } : {}),
+        });
+        allocations.push(permit.allocation.allocation_id);
+        return { allocationId: permit.allocation.allocation_id, collisionKeys: permit.collision_keys, release: permit.release };
+      },
+    },
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      attempts: 1,
+      max_concurrent: 1,
+      infrastructure_retries: 1,
+      infrastructure_retry_backoff_ms: 0,
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  const retries = result.infrastructure_retry_runs as Array<Record<string, unknown>>;
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0]?.execution_kind, "physical-infrastructure-retry");
+  assert.equal(typeof retries[0]?.lease_id, "string");
+  assert.equal(typeof retries[0]?.work_id, "string");
+  assert.equal(allocations.length, 2, "initial execution and physical retry must each be admitted");
+  assert.equal(new Set(allocations).size, 2);
+  const evalDirectory = path.join(root, "evals", result.eval_id as string);
+  const leases = await readExecutionLeases(evalDirectory);
+  assert.equal(leases.length, 2);
+  assert.equal(new Set(leases.map((lease) => lease.lease_id)).size, 2);
+  assert.equal(new Set(leases.map((lease) => lease.work_id)).size, 1);
+  assert.ok(leases.every((lease) => lease.state === "released" && lease.parent_allocation_id));
+  assert.deepEqual(new Set(reaped), new Set(leases.map((lease) => lease.lease_id)));
+  const retryLease = leases.find((lease) => lease.lease_id === retries[0]?.lease_id);
+  assert.ok(retryLease);
+  const retryConfig = await readJSON<Record<string, unknown>>(path.join(
+    evalDirectory,
+    "harbor", "work-items", retryLease.work_id, "infrastructure-retries", "retry-0001", "harbor", "job.json",
+  ));
+  const labels = ((retryConfig.environment as Record<string, unknown>).kwargs as Record<string, Record<string, string>>).hitch_ownership_labels;
+  assert.ok(labels);
+  assert.equal(labels["io.hitch.lease-id"], retryLease.lease_id);
+  assert.equal(labels["io.hitch.work-id"], retryLease.work_id);
+  assert.deepEqual(resources.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
+});
+
 interface Activity {
   type: "start" | "end";
   time: number;
@@ -149,4 +224,34 @@ function event(activity: Activity[], type: Activity["type"], task: string, attem
   const found = activity.find((entry) => entry.type === type && entry.logicalAttempt === attempt && entry.tasks.includes(task));
   assert.ok(found, `missing ${type} for ${task}#${attempt}`);
   return found;
+}
+
+async function writeInfrastructureFailureHarbor(directory: string): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-infrastructure-failure");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) { process.stdout.write("harbor 0.21.0\\n"); process.exit(0); }
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const counter = ${JSON.stringify(path.join(directory, "infrastructure-failure.count"))};
+let call = 1;
+try { call = Number(fs.readFileSync(counter, "utf8")) + 1; } catch {}
+fs.writeFileSync(counter, String(call));
+const output = path.join(config.jobs_dir, config.job_name);
+const trial = "one__infra-" + call;
+const trialDirectory = path.join(output, trial);
+fs.mkdirSync(trialDirectory, {recursive:true});
+fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:"one"}}));
+fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+  task_name:"one", trial_name:trial, exception_info:{exception_type:"InfrastructureError"}, verifier_result:{rewards:{reward:0}}
+}));
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials:1, stats:{n_completed_trials:0,n_errored_trials:1,n_cancelled_trials:0}
+}));
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
 }

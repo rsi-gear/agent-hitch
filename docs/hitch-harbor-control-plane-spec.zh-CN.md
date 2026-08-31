@@ -1578,6 +1578,8 @@ canonical trajectory 是审计证据，不是进程 checkpoint。把历史消息
 
 所有 retry 事件必须记录 attempt、backoff、原因、是否重新运行 Candidate Agent。禁止仅根据 exception message 选择会改变候选执行语义的重试。
 
+这里的 outer infrastructure retry 是 `physical-infrastructure-retry`，不是用户发起的 `rerun` operation。每次 physical retry 都必须重新经过全局 admission 和 task collision mutex，取得新的 allocation 与 execution lease，并使用新 lease/epoch 的 Docker ownership label、资源观测、provider process record 和 fenced reaper；不得在原 work item 释放资源后绕过 ledger 直接启动 Harbor。事件和 eval result 必须显式记录 `execution_kind=physical-infrastructure-retry`、`candidate_executes=true`、`work_id`、`lease_id`、trigger trials 和 retry 序号。daemon 崩溃时仍按 lease recovery 接管或收集这次 physical execution，不得因此自动创建下一次 retry 或 Candidate rerun。
+
 ## 20. 安全、凭据与信任边界
 
 ### 20.1 凭据

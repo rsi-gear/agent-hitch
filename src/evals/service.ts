@@ -426,8 +426,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         candidate_rerun_on_verifier_failure: false,
       },
       ...(infrastructureRetryRuns.length > 0 ? {
-        infrastructure_retry_runs: infrastructureRetryRuns.map(({ attempt, retry, tasks, triggers, refs, run }) => ({
-          attempt,
+        infrastructure_retry_runs: infrastructureRetryRuns.map(({ attempt, retry, tasks, triggers, refs, run, leaseId, workId }) => ({
+          execution_kind: "physical-infrastructure-retry", ...(leaseId ? { lease_id: leaseId } : {}), ...(workId ? { work_id: workId } : {}), attempt,
           retry,
           tasks,
           trigger_trials: triggers,
