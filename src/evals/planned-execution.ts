@@ -43,6 +43,7 @@ export interface ExecutePlannedHarborOptions {
   sink: EvalEventSink;
   worker: ExecutionWorkerIdentity;
   admission?: WorkItemAdmissionController;
+  onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
 }
 
 export async function executePlannedHarborTasks(options: ExecutePlannedHarborOptions): Promise<{
@@ -166,6 +167,7 @@ async function executeWorkItem(
   const epoch = lease.current().epoch;
   const providerProcess = { recorded: false };
   await lease.markRunning(epoch);
+  await options.onWorkItemState?.(item.work_id, lease.leaseId, "running");
   options.sink.emit({
     type: "eval.work-item.started",
     work_id: item.work_id,
@@ -208,6 +210,7 @@ async function executeWorkItem(
       lease_epoch: released.epoch,
       state: released.state,
     });
+    await options.onWorkItemState?.(item.work_id, lease.leaseId, "terminal");
   }
 }
 

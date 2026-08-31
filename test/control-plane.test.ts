@@ -5,7 +5,7 @@ import type { ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { EvalScheduler, ResourceLedger, scaleResources } from "../src/control-plane/index.js";
+import { EvalScheduler, ResourceLedger, applyEvalPhase, applyEvalWorkItem, scaleResources, settleEvalWorkItems } from "../src/control-plane/index.js";
 import type { BackendWorkItemV1, EvalControlV1, EvalRequest, ResourceVectorV1, Sha256 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
 import { createExecutionLease, readExecutionLeases, runEval } from "../src/evals/index.js";
@@ -66,6 +66,28 @@ test("resource ledger reserves vectors atomically and releases idempotently", ()
   assert.deepEqual(ledger.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
 });
 
+test("eval control phases and lease/work sets advance monotonically", () => {
+  const now = new Date().toISOString();
+  const workA = `work_${"a".repeat(32)}`;
+  const workB = `work_${"b".repeat(32)}`;
+  const leaseA = `lease_${"c".repeat(32)}`;
+  const control: EvalControlV1 = {
+    schema_version: "1", eval_id: `eval_${"d".repeat(32)}`, generation: 0, state: "queued",
+    requested_parallelism: 2, admitted_parallelism: 0, active_leases: [], queued_work_items: [], terminal_work_items: [],
+    created_at: now, updated_at: now,
+  };
+  const running = applyEvalPhase(control, "running", [workB, workA], []);
+  assert.deepEqual(running.queued_work_items, [workA, workB]);
+  const active = applyEvalWorkItem(running, workA, leaseA, "running");
+  assert.deepEqual(active.active_leases, [leaseA]);
+  assert.deepEqual(active.queued_work_items, [workB]);
+  const terminal = applyEvalWorkItem(active, workA, leaseA, "terminal");
+  assert.deepEqual(terminal.active_leases, []);
+  assert.deepEqual(terminal.terminal_work_items, [workA]);
+  assert.deepEqual(settleEvalWorkItems(terminal).terminal_work_items, [workA, workB]);
+  assert.equal(applyEvalPhase(running, "preparing").state, "running");
+});
+
 test("eval scheduler caps Harbor concurrency, persists requested policy, and releases capacity on cancel", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-control-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -77,7 +99,7 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
 
   const first = await scheduler.submit(request(8));
   const second = await scheduler.submit(request(8));
-  await waitFor(() => scheduler.status(first).then((status) => status?.control.state === "running"));
+  await waitFor(() => scheduler.status(first).then((status) => status?.control.state === "planning"));
   const firstStatus = await scheduler.status(first);
   assert.equal(firstStatus?.control.requested_parallelism, 8);
   assert.equal(firstStatus?.control.admitted_parallelism, 2);
@@ -86,7 +108,8 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
 
   assert.equal(await scheduler.cancel(first), "accepted");
   await waitFor(() => scheduler.status(first).then((status) => status?.result !== null));
-  await waitFor(() => scheduler.status(second).then((status) => status?.control.state === "running"));
+  await waitFor(() => scheduler.status(second).then((status) => status?.control.state === "planning"));
+  await waitFor(() => Promise.resolve(observed.length >= 2));
   assert.deepEqual(observed.slice(0, 2), [2, 2]);
   await waitFor(() => scheduler.status(second).then((status) => status?.result !== null));
   assert.equal((await scheduler.status(first))?.result?.status, "cancelled");
@@ -144,7 +167,7 @@ test("local evals dispatch work items fairly across evals without exceeding the 
   const large = await scheduler.submit({ ...request(2), dataset, model: "large" });
   await ready;
   const small = await scheduler.submit({ ...request(1), dataset, model: "small" });
-  await waitFor(() => scheduler.status(small).then((status) => status?.control.state === "running"));
+  await waitFor(() => scheduler.status(small).then((status) => status?.control.state === "planning"));
   releaseLarge();
   await waitFor(() => scheduler.status(large).then((status) => status?.result !== null));
   await waitFor(() => scheduler.status(small).then((status) => status?.result !== null));
@@ -191,6 +214,9 @@ test("eval scheduler fails an ambiguous interrupted execution without replaying 
     state: "running",
     requested_parallelism: 2,
     admitted_parallelism: 2,
+    active_leases: [],
+    queued_work_items: [],
+    terminal_work_items: [],
     allocation_id: "allocation_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     created_at: now,
     updated_at: now,
@@ -279,6 +305,9 @@ test("eval scheduler reattaches a live local Harbor process and does not rerun t
   assert.equal(leases.length, 1);
   assert.equal(leases[0]?.state, "released");
   assert.equal(leases[0]?.epoch, 2);
+  assert.deepEqual(status.control.active_leases, []);
+  assert.deepEqual(status.control.queued_work_items, []);
+  assert.equal(status.control.terminal_work_items.length, 1);
   const events = await readFile(path.join(evalDirectory, "events.jsonl"), "utf8");
   assert.match(events, /"type":"eval\.lease\.reissued"/);
   assert.match(events, /"type":"eval\.work-item\.recovered"/);

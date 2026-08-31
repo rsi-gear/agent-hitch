@@ -19,6 +19,15 @@ export interface RunEvalOptions {
   executionWorker?: ExecutionWorkerIdentity;
   workItemAdmission?: WorkItemAdmissionController;
   resumeExisting?: boolean;
+  onControlPhase?: (phase: EvalExecutionPhase, work?: EvalWorkStateSnapshot) => Promise<void>;
+  onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
+}
+
+export type EvalExecutionPhase = "planning" | "preparing" | "running" | "finalizing";
+
+export interface EvalWorkStateSnapshot {
+  queuedWorkItems: string[];
+  terminalWorkItems: string[];
 }
 
 export interface WorkItemAdmissionPermit {

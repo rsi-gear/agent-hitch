@@ -6,16 +6,16 @@ the repository contains both an implementation and a test that exercises the
 specified behavior. `npm run check` is necessary but does not by itself prove
 that a missing requirement exists.
 
-Last audited: 2026-08-31 on branch `codex/harbor-control-plane`.
+Last audited: 2026-09-01 on branch `codex/harbor-control-plane`.
 
 ## Stage status
 
 | Spec area | Status | Current evidence | Remaining work |
 | --- | --- | --- | --- |
 | Stage 0: contracts and compatibility | Partial | Strict eval submission/control/execution-plan/lease/worker/provider-status/local-provider-record/supervisor-exit/environment-image/build-record/bundle/rerun-operation schemas; provider and image contracts; direct Harbor fixtures; architecture checker with `images` boundary | Execution policy, interaction, remote-provider protocol and training-candidate schemas/capabilities |
-| Stage 1: daemon eval and durable queue | Partial | `/v1/evals`, status/events/cancel/rerun, idempotency, persisted control and rerun queues, shared resource ledger, work-item DRR, provider-aware live-process recovery and terminal collection | Complete control states and persisted work-item state lists |
+| Stage 1: daemon eval and durable queue | Partial | `/v1/evals`, status/events/cancel/rerun, idempotency, persisted control and rerun queues, monotonic planning/preparing/running/finalizing states, active lease and queued/terminal work lists, shared resource ledger, work-item DRR, provider-aware live-process recovery and terminal collection | Complete transition crash matrix and startup admission barrier |
 | Stage 2: vector scheduling and sharding | Partial | Atomic CPU/memory/container/build ledger, local task slots, cross-eval DRR, per-work-item task mutex, ordered same-task attempts, heartbeat-renewed execution leases with epoch fencing and recovery, opaque fallback | Docker labels/reaper, resource derivation and hard limits |
-| Stage 3: environment image service | Partial | Strict context hashing/manifest/store/build records and indexed build API; cross-instance keyed locks; 10-way single-invocation test; Docker BuildKit metadata/platform probes; derived registry cache refs; independent global build-slot lane | Harbor/Compose discovery, immutable base-image resolution, digest overlay and live-container verification, image GC |
+| Stage 3: environment image service | Partial | Strict context hashing/manifest/store/build records and indexed build API; cross-instance keyed locks; 10-way single-invocation test; Docker BuildKit metadata/platform probes; mutable registry tag to immutable digest resolution; explicit digest/platform verification; derived registry cache refs; independent global build-slot lane | Harbor/Compose discovery, Dockerfile base-image resolution, digest overlay and live-container verification, image GC |
 | Stage 4: execution providers | Partial | Provider interface; `/v1/workers` status/heartbeat/capacity; local-docker plan/offer/cancel/recover/release boundary; PID + process-start identity; detached supervisor/direct-file stdio; daemon reattach, heartbeat, terminal collection and resume | Docker resource discovery, remote registration/transport and worker selection |
 | Stage 5: model capture and data candidates | Missing | Provider-native trajectory and sealed Result Bundle index already exist | Proxy/hybrid capture, interaction store/redaction, capture policy gate, bundle interaction refs and read-only training-candidate exporter |
 
@@ -44,7 +44,6 @@ Last audited: 2026-08-31 on branch `codex/harbor-control-plane`.
 - Cross-domain Docker canary proving the same task can run concurrently on two
   truly independent collision domains.
 - Daemon crash injection at every transition listed in Spec section 25.3.
-- Ten concurrent requests for one image produce one BuildKit invocation.
 - Docker label ownership and reaper negative tests.
 - Malicious remote-worker paths and duplicate event delivery (stale lease epoch
   mutation is covered locally).

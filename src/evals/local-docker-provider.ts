@@ -227,10 +227,16 @@ export async function readLocalDockerProcessRecord(input: { root: string; leaseI
   return (await locateProviderRecord(input.root, input.leaseId, input.epoch)).record;
 }
 
-export async function readLocalDockerProcessRecordByLease(input: { root: string; leaseId: string }): Promise<LocalProviderExecutionRecordV1> {
+export async function readLocalDockerProcessRecordByLease(input: { root: string; leaseId: string; evalId?: string }): Promise<LocalProviderExecutionRecordV1> {
   validateLeaseMutation(input.leaseId, 1, false);
-  const index = await readLeaseIndex(input.root, input.leaseId);
-  if (!index) throw new HitchError(`local provider lease not found: ${input.leaseId}`, { code: "provider_lease_not_found", exitCode: 3 });
+  let index = await readLeaseIndex(input.root, input.leaseId);
+  if (!index && input.evalId) {
+    const recovered = await readRecord(evalDirectoryFor(input.root, input.evalId), input.leaseId);
+    if (recovered?.eval_id !== input.evalId) throw new HitchError(`local provider lease not found: ${input.leaseId}`, { code: "provider_lease_not_found", exitCode: 3 });
+    await writeLeaseIndex(input.root, recovered);
+    index = { eval_id: recovered.eval_id };
+  }
+  if (!index || (input.evalId !== undefined && index.eval_id !== input.evalId)) throw new HitchError(`local provider lease not found: ${input.leaseId}`, { code: "provider_lease_not_found", exitCode: 3 });
   const record = await readRecord(evalDirectoryFor(input.root, index.eval_id), input.leaseId);
   if (!record) throw new HitchError(`local provider record not found: ${input.leaseId}`, { code: "provider_record_not_found", exitCode: 3 });
   return record;

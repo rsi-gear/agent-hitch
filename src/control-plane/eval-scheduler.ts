@@ -13,6 +13,7 @@ import { WorkItemDispatcher } from "./work-dispatcher.js";
 import { workItemAdmission } from "./work-admission.js";
 import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker.js";
 import { recoverPersistedEvals } from "./eval-recovery.js";
+import { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
 
 interface QueuedEval {
   evalId: EvalId;
@@ -164,6 +165,9 @@ export class EvalScheduler {
         state: "queued",
         requested_parallelism: normalized.max_concurrent,
         admitted_parallelism: 0,
+        active_leases: [],
+        queued_work_items: [],
+        terminal_work_items: [],
         created_at: now,
         updated_at: now,
       };
@@ -191,7 +195,8 @@ export class EvalScheduler {
     const controlValue = await readJSON<unknown | null>(path.join(directory, "control.json"), null);
     if (!request || !controlValue) return null;
     const control = parseEvalControl(controlValue);
-    const result = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
+    const persistedResult = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
+    const result = isTerminalControl(control.state) ? persistedResult : null;
     const progress = await readJSON<Record<string, unknown> | null>(path.join(directory, "progress.json"), null);
     const active = this.active.get(evalId);
     const workItems = this.workItems.evalSnapshot(evalId);
@@ -339,8 +344,9 @@ export class EvalScheduler {
   private async execute(entry: QueuedEval, parallelism: number, fineGrained: boolean, lease: ResourceLease | undefined, controller: AbortController): Promise<void> {
     await this.updateControl(entry.directory, (control) => ({
       ...control,
-      state: "running",
+      state: "planning",
       admitted_parallelism: fineGrained ? 0 : parallelism,
+      active_leases: [],
       ...(lease ? { allocation_id: lease.allocation.allocation_id } : {}),
     }));
     const result = await this.executor({
@@ -364,6 +370,12 @@ export class EvalScheduler {
       root: this.root,
       signal: controller.signal,
       onEvent: this.onEvent,
+      onControlPhase: async (phase, work) => {
+        await this.updateControl(entry.directory, (control) => applyEvalPhase(control, phase, work?.queuedWorkItems, work?.terminalWorkItems));
+      },
+      onWorkItemState: async (workId, leaseId, state) => {
+        await this.updateControl(entry.directory, (control) => applyEvalWorkItem(control, workId, leaseId, state));
+      },
     });
     if (!await readJSON(path.join(entry.directory, "result.json"), null)) {
       await atomicWriteJSON(path.join(entry.directory, "result.json"), result);
@@ -372,7 +384,7 @@ export class EvalScheduler {
     await this.updateControl(entry.directory, (control) => {
       const { allocation_id: _allocationId, ...released } = control;
       return {
-        ...released,
+        ...settleEvalWorkItems(released as EvalControlV1),
         state,
         admitted_parallelism: fineGrained ? 0 : parallelism,
         ...(result.error ? { error: result.error } : {}),
@@ -388,7 +400,7 @@ export class EvalScheduler {
     await this.writeSyntheticResult(entry, cancelled ? "cancelled" : "failed", code, message, now);
     await this.updateControl(entry.directory, (control) => {
       const { allocation_id: _allocationId, ...released } = control;
-      return { ...released, state: cancelled ? "cancelled" : "failed", error: { code, message } };
+      return { ...settleEvalWorkItems(released as EvalControlV1), state: cancelled ? "cancelled" : "failed", error: { code, message } };
     });
     this.onEvent({ type: "eval.scheduler.error", eval_id: entry.evalId, code });
   }
@@ -429,17 +441,19 @@ export class EvalScheduler {
   }
 
   private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> {
-    const current = parseEvalControl(await readJSON(path.join(directory, "control.json")));
-    const next = parseEvalControl({
-      ...update(current),
-      schema_version: "1",
-      eval_id: current.eval_id,
-      generation: current.generation + 1,
-      created_at: current.created_at,
-      updated_at: new Date().toISOString(),
-    });
-    await atomicWriteJSON(path.join(directory, "control.json"), next);
-    return next;
+    return withFileLock(path.join(directory, ".locks"), "control", async () => {
+      const current = parseEvalControl(await readJSON(path.join(directory, "control.json")));
+      const next = parseEvalControl({
+        ...update(current),
+        schema_version: "1",
+        eval_id: current.eval_id,
+        generation: current.generation + 1,
+        created_at: current.created_at,
+        updated_at: new Date().toISOString(),
+      });
+      await atomicWriteJSON(path.join(directory, "control.json"), next);
+      return next;
+    }, { timeoutCode: "eval_control_locked", timeoutExitCode: 12 });
   }
 
   private async emitPersisted(directory: string, evalId: EvalId, event: Record<string, unknown>): Promise<void> {

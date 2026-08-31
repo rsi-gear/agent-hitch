@@ -7,3 +7,5 @@ export { DockerBuildKitBuilder } from "./docker-buildkit.js";
 export type { DockerBuildKitBuilderOptions } from "./docker-buildkit.js";
 export { inspectEnvironmentBuild } from "./records.js";
 export type { EnvironmentBuildInspection } from "./records.js";
+export { DockerRegistryResolver, resolveRegistryEnvironmentImage } from "./registry.js";
+export type { DockerRegistryResolverOptions, RegistryImageResolution, RegistryImageResolver } from "./registry.js";

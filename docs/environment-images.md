@@ -29,9 +29,17 @@ cache-hit verification. Optional registry cache references are derived from
 the service cache key under an operator-controlled prefix; user input cannot
 select an arbitrary cache tag.
 
+`DockerRegistryResolver` resolves both mutable tags and explicit digest
+references through a platform-specific pull and local OCI identity probe. The
+persisted manifest always uses a `repository@sha256:...` reference; an explicit
+input digest must match exactly, and the resolved OS/architecture plus config
+digest are verified before promotion. A later request for a mutable tag still
+resolves the tag again, so a moved tag creates a new content identity instead
+of returning a stale tag-based cache entry.
+
 Not yet wired into eval execution:
 
-- Harbor task/Compose environment discovery and immutable base-image
+- Harbor task/Compose environment discovery and Dockerfile base-image
   resolution;
 - version-canary-backed replacement of a Harbor build stanza with a digest;
 - post-start verification of the actual trial container image digest;

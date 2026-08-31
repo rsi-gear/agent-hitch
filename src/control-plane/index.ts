@@ -3,6 +3,7 @@ export type { ResourceKind, ResourceLedgerSnapshot, ResourceLease } from "./reso
 export { EvalScheduler } from "./eval-scheduler.js";
 export type { CancelEvalOutcome, EvalSchedulerOptions, EvalSchedulerStatus, SubmitEvalOptions } from "./eval-scheduler.js";
 export { evalTaskCollisionKey, parseEvalControl } from "./eval-records.js";
+export { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
 export { CollisionLockManager } from "./collisions.js";
 export type { CollisionLease } from "./collisions.js";
 export { WorkItemDispatcher } from "./work-dispatcher.js";

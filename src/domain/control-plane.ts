@@ -3,7 +3,10 @@ import type { Sha256 } from "./ids.js";
 
 export type EvalControlStateV1 =
   | "queued"
+  | "planning"
+  | "preparing"
   | "running"
+  | "finalizing"
   | "cancelling"
   | "succeeded"
   | "failed"
@@ -25,6 +28,9 @@ export interface EvalControlV1 {
   state: EvalControlStateV1;
   requested_parallelism: number;
   admitted_parallelism: number;
+  active_leases: string[];
+  queued_work_items: string[];
+  terminal_work_items: string[];
   allocation_id?: string;
   cancel_requested_at?: string;
   error?: { code: string; message: string };

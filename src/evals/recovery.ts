@@ -64,7 +64,7 @@ async function recoverLease(
     workerId: lease.worker_id,
     status: () => { throw new Error("recovery does not inspect provider capacity"); },
   });
-  const record = await readLocalDockerProcessRecordByLease({ root: input.root, leaseId: lease.lease_id }).catch(() => {
+  const record = await readLocalDockerProcessRecordByLease({ root: input.root, evalId: input.evalId, leaseId: lease.lease_id }).catch(() => {
     throw ambiguous(`local provider has no durable process identity for ${lease.lease_id}`);
   });
   if (record.lease_epoch === lease.epoch - 1) await provider.adoptLeaseEpoch(lease.lease_id, record.lease_epoch, lease.epoch);

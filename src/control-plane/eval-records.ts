@@ -7,7 +7,7 @@ import type { EvalRequestInput } from "../evals/index.js";
 export function parseEvalControl(value: unknown): EvalControlV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("eval control must be an object");
   const control = value as Record<string, unknown>;
-  const states = new Set<EvalControlStateV1>(["queued", "running", "cancelling", "succeeded", "failed", "cancelled"]);
+  const states = new Set<EvalControlStateV1>(["queued", "planning", "preparing", "running", "finalizing", "cancelling", "succeeded", "failed", "cancelled"]);
   if (control.schema_version !== "1" || typeof control.eval_id !== "string" || !/^eval_[a-f0-9]{32}$/.test(control.eval_id)
     || !Number.isSafeInteger(control.generation) || (control.generation as number) < 0
     || !states.has(control.state as EvalControlStateV1)
@@ -28,6 +28,10 @@ export function parseEvalControl(value: unknown): EvalControlV1 {
     || typeof (error as Record<string, unknown>).code !== "string" || typeof (error as Record<string, unknown>).message !== "string")) {
     throw new TypeError("eval control error is invalid");
   }
+  const activeLeases = controlItems(control.active_leases, "active_leases", /^lease_[a-f0-9]{32}$/);
+  const queuedWorkItems = controlItems(control.queued_work_items, "queued_work_items", /^work_[a-f0-9]{32}$/);
+  const terminalWorkItems = controlItems(control.terminal_work_items, "terminal_work_items", /^work_[a-f0-9]{32}$/);
+  if (queuedWorkItems.some((item) => terminalWorkItems.includes(item))) throw new TypeError("eval control work item sets overlap");
   return {
     schema_version: "1",
     eval_id: control.eval_id,
@@ -35,12 +39,24 @@ export function parseEvalControl(value: unknown): EvalControlV1 {
     state: control.state as EvalControlStateV1,
     requested_parallelism: control.requested_parallelism as number,
     admitted_parallelism: control.admitted_parallelism as number,
+    active_leases: activeLeases,
+    queued_work_items: queuedWorkItems,
+    terminal_work_items: terminalWorkItems,
     ...(control.allocation_id === undefined ? {} : { allocation_id: control.allocation_id as string }),
     ...(control.cancel_requested_at === undefined ? {} : { cancel_requested_at: control.cancel_requested_at as string }),
     ...(error === undefined ? {} : { error: error as { code: string; message: string } }),
     created_at: control.created_at,
     updated_at: control.updated_at,
   };
+}
+
+function controlItems(value: unknown, label: string, pattern: RegExp): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !pattern.test(item))
+    || new Set(value).size !== value.length) throw new TypeError(`eval control ${label} is invalid`);
+  const sorted = [...value].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+  if (sorted.some((item, index) => item !== value[index])) throw new TypeError(`eval control ${label} is not canonical`);
+  return value;
 }
 
 export function terminalControlState(status: unknown): Extract<EvalControlStateV1, "succeeded" | "failed" | "cancelled"> {

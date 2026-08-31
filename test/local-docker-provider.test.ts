@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BackendWorkItemV1, ExecutionProviderStatusV1 } from "../src/domain/index.js";
-import { adoptLocalDockerLeaseEpoch, createExecutionLease, LocalDockerExecutionProvider, parseExecutionProviderStatus, parseLocalProviderExecutionRecord, readLocalDockerProcessRecord, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord, waitForLocalDockerProcessTerminal } from "../src/evals/index.js";
+import { adoptLocalDockerLeaseEpoch, createExecutionLease, LocalDockerExecutionProvider, parseExecutionProviderStatus, parseLocalProviderExecutionRecord, readLocalDockerProcessRecord, readLocalDockerProcessRecordByLease, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord, waitForLocalDockerProcessTerminal } from "../src/evals/index.js";
 import { captureProcessIdentity, inspectProcessIdentity } from "../src/foundation/index.js";
 
 const evalId = "eval_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -85,6 +85,8 @@ test("local Docker provider records process identity and classifies recovery wit
   assert.ok(child.pid);
   const record = await provider.processStarted({ evalDirectory, lease: activeLease, backendDirectory, pid: child.pid });
   assert.equal(record.state, "running");
+  await rm(path.join(root, "providers", "local-docker", "leases", `${lease.leaseId}.json`));
+  assert.equal((await readLocalDockerProcessRecordByLease({ root, evalId, leaseId: lease.leaseId })).lease_id, lease.leaseId);
   assert.equal((await provider.recover(activeLease)).state, "running");
   await assert.rejects(provider.release(lease.leaseId, 1), (error: unknown) => (error as { code?: string }).code === "provider_release_active");
   const adopted = await provider.adoptLeaseEpoch(lease.leaseId, 1, 2);

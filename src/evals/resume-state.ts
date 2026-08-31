@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { EvalExecutionPlanV1, EvalProgressV1 } from "../domain/index.js";
+import type { EvalWorkStateSnapshot } from "./service-types.js";
 import { readJSON, sha256JSON } from "../foundation/index.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { readEvalProgress } from "./progress.js";
@@ -41,4 +42,12 @@ export function assertEvalResumeState(input: {
     || state.progress.planned_trials !== input.plannedTrials) {
     throw new TypeError("resumable eval progress does not match its plan");
   }
+}
+
+export function executionPlanWorkState(plan: EvalExecutionPlanV1, progress: EvalProgressV1): EvalWorkStateSnapshot {
+  const settled = new Set(progress.trials.map((trial) => `${trial.task_id}\0${trial.attempt}`));
+  const terminalWorkItems = plan.work_items.filter((item) => item.logical_attempt !== null
+    && item.task_ids.every((taskId) => settled.has(`${taskId}\0${item.logical_attempt}`))).map((item) => item.work_id);
+  const terminal = new Set(terminalWorkItems);
+  return { queuedWorkItems: plan.work_items.map((item) => item.work_id).filter((workId) => !terminal.has(workId)), terminalWorkItems };
 }

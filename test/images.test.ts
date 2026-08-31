@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Sha256 } from "../src/domain/index.js";
 import { BuildSlotAdmission, ResourceLedger } from "../src/control-plane/index.js";
-import { DockerBuildKitBuilder, EnvironmentImageService, inspectEnvironmentBuild, parseEnvironmentImageManifest, resolveBuildContext } from "../src/images/index.js";
+import { DockerBuildKitBuilder, DockerRegistryResolver, EnvironmentImageService, inspectEnvironmentBuild, parseEnvironmentImageManifest, resolveBuildContext, resolveRegistryEnvironmentImage } from "../src/images/index.js";
 import type { EnvironmentImageBuilder } from "../src/images/index.js";
 import { delay, sha256JSON, statePaths } from "../src/foundation/index.js";
 
@@ -178,4 +178,52 @@ test("image builds use a FIFO build lane independent from container slots", asyn
   second.release();
   runningTrial.release();
   assert.deepEqual(ledger.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
+});
+
+test("registry tags resolve to immutable platform-verified digests", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-registry-image-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const docker = path.join(root, "fake-docker-registry");
+  const argvLog = path.join(root, "registry-argv.jsonl");
+  const manifestDigest = `sha256:${"7".repeat(64)}`;
+  const configDigest = `sha256:${"8".repeat(64)}`;
+  await writeFile(docker, `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(args) + "\\n");
+if (args[0] === "pull") process.exit(0);
+if (args[0] === "image" && args[1] === "inspect") {
+  process.stdout.write(JSON.stringify({Id:${JSON.stringify(configDigest)},RepoDigests:["registry.example/team/image@${manifestDigest}"],Os:"linux",Architecture:"amd64"}));
+  process.exit(0);
+}
+process.exit(2);
+`, { mode: 0o755 });
+  const resolver = new DockerRegistryResolver({ dockerExecutable: docker, id: "registry-test" });
+  const request = {
+    root,
+    benchmarkId: "bench",
+    benchmarkRevision: "2",
+    taskId: "task-registry",
+    reference: "registry.example/team/image:latest",
+    platform: "linux/amd64",
+    resolver,
+  };
+  const first = await resolveRegistryEnvironmentImage(request);
+  assert.equal(first.cacheHit, false);
+  assert.equal(first.manifest.output.reference, `registry.example/team/image@${manifestDigest}`);
+  assert.equal(first.manifest.output.manifest_digest, manifestDigest);
+  assert.equal(first.manifest.output.config_digest, configDigest);
+  const second = await resolveRegistryEnvironmentImage(request);
+  assert.equal(second.cacheHit, true);
+  assert.equal(second.manifest.image_id, first.manifest.image_id);
+  const argv = await readFile(argvLog, "utf8");
+  assert.match(argv, /"pull","--platform","linux\/amd64","registry\.example\/team\/image:latest"/);
+  await assert.rejects(resolveRegistryEnvironmentImage({
+    ...request,
+    reference: `registry.example/team/image@sha256:${"9".repeat(64)}`,
+  }), (error: unknown) => (error as { code?: string }).code === "image_digest_mismatch");
+  await assert.rejects(resolveRegistryEnvironmentImage({
+    ...request,
+    resolver: { id: "forged", resolve: async () => ({ reference: "registry.example/other:latest", manifest_digest: manifestDigest as Sha256, platform: "linux/amd64" }) },
+  }), (error: unknown) => (error as { code?: string }).code === "image_output_mismatch");
 });

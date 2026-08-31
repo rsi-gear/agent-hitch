@@ -18,9 +18,9 @@ import { prepareEvalDirectory } from "./directory.js";
 import { buildEvalExecutionPlan } from "./execution-plan.js";
 import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
-import { assertEvalResumeState, loadEvalResumeState } from "./resume-state.js";
+import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionStrategy = "legacy-attempt-shards", executionWorker, workItemAdmission, resumeExisting = false, onControlPhase, onWorkItemState }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -38,8 +38,10 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   let progress: EvalProgressV1 | null = null;
   try {
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
+    await onControlPhase?.("planning");
     const requestedReference = parseHarnessReference(normalized.harness_ref);
     const resolvedRevision = await resolveHarness(normalized.harness_ref, { root, env });
+    await onControlPhase?.("preparing");
     let localTransport: LocalGitTransportUse | undefined;
     if (resolvedRevision.source.type === "git" && resolvedRevision.source.registered !== true) {
       const selector = requestedReference.selector;
@@ -192,6 +194,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       work_items: executionPlan.work_items.length,
       membership: executionPlan.membership,
     });
+    await onControlPhase?.("running", executionPlanWorkState(executionPlan, progress));
     if (localTransport) {
       await verifyLocalGitTransport(localTransport, {
         expected: {
@@ -229,6 +232,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
           collisionDomainId: `local-process:${process.pid}`,
         },
         ...(workItemAdmission ? { admission: workItemAdmission } : {}),
+        ...(onWorkItemState ? { onWorkItemState } : {}),
       });
       progress = execution.progress;
       backendRuns.push(...execution.backendRuns.map((entry) => ({
@@ -361,6 +365,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       infrastructureRetryRuns.push(...retries.runs);
     }
     if (progress === null) throw new Error("eval progress was not initialized");
+    await onControlPhase?.("finalizing");
     trialRefs = progress.trials;
     const cancelled = signal?.aborted === true;
     const localSourceFailure = localTransport
