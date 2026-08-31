@@ -13,5 +13,6 @@ export * from "./bundles.js";
 export * from "./execution-plan.js";
 export * from "./workers.js";
 export * from "./providers.js";
+export * from "./images.js";
 export * from "./validation.js";
 export type { EvalRequest } from "./evals.js";

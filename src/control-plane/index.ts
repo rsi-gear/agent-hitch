@@ -9,3 +9,4 @@ export { WorkItemDispatcher } from "./work-dispatcher.js";
 export type { WorkDispatchPermit, WorkDispatchRequest, WorkDispatcherSnapshot, WorkItemDispatcherOptions } from "./work-dispatcher.js";
 export { EvalRerunScheduler, parseEvalRerunSubmissionInput } from "./rerun-scheduler.js";
 export type { EvalRerunExecutor, EvalRerunSchedulerOptions, EvalRerunStatus, EvalRerunSubmissionInput } from "./rerun-scheduler.js";
+export { BuildSlotAdmission } from "./build-admission.js";

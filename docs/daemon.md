@@ -260,7 +260,7 @@ test profiles and isolated callers possible.
 - Run-history/artifact/workspace GC, durable queue replay policy, and push-based
   SSE/WebSocket delivery are not implemented yet.
 - Reservations currently control admission only; Docker/cgroup hard limits,
-  live resource metering, managed BuildKit image jobs, and remote workers remain
+  live resource metering, Harbor-wired BuildKit image jobs, and remote workers remain
   future provider work.
 - Loopback plus a file token protects the local control API from accidental
   cross-process use; it is not an OS sandbox for the launched coding agent.
