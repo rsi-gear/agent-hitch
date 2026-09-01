@@ -291,9 +291,13 @@ function parseBundleResources(value: unknown): NonNullable<ResultBundleIndexV1["
 function resourceVector(value: unknown): NonNullable<ResultBundleIndexV1["resources"]>["requested"] {
   const record = asRecord(value);
   const fields = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
-  if (Object.keys(record).some((key) => !fields.includes(key as typeof fields[number]))
-    || fields.some((key) => !Number.isSafeInteger(record[key]) || (record[key] as number) < 0)) throw new TypeError("result bundle requested resources are invalid");
-  return Object.fromEntries(fields.map((key) => [key, record[key]])) as unknown as NonNullable<ResultBundleIndexV1["resources"]>["requested"];
+  if (Object.keys(record).some((key) => !fields.includes(key as typeof fields[number]) && key !== "gpu_count")
+    || fields.some((key) => !Number.isSafeInteger(record[key]) || (record[key] as number) < 0)
+    || (record.gpu_count !== undefined && (!Number.isSafeInteger(record.gpu_count) || (record.gpu_count as number) < 0))) throw new TypeError("result bundle requested resources are invalid");
+  return {
+    ...Object.fromEntries(fields.map((key) => [key, record[key]])),
+    ...(record.gpu_count === undefined ? {} : { gpu_count: record.gpu_count }),
+  } as unknown as NonNullable<ResultBundleIndexV1["resources"]>["requested"];
 }
 
 async function bundleFiles(root: string): Promise<ResultBundleFileV1[]> {

@@ -74,6 +74,17 @@ gateway_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_mo
 gateway_overlay = json.loads(gateway_env._hitch_ownership_compose_path.read_text())
 assert gateway_overlay["services"]["main"] == {"extra_hosts": ["host.docker.internal:host-gateway"]}
 assert gateway_overlay["services"]["database"] == {}
+gpu_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_main_gpu_count=2)
+gpu_overlay_text = gpu_env._hitch_ownership_compose_path.read_text()
+assert '"devices": !override [{"capabilities": ["gpu"], "count": 2}]' in gpu_overlay_text
+(root / "docker-compose-hitch-gpu.yaml").write_text(gpu_overlay_text)
+gpu_sidecar_env = module.HitchHarborDockerEnvironment(
+    environment_dir=root,
+    hitch_ownership_labels=labels,
+    hitch_service_resource_limits={"database": {**limits["database"], "gpu_count": 1}},
+)
+gpu_sidecar_overlay_text = gpu_sidecar_env._hitch_ownership_compose_path.read_text()
+assert '"devices": !override [{"capabilities": ["gpu"], "count": 1}]' in gpu_sidecar_overlay_text
 try: module._validate_labels({**labels, "unexpected": "x"})
 except ValueError: pass
 else: raise AssertionError("unknown ownership label accepted")
@@ -105,4 +116,14 @@ else: raise AssertionError("mutable prebuilt task image accepted")
   const config = JSON.parse(merged.stdout) as { services: { main: Record<string, unknown> } };
   assert.equal(config.services.main.image, `sha256:${"c".repeat(64)}`);
   assert.equal("build" in config.services.main, false, "prebuilt Compose merge retained a build stanza");
+  const gpuMerged = spawnSync("docker", [
+    "compose",
+    "-f", path.join(directory, "docker-compose.yaml"),
+    "-f", path.join(directory, "docker-compose-hitch-gpu.yaml"),
+    "config", "--format", "json",
+  ], { encoding: "utf8" });
+  assert.equal(gpuMerged.status, 0, gpuMerged.stderr || gpuMerged.stdout);
+  const gpuConfig = JSON.parse(gpuMerged.stdout) as { services: { main: { deploy?: { resources?: { reservations?: { devices?: Array<{ count?: number; capabilities?: string[] }> } } } } } };
+  assert.equal(gpuConfig.services.main.deploy?.resources?.reservations?.devices?.[0]?.count, 2);
+  assert.deepEqual(gpuConfig.services.main.deploy?.resources?.reservations?.devices?.[0]?.capabilities, ["gpu"]);
 });

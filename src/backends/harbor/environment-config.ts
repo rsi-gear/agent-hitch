@@ -3,7 +3,7 @@ import { HitchError, invalidInput } from "../../foundation/index.js";
 
 const HITCH_DOCKER_ENVIRONMENT = "hitch_harbor_environment:HitchHarborDockerEnvironment";
 
-export type HarborDockerServiceLimitsV1 = Record<string, { cpu_millis: number; memory_bytes: number }>;
+export type HarborDockerServiceLimitsV1 = Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
 
 export function harborEnvironmentConfig(
   resources?: ResourceVectorV1,
@@ -14,6 +14,7 @@ export function harborEnvironmentConfig(
   modelProxyHostGateway = false,
 ): Record<string, unknown> {
   const environment: Record<string, unknown> = { type: "docker", delete: true };
+  let gpuCount = 0;
   if (resources) {
     if (Object.values(resources).some((value) => !Number.isSafeInteger(value) || value < 0)) throw invalidInput("Harbor execution resources are invalid");
     const mib = 1024 * 1024;
@@ -22,13 +23,14 @@ export function harborEnvironmentConfig(
     }
     const cpus = resources.cpu_millis / 1_000;
     const memoryMb = resources.memory_bytes / mib;
+    gpuCount = resources.gpu_count ?? 0;
     if (cpus > 0) Object.assign(environment, { cpu_enforcement_policy: "limit", override_cpus: cpus });
     if (memoryMb > 0) Object.assign(environment, { memory_enforcement_policy: "limit", override_memory_mb: memoryMb });
   }
   if (serviceLimits && !ownership) throw invalidInput("Harbor sidecar limits require Docker ownership");
   const images = resolvedImages ? parseResolvedImages(resolvedImages) : {};
   if (prebuiltTaskImage !== undefined && !/^sha256:[a-f0-9]{64}$/.test(prebuiltTaskImage)) throw invalidInput("Harbor prebuilt task image is invalid");
-  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage || modelProxyHostGateway) Object.assign(environment, {
+  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage || modelProxyHostGateway || gpuCount > 0) Object.assign(environment, {
     import_path: HITCH_DOCKER_ENVIRONMENT,
     kwargs: {
       ...(ownership ? { hitch_ownership_labels: harborOwnershipLabels(ownership) } : {}),
@@ -36,6 +38,7 @@ export function harborEnvironmentConfig(
       ...(Object.keys(images).length > 0 ? { hitch_resolved_images: images } : {}),
       ...(prebuiltTaskImage ? { hitch_prebuilt_task_image: prebuiltTaskImage } : {}),
       ...(modelProxyHostGateway ? { hitch_model_proxy_host_gateway: true } : {}),
+      ...(gpuCount > 0 ? { hitch_main_gpu_count: gpuCount } : {}),
     },
   });
   if (ownership) environment.delete = false;
@@ -69,10 +72,11 @@ function parseServiceLimits(value: HarborDockerServiceLimitsV1): HarborDockerSer
   const result: HarborDockerServiceLimitsV1 = {};
   for (const [name, resources] of Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) {
     if (!name || name === "main" || name.length > 255 || /[\0\r\n]/.test(name)
-      || !resources || Object.keys(resources).some((field) => field !== "cpu_millis" && field !== "memory_bytes")
+      || !resources || Object.keys(resources).some((field) => field !== "cpu_millis" && field !== "memory_bytes" && field !== "gpu_count")
       || !Number.isSafeInteger(resources.cpu_millis) || resources.cpu_millis < 1
-      || !Number.isSafeInteger(resources.memory_bytes) || resources.memory_bytes < 1) throw invalidInput("Harbor sidecar resource limits are invalid");
-    result[name] = { cpu_millis: resources.cpu_millis, memory_bytes: resources.memory_bytes };
+      || !Number.isSafeInteger(resources.memory_bytes) || resources.memory_bytes < 1
+      || (resources.gpu_count !== undefined && (!Number.isSafeInteger(resources.gpu_count) || resources.gpu_count < 1))) throw invalidInput("Harbor sidecar resource limits are invalid");
+    result[name] = { cpu_millis: resources.cpu_millis, memory_bytes: resources.memory_bytes, ...(resources.gpu_count === undefined ? {} : { gpu_count: resources.gpu_count }) };
   }
   return result;
 }

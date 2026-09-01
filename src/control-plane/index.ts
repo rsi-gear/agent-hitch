@@ -1,4 +1,4 @@
-export { ResourceLedger, scaleResources, validateResourceVector, zeroResources } from "./resources.js";
+export { ResourceLedger, maxResourceVectors, resourceValue, scaleResources, subtractResourceVectors, sumResourceVectors, validateResourceVector, zeroResources } from "./resources.js";
 export type { ResourceKind, ResourceLedgerSnapshot, ResourceLease } from "./resources.js";
 export { EvalScheduler } from "./eval-scheduler.js";
 export type { CancelEvalOutcome, EvalSchedulerOptions, EvalSchedulerStatus, SubmitEvalOptions } from "./eval-scheduler.js";

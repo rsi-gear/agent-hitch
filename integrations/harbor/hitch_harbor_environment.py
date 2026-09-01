@@ -29,6 +29,7 @@ _REQUIRED_LABELS = {
 }
 _ALLOWED_LABELS = _REQUIRED_LABELS | {_LABEL_TASK}
 _COMPOSE_RESET_MARKER = "__HITCH_COMPOSE_RESET_NULL__"
+_GPU_OVERRIDE_PREFIX = "__HITCH_GPU_OVERRIDE_"
 
 
 class HitchHarborDockerEnvironment(DockerEnvironment):
@@ -42,6 +43,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         hitch_resolved_images: Mapping[str, str] | None = None,
         hitch_prebuilt_task_image: str | None = None,
         hitch_model_proxy_host_gateway: bool = False,
+        hitch_main_gpu_count: int = 0,
         **kwargs: Any,
     ) -> None:
         self._hitch_ownership_labels = _validate_labels(hitch_ownership_labels)
@@ -55,6 +57,9 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         if not isinstance(hitch_model_proxy_host_gateway, bool):
             raise ValueError("Hitch model proxy host gateway flag is invalid")
         self._hitch_model_proxy_host_gateway = hitch_model_proxy_host_gateway
+        if isinstance(hitch_main_gpu_count, bool) or not isinstance(hitch_main_gpu_count, int) or hitch_main_gpu_count < 0:
+            raise ValueError("Hitch main GPU count is invalid")
+        self._hitch_main_gpu_count = hitch_main_gpu_count
         self._hitch_ownership_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._hitch_ownership_compose_path: Path | None = None
         positional = list(args)
@@ -79,6 +84,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             or self._hitch_resolved_images
             or self._hitch_prebuilt_task_image
             or self._hitch_model_proxy_host_gateway
+            or self._hitch_main_gpu_count > 0
         ):
             self._hitch_ownership_compose_path = self._write_ownership_overlay()
 
@@ -145,6 +151,14 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 config["build"] = _COMPOSE_RESET_MARKER
             if name == MAIN_SERVICE_NAME and self._hitch_model_proxy_host_gateway:
                 config["extra_hosts"] = ["host.docker.internal:host-gateway"]
+            if name == MAIN_SERVICE_NAME and self._hitch_main_gpu_count > 0:
+                config["deploy"] = {
+                    "resources": {
+                        "reservations": {
+                            "devices": f"{_GPU_OVERRIDE_PREFIX}{self._hitch_main_gpu_count}__"
+                        }
+                    }
+                }
             if name != MAIN_SERVICE_NAME and self._hitch_service_resource_limits:
                 limits = self._hitch_service_resource_limits.get(name)
                 if limits is None:
@@ -155,6 +169,14 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                     "cpus": limits["cpu_millis"] / 1000,
                     "mem_limit": limits["memory_bytes"],
                 })
+                if limits.get("gpu_count", 0) > 0:
+                    config["deploy"] = {
+                        "resources": {
+                            "reservations": {
+                                "devices": f"{_GPU_OVERRIDE_PREFIX}{limits['gpu_count']}__"
+                            }
+                        }
+                    }
             service_overlays[name] = config
         overlay = {
             "services": service_overlays,
@@ -175,6 +197,11 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         contents = contents.replace(
             f'"build": "{_COMPOSE_RESET_MARKER}"',
             '"build": !reset null',
+        )
+        contents = re.sub(
+            rf'"devices": "{_GPU_OVERRIDE_PREFIX}([1-9][0-9]*)__"',
+            lambda match: '"devices": !override [{"capabilities": ["gpu"], "count": ' + match.group(1) + '}]',
+            contents,
         )
         target.write_text(contents, encoding="utf-8")
         return target
@@ -237,18 +264,25 @@ def _validate_resource_limits(
             or len(name) > 255
             or any(character in name for character in ("\x00", "\n", "\r"))
             or not isinstance(resources, Mapping)
-            or set(resources) != {"cpu_millis", "memory_bytes"}
+            or set(resources) - {"cpu_millis", "memory_bytes", "gpu_count"}
+            or not {"cpu_millis", "memory_bytes"} <= set(resources)
             or isinstance(resources.get("cpu_millis"), bool)
             or not isinstance(resources.get("cpu_millis"), int)
             or resources["cpu_millis"] < 1
             or isinstance(resources.get("memory_bytes"), bool)
             or not isinstance(resources.get("memory_bytes"), int)
             or resources["memory_bytes"] < 1
+            or ("gpu_count" in resources and (
+                isinstance(resources.get("gpu_count"), bool)
+                or not isinstance(resources.get("gpu_count"), int)
+                or resources["gpu_count"] < 1
+            ))
         ):
             raise ValueError("Hitch Docker service resource limits are invalid")
         result[name] = {
             "cpu_millis": resources["cpu_millis"],
             "memory_bytes": resources["memory_bytes"],
+            **({"gpu_count": resources["gpu_count"]} if "gpu_count" in resources else {}),
         }
     return dict(sorted(result.items()))
 

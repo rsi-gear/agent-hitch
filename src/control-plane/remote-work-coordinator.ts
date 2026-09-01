@@ -296,14 +296,23 @@ function workerOrder(left: RemoteWorkerPublicRecordV1, right: RemoteWorkerPublic
 }
 
 function utilization(allocated: ResourceVectorV1, allocatable: ResourceVectorV1): number {
-  return Math.max(...fields().map((field) => allocatable[field] === 0 ? allocated[field] === 0 ? 0 : Infinity : allocated[field] / allocatable[field]));
+  return Math.max(...fields().map((field) => resourceValue(allocatable, field) === 0
+    ? resourceValue(allocated, field) === 0 ? 0 : Infinity
+    : resourceValue(allocated, field) / resourceValue(allocatable, field)));
 }
 
 function available(total: ResourceVectorV1, used: ResourceVectorV1): ResourceVectorV1 {
-  return Object.fromEntries(fields().map((field) => [field, total[field] - used[field]])) as unknown as ResourceVectorV1;
+  const result: ResourceVectorV1 = {
+    cpu_millis: total.cpu_millis - used.cpu_millis,
+    memory_bytes: total.memory_bytes - used.memory_bytes,
+    container_slots: total.container_slots - used.container_slots,
+    build_slots: total.build_slots - used.build_slots,
+  };
+  if (total.gpu_count !== undefined || used.gpu_count !== undefined) result.gpu_count = (total.gpu_count ?? 0) - (used.gpu_count ?? 0);
+  return result;
 }
 
-function fits(requested: ResourceVectorV1, capacity: ResourceVectorV1): boolean { return fields().every((field) => requested[field] <= capacity[field]); }
+function fits(requested: ResourceVectorV1, capacity: ResourceVectorV1): boolean { return fields().every((field) => resourceValue(requested, field) <= resourceValue(capacity, field)); }
 function acceptedOrLater(offer: RemoteWorkOfferV1): boolean {
   return new Set(["accepted", "cancel-requested", "completed", "release-requested", "released"]).has(offer.state)
     && typeof offer.accepted_at === "string" && typeof offer.accept_receipt_digest === "string";
@@ -313,7 +322,8 @@ function workerAvailableForOffer(worker: RemoteWorkerPublicRecordV1 | null, offe
   if (offer.state === "offered") return true;
   return worker.active_leases.some((lease) => lease.lease_id === offer.lease.lease_id && lease.epoch === offer.lease.epoch);
 }
-function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots"]; }
+function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"]; }
+function resourceValue(resources: ResourceVectorV1, field: keyof ResourceVectorV1): number { return resources[field] ?? 0; }
 function boundedInterval(value: number, label: string): number { if (!Number.isSafeInteger(value) || value < 1 || value > 60_000) throw new TypeError(`${label} is invalid`); return value; }
 function boundedReconnectTimeout(value: number): number { if (!Number.isSafeInteger(value) || value < 1 || value > 5 * 60_000) throw new TypeError("remote worker reconnect timeout is invalid"); return value; }
 function ambiguous(message: string): HitchError { return new HitchError(message, { code: "execution_state_ambiguous", exitCode: 12 }); }

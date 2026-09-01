@@ -4,7 +4,7 @@ import path from "node:path";
 import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteCredentialEnvelopeV1, RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, RemoteWorkerHeartbeatV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { parseExecutionLease } from "../evals/index.js";
-import { validateResourceVector } from "./resources.js";
+import { maxResourceVectors, resourceValue, subtractResourceVectors, sumResourceVectors, validateResourceVector } from "./resources.js";
 import { RemoteWorkerArtifactStore } from "./remote-worker-artifacts.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { RemoteWorkInputStore } from "./remote-work-inputs.js";
@@ -455,26 +455,26 @@ function validateOfferIdentity(workerId: string, offerId: string): void {
 }
 
 function available(allocatable: ResourceVectorV1, allocated: ResourceVectorV1): ResourceVectorV1 {
-  return Object.fromEntries(fields().map((field) => [field, allocatable[field] - allocated[field]])) as unknown as ResourceVectorV1;
+  return subtractResourceVectors(allocatable, allocated);
 }
 
 function sumReservations(offers: readonly RemoteWorkOfferV1[]): ResourceVectorV1 {
-  return Object.fromEntries(fields().map((field) => [field, offers.reduce((total, offer) => total + offer.lease.reservation[field], 0)])) as unknown as ResourceVectorV1;
+  return sumResourceVectors(offers.map((offer) => offer.lease.reservation));
 }
 
 function maxResources(left: ResourceVectorV1, right: ResourceVectorV1): ResourceVectorV1 {
-  return Object.fromEntries(fields().map((field) => [field, Math.max(left[field], right[field])])) as unknown as ResourceVectorV1;
+  return maxResourceVectors(left, right);
 }
 
 function assertFits(requested: ResourceVectorV1, capacity: ResourceVectorV1): void {
-  if (fields().some((field) => requested[field] > capacity[field])) throw new HitchError("remote worker rejected work capacity", { code: "worker_rejected", exitCode: 10 });
+  if (fields().some((field) => resourceValue(requested, field) > resourceValue(capacity, field))) throw new HitchError("remote worker rejected work capacity", { code: "worker_rejected", exitCode: 10 });
 }
 
 function acceptedOrCollecting(state: RemoteWorkOfferV1["state"]): boolean {
   return state === "accepted" || state === "cancel-requested" || state === "completed" || state === "release-requested";
 }
 
-function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots"]; }
+function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"]; }
 function timestamp(value: unknown): boolean { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
 function stringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0 && !/[\0\r\n]/.test(entry)) && new Set(value).size === value.length; }
 function validSequence(value: unknown, allowZero: boolean): number { if (!Number.isSafeInteger(value) || (value as number) < (allowZero ? 0 : 1)) throw protocolError("remote worker event sequence state is invalid"); return value as number; }

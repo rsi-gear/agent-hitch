@@ -150,8 +150,8 @@ export function parseExecutionProviderStatus(value: unknown): ExecutionProviderS
   const total = providerResources(capacity.total, "total");
   const allocatable = providerResources(capacity.allocatable, "allocatable");
   const allocated = providerResources(capacity.allocated, "allocated");
-  for (const field of ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const) {
-    if (allocatable[field] > total[field] || allocated[field] > allocatable[field]) throw new TypeError("execution provider capacity accounting is invalid");
+  for (const field of ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"] as const) {
+    if ((allocatable[field] ?? 0) > (total[field] ?? 0) || (allocated[field] ?? 0) > (allocatable[field] ?? 0)) throw new TypeError("execution provider capacity accounting is invalid");
   }
   return {
     ...(status as unknown as Omit<ExecutionProviderStatusV1, "features" | "capacity">),
@@ -394,17 +394,17 @@ async function regularFileOrMissing(file: string): Promise<boolean> {
   }
 }
 
-function exactRecord(value: unknown, keys: string[], label: string): Record<string, unknown> {
+function exactRecord(value: unknown, keys: string[], label: string, optional: string[] = []): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== keys.length || keys.some((key) => !(key in record)) || Object.keys(record).some((key) => !keys.includes(key))) {
+  if (keys.some((key) => !(key in record)) || Object.keys(record).some((key) => !keys.includes(key) && !optional.includes(key))) {
     throw new TypeError(`${label} fields are invalid`);
   }
   return record;
 }
 
 function providerResources(value: unknown, label: string): ExecutionProviderStatusV1["capacity"]["total"] {
-  const record = exactRecord(value, ["cpu_millis", "memory_bytes", "container_slots", "build_slots"], `execution provider ${label} resources`);
+  const record = exactRecord(value, ["cpu_millis", "memory_bytes", "container_slots", "build_slots"], `execution provider ${label} resources`, ["gpu_count"]);
   for (const entry of Object.values(record)) if (!Number.isSafeInteger(entry) || (entry as number) < 0) throw new TypeError(`execution provider ${label} resources are invalid`);
   return record as unknown as ExecutionProviderStatusV1["capacity"]["total"];
 }

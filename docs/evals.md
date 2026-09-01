@@ -27,7 +27,9 @@ hitch daemon start \
   --max-concurrent 8 \
   --capacity-cpu-millis 8000 \
   --capacity-memory-mib 16384 \
-  --container-slots 8
+  --container-slots 8 \
+  --capacity-gpus 2 \
+  --eval-gpus 1
 
 # Submit and wait for the terminal result.
 hitch eval run --daemon \

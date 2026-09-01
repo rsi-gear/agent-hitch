@@ -57,6 +57,13 @@ test("execution plan conservatively represents opaque dataset membership", () =>
   assert.deepEqual(plan.work_items[0]?.reservation, { cpu_millis: 4_000, memory_bytes: 8_192, container_slots: 2, build_slots: 0 });
 });
 
+test("execution plan scales and round-trips GPU reservations", () => {
+  const plan = buildEvalExecutionPlan({ ...input, tasks: ["one", "two"], trialResources: { ...input.trialResources, gpu_count: 1 } });
+  assert.equal(plan.default_trial_resources.gpu_count, 1);
+  assert.equal(plan.work_items[0]?.reservation.gpu_count, 2);
+  assert.deepEqual(parseEvalExecutionPlan(plan), plan);
+});
+
 test("execution plan seals requested and effective model capture policy", () => {
   const modelCapture = {
     requested_mode: "hybrid" as const,

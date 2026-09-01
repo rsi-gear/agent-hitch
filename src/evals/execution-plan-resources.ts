@@ -36,11 +36,17 @@ export function reservationForTasks(
     if (!resource) throw new TypeError(`execution plan has no resources for task: ${taskId}`);
     return resource;
   });
-  return Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, selected
+  const result = Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, selected
     .map((entry) => entry[name])
     .sort((left, right) => right - left)
     .slice(0, parallelism)
     .reduce((sum, entry) => sum + entry, 0)])) as unknown as ResourceVectorV1;
+  if (selected.some((entry) => entry.gpu_count !== undefined)) result.gpu_count = selected
+    .map((entry) => entry.gpu_count ?? 0)
+    .sort((left, right) => right - left)
+    .slice(0, parallelism)
+    .reduce((sum, entry) => sum + entry, 0);
+  return result;
 }
 
 export function resourceRequirementForTask(
@@ -54,13 +60,14 @@ export function runtimeResourcesForTask(
   plan: { task_resources?: readonly TaskResourceRequirementV1[] },
   taskId: string,
   fallback: ResourceVectorV1,
-): { mainLimits: ResourceVectorV1; sidecarLimits: Record<string, { cpu_millis: number; memory_bytes: number }> } {
+): { mainLimits: ResourceVectorV1; sidecarLimits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }> } {
   const requirement = resourceRequirementForTask(plan, taskId);
   const sidecarLimits = Object.fromEntries((requirement?.components ?? [])
     .filter((entry) => entry.role === "task-sidecar" || entry.role === "provider-sidecar")
     .map((entry) => [entry.name, {
       cpu_millis: entry.fields.cpu_millis.value,
       memory_bytes: entry.fields.memory_bytes.value,
+      ...(entry.fields.gpu_count && entry.fields.gpu_count.value > 0 ? { gpu_count: entry.fields.gpu_count.value } : {}),
     }]));
   return { mainLimits: requirement?.main_limits ?? fallback, sidecarLimits };
 }
@@ -71,9 +78,11 @@ function parseRequirement(value: unknown, index: number): TaskResourceRequiremen
   const reservation = parseVector(record.reservation, `task resources ${index} reservation`);
   const mainLimits = parseVector(record.main_limits, `task resources ${index} main limits`);
   if (mainLimits.container_slots !== 1 || mainLimits.build_slots !== 0) throw new TypeError(`task resources ${index} main limits are invalid`);
-  const fieldsRecord = exactRecord(record.fields, RESOURCE_FIELDS, `task resources ${index} fields`);
+  const fieldsRecord = exactRecord(record.fields, RESOURCE_FIELDS, `task resources ${index} fields`, ["gpu_count"]);
   const fields = Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, parseField(fieldsRecord[name], `task resources ${index} ${name}`)])) as unknown as TaskResourceRequirementV1["fields"];
+  if (fieldsRecord.gpu_count !== undefined) fields.gpu_count = parseField(fieldsRecord.gpu_count, `task resources ${index} gpu_count`);
   if (RESOURCE_FIELDS.some((name) => fields[name].value !== reservation[name])
+    || (fields.gpu_count?.value ?? 0) !== (reservation.gpu_count ?? 0)
     || fields.cpu_millis.source !== "derived-components" || fields.memory_bytes.source !== "derived-components"
     || fields.container_slots.source !== "derived-components" || fields.build_slots.source !== "derived-components") {
     throw new TypeError(`task resources ${index} field evidence does not match reservation`);
@@ -84,7 +93,7 @@ function parseRequirement(value: unknown, index: number): TaskResourceRequiremen
     throw new TypeError(`task resources ${index} component identities are invalid`);
   }
   const sum = sumComponents(components);
-  if (RESOURCE_FIELDS.some((name) => sum[name] !== reservation[name])) throw new TypeError(`task resources ${index} components do not match reservation`);
+  if (RESOURCE_FIELDS.some((name) => sum[name] !== reservation[name]) || (sum.gpu_count ?? 0) !== (reservation.gpu_count ?? 0)) throw new TypeError(`task resources ${index} components do not match reservation`);
   for (const component of components.filter((entry) => entry.role === "main" || entry.role === "verifier")) {
     if (component.fields.cpu_millis.value > mainLimits.cpu_millis || component.fields.memory_bytes.value > mainLimits.memory_bytes) {
       throw new TypeError(`task resources ${index} main limits do not cover runtime components`);
@@ -109,13 +118,15 @@ function parseComponent(value: unknown, requirementIndex: number, componentIndex
     || !["main", "task-sidecar", "verifier", "provider-sidecar"].includes(record.role as string)
     || !Number.isSafeInteger(record.replicas) || (record.replicas as number) < 1) throw new TypeError(`${label} identity is invalid`);
   const resources = parseVector(record.resources, `${label} resources`);
-  const fieldsRecord = exactRecord(record.fields, ["cpu_millis", "memory_bytes"], `${label} fields`);
+  const fieldsRecord = exactRecord(record.fields, ["cpu_millis", "memory_bytes"], `${label} fields`, ["gpu_count"]);
   const fields = {
     cpu_millis: parseField(fieldsRecord.cpu_millis, `${label} cpu_millis`),
     memory_bytes: parseField(fieldsRecord.memory_bytes, `${label} memory_bytes`),
+    ...(fieldsRecord.gpu_count === undefined ? {} : { gpu_count: parseField(fieldsRecord.gpu_count, `${label} gpu_count`) }),
   };
   const replicas = record.replicas as number;
   if (resources.cpu_millis !== fields.cpu_millis.value * replicas || resources.memory_bytes !== fields.memory_bytes.value * replicas
+    || (resources.gpu_count ?? 0) !== (fields.gpu_count?.value ?? 0) * replicas
     || resources.container_slots !== replicas || resources.build_slots !== 0) throw new TypeError(`${label} resource totals are invalid`);
   return { name: record.name, role: record.role as TaskResourceComponentV1["role"], replicas, resources, fields };
 }
@@ -128,23 +139,32 @@ function parseField(value: unknown, label: string): ResourceRequirementFieldV1 {
 }
 
 function parseVector(value: unknown, label: string): ResourceVectorV1 {
-  const record = exactRecord(value, RESOURCE_FIELDS, label);
+  const record = exactRecord(value, RESOURCE_FIELDS, label, ["gpu_count"]);
   if (RESOURCE_FIELDS.some((name) => !Number.isSafeInteger(record[name]) || (record[name] as number) < 0)) throw new TypeError(`${label} is invalid`);
-  return Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, record[name]])) as unknown as ResourceVectorV1;
+  if (record.gpu_count !== undefined && (!Number.isSafeInteger(record.gpu_count) || (record.gpu_count as number) < 0)) throw new TypeError(`${label} is invalid`);
+  return {
+    ...Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, record[name]])),
+    ...(record.gpu_count === undefined ? {} : { gpu_count: record.gpu_count }),
+  } as unknown as ResourceVectorV1;
 }
 
 function sumComponents(components: TaskResourceComponentV1[]): ResourceVectorV1 {
-  return Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, components.reduce((sum, entry) => sum + entry.resources[name], 0)])) as unknown as ResourceVectorV1;
+  const result = Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, components.reduce((sum, entry) => sum + entry.resources[name], 0)])) as unknown as ResourceVectorV1;
+  if (components.some((entry) => entry.resources.gpu_count !== undefined)) result.gpu_count = components.reduce((sum, entry) => sum + (entry.resources.gpu_count ?? 0), 0);
+  return result;
 }
 
 function scaleResources(resources: ResourceVectorV1, count: number): ResourceVectorV1 {
-  return Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, resources[name] * count])) as unknown as ResourceVectorV1;
+  return {
+    ...Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, resources[name] * count])),
+    ...(resources.gpu_count === undefined ? {} : { gpu_count: resources.gpu_count * count }),
+  } as unknown as ResourceVectorV1;
 }
 
-function exactRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+function exactRecord(value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
   const record = value as Record<string, unknown>;
-  if (keys.some((key) => !(key in record)) || Object.keys(record).some((key) => !keys.includes(key))) throw new TypeError(`${label} fields are invalid`);
+  if (keys.some((key) => !(key in record)) || Object.keys(record).some((key) => !keys.includes(key) && !optional.includes(key))) throw new TypeError(`${label} fields are invalid`);
   return record;
 }
 

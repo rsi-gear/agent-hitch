@@ -66,6 +66,21 @@ test("resource ledger reserves vectors atomically and releases idempotently", ()
   assert.deepEqual(ledger.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
 });
 
+test("resource ledger treats GPU count as an atomic schedulable dimension", () => {
+  const ledger = new ResourceLedger({ cpu_millis: 8_000, memory_bytes: 16 * GIB, container_slots: 4, build_slots: 1, gpu_count: 2 });
+  const gpuTrial: ResourceVectorV1 = { ...TRIAL, gpu_count: 1 };
+  assert.equal(ledger.maximumUnits(gpuTrial, 8), 2);
+  const first = ledger.tryAcquire("eval_gpu_a", "eval", gpuTrial);
+  const second = ledger.tryAcquire("eval_gpu_b", "eval", gpuTrial);
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(ledger.tryAcquire("eval_gpu_c", "eval", gpuTrial), null);
+  assert.equal(ledger.snapshot().allocated.gpu_count, 2);
+  first.release();
+  assert.equal(ledger.snapshot().available.gpu_count, 1);
+  second.release();
+});
+
 test("eval control phases and lease/work sets advance monotonically", () => {
   const now = new Date().toISOString();
   const workA = `work_${"a".repeat(32)}`;

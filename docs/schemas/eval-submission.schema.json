@@ -23,7 +23,8 @@
         "cpu_millis": { "type": "integer", "minimum": 0 },
         "memory_bytes": { "type": "integer", "minimum": 0 },
         "container_slots": { "type": "integer", "minimum": 0 },
-        "build_slots": { "type": "integer", "minimum": 0 }
+        "build_slots": { "type": "integer", "minimum": 0 },
+        "gpu_count": { "type": "integer", "minimum": 0 }
       }
     },
     "execution": {

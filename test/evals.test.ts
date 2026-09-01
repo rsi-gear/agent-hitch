@@ -75,6 +75,11 @@ test("Harbor resource limits exactly mirror representable trial reservations", (
     import_path: "hitch_harbor_environment:HitchHarborDockerEnvironment",
     kwargs: { hitch_model_proxy_host_gateway: true },
   });
+  const gpu = harborEnvironmentConfig({
+    cpu_millis: 2_000, memory_bytes: 4_500 * 1024 * 1024, container_slots: 1, build_slots: 0, gpu_count: 2,
+  });
+  assert.equal((gpu.kwargs as Record<string, unknown>).hitch_main_gpu_count, 2);
+  assert.equal(gpu.import_path, "hitch_harbor_environment:HitchHarborDockerEnvironment");
   const ownership = {
     root_id: "a".repeat(24), provider: "local-docker" as const,
     eval_id: `eval_${"b".repeat(32)}`, work_id: `work_${"c".repeat(32)}`,
@@ -85,6 +90,12 @@ test("Harbor resource limits exactly mirror representable trial reservations", (
   }, ownership, { database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024 } });
   assert.deepEqual((bounded.kwargs as Record<string, unknown>).hitch_service_resource_limits, {
     database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024 },
+  });
+  const gpuSidecar = harborEnvironmentConfig({
+    cpu_millis: 2_000, memory_bytes: 512 * 1024 * 1024, container_slots: 1, build_slots: 0,
+  }, ownership, { database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024, gpu_count: 1 } });
+  assert.deepEqual((gpuSidecar.kwargs as Record<string, unknown>).hitch_service_resource_limits, {
+    database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024, gpu_count: 1 },
   });
   assert.throws(() => harborEnvironmentConfig(undefined, undefined, {
     database: { cpu_millis: 500, memory_bytes: 64 * 1024 * 1024 },

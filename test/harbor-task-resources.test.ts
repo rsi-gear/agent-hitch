@@ -13,7 +13,10 @@ test("Harbor task inspector validates task semantics and extracts Compose hard l
   await writeFile(path.join(directory, "task.toml"), 'name = "resource-task"\n');
   await writeFile(path.join(directory, "environment", "docker-compose.yaml"), JSON.stringify({
     services: {
-      main: { image: "registry.test/main:latest", cpus: "1.5", mem_limit: "256MiB" },
+      main: {
+        image: "registry.test/main:latest", cpus: "1.5", mem_limit: "256MiB",
+        deploy: { resources: { reservations: { devices: [{ capabilities: ["gpu"], count: 2 }] } } },
+      },
       database: { image: "registry.test/database:16", deploy: { replicas: 2, resources: { limits: { cpus: "0.5", memory: "64MiB" } } } },
     },
   }));
@@ -52,7 +55,7 @@ print(json.dumps(module.inspect_task(root)))
   assert.deepEqual(declaration.verifier, { separate: true, environment: { cpu_millis: 1_000, memory_bytes: 256 * 1024 * 1024 } });
   assert.deepEqual(declaration.compose_services, [
     { name: "database", replicas: 2, cpu_millis: 500, memory_bytes: 64 * 1024 * 1024 },
-    { name: "main", replicas: 1, cpu_millis: 1_500, memory_bytes: 256 * 1024 * 1024 },
+    { name: "main", replicas: 1, cpu_millis: 1_500, memory_bytes: 256 * 1024 * 1024, gpu_count: 2 },
   ]);
   assert.deepEqual(declaration.provider_sidecars, { main_egress: true, verifier_egress: true });
   assert.deepEqual(declaration.environment_images, [

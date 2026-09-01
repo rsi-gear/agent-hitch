@@ -33,7 +33,8 @@
             "required": ["cpu_millis", "memory_bytes"],
             "properties": {
               "cpu_millis": { "type": "integer", "minimum": 1 },
-              "memory_bytes": { "type": "integer", "minimum": 1 }
+              "memory_bytes": { "type": "integer", "minimum": 1 },
+              "gpu_count": { "type": "integer", "minimum": 1 }
             }
           }
         }
@@ -67,7 +68,8 @@
         "cpu_millis": { "type": "integer", "minimum": 0 },
         "memory_bytes": { "type": "integer", "minimum": 0 },
         "container_slots": { "type": "integer", "minimum": 0 },
-        "build_slots": { "type": "integer", "minimum": 0 }
+        "build_slots": { "type": "integer", "minimum": 0 },
+        "gpu_count": { "type": "integer", "minimum": 0 }
       }
     },
     "container": {
@@ -82,6 +84,7 @@
         "first_observed_at": { "type": "string", "format": "date-time" },
         "last_observed_at": { "type": "string", "format": "date-time" },
         "peak_memory_bytes": { "type": "integer", "minimum": 0 },
+        "cpu_time_ns": { "type": "integer", "minimum": 0 },
         "oom_killed": { "type": "boolean" },
         "exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
         "exit_reason": { "type": "string", "minLength": 1, "maxLength": 512 }

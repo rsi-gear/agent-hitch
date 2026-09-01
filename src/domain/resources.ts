@@ -3,6 +3,8 @@ export interface ResourceVectorV1 {
   memory_bytes: number;
   container_slots: number;
   build_slots: number;
+  /** Whole GPU devices. Omitted is the V1-compatible representation of zero. */
+  gpu_count?: number;
 }
 
 export interface ResourceAllocationV1 {
@@ -12,4 +14,3 @@ export interface ResourceAllocationV1 {
   resources: ResourceVectorV1;
   acquired_at: string;
 }
-

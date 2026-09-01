@@ -118,6 +118,27 @@ test("remote worker registration rejects inconsistent capacity accounting", asyn
   })), (error: unknown) => (error as { code?: string }).code === "worker_protocol_invalid");
 });
 
+test("remote worker capacity accounting preserves GPU availability", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-worker-gpu-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const registry = new RemoteWorkerRegistry({ root });
+  await registry.initialize();
+  const registered = await registry.register(registration({
+    capacity: {
+      total: { ...TOTAL, gpu_count: 2 },
+      reserved_for_system: { ...RESERVED, gpu_count: 0 },
+      allocatable: { ...ALLOCATABLE, gpu_count: 2 },
+    },
+  }));
+  const heartbeat = await registry.heartbeat("worker_remote_a", {
+    schema_version: "1", generation: registered.worker.generation, health: "healthy",
+    allocated: { ...ZERO, gpu_count: 1 }, active_leases: [], sent_at: new Date().toISOString(),
+  });
+  assert.equal(heartbeat.worker.capacity.total.gpu_count, 2);
+  assert.equal(heartbeat.worker.capacity.allocated.gpu_count, 1);
+  assert.equal(heartbeat.provider_status.capacity.allocatable.gpu_count, 2);
+});
+
 test("remote work protocol fences offers, events, terminal receipts, and release", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-protocol-"));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -66,6 +66,7 @@ export interface TaskResourceComponentV1 {
   fields: {
     cpu_millis: ResourceRequirementFieldV1;
     memory_bytes: ResourceRequirementFieldV1;
+    gpu_count?: ResourceRequirementFieldV1;
   };
 }
 
@@ -78,6 +79,7 @@ export interface TaskResourceRequirementV1 {
     memory_bytes: ResourceRequirementFieldV1;
     container_slots: ResourceRequirementFieldV1;
     build_slots: ResourceRequirementFieldV1;
+    gpu_count?: ResourceRequirementFieldV1;
   };
   components: TaskResourceComponentV1[];
   diagnostics: string[];

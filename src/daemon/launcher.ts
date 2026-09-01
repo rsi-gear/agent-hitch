@@ -40,6 +40,8 @@ export async function startDetachedDaemon(options: DetachedDaemonOptions): Promi
     "--run-memory-mib", String(runMemoryMib),
     "--eval-cpu-millis", String(resourcePolicy.eval_trial.cpu_millis),
     "--eval-memory-mib", String(evalMemoryMib),
+    ...(resourcePolicy.capacity.gpu_count === undefined ? [] : ["--capacity-gpus", String(resourcePolicy.capacity.gpu_count)]),
+    ...(resourcePolicy.eval_trial.gpu_count === undefined ? [] : ["--eval-gpus", String(resourcePolicy.eval_trial.gpu_count)]),
   ], {
     detached: true,
     stdio: ["ignore", stdout, stderr],

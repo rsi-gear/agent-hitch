@@ -7,9 +7,9 @@ const INSPECTOR = path.join(packageRoot(), "integrations", "harbor", "hitch_harb
 
 export interface HarborTaskResourceDeclarationV1 {
   schema_version: "1";
-  task: { cpu_millis?: number; memory_bytes?: number };
-  verifier: { separate: boolean; environment?: { cpu_millis?: number; memory_bytes?: number } };
-  compose_services: Array<{ name: string; replicas: number; cpu_millis?: number; memory_bytes?: number }>;
+  task: { cpu_millis?: number; memory_bytes?: number; gpu_count?: number };
+  verifier: { separate: boolean; environment?: { cpu_millis?: number; memory_bytes?: number; gpu_count?: number } };
+  compose_services: Array<{ name: string; replicas: number; cpu_millis?: number; memory_bytes?: number; gpu_count?: number }>;
   provider_sidecars: { main_egress: boolean; verifier_egress: boolean };
   environment_images: HarborEnvironmentImageDeclarationV1[];
   environment_image_fallbacks: HarborEnvironmentImageFallbackV1[];
@@ -87,7 +87,7 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
   };
   if (!Array.isArray(root.compose_services)) throw new TypeError("Compose resource services are invalid");
   const composeServices = root.compose_services.map((entry, index) => {
-    const service = exactRecord(entry, ["name", "replicas"], `Compose service ${index}`, ["cpu_millis", "memory_bytes"]);
+    const service = exactRecord(entry, ["name", "replicas"], `Compose service ${index}`, ["cpu_millis", "memory_bytes", "gpu_count"]);
     if (typeof service.name !== "string" || !service.name || !Number.isSafeInteger(service.replicas) || (service.replicas as number) < 1) {
       throw new TypeError(`Compose service ${index} identity is invalid`);
     }
@@ -173,15 +173,16 @@ async function harborPython(harborExecutable: string, env: NodeJS.ProcessEnv): P
   return null;
 }
 
-function resourcePair(value: unknown, label: string): { cpu_millis?: number; memory_bytes?: number } {
+function resourcePair(value: unknown, label: string): { cpu_millis?: number; memory_bytes?: number; gpu_count?: number } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
   const record = value as Record<string, unknown>;
-  for (const field of ["cpu_millis", "memory_bytes"] as const) {
+  for (const field of ["cpu_millis", "memory_bytes", "gpu_count"] as const) {
     if (record[field] !== undefined && (!Number.isSafeInteger(record[field]) || (record[field] as number) < 1)) throw new TypeError(`${label} ${field} is invalid`);
   }
   return {
     ...(record.cpu_millis === undefined ? {} : { cpu_millis: record.cpu_millis as number }),
     ...(record.memory_bytes === undefined ? {} : { memory_bytes: record.memory_bytes as number }),
+    ...(record.gpu_count === undefined ? {} : { gpu_count: record.gpu_count as number }),
   };
 }
 

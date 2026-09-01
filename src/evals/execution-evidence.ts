@@ -76,21 +76,23 @@ function container(value: unknown, index: number): ObservedContainerResourcesV1 
   return record as unknown as ObservedContainerResourcesV1;
 }
 
-function sidecars(value: unknown): Record<string, { cpu_millis: number; memory_bytes: number }> {
+function sidecars(value: unknown): Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("execution evidence sidecar limits are invalid");
-  const result: Record<string, { cpu_millis: number; memory_bytes: number }> = {};
+  const result: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }> = {};
   for (const [name, entry] of Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))) {
-    const limit = exact(entry, ["cpu_millis", "memory_bytes"], `execution evidence sidecar ${name}`);
+    const limit = exact(entry, ["cpu_millis", "memory_bytes"], `execution evidence sidecar ${name}`, ["gpu_count"]);
     if (!validText(name, 255) || !Number.isSafeInteger(limit.cpu_millis) || (limit.cpu_millis as number) < 1
-      || !Number.isSafeInteger(limit.memory_bytes) || (limit.memory_bytes as number) < 1) throw new TypeError("execution evidence sidecar limits are invalid");
-    result[name] = { cpu_millis: limit.cpu_millis as number, memory_bytes: limit.memory_bytes as number };
+      || !Number.isSafeInteger(limit.memory_bytes) || (limit.memory_bytes as number) < 1
+      || (limit.gpu_count !== undefined && (!Number.isSafeInteger(limit.gpu_count) || (limit.gpu_count as number) < 1))) throw new TypeError("execution evidence sidecar limits are invalid");
+    result[name] = { cpu_millis: limit.cpu_millis as number, memory_bytes: limit.memory_bytes as number, ...(limit.gpu_count === undefined ? {} : { gpu_count: limit.gpu_count as number }) };
   }
   return result;
 }
 
 function resources(value: unknown, label: string): ResourceVectorV1 {
-  const record = exact(value, RESOURCE_FIELDS, label);
+  const record = exact(value, RESOURCE_FIELDS, label, ["gpu_count"]);
   if (RESOURCE_FIELDS.some((name) => !Number.isSafeInteger(record[name]) || (record[name] as number) < 0)) throw new TypeError(`${label} is invalid`);
+  if (record.gpu_count !== undefined && (!Number.isSafeInteger(record.gpu_count) || (record.gpu_count as number) < 0)) throw new TypeError(`${label} is invalid`);
   return record as unknown as ResourceVectorV1;
 }
 

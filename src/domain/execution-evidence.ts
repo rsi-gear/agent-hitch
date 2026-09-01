@@ -28,7 +28,7 @@ export interface ExecutionEvidenceV1 {
   reservation: ResourceVectorV1;
   enforced: {
     main_limits: ResourceVectorV1;
-    sidecar_limits: Record<string, { cpu_millis: number; memory_bytes: number }>;
+    sidecar_limits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
   };
   observed: {
     status: "partial" | "unavailable";

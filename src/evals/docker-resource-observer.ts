@@ -10,7 +10,7 @@ export interface DockerResourceObserverOptions {
   collisionDomainId: string;
   reservation: ResourceVectorV1;
   mainLimits: ResourceVectorV1;
-  sidecarLimits: Record<string, { cpu_millis: number; memory_bytes: number }>;
+  sidecarLimits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   intervalMs?: number;

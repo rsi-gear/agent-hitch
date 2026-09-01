@@ -61,6 +61,8 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /--capacity-memory-mib <n>/);
   assert.match(help.stdout, /--container-slots <n>/);
   assert.match(help.stdout, /--build-slots <n>/);
+  assert.match(help.stdout, /--capacity-gpus <n>/);
+  assert.match(help.stdout, /--eval-gpus <n>/);
   assert.match(help.stdout, /--eval-memory-mib <n>/);
   assert.match(help.stdout, /hitch worker register --server <url>/);
   assert.match(help.stdout, /hitch worker run --server <url>/);
@@ -127,6 +129,16 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   ], { encoding: "utf8" });
   assert.equal(invalidDaemonPolicy.status, 2);
   assert.match(invalidDaemonPolicy.stderr, /--build-slots must be a non-negative integer/);
+
+  const invalidGpuPolicy = spawnSync(process.execPath, [
+    executable,
+    "--root", path.join(tmpdir(), `hitch-invalid-gpu-policy-${process.pid}`),
+    "daemon", "start",
+    "--capacity-gpus", "1",
+    "--eval-gpus", "2",
+  ], { encoding: "utf8" });
+  assert.equal(invalidGpuPolicy.status, 2);
+  assert.match(invalidGpuPolicy.stderr, /--eval-gpus cannot exceed --capacity-gpus/);
 
   const invalidDaemonPort = spawnSync(process.execPath, [
     executable,

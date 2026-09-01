@@ -64,3 +64,27 @@ test("missing task and sidecar declarations use conservative non-zero defaults",
   assert.equal(requirement.components[1]?.fields.memory_bytes.source, "operator-default");
   assert.equal(requirement.components[1]?.fields.memory_bytes.estimated, true);
 });
+
+test("fixed Compose GPU requests enter task admission without charging non-GPU sidecars", () => {
+  const requirement = deriveTaskResourceRequirement({
+    taskId: "gpu-task",
+    defaultResources: { ...defaults, gpu_count: 1 },
+    defaultSource: "operator-default",
+    declaration: {
+      schema_version: "1",
+      task: {},
+      verifier: { separate: false },
+      compose_services: [
+        { name: "main", replicas: 1, gpu_count: 2 },
+        { name: "database", replicas: 1 },
+      ],
+      provider_sidecars: { main_egress: false, verifier_egress: false },
+      environment_images: [], environment_image_fallbacks: [], environment_builds: [],
+    },
+  });
+  assert.equal(requirement.reservation.gpu_count, 2);
+  assert.equal(requirement.main_limits.gpu_count, 2);
+  assert.equal(requirement.components[0]?.resources.gpu_count, 2);
+  assert.equal(requirement.components[1]?.resources.gpu_count, 0);
+  assert.equal(requirement.fields.gpu_count?.source, "derived-components");
+});

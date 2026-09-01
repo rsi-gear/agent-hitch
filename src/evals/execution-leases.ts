@@ -362,12 +362,17 @@ function validateWorker(worker: ExecutionWorkerIdentity): void {
 
 function parseResourceVector(value: unknown, label: string): ResourceVectorV1 {
   if (!isRecord(value)) throw new TypeError(`${label} must be an object`);
-  const fields = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
-  if (Object.keys(value).some((key) => !fields.includes(key as typeof fields[number]))) throw new TypeError(`${label} has unknown fields`);
-  for (const field of fields) {
+  const required = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
+  const allowed = [...required, "gpu_count"] as const;
+  if (Object.keys(value).some((key) => !allowed.includes(key as typeof allowed[number]))) throw new TypeError(`${label} has unknown fields`);
+  for (const field of required) {
     if (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0) throw new TypeError(`${label} ${field} is invalid`);
   }
-  return Object.fromEntries(fields.map((field) => [field, value[field]])) as unknown as ResourceVectorV1;
+  if (value.gpu_count !== undefined && (!Number.isSafeInteger(value.gpu_count) || (value.gpu_count as number) < 0)) throw new TypeError(`${label} gpu_count is invalid`);
+  return {
+    ...Object.fromEntries(required.map((field) => [field, value[field]])),
+    ...(value.gpu_count === undefined ? {} : { gpu_count: value.gpu_count }),
+  } as unknown as ResourceVectorV1;
 }
 
 function timestamp(value: unknown): value is string {

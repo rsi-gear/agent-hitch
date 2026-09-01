@@ -159,8 +159,10 @@ def _compose_services(compose_file: Path) -> list[dict[str, Any]]:
         deploy = raw.get("deploy") if isinstance(raw.get("deploy"), dict) else {}
         deploy_resources = deploy.get("resources") if isinstance(deploy.get("resources"), dict) else {}
         limits = deploy_resources.get("limits") if isinstance(deploy_resources.get("limits"), dict) else {}
+        reservations = deploy_resources.get("reservations") if isinstance(deploy_resources.get("reservations"), dict) else {}
         cpu_values = [_cpu_millis(value, name) for value in (raw.get("cpus"), limits.get("cpus")) if value is not None]
         memory_values = [_memory_bytes(value, name) for value in (raw.get("mem_limit"), limits.get("memory")) if value is not None]
+        gpu_values = [_gpu_count(value, name) for value in (raw.get("gpus"), reservations.get("devices")) if value is not None]
         replicas = raw.get("scale", deploy.get("replicas", 1))
         if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
             raise ValueError(f"Compose service replicas must be a positive integer: {name}")
@@ -169,8 +171,38 @@ def _compose_services(compose_file: Path) -> list[dict[str, Any]]:
             "replicas": replicas,
             **({"cpu_millis": max(cpu_values)} if cpu_values else {}),
             **({"memory_bytes": max(memory_values)} if memory_values else {}),
+            **({"gpu_count": max(gpu_values)} if gpu_values else {}),
         })
     return result
+
+
+def _gpu_count(value: Any, service: str) -> int:
+    if value == "all":
+        raise ValueError(f"Compose GPU request must use a fixed count: {service}")
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"Compose GPU request is invalid: {service}")
+    total = 0
+    for request in value:
+        if not isinstance(request, dict):
+            raise ValueError(f"Compose GPU request is invalid: {service}")
+        capabilities = request.get("capabilities")
+        if not isinstance(capabilities, list) or "gpu" not in capabilities:
+            continue
+        count = request.get("count")
+        device_ids = request.get("device_ids")
+        if count is not None and device_ids is not None:
+            raise ValueError(f"Compose GPU request cannot set count and device_ids: {service}")
+        if device_ids is not None:
+            if not isinstance(device_ids, list) or not device_ids or any(not isinstance(item, str) or not item for item in device_ids):
+                raise ValueError(f"Compose GPU device_ids are invalid: {service}")
+            total += len(device_ids)
+        elif isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            total += count
+        else:
+            raise ValueError(f"Compose GPU request must use a fixed count: {service}")
+    if total < 1:
+        raise ValueError(f"Compose GPU request has no gpu capability: {service}")
+    return total
 
 
 def _cpu_millis(value: Any, service: str) -> int:

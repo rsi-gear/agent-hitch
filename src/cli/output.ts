@@ -109,6 +109,7 @@ Usage:
   hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]
     [--capacity-cpu-millis <n>] [--capacity-memory-mib <n>]
     [--container-slots <n>] [--build-slots <n>]
+    [--capacity-gpus <n>] [--eval-gpus <n>]
     [--run-cpu-millis <n>] [--run-memory-mib <n>]
     [--eval-cpu-millis <n>] [--eval-memory-mib <n>]
   hitch daemon stop | status [--json] | logs [-n <lines>]

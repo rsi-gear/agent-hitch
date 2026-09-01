@@ -449,6 +449,7 @@ interface ResourceVectorV1 {
 - 调度预留必须对完整向量原子成功或完全失败。
 - `cpu_millis` 表示可调度配额，不等同于实际 CPU time。
 - `memory_bytes` 必须对应 Docker/worker 的硬限制或可审计的 admission limit。
+- `gpu_count` 只接受整卡数量；字段缺失保持旧记录兼容并等价于零。operator 必须通过 `--capacity-gpus` 显式声明本机可调度 GPU，不能从宿主机可见设备数推测 Docker VM 的可用容量。
 - 未知资源不能按零处理；必须使用 operator 配置的保守默认值。
 
 ### 8.3 Trial slot 与 work item
@@ -870,6 +871,8 @@ Planner 必须在 execution plan 中逐字段记录 `value`、`source` 和 `esti
 
 Harbor `0.21.0` 的 Docker override 只能精确表达整数 CPU 和整数 MiB。V1 在写入 JobConfig 前要求 `cpu_millis` 为 1000 的倍数、`memory_bytes` 为 MiB 的倍数；不能精确表达时返回 `resource_limit_unrepresentable`，不得静默向上取整突破 reservation，也不得只做 admission 而省略容器硬限制。
 
+GPU 只接受 Compose 中固定的整数 `count` 或固定 `device_ids`；`all`、缺省 count 和动态表达式失败关闭。主环境最终 overlay 使用 Compose `!override` 写入精确设备 reservation，避免与 task 原声明合并后重复计数；sidecar 的固定 GPU 请求同样进入 component reservation 和 enforced evidence。无 GPU 配置时不写入设备请求，保持普通 Docker 主机兼容。
+
 V1 的已知本地 task 在 `execution-plan.json` 中使用以下附加结构；`main_limits` 是 Harbor 主环境及 separate Verifier 实际共享的硬限额，`reservation` 则是所有 component（含 replica）之和，两者不得混用：
 
 ```ts
@@ -892,7 +895,7 @@ interface TaskResourceRequirementV1 {
 }
 ```
 
-Compose sidecar 缺少声明时使用同一保守默认值而不是零；Harbor egress sidecar 使用 provider 固定 overhead。Planner 对 Compose 的动态 `include`、`profiles`、`extends` 或无法固定解析的 resource expression 失败关闭。最终 Docker environment overlay 必须把逐服务 CPU/memory hard limit 与 lease ownership label 一起写入。
+Compose sidecar 缺少 CPU/memory 声明时使用同一保守默认值而不是零；GPU 默认只应用于主环境，sidecar 只有固定显式 GPU 请求才占用 GPU；Harbor egress sidecar 使用 provider 固定 overhead。Planner 对 Compose 的动态 `include`、`profiles`、`extends` 或无法固定解析的 resource expression 失败关闭。最终 Docker environment overlay 必须把逐服务 CPU/memory/GPU hard limit 与 lease ownership label 一起写入。
 
 ## 11. 全局资源调度
 
@@ -963,6 +966,7 @@ effective eval parallelism = min(
   available worker container slots,
   floor(available cpu / cpu per trial),
   floor(available memory / memory per trial),
+  floor(available gpu count / gpu count per trial),
   backend safe parallelism
 )
 ```
@@ -1823,7 +1827,7 @@ CLI operator flags
 
 ### 阶段 2：资源向量、分片与 Harbor 并发治理
 
-1. 实现 CPU/内存/container/build 原子预留。
+1. 实现 CPU/内存/container/build/GPU 原子预留。
 2. 本地 dataset 生成 Trial Slots 和 work item shards。
 3. 将 attempt 从外层全串行改为 slot 调度。
 4. 实现跨 eval task mutex、lease epoch、Docker labels 和 reaper。

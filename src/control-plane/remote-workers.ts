@@ -306,7 +306,7 @@ function parseRegistrationCapacity(value: unknown): RemoteWorkerRegistrationV1["
   const total = validateResourceVector(capacity.total as ResourceVectorV1, "remote worker total capacity");
   const reserved = validateResourceVector(capacity.reserved_for_system as ResourceVectorV1, "remote worker reserved capacity");
   const allocatable = validateResourceVector(capacity.allocatable as ResourceVectorV1, "remote worker allocatable capacity");
-  for (const field of resourceFields()) if (reserved[field] + allocatable[field] !== total[field]) throw invalidWorker("remote worker capacity accounting is invalid");
+  for (const field of resourceFields()) if (resourceValue(reserved, field) + resourceValue(allocatable, field) !== resourceValue(total, field)) throw invalidWorker("remote worker capacity accounting is invalid");
   return { total, reserved_for_system: reserved, allocatable };
 }
 
@@ -352,11 +352,11 @@ function stringSet(value: unknown, label: string): string[] {
 }
 
 function assertWithin(value: ResourceVectorV1, limit: ResourceVectorV1, message: string): void {
-  for (const field of resourceFields()) if (value[field] > limit[field]) throw invalidWorker(message);
+  for (const field of resourceFields()) if (resourceValue(value, field) > resourceValue(limit, field)) throw invalidWorker(message);
 }
 
 function resourceFields(): Array<keyof ResourceVectorV1> {
-  return ["cpu_millis", "memory_bytes", "container_slots", "build_slots"];
+  return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"];
 }
 
 function zero(): ResourceVectorV1 {
@@ -364,8 +364,17 @@ function zero(): ResourceVectorV1 {
 }
 
 function subtract(left: ResourceVectorV1, right: ResourceVectorV1): ResourceVectorV1 {
-  return Object.fromEntries(resourceFields().map((field) => [field, left[field] - right[field]])) as unknown as ResourceVectorV1;
+  const result: ResourceVectorV1 = {
+    cpu_millis: left.cpu_millis - right.cpu_millis,
+    memory_bytes: left.memory_bytes - right.memory_bytes,
+    container_slots: left.container_slots - right.container_slots,
+    build_slots: left.build_slots - right.build_slots,
+  };
+  if (left.gpu_count !== undefined || right.gpu_count !== undefined) result.gpu_count = (left.gpu_count ?? 0) - (right.gpu_count ?? 0);
+  return result;
 }
+
+function resourceValue(resources: ResourceVectorV1, field: keyof ResourceVectorV1): number { return resources[field] ?? 0; }
 
 function validText(value: unknown): boolean {
   return typeof value === "string" && value.length > 0 && value.length <= 1_024 && !/[\0\r\n]/.test(value);
