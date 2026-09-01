@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Sha256 } from "../domain/index.js";
-import { HitchError, ensureDir, runCommand, statePaths } from "../foundation/index.js";
+import { HitchError, credentialValuesFromEnv, ensureDir, redactCredentialText, runCommand, statePaths } from "../foundation/index.js";
 import type { EnvironmentImageBuilder, EnvironmentImageBuilderOutput } from "./service.js";
 
 export interface DockerBuildKitBuilderOptions {
@@ -47,6 +47,12 @@ export class DockerBuildKitBuilder implements EnvironmentImageBuilder {
     cacheKey: Sha256;
     cacheReference: string;
   }): Promise<EnvironmentImageBuilderOutput> {
+    for (const name of input.secretNames) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new TypeError("BuildKit secret name is invalid");
+      if (this.env[name] === undefined) {
+        throw new HitchError(`BuildKit secret is unavailable: ${name}`, { code: "credential_unavailable", exitCode: 10 });
+      }
+    }
     const temporary = await mkdtemp(path.join(await ensureDir(statePaths(this.root).temporary), "buildkit-"));
     const metadataFile = path.join(temporary, "metadata.json");
     try {
@@ -61,7 +67,12 @@ export class DockerBuildKitBuilder implements EnvironmentImageBuilder {
       try {
         await runCommand(this.docker, args, { env: this.env, failureCode: "image_build_failed", failureExitCode: 12 });
       } catch (error) {
-        throw new HitchError("BuildKit invocation failed", { code: (error as { code?: string }).code || "image_build_failed", exitCode: 12, cause: error });
+        const detail = redactCredentialText(
+          ((error as Error)?.message || String(error)).slice(0, 64 * 1024), credentialValuesFromEnv(input.secretNames, this.env),
+        ).text;
+        throw new HitchError(`BuildKit invocation failed: ${detail}`, {
+          code: (error as { code?: string }).code || "image_build_failed", exitCode: 12,
+        });
       }
       const metadata = await parseMetadata(metadataFile);
       const inspected = await this.inspect(input.outputReference);

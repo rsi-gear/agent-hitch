@@ -738,7 +738,10 @@ names may cross the Harbor JobConfig/bridge boundary, while values are resolved
 from the execution environment and never placed in Hitch process arguments.
 Provider capture, trajectory and run records apply the same known-value policy;
 Harbor host output is redacted as a bounded stream before it reaches logs or
-events. Protected files remain preferable for future non-environment secret
+events. Environment builds carry secret names in their identity, resolve values
+only in the builder process, and use BuildKit env-backed secret mounts; values
+are absent from argv, manifest and cache identity, and build failures are
+redacted. Protected files remain preferable for future non-environment secret
 providers.
 
 ## 17. Local filesystem layout

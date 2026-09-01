@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Sha256 } from "../src/domain/index.js";
@@ -120,13 +120,14 @@ test("Dockerfile prebuild accepts only immutable external image inputs", async (
   await assert.rejects(inspectPinnedDockerfileBases(root), /ARG before FROM/);
 });
 
-test("Docker BuildKit builder records verified digests without putting secret values in argv", async (t) => {
+test("Docker BuildKit resolves secret handles without putting values in argv, state, or cache identity", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-buildkit-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const context = path.join(root, "context");
   await mkdir(context);
   await writeFile(path.join(context, "Dockerfile"), "FROM scratch\n");
   const argvLog = path.join(root, "docker-argv.jsonl");
+  const observationLog = path.join(root, "docker-observation.jsonl");
   const docker = path.join(root, "fake-docker");
   const manifestDigest = `sha256:${"d".repeat(64)}`;
   const configDigest = `sha256:${"e".repeat(64)}`;
@@ -135,6 +136,14 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(args) + "\\n");
 if (args[0] === "buildx" && args[1] === "build") {
+  if (args.includes("hitch-environment:fail")) {
+    process.stderr.write("build failed with " + process.env.REGISTRY_TOKEN + "\\n");
+    process.exit(9);
+  }
+  fs.appendFileSync(${JSON.stringify(observationLog)}, JSON.stringify({
+    secret_present: typeof process.env.REGISTRY_TOKEN === "string" && process.env.REGISTRY_TOKEN.length > 0,
+    secret_in_argv: args.some((value) => value.includes(process.env.REGISTRY_TOKEN || "__missing__"))
+  }) + "\\n");
   const metadata = args[args.indexOf("--metadata-file") + 1];
   fs.writeFileSync(metadata, JSON.stringify({"containerimage.digest":${JSON.stringify(manifestDigest)},"containerimage.config.digest":${JSON.stringify(configDigest)}}));
   process.exit(0);
@@ -149,29 +158,61 @@ if (args[0] === "buildx" && args[1] === "version") {
 }
 process.exit(2);
 `, { mode: 0o755 });
+  const firstSecret = "never-write-this-secret";
   const builder = new DockerBuildKitBuilder({
     root,
     dockerExecutable: docker,
-    env: { ...process.env, REGISTRY_TOKEN: "never-write-this-secret" },
+    env: { ...process.env, REGISTRY_TOKEN: firstSecret },
     registryCachePrefix: "registry.example/hitch-cache",
   });
-  const output = await builder.build({
+  const request = {
+    benchmarkId: "bench", benchmarkRevision: "1.0", taskId: "task-a",
     contextDirectory: context,
-    dockerfile: "Dockerfile",
     platform: "linux/amd64",
     buildArgs: { MODE: "release" },
     secretNames: ["REGISTRY_TOKEN"],
-    outputReference: "hitch-environment:test",
-    cacheKey: `sha256:${"c".repeat(64)}`,
-    cacheReference: "ignored",
-  });
-  assert.equal(output.manifest_digest, manifestDigest);
-  assert.equal(output.config_digest, configDigest);
-  assert.equal(await builder.probe(output.reference, output.manifest_digest, output.platform, output.config_digest), true);
+  };
+  const first = await new EnvironmentImageService({ root, builder }).build(request);
+  assert.equal(first.cacheHit, false);
+  assert.equal(first.manifest.output.manifest_digest, manifestDigest);
+  assert.equal(first.manifest.output.config_digest, configDigest);
+  assert.deepEqual(first.manifest.build.secret_names, ["REGISTRY_TOKEN"]);
+  const secondSecret = "rotated-secret-must-not-change-cache";
+  const restarted = new EnvironmentImageService({ root, builder: new DockerBuildKitBuilder({
+    root, dockerExecutable: docker, env: { ...process.env, REGISTRY_TOKEN: secondSecret }, registryCachePrefix: "registry.example/hitch-cache",
+  }) });
+  const cached = await restarted.build(request);
+  assert.equal(cached.cacheHit, true);
+  assert.equal(cached.manifest.image_id, first.manifest.image_id);
   const argv = await readFile(argvLog, "utf8");
   assert.match(argv, /REGISTRY_TOKEN/);
   assert.match(argv, /registry\.example\/hitch-cache/);
-  assert.equal(argv.includes("never-write-this-secret"), false);
+  assert.equal(argv.includes(firstSecret), false);
+  assert.equal(argv.includes(secondSecret), false);
+  const observations = (await readFile(observationLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(observations, [{ secret_present: true, secret_in_argv: false }], "cache hit must not start a second build");
+  const argvBeforeMissing = await readFile(argvLog, "utf8");
+  const missingEnv: NodeJS.ProcessEnv = { ...process.env };
+  delete missingEnv.REGISTRY_TOKEN;
+  const missing = new DockerBuildKitBuilder({ root, dockerExecutable: docker, env: missingEnv, registryCachePrefix: "registry.example/hitch-cache" });
+  await assert.rejects(missing.build({
+    contextDirectory: context, dockerfile: "Dockerfile", platform: "linux/amd64", buildArgs: {}, secretNames: ["REGISTRY_TOKEN"],
+    outputReference: "hitch-environment:missing", cacheKey: `sha256:${"c".repeat(64)}`, cacheReference: "ignored",
+  }), (error: unknown) => (error as { code?: string }).code === "credential_unavailable");
+  assert.equal(await readFile(argvLog, "utf8"), argvBeforeMissing, "missing secret must fail before Docker starts");
+  await assert.rejects(builder.build({
+    contextDirectory: context, dockerfile: "Dockerfile", platform: "linux/amd64", buildArgs: {}, secretNames: ["REGISTRY_TOKEN"],
+    outputReference: "hitch-environment:fail", cacheKey: `sha256:${"f".repeat(64)}`, cacheReference: "ignored",
+  }), (error: unknown) => {
+    assert.equal((error as Error).message.includes(firstSecret), false, "BuildKit errors must redact injected values");
+    assert.match((error as Error).message, /\[REDACTED\]/);
+    return true;
+  });
+  for (const file of await regularFiles(root)) {
+    const persisted = await readFile(file);
+    assert.equal(persisted.includes(Buffer.from(firstSecret)), false, `BuildKit secret leaked into ${path.relative(root, file)}`);
+    assert.equal(persisted.includes(Buffer.from(secondSecret)), false, `rotated BuildKit secret leaked into ${path.relative(root, file)}`);
+  }
 });
 
 test("image builds use a FIFO build lane independent from container slots", async (t) => {
@@ -243,3 +284,13 @@ process.exit(2);
     resolver: { id: "forged", resolve: async () => ({ reference: "registry.example/other:latest", manifest_digest: manifestDigest as Sha256, platform: "linux/amd64" }) },
   }), (error: unknown) => (error as { code?: string }).code === "image_output_mismatch");
 });
+
+async function regularFiles(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await regularFiles(target));
+    else if (entry.isFile()) files.push(target);
+  }
+  return files;
+}
