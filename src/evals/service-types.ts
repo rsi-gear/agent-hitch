@@ -115,6 +115,7 @@ export type EvalRemoteWorkExecutor = (input: {
   runtimeId: string;
   environmentImages?: import("./trial-environment-evidence.js").TrialEnvironmentImagesV1;
   modelCapturePlan?: ModelCapturePlanV1;
+  publicationMode?: "settle" | "replace-invalid";
   signal?: AbortSignal;
   emit(event: Record<string, unknown>): void;
   publish(ref: EvalTrialRefV1): Promise<void>;

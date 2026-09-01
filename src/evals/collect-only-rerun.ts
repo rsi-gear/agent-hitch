@@ -144,6 +144,7 @@ async function collectSlot(
           resolvedRevision: resolution,
           benchmarkId: input.request.benchmark_id,
           benchmarkRevision: input.request.benchmark_revision,
+          publicationMode: "replace-invalid",
           runtimeId,
           requireCompleteMarker: true,
         }, trial, index, imported);

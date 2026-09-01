@@ -55,6 +55,7 @@ test("physical infrastructure retry stays on the remote provider with a new work
       remoteCalls += 1;
       assert.notEqual(input.workItem.work_id, item.work_id);
       assert.equal(input.workItem.provider, "remote-docker");
+      assert.equal(input.publicationMode, "replace-invalid");
       await input.onLeaseState("lease_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "running");
       await input.publish(repaired);
       await input.onLeaseState("lease_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "terminal");

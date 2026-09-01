@@ -21,7 +21,7 @@
             "enum": [
               "request", "resolution", "manifest", "result", "runtime-ref", "environment-manifest",
               "execution-evidence", "control-events", "process-log", "workspace-evidence", "trajectory",
-              "provider-evidence", "verifier-evidence", "interaction-capture", "diagnostic"
+              "provider-evidence", "verifier-evidence", "interaction-capture", "eval-publication", "diagnostic"
             ]
           },
           "path": { "$ref": "#/$defs/relativePath" },

@@ -22,6 +22,8 @@ import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 import type { EvalInteractionCaptureExporter } from "./service-types.js";
 import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./interaction-capture-import.js";
 import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-import-identity.js";
+import { writeEvalTrialPublication } from "./trial-publication.js";
+import type { EvalTrialPublicationMode } from "./trial-publication.js";
 
 export interface ImportEvalRunsOptions {
   root: string;
@@ -39,7 +41,9 @@ export interface ImportEvalRunsOptions {
   environmentImages?: TrialEnvironmentImagesV1;
   modelCapturePlan?: ModelCapturePlanV1;
   interactionCaptureExporter?: EvalInteractionCaptureExporter;
+  publicationMode?: EvalTrialPublicationMode;
 }
+
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
   requireCompleteMarker?: boolean;
   allowMissingBundleDiagnostic?: boolean;
@@ -232,6 +236,8 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       ...(manifest.trajectory_ref ? {} : { trajectory_ref: "trajectory.ref.json" }),
       sealed: true,
     });
+    const ref = evalTrialRef(input, record.run_id, observation);
+    await writeEvalTrialPublication(staging, input.evalId, input.publicationMode ?? "settle", ref);
     await writeResultBundleIndex(staging);
     const verified = await loadRunRecord(staging, { verifyTrajectory: true });
     if (verified.record.observation?.status !== observation.status) throw new Error(`failed to seal observation for ${record.run_id}`);
@@ -243,7 +249,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     await rename(staging, destination);
-    return evalTrialRef(input, record.run_id, observation);
+    return ref;
   } finally {
     await rm(stagingParent, { recursive: true, force: true });
   }
@@ -251,114 +257,130 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
 
 async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   const runId = newRunId();
-  const runDirectory = await ensureDir(path.join(statePaths(input.root).runs, runId));
+  const destination = path.join(statePaths(input.root).runs, runId);
+  const stagingParent = await mkdtemp(path.join(await ensureDir(statePaths(input.root).temporary), "eval-run-diagnostic-"));
+  const runDirectory = await ensureDir(path.join(stagingParent, runId));
   const now = new Date().toISOString();
-  const verifier = verifierResult(input.trial);
-  const verifierRef = verifier ? "verifier/result.json" : undefined;
-  if (verifier) await atomicWriteJSON(path.join(runDirectory, verifierRef as string), verifier);
-  const verifierInfrastructure = await detectVerifierInfrastructureFailure(
-    input.trialDirectory,
-    primaryVerifierReward(input.trial),
-  );
-  if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-  await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
-  const bridgeError = input.trial.exception_info
-    ? await readHarborBridgeError(input.trialDirectory)
-    : null;
-  const bridgeErrorRef = bridgeError ? "diagnostics/harbor-bridge-error.json" : undefined;
-  if (bridgeError && bridgeErrorRef) {
-    await ensureDir(path.dirname(path.join(runDirectory, bridgeErrorRef)));
-    await writePrivateFile(
-      path.join(runDirectory, bridgeErrorRef),
-      bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
+  try {
+    const verifier = verifierResult(input.trial);
+    const verifierRef = verifier ? "verifier/result.json" : undefined;
+    if (verifier) await atomicWriteJSON(path.join(runDirectory, verifierRef as string), verifier);
+    const verifierInfrastructure = await detectVerifierInfrastructureFailure(
+      input.trialDirectory,
+      primaryVerifierReward(input.trial),
     );
+    if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
+    await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
+    const bridgeError = input.trial.exception_info
+      ? await readHarborBridgeError(input.trialDirectory)
+      : null;
+    const bridgeErrorRef = bridgeError ? "diagnostics/harbor-bridge-error.json" : undefined;
+    if (bridgeError && bridgeErrorRef) {
+      await ensureDir(path.dirname(path.join(runDirectory, bridgeErrorRef)));
+      await writePrivateFile(
+        path.join(runDirectory, bridgeErrorRef),
+        bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
+      );
+    }
+    const reason = verifierInfrastructure
+      ? "verifier_infrastructure_failure"
+      : input.trial.exception_info
+      ? "infrastructure_failure"
+      : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
+    const observation: RunObservationV1 = {
+      status: "invalid",
+      invalid_reason: reason,
+      ...(verifierRef ? { verifier_result_ref: verifierRef } : {}),
+    };
+    const context = {
+      kind: "benchmark_task" as const,
+      benchmark_id: input.benchmarkId,
+      benchmark_revision: input.benchmarkRevision,
+      task_id: input.taskId,
+      task_digest: benchmarkTaskDigest(input.benchmarkId, input.benchmarkRevision, input.taskId),
+      verifier_identity: benchmarkVerifierIdentity(input.benchmarkId, input.benchmarkRevision),
+    };
+    const safeAgentArgs = safeAgentArgsForPersistence(input.request.agent_args);
+    const argsDigest = safeAgentArgs.length ? sha256JSON(safeAgentArgs) : undefined;
+    const artifactId = typeof (input.trial.agent_result as Record<string, unknown> | undefined)?.metadata === "object"
+      ? ((input.trial.agent_result as { metadata?: { hitch_artifact_id?: unknown } }).metadata?.hitch_artifact_id as string | undefined)
+      : undefined;
+    await atomicWriteJSON(path.join(runDirectory, "request.json"), {
+      schema_version: "1",
+      context,
+      parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
+      task_id: input.taskId,
+      prompt: null,
+      diagnostic: "trial bundle was not exported",
+    });
+    await atomicWriteJSON(path.join(runDirectory, "resolution.json"), input.resolvedRevision);
+    await writeTrialExecutionEvidence(runDirectory, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
+    await writeTrialEnvironmentImageEvidence(runDirectory, input.taskId, input.environmentImages);
+    await writeTrialCapturePolicy(runDirectory, input.modelCapturePlan);
+    await writePrivateFile(path.join(runDirectory, "events.jsonl"), `${JSON.stringify({
+      schema_version: "1",
+      sequence: 1,
+      timestamp: now,
+      run_id: runId,
+      type: "eval.trial.import_failed",
+      reason,
+      ...(bridgeError ? { bridge_error_code: bridgeError.code } : {}),
+    })}\n`);
+    await atomicWriteJSON(path.join(runDirectory, "result.json"), {
+      schema_version: "1",
+      run_id: runId,
+      status: "failed",
+      exit_code: 12,
+      error: bridgeError
+        ? { code: bridgeError.code, message: bridgeError.message }
+        : { code: reason, message: "Harbor trial completed without an importable Hitch run bundle" },
+      completed_at: now,
+    });
+    await atomicWriteJSON(path.join(runDirectory, "manifest.json"), {
+      schema_version: "1",
+      run_id: runId,
+      context,
+      parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
+      status: "failed",
+      harness: {
+        harness_id: input.resolvedRevision.harness_id,
+        requested_ref: input.request.harness_ref,
+        revision_identity: input.resolvedRevision.identity,
+        ...(artifactId && /^sha256:[0-9a-f]{64}$/.test(artifactId) ? { artifact_id: artifactId } : {}),
+        ...(argsDigest ? { agent_args_sha256: argsDigest } : {}),
+      },
+      model: defaultModelIdentity(input.request.model, input.resolvedRevision.harness_id),
+      protocol: {
+        timeout_ms: input.request.timeout_ms,
+        workspace_mode: "shared",
+        ...(input.runtimeId && /^sha256:[0-9a-f]{64}$/.test(input.runtimeId)
+          ? { environment_identity: input.runtimeId as Sha256 }
+          : {}),
+      },
+      observation,
+      request_ref: "request.json",
+      resolution_ref: "resolution.json",
+      result_ref: "result.json",
+      created_at: now,
+      completed_at: now,
+      sealed: true,
+      ...(bridgeErrorRef ? { diagnostics: { harbor_bridge_error_ref: bridgeErrorRef } } : {}),
+    });
+    const ref = evalTrialRef(input, runId, observation);
+    await writeEvalTrialPublication(runDirectory, input.evalId, input.publicationMode ?? "settle", ref);
+    await writeResultBundleIndex(runDirectory);
+    await ensureDir(path.dirname(destination));
+    try {
+      await stat(destination);
+      throw new TrialIdentityConflictError(`run destination already exists: ${runId}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await rename(runDirectory, destination);
+    return ref;
+  } finally {
+    await rm(stagingParent, { recursive: true, force: true });
   }
-  const reason = verifierInfrastructure
-    ? "verifier_infrastructure_failure"
-    : input.trial.exception_info
-    ? "infrastructure_failure"
-    : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
-  const observation: RunObservationV1 = {
-    status: "invalid",
-    invalid_reason: reason,
-    ...(verifierRef ? { verifier_result_ref: verifierRef } : {}),
-  };
-  const context = {
-    kind: "benchmark_task" as const,
-    benchmark_id: input.benchmarkId,
-    benchmark_revision: input.benchmarkRevision,
-    task_id: input.taskId,
-    task_digest: benchmarkTaskDigest(input.benchmarkId, input.benchmarkRevision, input.taskId),
-    verifier_identity: benchmarkVerifierIdentity(input.benchmarkId, input.benchmarkRevision),
-  };
-  const safeAgentArgs = safeAgentArgsForPersistence(input.request.agent_args);
-  const argsDigest = safeAgentArgs.length ? sha256JSON(safeAgentArgs) : undefined;
-  const artifactId = typeof (input.trial.agent_result as Record<string, unknown> | undefined)?.metadata === "object"
-    ? ((input.trial.agent_result as { metadata?: { hitch_artifact_id?: unknown } }).metadata?.hitch_artifact_id as string | undefined)
-    : undefined;
-  await atomicWriteJSON(path.join(runDirectory, "request.json"), {
-    schema_version: "1",
-    context,
-    parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
-    task_id: input.taskId,
-    prompt: null,
-    diagnostic: "trial bundle was not exported",
-  });
-  await atomicWriteJSON(path.join(runDirectory, "resolution.json"), input.resolvedRevision);
-  await writeTrialExecutionEvidence(runDirectory, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
-  await writeTrialEnvironmentImageEvidence(runDirectory, input.taskId, input.environmentImages);
-  await writeTrialCapturePolicy(runDirectory, input.modelCapturePlan);
-  await writePrivateFile(path.join(runDirectory, "events.jsonl"), `${JSON.stringify({
-    schema_version: "1",
-    sequence: 1,
-    timestamp: now,
-    run_id: runId,
-    type: "eval.trial.import_failed",
-    reason,
-    ...(bridgeError ? { bridge_error_code: bridgeError.code } : {}),
-  })}\n`);
-  await atomicWriteJSON(path.join(runDirectory, "result.json"), {
-    schema_version: "1",
-    run_id: runId,
-    status: "failed",
-    exit_code: 12,
-    error: bridgeError
-      ? { code: bridgeError.code, message: bridgeError.message }
-      : { code: reason, message: "Harbor trial completed without an importable Hitch run bundle" },
-    completed_at: now,
-  });
-  await atomicWriteJSON(path.join(runDirectory, "manifest.json"), {
-    schema_version: "1",
-    run_id: runId,
-    context,
-    parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
-    status: "failed",
-    harness: {
-      harness_id: input.resolvedRevision.harness_id,
-      requested_ref: input.request.harness_ref,
-      revision_identity: input.resolvedRevision.identity,
-      ...(artifactId && /^sha256:[0-9a-f]{64}$/.test(artifactId) ? { artifact_id: artifactId } : {}),
-      ...(argsDigest ? { agent_args_sha256: argsDigest } : {}),
-    },
-    model: defaultModelIdentity(input.request.model, input.resolvedRevision.harness_id),
-    protocol: {
-      timeout_ms: input.request.timeout_ms,
-      workspace_mode: "shared",
-      ...(input.runtimeId && /^sha256:[0-9a-f]{64}$/.test(input.runtimeId)
-        ? { environment_identity: input.runtimeId as Sha256 }
-        : {}),
-    },
-    observation,
-    request_ref: "request.json",
-    resolution_ref: "resolution.json",
-    result_ref: "result.json",
-    created_at: now,
-    completed_at: now,
-    sealed: true,
-    ...(bridgeErrorRef ? { diagnostics: { harbor_bridge_error_ref: bridgeErrorRef } } : {}),
-  });
-  await writeResultBundleIndex(runDirectory);
-  return evalTrialRef(input, runId, observation);
 }
 
 function evalTrialRef(input: TrialInput, runId: string, observation: RunObservationV1): EvalTrialRefV1 {

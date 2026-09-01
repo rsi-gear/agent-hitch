@@ -26,6 +26,7 @@ import { modelCaptureDegradationEvent, resolveEvalModelCapturePlan } from "./mod
 import { finalizeEvalResult } from "./eval-finalization.js";
 import { harborPreparedArtifact, preparedHarnessEvent } from "./prepared-harness.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
+import { recoverPromotedEvalTrialPublications } from "./trial-publication-recovery.js";
 export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
@@ -179,6 +180,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       startedAt: startedAt.toISOString(),
     });
     if (!resume) await writeEvalProgress(evalDirectory, progress);
+    else progress = (await recoverPromotedEvalTrialPublications({ root, evalDirectory, plan: executionPlan, progress, sink })).progress;
     sink.emit({
       type: "eval.planned",
       harness: resolvedRevision.harness_id,

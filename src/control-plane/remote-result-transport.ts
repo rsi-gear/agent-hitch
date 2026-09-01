@@ -56,6 +56,7 @@ export async function importRemoteResultEnvelope(input: {
   runtimeId?: string;
   environmentImages?: TrialEnvironmentImagesV1;
   modelCapturePlan?: import("../domain/index.js").ModelCapturePlanV1;
+  publicationMode?: "settle" | "replace-invalid";
 }): Promise<{ ref: EvalTrialRefV1; trial: Record<string, unknown>; backendDirectory: string }> {
   const info = await lstat(input.artifactPath);
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > MAX_ENVELOPE_BYTES) throw transportError("remote result artifact is not a safe bounded file");
@@ -88,6 +89,7 @@ export async function importRemoteResultEnvelope(input: {
       resolvedRevision: input.resolvedRevision,
       benchmarkId: input.request.benchmark_id,
       benchmarkRevision: input.request.benchmark_revision,
+      ...(input.publicationMode ? { publicationMode: input.publicationMode } : {}),
       ...(input.runtimeId ? { runtimeId: input.runtimeId } : {}),
       executionEvidence: execution,
       ...(input.environmentImages ? { environmentImages: input.environmentImages } : {}),

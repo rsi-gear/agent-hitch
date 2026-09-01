@@ -16,6 +16,7 @@ export type ResultBundleFileRoleV1 =
   | "provider-evidence"
   | "verifier-evidence"
   | "interaction-capture"
+  | "eval-publication"
   | "diagnostic";
 
 export interface ResultBundleFileV1 {

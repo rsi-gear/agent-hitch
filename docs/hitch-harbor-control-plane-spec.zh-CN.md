@@ -359,6 +359,8 @@ domain
     run_<id>/
       ...existing files...
       bundle.index.json
+      eval/
+        publication.json
       execution.json
       runtime.ref.json
       environment/
@@ -381,6 +383,7 @@ domain
 | `progress.json` | atomic mutable | 已发布 trial 集合；保持现有语义 |
 | `result.json` | immutable terminal | eval 终态和聚合结果 |
 | `bundle.index.json` | immutable | sealed run 内所有证据引用和校验和 |
+| `eval/publication.json` | immutable | run 对 eval progress 的发布收据与 settle/replace 语义；随 bundle 一起封存 |
 
 `control.json` 不能代替 `progress.json` 或 `result.json`。前者描述执行控制状态，后两者描述已发布的评测事实。
 
@@ -1453,6 +1456,7 @@ backend terminal
   -> validate provider evidence and canonical trajectory
   -> validate interaction capture according to policy
   -> write observation, terminal result and sealed manifest in staging
+  -> write eval/publication.json in staging
   -> build bundle.index.json
   -> verify every indexed file and bundle digest
   -> atomically promote runs/<run-id>/
@@ -1460,6 +1464,8 @@ backend terminal
 ```
 
 atomic promotion 之后不得再修改 run 目录中的 manifest、result、bundle index 或证据文件。任何一步失败都不得留下看似成功但未封存的权威 run。沿用现有 diagnostic run 机制表示缺失或损坏的 bundle。
+
+`eval/publication.json` 与 run 的其他证据在同一 staging 目录写入，并被 `bundle.index.json` 覆盖。它固定 `eval_id`、完整 trial ref 和发布模式：首次 settle 使用 `settle`，只替换 invalid slot 的基础设施修复或显式 rerun 使用 `replace-invalid`。daemon 在恢复调度前扫描属于该 eval 的收据，先验证 bundle digest、run parent、benchmark identity 和冻结 execution plan，再原子补写缺失 progress。一个逻辑 slot 出现多个 settle、多个 valid replacement，或收据与既有 valid progress 冲突时，必须以 `eval_trial_publication_conflict` fail-closed，不能选择任意 run，也不能自动重跑 Candidate。历史 bundle 没有该 additive 收据时继续按旧恢复规则读取。
 
 ### 17.2 Bundle completeness
 

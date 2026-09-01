@@ -114,6 +114,7 @@ export class RemoteWorkCoordinator {
         runtimeId: input.runtimeId,
         ...(input.environmentImages ? { environmentImages: input.environmentImages } : {}),
         ...(input.modelCapturePlan ? { modelCapturePlan: input.modelCapturePlan } : {}),
+        ...(input.publicationMode ? { publicationMode: input.publicationMode } : {}),
       });
       await input.publish(imported.ref);
       input.emit({ type: "eval.work.completed", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, run_id: imported.ref.run_id });

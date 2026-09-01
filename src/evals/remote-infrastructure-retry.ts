@@ -56,6 +56,7 @@ export async function runRemoteInfrastructureRetries(input: {
       runtimeDirectory: input.options.controllerRuntime.directory, runtimeId: input.options.controllerRuntime.runtime_id,
       ...(input.initial.environmentImages ? { environmentImages: input.initial.environmentImages } : {}),
       ...(input.options.plan.model_capture ? { modelCapturePlan: input.options.plan.model_capture } : {}),
+      publicationMode: "replace-invalid",
       ...(input.options.signal ? { signal: input.options.signal } : {}),
       emit: (event) => input.options.sink.emit({ ...event, execution_kind: "physical-infrastructure-retry", infrastructure_retry: retry }),
       publish,

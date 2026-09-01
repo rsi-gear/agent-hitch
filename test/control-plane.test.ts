@@ -2,17 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EvalScheduler, ResourceLedger, applyEvalPhase, applyEvalWorkItem, scaleResources, settleEvalWorkItems } from "../src/control-plane/index.js";
-import type { BackendWorkItemV1, EvalControlV1, EvalRequest, ResourceVectorV1, Sha256 } from "../src/domain/index.js";
+import type { BackendWorkItemV1, EvalControlV1, EvalProgressV1, EvalRequest, ResourceVectorV1, Sha256 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
-import { createExecutionLease, readExecutionLeases, runEval, validateEvalRequest } from "../src/evals/index.js";
+import { createExecutionLease, parseEvalExecutionPlan, readExecutionLeases, recoverPromotedEvalTrialPublications, runEval, validateEvalRequest } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256Bytes, sha256JSON } from "../src/foundation/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 import { EnvironmentImageService } from "../src/images/index.js";
+import { writeResultBundleIndex } from "../src/runs/index.js";
 
 const GIB = 1024 * 1024 * 1024;
 const TRIAL: ResourceVectorV1 = { cpu_millis: 2_000, memory_bytes: 4 * GIB, container_slots: 1, build_slots: 0 };
@@ -674,6 +675,99 @@ test("eval recovery finalizes persisted progress without starting another Candid
   assert.equal(activity.filter((entry) => entry.type === "start").length, 1, "finalization recovery must not start Harbor again");
   const events = await readFile(path.join(evalDirectory, "events.jsonl"), "utf8");
   assert.match(events, /"type":"eval\.recovered","status":"queued","recovery":"resume"/);
+});
+
+test("eval recovery reconciles a promoted bundle before progress and does not rerun the Candidate", async (t) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-promoted-bundle-recovery-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const activityLog = path.join(root, "promoted-bundle-activity.jsonl");
+  const harbor = await writeFakeHarbor(root, { activityLog });
+  const npm = await writeFakeNpm(root);
+  const createScheduler = () => new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
+    trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
+    executor: (options) => runEval({
+      ...options,
+      harborExecutable: harbor,
+      env: { ...process.env, HITCH_NPM_PATH: npm },
+      trialBundleGraceMs: 0,
+    }),
+  });
+
+  const first = createScheduler();
+  await first.initialize();
+  const evalId = await first.submit({
+    dataset,
+    harness_ref: "pi@version:1.2.3",
+    attempts: 1,
+    max_concurrent: 1,
+    infrastructure_retries: 0,
+  });
+  await waitFor(() => first.status(evalId).then((status) => status?.result !== null), 10_000);
+  await first.shutdown();
+
+  const evalDirectory = path.join(root, "evals", evalId);
+  const originalProgress = await readJSON<EvalProgressV1>(path.join(evalDirectory, "progress.json"));
+  assert.equal(originalProgress.trials.length, 1);
+  const originalTrial = originalProgress.trials[0]!;
+  const publication = await readJSON<Record<string, unknown>>(path.join(root, "runs", originalTrial.run_id, "eval", "publication.json"));
+  assert.equal(publication.eval_id, evalId);
+  assert.equal(publication.mode, "settle");
+  const bundle = await readJSON<{ files: Array<{ path: string }> }>(path.join(root, "runs", originalTrial.run_id, "bundle.index.json"));
+  assert.ok(bundle.files.some((file) => file.path === "eval/publication.json" && (file as { role?: string }).role === "eval-publication"), "publication receipt must be sealed into the bundle");
+
+  await atomicWriteJSON(path.join(evalDirectory, "progress.json"), {
+    ...originalProgress,
+    generation: 0,
+    trials: [],
+    summary: { settled_trials: 0, valid_trials: 0, invalid_trials: 0 },
+    updated_at: originalProgress.started_at,
+  });
+  await rm(path.join(evalDirectory, "result.json"), { force: true });
+  const completed = await readJSON<EvalControlV1>(path.join(evalDirectory, "control.json"));
+  const { error: _error, allocation_id: _allocation, ...base } = completed;
+  await atomicWriteJSON(path.join(evalDirectory, "control.json"), {
+    ...base,
+    state: "finalizing",
+    generation: completed.generation + 1,
+    updated_at: new Date().toISOString(),
+  });
+
+  const recovered = createScheduler();
+  await recovered.initialize();
+  t.after(() => recovered.shutdown());
+  await waitFor(() => recovered.status(evalId).then((status) => status?.result !== null), 10_000);
+  const status = await recovered.status(evalId);
+  assert.deepEqual(status?.result?.trials, [originalTrial]);
+  const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
+  assert.equal(activity.filter((entry) => entry.type === "start").length, 1, "promoted bundle recovery must not start Harbor again");
+  const progress = await readJSON<EvalProgressV1>(path.join(evalDirectory, "progress.json"));
+  assert.deepEqual(progress.trials, [originalTrial]);
+  const events = await readFile(path.join(evalDirectory, "events.jsonl"), "utf8");
+  assert.match(events, /"type":"eval\.trial\.publication-recovered"/);
+
+  const duplicateRunId = `run_${"f".repeat(32)}`;
+  const duplicateDirectory = path.join(root, "runs", duplicateRunId);
+  await cp(path.join(root, "runs", originalTrial.run_id), duplicateDirectory, { recursive: true });
+  const duplicateManifest = await readJSON<Record<string, unknown>>(path.join(duplicateDirectory, "manifest.json"));
+  await atomicWriteJSON(path.join(duplicateDirectory, "manifest.json"), { ...duplicateManifest, run_id: duplicateRunId });
+  const duplicateResult = await readJSON<Record<string, unknown>>(path.join(duplicateDirectory, "result.json"));
+  await atomicWriteJSON(path.join(duplicateDirectory, "result.json"), { ...duplicateResult, run_id: duplicateRunId });
+  const duplicatePublication = await readJSON<{ trial: Record<string, unknown> }>(path.join(duplicateDirectory, "eval", "publication.json"));
+  await atomicWriteJSON(path.join(duplicateDirectory, "eval", "publication.json"), {
+    ...duplicatePublication, trial: { ...duplicatePublication.trial, run_id: duplicateRunId },
+  });
+  await writeResultBundleIndex(duplicateDirectory);
+  const executionPlan = parseEvalExecutionPlan(await readJSON(path.join(evalDirectory, "execution-plan.json")));
+  await assert.rejects(
+    recoverPromotedEvalTrialPublications({ root, evalDirectory, plan: executionPlan, progress }),
+    (error: unknown) => (error as { code?: string }).code === "eval_trial_publication_conflict",
+  );
 });
 
 test("daemon exposes queued eval status and terminal result", async (t) => {

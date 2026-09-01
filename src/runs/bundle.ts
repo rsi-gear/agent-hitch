@@ -344,6 +344,7 @@ function roleForPath(file: string): ResultBundleFileRoleV1 {
   if (file === "workspace.json" || file.startsWith("workspace/")) return "workspace-evidence";
   if (file === "environment/image.manifest.json") return "environment-manifest";
   if (file.startsWith("interactions/")) return "interaction-capture";
+  if (file === "eval/publication.json") return "eval-publication";
   if (file.startsWith("verifier/")) return "verifier-evidence";
   if (file === "trajectory.ref.json" || file.startsWith("trajectory/")) return "trajectory";
   if (file.startsWith("provider/") || file.includes("provider-native")) return "provider-evidence";
@@ -357,7 +358,7 @@ function parseBundleFile(value: unknown, index: number): ResultBundleFileV1 {
   const roles = new Set<ResultBundleFileRoleV1>([
     "request", "resolution", "manifest", "result", "runtime-ref", "environment-manifest", "execution-evidence",
     "control-events", "process-log", "workspace-evidence", "trajectory", "provider-evidence", "verifier-evidence",
-    "interaction-capture", "diagnostic",
+    "interaction-capture", "eval-publication", "diagnostic",
   ]);
   if (!roles.has(file.role as ResultBundleFileRoleV1) || typeof file.path !== "string" || !validRelativePath(file.path)
     || !Number.isSafeInteger(file.size) || (file.size as number) < 0 || !isSha256(file.sha256)) {
