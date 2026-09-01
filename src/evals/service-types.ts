@@ -111,6 +111,7 @@ export type EvalRemoteWorkExecutor = (input: {
   workItem: BackendWorkItemV1;
   resolvedRevision: ResolvedRevision;
   preparedArtifact: HarborPreparedArtifactUse;
+  runtimeDirectory: string;
   runtimeId: string;
   environmentImages?: import("./trial-environment-evidence.js").TrialEnvironmentImagesV1;
   modelCapturePlan?: ModelCapturePlanV1;

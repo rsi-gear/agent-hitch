@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { parseRemoteWorkerHeartbeat } from "../control-plane/index.js";
 import type { RemoteWorkerProtocol, RemoteWorkerRegistry } from "../control-plane/index.js";
-import type { BackendWorkItemV1, ExecutionLeaseV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkInputRefV1 } from "../domain/index.js";
 import { invalidInput } from "../foundation/index.js";
 import { authorized } from "./auth.js";
 
@@ -66,6 +68,17 @@ export async function handleRemoteWorkRoute(input: {
   adminToken: string;
 }): Promise<boolean> {
   const { request, response, url, registry, protocol } = input;
+  const inputMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/inputs\/(sha256:[a-f0-9]{64})$/);
+  if (inputMatch && request.method === "GET") {
+    const workerId = inputMatch[1] as string;
+    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    else {
+      const resolved = await protocol.resolveInput(workerId, inputMatch[2] as string, positiveGeneration(url.searchParams.get("generation")), inputMatch[3] as `sha256:${string}`);
+      response.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(resolved.size), "cache-control": "private, immutable" });
+      await pipeline(createReadStream(resolved.path), response);
+    }
+    return true;
+  }
   const artifactMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/artifacts\/(sha256:[a-f0-9]{64})$/);
   if (artifactMatch && request.method === "PUT") {
     const workerId = artifactMatch[1] as string;
@@ -89,7 +102,7 @@ export async function handleRemoteWorkRoute(input: {
       if (!authorized(request, input.adminToken)) unauthorized(response);
       else {
         const body = objectBody(await readBodyJSON(request));
-        const offer = await protocol.createOffer(workerId, body.lease as ExecutionLeaseV1, body.work as BackendWorkItemV1);
+        const offer = await protocol.createOffer(workerId, body.lease as ExecutionLeaseV1, body.work as BackendWorkItemV1, body.inputs as RemoteWorkInputRefV1[] | undefined);
         json(response, 201, { schema_version: "1", offer });
       }
       return true;

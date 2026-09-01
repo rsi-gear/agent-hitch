@@ -1,12 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkArtifactRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, RemoteWorkerHeartbeatV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, RemoteWorkerHeartbeatV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { parseExecutionLease } from "../evals/index.js";
 import { validateResourceVector } from "./resources.js";
 import { RemoteWorkerArtifactStore } from "./remote-worker-artifacts.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
+import { RemoteWorkInputStore } from "./remote-work-inputs.js";
 
 const OFFER_ID = /^offer_[a-f0-9]{32}$/;
 const LEASE_ID = /^lease_[a-f0-9]{32}$/;
@@ -19,6 +20,7 @@ export class RemoteWorkerProtocol {
   private readonly locks: string;
   private readonly offerTtlMs: number;
   private readonly artifacts: RemoteWorkerArtifactStore;
+  private readonly inputs: RemoteWorkInputStore;
 
   constructor(input: { root: string; registry: RemoteWorkerRegistry; offerTtlMs?: number }) {
     const ttl = input.offerTtlMs ?? DEFAULT_OFFER_TTL_MS;
@@ -29,17 +31,20 @@ export class RemoteWorkerProtocol {
     this.locks = paths.workerProtocolLocks;
     this.offerTtlMs = ttl;
     this.artifacts = new RemoteWorkerArtifactStore({ root: input.root });
+    this.inputs = new RemoteWorkInputStore(input.root);
   }
 
   async initialize(): Promise<void> {
-    await Promise.all([ensureDir(this.directory), ensureDir(this.locks), this.artifacts.initialize()]);
+    await Promise.all([ensureDir(this.directory), ensureDir(this.locks), this.artifacts.initialize(), this.inputs.initialize()]);
   }
 
-  async createOffer(workerId: string, leaseValue: ExecutionLeaseV1, workValue: BackendWorkItemV1): Promise<RemoteWorkOfferV1> {
+  async createOffer(workerId: string, leaseValue: ExecutionLeaseV1, workValue: BackendWorkItemV1, inputRefs: RemoteWorkInputRefV1[] = []): Promise<RemoteWorkOfferV1> {
     return withFileLock(this.locks, `offers-${workerId}`, async () => {
       const worker = await this.requireReadyWorker(workerId);
       const lease = parseExecutionLease(leaseValue);
       const work = parseRemoteWorkItem(workValue);
+      const inputs = inputRefs.map(parseInputRef);
+      if (new Set(inputs.map((entry) => entry.kind)).size !== inputs.length) throw protocolError("remote work inputs are duplicated");
       if (lease.state !== "offered" || lease.worker_id !== workerId || lease.provider !== worker.worker.provider
         || lease.collision_domain_id !== worker.worker.collision_domain_id || lease.work_id !== work.work_id
         || lease.eval_id !== work.eval_id || work.provider !== worker.worker.provider
@@ -56,6 +61,7 @@ export class RemoteWorkerProtocol {
         worker_id: workerId,
         lease,
         work,
+        ...(inputs.length > 0 ? { inputs } : {}),
         state: "offered",
         issued_at: now.toISOString(),
         expires_at: new Date(now.getTime() + this.offerTtlMs).toISOString(),
@@ -269,6 +275,17 @@ export class RemoteWorkerProtocol {
     }
   }
 
+  async resolveInput(workerId: string, leaseId: string, generation: number, digest: Sha256): Promise<{ path: string; size: number }> {
+    await this.requireWorkerGeneration(workerId, generation);
+    const offer = await this.findOfferForLease(workerId, leaseId);
+    if (!offer || offer.generation !== generation || !new Set(["offered", "accepted", "cancel-requested"]).has(offer.state)) {
+      throw protocolError("remote work input lease is not active");
+    }
+    const ref = offer.inputs?.find((entry) => entry.digest === digest);
+    if (!ref) throw protocolError("remote work input is not authorized for this lease");
+    return this.inputs.verify(ref);
+  }
+
   artifactPath(workerId: string, leaseId: string, digest: Sha256): string {
     return this.artifacts.pathFor(workerId, leaseId, digest);
   }
@@ -319,7 +336,7 @@ export class RemoteWorkerProtocol {
 
 function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   const record = exact(value, [
-    "schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "state", "issued_at", "expires_at",
+    "schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "inputs", "state", "issued_at", "expires_at",
     "accepted_at", "completed_at", "released_at", "rejection_code", "terminal",
     "accept_receipt_digest", "terminal_receipt_digest", "release_receipt_digest",
   ], "remote work offer");
@@ -333,10 +350,12 @@ function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   for (const field of ["accept_receipt_digest", "terminal_receipt_digest", "release_receipt_digest"] as const) if (record[field] !== undefined && (typeof record[field] !== "string" || !SHA256.test(record[field] as string))) throw protocolError(`remote work offer ${field} is invalid`);
   const lease = parseExecutionLease(record.lease);
   const work = parseRemoteWorkItem(record.work);
+  const inputs = record.inputs === undefined ? undefined : Array.isArray(record.inputs) ? record.inputs.map(parseInputRef) : (() => { throw protocolError("remote work inputs are invalid"); })();
+  if (inputs && new Set(inputs.map((entry) => entry.kind)).size !== inputs.length) throw protocolError("remote work inputs are duplicated");
   const terminal = record.terminal === undefined ? undefined : parseTerminal(record.terminal);
   if (lease.worker_id !== record.worker_id || lease.work_id !== work.work_id || lease.eval_id !== work.eval_id
     || (record.state === "completed" || record.state === "release-requested" || record.state === "released") !== (terminal !== undefined)) throw protocolError("remote work offer evidence is inconsistent");
-  return record as unknown as RemoteWorkOfferV1;
+  return { ...record, ...(inputs ? { inputs } : {}) } as unknown as RemoteWorkOfferV1;
 }
 
 function parseRemoteWorkItem(value: unknown): BackendWorkItemV1 {
@@ -398,6 +417,14 @@ function parseArtifactRef(value: unknown): RemoteWorkArtifactRefV1 {
   if (record.kind !== "result-bundle" && record.kind !== "diagnostic" || typeof record.digest !== "string" || !SHA256.test(record.digest)
     || !Number.isSafeInteger(record.size) || (record.size as number) < 0 || (record.size as number) > 512 * 1024 * 1024) throw protocolError("remote work artifact ref is invalid");
   return { kind: record.kind, digest: record.digest as Sha256, size: record.size as number };
+}
+
+function parseInputRef(value: unknown): RemoteWorkInputRefV1 {
+  const record = exact(value, ["kind", "format", "digest", "size"], "remote work input ref");
+  if (!new Set(["work-spec", "harness-artifact", "controller-runtime", "task-input"]).has(String(record.kind))
+    || !new Set(["json", "hitch-tree-v1"]).has(String(record.format)) || typeof record.digest !== "string" || !SHA256.test(record.digest)
+    || !Number.isSafeInteger(record.size) || (record.size as number) < 1 || (record.size as number) > 256 * 1024 * 1024) throw protocolError("remote work input ref is invalid");
+  return record as unknown as RemoteWorkInputRefV1;
 }
 
 function assertOfferReceipt(offer: RemoteWorkOfferV1, workerId: string, generation: number, nonce: string): void {

@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkOfferV1, RemoteWorkerPublicRecordV1, ResourceVectorV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerPublicRecordV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease, markExecutionLeaseLost, releaseExecutionLease } from "../evals/index.js";
 import type { EvalRemoteWorkExecutor } from "../evals/index.js";
@@ -9,6 +9,7 @@ import { importRemoteResultEnvelope } from "./remote-result-transport.js";
 import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
+import { prepareRemoteWorkInputs } from "./remote-work-inputs.js";
 
 export interface RemoteWorkCoordinatorOptions {
   root: string;
@@ -65,7 +66,12 @@ export class RemoteWorkCoordinator {
   }
 
   private async executeWork(input: Parameters<EvalRemoteWorkExecutor>[0]): ReturnType<EvalRemoteWorkExecutor> {
-    const dispatch = await this.dispatch(input);
+    const inputs = await prepareRemoteWorkInputs({
+      root: input.root, request: input.request, plan: input.plan, work: input.workItem,
+      resolvedRevision: input.resolvedRevision, preparedArtifact: input.preparedArtifact,
+      runtimeDirectory: input.runtimeDirectory, runtimeId: input.runtimeId,
+    });
+    const dispatch = await this.dispatch(input, inputs);
     const { worker, lease, offer, collision } = dispatch;
     let accepted = false;
     let terminal = false;
@@ -119,7 +125,7 @@ export class RemoteWorkCoordinator {
     }
   }
 
-  private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0]) {
+  private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0], inputs: RemoteWorkInputRefV1[]) {
     for (;;) {
       if (input.signal?.aborted) throw cancelled();
       const workers = (await this.registry.list()).filter((worker) => compatible(worker, input.workItem, input.preparedArtifact.platform, input.modelCapturePlan));
@@ -139,7 +145,7 @@ export class RemoteWorkCoordinator {
           initialState: "offered",
         });
         try {
-          const offer = await this.protocol.createOffer(worker.worker.worker_id, lease.current(), input.workItem);
+          const offer = await this.protocol.createOffer(worker.worker.worker_id, lease.current(), input.workItem, inputs);
           return { worker, lease, offer, collision };
         } catch (error) {
           await lease.release().catch(() => undefined);

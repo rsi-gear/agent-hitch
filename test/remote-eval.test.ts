@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { EvalScheduler, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger, encodeRemoteResultEnvelope } from "../src/control-plane/index.js";
+import { EvalScheduler, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger, encodeRemoteResultEnvelope, parseRemoteTreeEnvelope } from "../src/control-plane/index.js";
 import type { RemoteWorkOfferV1, ResourceVectorV1 } from "../src/domain/index.js";
 import { readExecutionLeases, runEval } from "../src/evals/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256Bytes, sha256JSON } from "../src/foundation/index.js";
@@ -113,7 +113,7 @@ async function simulateCrashAfterRemoteCompletion(
   const control = await readJSON<Record<string, unknown>>(path.join(directory, "control.json"));
   await atomicWriteJSON(path.join(directory, "control.json"), {
     ...control, state: "running", generation: Number(control.generation) + 1,
-    admitted_parallelism: 0, active_leases: leases.map((lease) => lease.lease_id),
+    admitted_parallelism: 0, active_leases: leases.map((lease) => lease.lease_id).sort(),
     queued_work_items: [], terminal_work_items: [], updated_at: new Date().toISOString(),
   });
   for (const lease of leases) {
@@ -144,6 +144,16 @@ async function remoteWorkerOnce(root: string, registry: RemoteWorkerRegistry, pr
   }, 1_000);
   heartbeat.unref();
   const offer = await waitForOffer(protocol, workerId);
+  assert.deepEqual(new Set(offer.inputs?.map((entry) => entry.kind)), new Set(["work-spec", "harness-artifact", "controller-runtime", "task-input"]));
+  const taskInput = offer.inputs?.find((entry) => entry.kind === "task-input");
+  const workSpec = offer.inputs?.find((entry) => entry.kind === "work-spec");
+  assert.ok(taskInput && workSpec);
+  const taskBlob = await protocol.resolveInput(workerId, offer.lease.lease_id, offer.generation, taskInput.digest);
+  assert.ok(parseRemoteTreeEnvelope(JSON.parse(await readFile(taskBlob.path, "utf8"))).files.some((file) => file.path === "task.toml"));
+  const specBlob = await protocol.resolveInput(workerId, offer.lease.lease_id, offer.generation, workSpec.digest);
+  const stagedSpec = JSON.parse(await readFile(specBlob.path, "utf8")) as { request: { dataset: string }; work: { work_id: string } };
+  assert.equal(stagedSpec.request.dataset, "task-input");
+  assert.equal(stagedSpec.work.work_id, offer.work.work_id);
   await protocol.acceptOffer(workerId, {
     schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce, generation: offer.generation,
     accepted: true, sent_at: new Date().toISOString(),

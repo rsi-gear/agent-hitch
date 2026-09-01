@@ -23,6 +23,7 @@ export async function executeRemotePlannedWorkItem(input: {
     workItem: item,
     resolvedRevision: options.resolvedRevision,
     preparedArtifact: options.preparedArtifact,
+    runtimeDirectory: options.controllerRuntime.directory,
     runtimeId: options.controllerRuntime.runtime_id,
     ...(environmentImages ? { environmentImages } : {}),
     ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),

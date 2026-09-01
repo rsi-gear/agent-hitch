@@ -98,6 +98,13 @@ export interface RemoteWorkArtifactRefV1 {
   size: number;
 }
 
+export interface RemoteWorkInputRefV1 {
+  kind: "work-spec" | "harness-artifact" | "controller-runtime" | "task-input";
+  format: "json" | "hitch-tree-v1";
+  digest: Sha256;
+  size: number;
+}
+
 export interface RemoteWorkTerminalV1 {
   status: "succeeded" | "failed" | "cancelled";
   artifacts: RemoteWorkArtifactRefV1[];
@@ -112,6 +119,7 @@ export interface RemoteWorkOfferV1 {
   worker_id: string;
   lease: ExecutionLeaseV1;
   work: BackendWorkItemV1;
+  inputs?: RemoteWorkInputRefV1[];
   state: "offered" | "accepted" | "rejected" | "cancel-requested" | "completed" | "release-requested" | "released" | "expired";
   issued_at: string;
   expires_at: string;

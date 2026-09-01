@@ -23,3 +23,5 @@ export type { RemoteResultEnvelopeV1 } from "./remote-result-transport.js";
 export { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
 export type { RemoteWorkCoordinatorOptions } from "./remote-work-coordinator.js";
 export { recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
+export { RemoteWorkInputStore, materializeRemoteTreeEnvelope, parseRemoteTreeEnvelope, prepareRemoteWorkInputs } from "./remote-work-inputs.js";
+export type { RemoteTreeEnvelopeV1 } from "./remote-work-inputs.js";

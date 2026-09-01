@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { RemoteWorkerProtocol, RemoteWorkerRegistry, recoverRemoteWorkerEvalLeases } from "../src/control-plane/index.js";
+import { RemoteWorkInputStore, RemoteWorkerProtocol, RemoteWorkerRegistry, recoverRemoteWorkerEvalLeases } from "../src/control-plane/index.js";
 import { createExecutionLease, readExecutionLeases } from "../src/evals/index.js";
 import { sha256Bytes, statePaths } from "../src/foundation/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
@@ -250,11 +250,18 @@ test("daemon remote-worker API separates admin registration from worker heartbea
   const inspected = await client.request("/v1/workers/worker_remote_a");
   assert.equal(((inspected.worker as { worker: { provider: string } }).worker.provider), "remote-docker");
   const { lease, work } = remoteWork();
+  const inputStore = new RemoteWorkInputStore(root);
+  await inputStore.initialize();
+  const inputBody = Buffer.from('{"schema_version":"1","work":"test"}\n');
+  const inputRef = await inputStore.put("work-spec", "json", inputBody);
   const created = await client.request("/v1/workers/worker_remote_a/offers", {
-    method: "POST", body: JSON.stringify({ lease, work }),
+    method: "POST", body: JSON.stringify({ lease, work, inputs: [inputRef] }),
   });
   const offer = created.offer as { offer_id: string; nonce: string };
   const workerHeaders = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  const downloaded = await fetch(`http://127.0.0.1:${server.port}/v1/workers/worker_remote_a/leases/${lease.lease_id}/inputs/${inputRef.digest}?generation=1`, { headers: workerHeaders });
+  assert.equal(downloaded.status, 200);
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), inputBody);
   const polled = await fetch(`http://127.0.0.1:${server.port}/v1/workers/worker_remote_a/offers?generation=1`, { headers: workerHeaders });
   assert.equal(polled.status, 200);
   assert.equal(((await polled.json() as { offers: unknown[] }).offers).length, 1);
