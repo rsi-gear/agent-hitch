@@ -138,9 +138,20 @@ export class EvalRerunScheduler {
     if (!/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
     const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
     const submission = await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null);
-    const state = await readJSON<Record<string, unknown> | null>(path.join(directory, "state.json"), null);
+    let state = await readJSON<Record<string, unknown> | null>(path.join(directory, "state.json"), null);
     if (!submission || !state || submission.eval_id !== evalId || submission.rerun_id !== rerunId) return null;
     assertRerunStateIdentity(state, evalId, rerunId);
+    // The terminal state is written before the terminal event is flushed. Do
+    // not expose that narrow intermediate state through the API while this
+    // scheduler still owns the completion tail.
+    if (state.status === "completed" || state.status === "failed") {
+      const completion = this.completions.get(rerunId);
+      if (completion) {
+        await completion;
+        state = await readJSON<Record<string, unknown>>(path.join(directory, "state.json"));
+        assertRerunStateIdentity(state, evalId, rerunId);
+      }
+    }
     return { submission, state, result: await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null) };
   }
 
