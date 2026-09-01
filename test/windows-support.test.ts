@@ -39,7 +39,7 @@ process.stdin.on("end", () => {
 
   assert.equal(result.status, "succeeded");
   assert.equal(result.output, "reply:windows");
-  assert.match(await readFile(path.join(root, "runs", runId, "events.jsonl"), "utf8"), /message\.completed/);
+  assert.match(await readFile(path.join(root, "runs", runId, "events.jsonl"), "utf8"), /message\.delta/);
 });
 
 test("Windows promotes and verifies the controller runtime without POSIX mode evidence", { skip: process.platform !== "win32" }, async (t) => {

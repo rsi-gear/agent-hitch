@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,6 +42,6 @@ test("Windows executable resolution and batch execution honor PATHEXT", { skip: 
   await writeFile(shim, "@echo off\r\necho windows-shim-ready\r\n");
 
   const executable = await resolveExecutable("hitch-probe", directory, ".EXE;.CMD");
-  assert.equal(executable?.toLowerCase(), shim.toLowerCase());
+  assert.equal(executable?.toLowerCase(), (await realpath(shim)).toLowerCase());
   assert.equal((await runCommand(executable as string, [])).stdout.trim(), "windows-shim-ready");
 });
