@@ -58,6 +58,7 @@
     "test": "node --test \"dist/test/*.test.js\"",
     "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test \"dist/test/*.test.js\"",
     "canary:buildkit-secrets": "npm run build && node dist/scripts/canary-buildkit-secrets.js",
+    "canary:docker-images": "npm run build && node dist/scripts/canary-docker-image-observation.js",
     "check:architecture": "node dist/scripts/check-architecture.js",
     "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && node --test \"dist/test/*.test.js\"",
     "prepublishOnly": "npm run check"

@@ -1910,6 +1910,8 @@ npm run build
 npm run check:architecture
 node dist/scripts/check-syntax.js
 node --test "dist/test/*.test.js"
+npm run canary:buildkit-secrets
+npm run canary:docker-images
 ```
 
 Docker/Harbor canary 至少包含：

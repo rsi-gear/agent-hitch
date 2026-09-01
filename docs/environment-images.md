@@ -63,10 +63,14 @@ The resource observer records Docker's configured image reference and config
 digest, and a planned immutable image is accepted only when that config digest
 was actually observed during the trial.
 
+`npm run canary:docker-images` starts three ownership-labeled containers with
+distinct main, sidecar, and separate-Verifier config digests. It runs the real
+Docker observer, verifies every planned digest, and proves a forged Verifier
+digest fails closed. The command builds from a temporary export of the selected
+local base, so it does not require registry access.
+
 Remaining work:
 
-- a real-Docker, version-specific canary for post-start image/config digest
-  verification across task, sidecar, and separate-Verifier containers;
 - image reference GC.
 
 Successful, failed, and in-progress records have a stable `build_<id>` index.
