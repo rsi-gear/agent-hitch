@@ -139,6 +139,14 @@ test("remote work protocol fences offers, events, terminal receipts, and release
   };
   const accepted = await protocol.acceptOffer("worker_remote_a", accept);
   assert.equal(accepted.state, "accepted");
+  await protocol.validateHeartbeatLeases("worker_remote_a", {
+    schema_version: "1", generation: 1, health: "healthy", allocated: work.reservation,
+    active_leases: [{ lease_id: lease.lease_id, epoch: 1 }], sent_at: new Date().toISOString(),
+  });
+  await assert.rejects(protocol.validateHeartbeatLeases("worker_remote_a", {
+    schema_version: "1", generation: 1, health: "healthy", allocated: work.reservation,
+    active_leases: [{ lease_id: `lease_${"a".repeat(32)}`, epoch: 1 }], sent_at: new Date().toISOString(),
+  }), (error: unknown) => (error as { code?: string }).code === "worker_protocol_invalid");
   assert.deepEqual(await protocol.acceptOffer("worker_remote_a", accept), accepted);
   await assert.rejects(protocol.acceptOffer("worker_remote_a", { ...accept, nonce: "0".repeat(64) }),
     (error: unknown) => (error as { code?: string }).code === "worker_protocol_replay");

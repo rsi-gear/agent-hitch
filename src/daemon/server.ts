@@ -103,6 +103,8 @@ export class DaemonServer {
         resources: this.resources,
         trialResources: this.evalTrialResources,
         collisions,
+        remoteWorkers: this.remoteWorkers,
+        remoteWorkerProtocol: this.remoteWorkerProtocol,
         ...(this.evalExecutor ? { executor: this.evalExecutor } : {}),
         onEvent: (event) => this.logger("event", { type: event.type, eval_id: event.eval_id }),
       });

@@ -7,7 +7,7 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
     "schema_version", "provider", "worker_id", "collision_domain_id", "eval_id", "work_id", "lease_id", "lease_epoch",
     "task_id", "reservation", "enforced", "observed",
   ], "execution evidence");
-  if (record.schema_version !== "1" || record.provider !== "local-docker"
+  if (record.schema_version !== "1" || !validText(record.provider)
     || !validText(record.worker_id) || !validText(record.collision_domain_id)
     || typeof record.eval_id !== "string" || !/^eval_[a-f0-9]{32}$/.test(record.eval_id)
     || typeof record.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(record.work_id)
@@ -37,7 +37,7 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
     || (observedRecord.status === "unavailable" && containers.length !== 0)) throw new TypeError("execution evidence containers are invalid");
   return {
     schema_version: "1",
-    provider: "local-docker",
+    provider: record.provider as string,
     worker_id: record.worker_id as string,
     collision_domain_id: record.collision_domain_id as string,
     eval_id: record.eval_id,

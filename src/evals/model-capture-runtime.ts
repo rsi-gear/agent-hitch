@@ -25,6 +25,9 @@ export async function startEvalModelCaptureRuntime(input: {
   if (input.plan.effective_mode !== "proxy" && input.plan.effective_mode !== "hybrid") {
     return { plan: input.plan, close: async () => undefined };
   }
+  if (input.plan.topology === "in-sandbox") {
+    return { plan: input.plan, close: async () => undefined };
+  }
   let proxy: HostModelProxy | undefined;
   try {
     const persisted = await readModelProxyRuntimeState(input.evalDirectory, input.evalId, input.plan);

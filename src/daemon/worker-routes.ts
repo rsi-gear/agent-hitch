@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { parseRemoteWorkerHeartbeat } from "../control-plane/index.js";
 import type { RemoteWorkerProtocol, RemoteWorkerRegistry } from "../control-plane/index.js";
 import type { BackendWorkItemV1, ExecutionLeaseV1 } from "../domain/index.js";
 import { invalidInput } from "../foundation/index.js";
@@ -32,7 +33,11 @@ export async function handleWorkerProtocolRoute(input: {
   if (request.method === "POST" && action === "heartbeat") {
     const workerToken = bearerToken(request);
     if (!workerToken || !await registry.authenticate(workerId, workerToken)) unauthorized(response);
-    else json(response, 200, { schema_version: "1", worker: await registry.heartbeat(workerId, await readBodyJSON(request)) });
+    else {
+      const heartbeat = parseRemoteWorkerHeartbeat(await readBodyJSON(request));
+      await protocol.validateHeartbeatLeases(workerId, heartbeat);
+      json(response, 200, { schema_version: "1", worker: await registry.heartbeat(workerId, heartbeat) });
+    }
     return true;
   }
   if (request.method === "DELETE" && !action) {
@@ -98,13 +103,15 @@ export async function handleRemoteWorkRoute(input: {
       return true;
     }
   }
-  const offerMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/offers\/(offer_[a-f0-9]{32})\/(accept|complete|release|cancel)$/);
+  const offerMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/offers\/(offer_[a-f0-9]{32})\/(accept|complete|release|release-request|cancel)$/);
   if (offerMatch) {
     const [, workerId, offerId, action] = offerMatch as unknown as [string, string, string, string];
     if (request.method !== "POST") return false;
-    if (action === "cancel") {
+    if (action === "cancel" || action === "release-request") {
       if (!authorized(request, input.adminToken)) unauthorized(response);
-      else json(response, 200, { schema_version: "1", offer: await protocol.requestCancel(workerId, offerId) });
+      else json(response, 200, { schema_version: "1", offer: action === "cancel"
+        ? await protocol.requestCancel(workerId, offerId)
+        : await protocol.requestRelease(workerId, offerId) });
       return true;
     }
     if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);

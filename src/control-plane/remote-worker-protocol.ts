@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkArtifactRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkArtifactRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, RemoteWorkerHeartbeatV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { parseExecutionLease } from "../evals/index.js";
 import { validateResourceVector } from "./resources.js";
@@ -36,31 +36,33 @@ export class RemoteWorkerProtocol {
   }
 
   async createOffer(workerId: string, leaseValue: ExecutionLeaseV1, workValue: BackendWorkItemV1): Promise<RemoteWorkOfferV1> {
-    const worker = await this.requireReadyWorker(workerId);
-    const lease = parseExecutionLease(leaseValue);
-    const work = parseRemoteWorkItem(workValue);
-    if (lease.state !== "offered" || lease.worker_id !== workerId || lease.provider !== worker.worker.provider
-      || lease.collision_domain_id !== worker.worker.collision_domain_id || lease.work_id !== work.work_id
-      || lease.eval_id !== work.eval_id || work.provider !== worker.worker.provider
-      || JSON.stringify(lease.reservation) !== JSON.stringify(work.reservation)) throw protocolError("remote work offer identity is invalid");
-    const outstanding = sumReservations(await this.listOffers(workerId, worker.generation));
-    const used = maxResources(worker.worker.capacity.allocated, outstanding);
-    assertFits(lease.reservation, available(worker.worker.capacity.allocatable, used));
-    const now = new Date();
-    const offer: RemoteWorkOfferV1 = {
-      schema_version: "1",
-      offer_id: `offer_${randomUUID().replaceAll("-", "")}`,
-      nonce: randomBytes(32).toString("hex"),
-      generation: worker.generation,
-      worker_id: workerId,
-      lease,
-      work,
-      state: "offered",
-      issued_at: now.toISOString(),
-      expires_at: new Date(now.getTime() + this.offerTtlMs).toISOString(),
-    };
-    await atomicWriteJSON(this.offerPath(workerId, offer.offer_id), offer);
-    return offer;
+    return withFileLock(this.locks, `offers-${workerId}`, async () => {
+      const worker = await this.requireReadyWorker(workerId);
+      const lease = parseExecutionLease(leaseValue);
+      const work = parseRemoteWorkItem(workValue);
+      if (lease.state !== "offered" || lease.worker_id !== workerId || lease.provider !== worker.worker.provider
+        || lease.collision_domain_id !== worker.worker.collision_domain_id || lease.work_id !== work.work_id
+        || lease.eval_id !== work.eval_id || work.provider !== worker.worker.provider
+        || JSON.stringify(lease.reservation) !== JSON.stringify(work.reservation)) throw protocolError("remote work offer identity is invalid");
+      const outstanding = sumReservations(await this.listOffers(workerId, worker.generation));
+      const used = maxResources(worker.worker.capacity.allocated, outstanding);
+      assertFits(lease.reservation, available(worker.worker.capacity.allocatable, used));
+      const now = new Date();
+      const offer: RemoteWorkOfferV1 = {
+        schema_version: "1",
+        offer_id: `offer_${randomUUID().replaceAll("-", "")}`,
+        nonce: randomBytes(32).toString("hex"),
+        generation: worker.generation,
+        worker_id: workerId,
+        lease,
+        work,
+        state: "offered",
+        issued_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + this.offerTtlMs).toISOString(),
+      };
+      await atomicWriteJSON(this.offerPath(workerId, offer.offer_id), offer);
+      return offer;
+    }, { timeoutCode: "worker_offer_selection_locked", timeoutExitCode: 12 });
   }
 
   async listOffers(workerId: string, generation: number): Promise<RemoteWorkOfferV1[]> {
@@ -73,7 +75,7 @@ export class RemoteWorkerProtocol {
       if (!entry.isFile() || !/^offer_[a-f0-9]{32}\.json$/.test(entry.name)) continue;
       let offer = parseRemoteWorkOffer(await readJSON(path.join(directory, entry.name)));
       if (offer.state === "offered" && Date.parse(offer.expires_at) <= Date.now()) offer = await this.expireOffer(offer);
-      if (offer.state === "offered" || offer.state === "accepted" || offer.state === "cancel-requested") offers.push(offer);
+      if (offer.state === "offered" || offer.state === "accepted" || offer.state === "cancel-requested" || offer.state === "completed" || offer.state === "release-requested") offers.push(offer);
     }
     return offers;
   }
@@ -111,7 +113,7 @@ export class RemoteWorkerProtocol {
     await this.requireWorkerGeneration(workerId, event.generation);
     const offer = await this.offerForLease(event.lease_id);
     if (offer.worker_id !== workerId || offer.generation !== event.generation || offer.lease.epoch !== event.epoch
-      || !new Set(["accepted", "cancel-requested", "completed"]).has(offer.state)) throw protocolError("remote worker event lease is not active");
+      || !new Set(["accepted", "cancel-requested", "completed", "release-requested"]).has(offer.state)) throw protocolError("remote worker event lease is not active");
     return withFileLock(this.locks, `event-${event.lease_id}`, async () => {
       const statePath = this.eventStatePath(event.lease_id);
       const state = await readJSON<{ sequence?: unknown } | null>(statePath, null);
@@ -163,6 +165,14 @@ export class RemoteWorkerProtocol {
     });
   }
 
+  async requestRelease(workerId: string, offerId: string): Promise<RemoteWorkOfferV1> {
+    return this.updateOffer(workerId, offerId, async (offer) => {
+      if (offer.state === "release-requested" || offer.state === "released") return offer;
+      if (offer.state !== "completed") throw protocolError(`remote work offer cannot request release from ${offer.state}`);
+      return { ...offer, state: "release-requested" };
+    });
+  }
+
   async releaseOffer(workerId: string, value: unknown): Promise<RemoteWorkOfferV1> {
     const receipt = parseReleaseReceipt(value);
     await this.requireWorkerGeneration(workerId, receipt.generation);
@@ -174,7 +184,7 @@ export class RemoteWorkerProtocol {
         if (offer.release_receipt_digest !== digest) throw replayError("remote work release receipt conflicts with the persisted receipt");
         return offer;
       }
-      if (offer.state !== "completed" && offer.state !== "cancel-requested") throw protocolError(`remote work offer cannot be released from ${offer.state}`);
+      if (offer.state !== "completed" && offer.state !== "release-requested" && offer.state !== "cancel-requested") throw protocolError(`remote work offer cannot be released from ${offer.state}`);
       return {
         ...offer,
         state: "released",
@@ -213,6 +223,21 @@ export class RemoteWorkerProtocol {
     const offer = await this.offerForLease(leaseId);
     if (offer.worker_id !== workerId || offer.generation !== generation || offer.lease.epoch !== epoch) throw protocolError("remote worker lease identity is invalid");
     return offer;
+  }
+
+  async validateHeartbeatLeases(workerId: string, heartbeat: RemoteWorkerHeartbeatV1): Promise<void> {
+    await this.requireWorkerGeneration(workerId, heartbeat.generation);
+    for (const lease of heartbeat.active_leases) {
+      const offer = await this.offerForLease(lease.lease_id).catch(() => null);
+      if (!offer || offer.worker_id !== workerId || offer.generation !== heartbeat.generation
+        || offer.lease.epoch !== lease.epoch || !acceptedOrCollecting(offer.state)) {
+        throw protocolError(`remote worker heartbeat reports an unauthorized lease: ${lease.lease_id}`);
+      }
+    }
+  }
+
+  artifactPath(workerId: string, leaseId: string, digest: Sha256): string {
+    return this.artifacts.pathFor(workerId, leaseId, digest);
   }
 
   private async updateOffer(workerId: string, offerId: string, update: (offer: RemoteWorkOfferV1) => Promise<RemoteWorkOfferV1>): Promise<RemoteWorkOfferV1> {
@@ -265,7 +290,7 @@ function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
     "accepted_at", "completed_at", "released_at", "rejection_code", "terminal",
     "accept_receipt_digest", "terminal_receipt_digest", "release_receipt_digest",
   ], "remote work offer");
-  const states = new Set(["offered", "accepted", "rejected", "cancel-requested", "completed", "released", "expired"]);
+  const states = new Set(["offered", "accepted", "rejected", "cancel-requested", "completed", "release-requested", "released", "expired"]);
   if (record.schema_version !== "1" || typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
     || typeof record.nonce !== "string" || !/^[a-f0-9]{64}$/.test(record.nonce)
     || !Number.isSafeInteger(record.generation) || (record.generation as number) < 1
@@ -277,7 +302,7 @@ function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   const work = parseRemoteWorkItem(record.work);
   const terminal = record.terminal === undefined ? undefined : parseTerminal(record.terminal);
   if (lease.worker_id !== record.worker_id || lease.work_id !== work.work_id || lease.eval_id !== work.eval_id
-    || (record.state === "completed" || record.state === "released") !== (terminal !== undefined)) throw protocolError("remote work offer evidence is inconsistent");
+    || (record.state === "completed" || record.state === "release-requested" || record.state === "released") !== (terminal !== undefined)) throw protocolError("remote work offer evidence is inconsistent");
   return record as unknown as RemoteWorkOfferV1;
 }
 
@@ -364,6 +389,10 @@ function maxResources(left: ResourceVectorV1, right: ResourceVectorV1): Resource
 
 function assertFits(requested: ResourceVectorV1, capacity: ResourceVectorV1): void {
   if (fields().some((field) => requested[field] > capacity[field])) throw new HitchError("remote worker rejected work capacity", { code: "worker_rejected", exitCode: 10 });
+}
+
+function acceptedOrCollecting(state: RemoteWorkOfferV1["state"]): boolean {
+  return state === "accepted" || state === "cancel-requested" || state === "completed" || state === "release-requested";
 }
 
 function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots"]; }

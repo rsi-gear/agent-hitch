@@ -20,6 +20,8 @@ import type { WorkItemAdmissionController } from "./service-types.js";
 import type { EvalDockerResourceReaper } from "./service-types.js";
 import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
 import type { EvalInteractionCaptureExporter } from "./service-types.js";
+import type { EvalRemoteWorkExecutor } from "./service-types.js";
+import { executeRemotePlannedWorkItem } from "./planned-remote-execution.js";
 import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
@@ -58,6 +60,7 @@ export interface ExecutePlannedHarborOptions {
   dockerResourceReaper?: EvalDockerResourceReaper;
   environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
   interactionCaptureExporter?: EvalInteractionCaptureExporter;
+  remoteWorkExecutor?: EvalRemoteWorkExecutor;
 }
 
 export async function executePlannedHarborTasks(options: ExecutePlannedHarborOptions): Promise<{
@@ -180,6 +183,7 @@ async function executeWorkItem(
   item: BackendWorkItemV1,
   parentAllocationId?: string,
 ): Promise<PlannedBackendRun> {
+  if (options.remoteWorkExecutor) return executeRemotePlannedWorkItem({ options, item, publish: (ref) => publisher.publish(ref, item.work_id) });
   const lease = await createExecutionLease({
     evalDirectory: options.evalDirectory,
     evalId: options.evalId,

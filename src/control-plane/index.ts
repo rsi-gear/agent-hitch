@@ -18,3 +18,7 @@ export type { RemoteWorkerRegistrationResult } from "./remote-workers.js";
 export { RemoteWorkerProtocol, parseRemoteWorkerEvent } from "./remote-worker-protocol.js";
 export { RemoteWorkerArtifactStore } from "./remote-worker-artifacts.js";
 export type { RemoteWorkerArtifactRecordV1 } from "./remote-worker-artifacts.js";
+export { encodeRemoteResultEnvelope, importRemoteResultEnvelope, parseRemoteResultEnvelope } from "./remote-result-transport.js";
+export type { RemoteResultEnvelopeV1 } from "./remote-result-transport.js";
+export { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
+export type { RemoteWorkCoordinatorOptions } from "./remote-work-coordinator.js";

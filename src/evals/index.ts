@@ -14,7 +14,7 @@ export type { ExecutionLeaseHandle, ExecutionWorkerIdentity } from "./execution-
 export { runEval } from "./service.js";
 export { recoverLocalDockerEvalLeases } from "./recovery.js";
 export type { EvalLeaseRecoveryResult } from "./recovery.js";
-export type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageManifestLoader, EvalEnvironmentImageResolver, EvalExecutionPhase, EvalInteractionCaptureExporter, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";
+export type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageManifestLoader, EvalEnvironmentImageResolver, EvalExecutionPhase, EvalInteractionCaptureExporter, EvalRemoteWorkExecutionResult, EvalRemoteWorkExecutor, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";
 export { inspectEval, listEvals } from "./records.js";
 export type { InspectedEval, ListedEval } from "./records.js";
 export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";
@@ -26,6 +26,7 @@ export { EVAL_RERUN_TYPES, assertEvalRerunTypeSupported, evalRerunSemantics, par
 export type { EvalRerunResult, EvalRerunSemanticsV1, EvalRerunType, RerunEvalOptions } from "./rerun-types.js";
 export { LocalDockerExecutionProvider, adoptLocalDockerLeaseEpoch, parseExecutionProviderStatus, parseLocalProviderExecutionRecord, readLocalDockerProcessRecord, readLocalDockerProcessRecordByLease, reconcileLocalDockerProcess, recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord, waitForLocalDockerProcessTerminal } from "./local-docker-provider.js";
 export type { LocalDockerExecutionProviderOptions, LocalProviderExecutionRecordV1 } from "./local-docker-provider.js";
+export type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 export { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, dockerResourceOwnership, validateDockerResourceOwnership } from "./docker-ownership.js";
 export { reapOwnedDockerResources } from "./docker-reaper.js";
 export type { DockerReaperOptions, DockerReaperReportV1, ReapableDockerResourceKind } from "./docker-reaper.js";

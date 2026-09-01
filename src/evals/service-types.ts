@@ -1,4 +1,5 @@
-import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalId, EvalRequest, InteractionCaptureRefV1, ModelCapturePlanV1, ModelProxyRouteV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalExecutionPlanV1, EvalId, EvalRequest, EvalTrialRefV1, InteractionCaptureRefV1, ModelCapturePlanV1, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { HarborBackendResult, HarborPreparedArtifactUse } from "../backends/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
 import type { EvalRequestInput } from "./request.js";
@@ -36,6 +37,7 @@ export interface RunEvalOptions {
   environmentImageResolver?: EvalEnvironmentImageResolver;
   environmentImageBuilder?: EvalEnvironmentImageBuilder;
   environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
+  remoteWorkExecutor?: EvalRemoteWorkExecutor;
 }
 
 export type EvalEnvironmentImageManifestLoader = (imageId: Sha256) => Promise<EnvironmentImageManifestV1>;
@@ -93,6 +95,30 @@ export interface WorkItemAdmissionController {
     signal?: AbortSignal;
   }): Promise<WorkItemAdmissionPermit>;
 }
+
+export interface EvalRemoteWorkExecutionResult {
+  leaseId: string;
+  refs: EvalTrialRefV1[];
+  run: HarborBackendResult;
+}
+
+export type EvalRemoteWorkExecutor = (input: {
+  evalId: EvalId;
+  evalDirectory: string;
+  root: string;
+  request: EvalRequest;
+  plan: EvalExecutionPlanV1;
+  workItem: BackendWorkItemV1;
+  resolvedRevision: ResolvedRevision;
+  preparedArtifact: HarborPreparedArtifactUse;
+  runtimeId: string;
+  environmentImages?: import("./trial-environment-evidence.js").TrialEnvironmentImagesV1;
+  modelCapturePlan?: ModelCapturePlanV1;
+  signal?: AbortSignal;
+  emit(event: Record<string, unknown>): void;
+  publish(ref: EvalTrialRefV1): Promise<void>;
+  onLeaseState(leaseId: string, state: "running" | "terminal"): Promise<void>;
+}) => Promise<EvalRemoteWorkExecutionResult>;
 
 export interface EvalInteractionCaptureExporter {
   route: ModelProxyRouteV1;

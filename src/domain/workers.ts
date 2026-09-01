@@ -112,7 +112,7 @@ export interface RemoteWorkOfferV1 {
   worker_id: string;
   lease: ExecutionLeaseV1;
   work: BackendWorkItemV1;
-  state: "offered" | "accepted" | "rejected" | "cancel-requested" | "completed" | "released" | "expired";
+  state: "offered" | "accepted" | "rejected" | "cancel-requested" | "completed" | "release-requested" | "released" | "expired";
   issued_at: string;
   expires_at: string;
   accepted_at?: string;

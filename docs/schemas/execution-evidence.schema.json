@@ -10,7 +10,7 @@
   ],
   "properties": {
     "schema_version": { "const": "1" },
-    "provider": { "const": "local-docker" },
+    "provider": { "type": "string", "minLength": 1, "maxLength": 4096 },
     "worker_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
     "collision_domain_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
     "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },

@@ -16,19 +16,14 @@ import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker
 import { recoverPersistedEvals } from "./eval-recovery.js";
 import { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
 import { EvalImageServices } from "./eval-image-services.js";
-import { modelCapturePlanForEval } from "./model-capture-planning.js";
 import { writeSyntheticEvalResult } from "./synthetic-result.js";
+import { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
+import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
+import type { RemoteWorkerRegistry } from "./remote-workers.js";
+import { schedulerCapturePlan, schedulerQueuedEval } from "./scheduler-eval-entry.js";
+import type { SchedulerQueuedEval } from "./scheduler-eval-entry.js";
 
-interface QueuedEval {
-  evalId: EvalId;
-  request: EvalRequest;
-  execution: EvalExecutionPolicyV1;
-  modelCapturePlan?: ModelCapturePlanV1;
-  directory: string;
-  collisionKeys: string[];
-  fineGrained: boolean;
-  resumeExisting: boolean;
-}
+type QueuedEval = SchedulerQueuedEval;
 
 interface ActiveEval {
   controller: AbortController;
@@ -51,6 +46,8 @@ export interface EvalSchedulerOptions {
   dockerResourceReaper?: EvalDockerResourceReaper;
   environmentImageResolver?: EvalEnvironmentImageResolver;
   environmentImageBuilder?: EvalEnvironmentImageBuilder;
+  remoteWorkers?: RemoteWorkerRegistry;
+  remoteWorkerProtocol?: RemoteWorkerProtocol;
 }
 
 export interface SubmitEvalOptions {
@@ -89,13 +86,14 @@ export class EvalScheduler {
   private readonly workItems: WorkItemDispatcher;
   private readonly dockerResourceReaper: EvalDockerResourceReaper;
   private readonly environmentImages: EvalImageServices;
+  private readonly remoteWork: RemoteWorkCoordinator | undefined;
   private queue: QueuedEval[] = [];
   private active = new Map<EvalId, ActiveEval>();
   private completions = new Map<EvalId, Promise<void>>();
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder }: EvalSchedulerOptions) {
+  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol }: EvalSchedulerOptions) {
     this.root = root;
     this.evalsRoot = statePaths(root).evals;
     this.resources = resources;
@@ -110,6 +108,9 @@ export class EvalScheduler {
     this.workItems = new WorkItemDispatcher({ resources, collisions });
     this.dockerResourceReaper = dockerResourceReaper;
     this.environmentImages = new EvalImageServices({ root, provider, resources, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}) });
+    this.remoteWork = remoteWorkers && remoteWorkerProtocol
+      ? new RemoteWorkCoordinator({ root, registry: remoteWorkers, protocol: remoteWorkerProtocol, collisions })
+      : undefined;
     this.unsubscribe = resources.subscribe(() => this.scheduleDrain());
     this.unsubscribeCollisions = collisions.subscribe(() => this.scheduleDrain());
   }
@@ -131,10 +132,17 @@ export class EvalScheduler {
   async submit(input: EvalSubmissionInputV1 | EvalRequestInput, options: SubmitEvalOptions = {}): Promise<EvalId> {
     if (!this.accepting) throw new HitchError("daemon is shutting down", { code: "daemon_shutting_down", exitCode: 12 });
     const normalized = await normalizeEvalSubmissionInput(input, { provider: this.provider, trialResources: this.trialResources });
-    assertExecutionPolicySupported(normalized.execution, this.provider);
-    const modelCapturePlan = this.capturePlan(normalized.request, normalized.execution);
+    const remote = normalized.execution.provider !== this.provider;
+    assertExecutionPolicySupported(normalized.execution, remote ? normalized.execution.provider : this.provider);
+    if (remote && !this.remoteWork) throw new HitchError(`execution provider is unavailable: ${normalized.execution.provider}`, { code: "execution_provider_unavailable", exitCode: 10 });
+    if (remote && normalized.execution.build.mode !== "backend") throw new HitchError("remote worker image prebuild is not available yet", { code: "remote_build_mode_unsupported", exitCode: 10 });
+    if (remote && await resolveLocalDatasetTaskIds(normalized.request.dataset) === null) throw new HitchError("remote workers require enumerable task membership", { code: "remote_opaque_membership_unsupported", exitCode: 10 });
+    const modelCapturePlan = await schedulerCapturePlan({ request: normalized.request, execution: normalized.execution, localProvider: this.provider, localStatus: this.providerSnapshot(), ...(this.remoteWork ? { remoteWork: this.remoteWork } : {}) });
     const idempotencyKey = reconcileIdempotencyKeys(normalized.idempotencyKey, options.idempotencyKey);
-    if (!this.resources.canEverFit(normalized.execution.resources.default_trial)) {
+    const canFit = remote
+      ? await (this.remoteWork as RemoteWorkCoordinator).canEverFit(normalized.execution.provider, normalized.execution.resources.default_trial)
+      : this.resources.canEverFit(normalized.execution.resources.default_trial);
+    if (!canFit) {
       throw new HitchError("one eval trial exceeds the daemon resource capacity", {
         code: "resource_request_unsatisfiable",
         exitCode: 10,
@@ -371,6 +379,7 @@ export class EvalScheduler {
   }
 
   private async execute(entry: QueuedEval, parallelism: number, fineGrained: boolean, lease: ResourceLease | undefined, controller: AbortController): Promise<void> {
+    const remote = entry.execution.provider !== this.provider;
     await this.updateControl(entry.directory, (control) => ({
       ...control,
       state: "planning",
@@ -390,20 +399,21 @@ export class EvalScheduler {
       environmentBuildMode: entry.execution.build.mode,
       ...this.environmentImages.runOptions(),
       executionWorker: {
-        workerId: this.workerId,
+        workerId: remote ? "worker_remote_pool" : this.workerId,
         provider: entry.execution.provider,
-        collisionDomainId: this.collisionDomainId,
+        collisionDomainId: remote ? `remote-pool:${entry.execution.provider}` : this.collisionDomainId,
         ...(lease ? { parentAllocationId: lease.allocation.allocation_id } : {}),
       },
-      ...(fineGrained ? {
+      ...(fineGrained && !remote ? {
         workItemAdmission: workItemAdmission({ dispatcher: this.workItems, request: entry.request, collisionDomainId: this.collisionDomainId }),
       } : {}),
+      ...(remote && this.remoteWork ? { remoteWorkExecutor: this.remoteWork.execute } : {}),
       precreated: true,
       resumeExisting: entry.resumeExisting,
       root: this.root,
       signal: controller.signal,
       onEvent: this.onEvent,
-      dockerResourceReaper: this.dockerResourceReaper,
+      ...(remote ? {} : { dockerResourceReaper: this.dockerResourceReaper }),
       onControlPhase: async (phase, work) => {
         await this.updateControl(entry.directory, (control) => applyEvalPhase(control, phase, work?.queuedWorkItems, work?.terminalWorkItems));
       },
@@ -443,32 +453,18 @@ export class EvalScheduler {
     const recovered = await recoverPersistedEvals({ root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent });
     for (const entry of recovered) {
       const execution = entry.execution || defaultEvalExecutionPolicy(entry.request, { provider: this.provider, trialResources: this.trialResources, buildMode: "backend" });
-      assertExecutionPolicySupported(execution, this.provider);
+      assertExecutionPolicySupported(execution, execution.provider === this.provider ? this.provider : execution.provider);
+      if (execution.provider !== this.provider && !this.remoteWork) throw new HitchError(`execution provider is unavailable: ${execution.provider}`, { code: "execution_provider_unavailable", exitCode: 10 });
       const persistedPlan = entry.resumeExisting
         ? parseEvalExecutionPlan(await readJSON(path.join(entry.directory, "execution-plan.json")))
         : null;
-      const capturePlan = persistedPlan ? persistedPlan.model_capture : this.capturePlan(entry.request, execution);
+      const capturePlan = persistedPlan ? persistedPlan.model_capture : await schedulerCapturePlan({ request: entry.request, execution, localProvider: this.provider, localStatus: this.providerSnapshot(), ...(this.remoteWork ? { remoteWork: this.remoteWork } : {}) });
       this.queue.push(await this.queuedEval(entry.evalId, entry.request, execution, capturePlan, entry.directory, entry.resumeExisting));
     }
   }
 
   private async queuedEval(evalId: EvalId, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string, resumeExisting = false): Promise<QueuedEval> {
-    const taskIds = await resolveLocalDatasetTaskIds(request.dataset);
-    const fineGrained = taskIds !== null;
-    return {
-      evalId,
-      request,
-      execution,
-      ...(modelCapturePlan ? { modelCapturePlan } : {}),
-      directory,
-      fineGrained,
-      resumeExisting,
-      collisionKeys: fineGrained ? [] : [evalTaskCollisionKey(request, "*", this.collisionDomainId)],
-    };
-  }
-
-  private capturePlan(request: EvalRequest, execution: EvalExecutionPolicyV1): ModelCapturePlanV1 {
-    return modelCapturePlanForEval(request, execution, this.providerSnapshot());
+    return schedulerQueuedEval({ evalId, request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}), directory, collisionDomainId: this.collisionDomainId, resumeExisting });
   }
 
   private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> {

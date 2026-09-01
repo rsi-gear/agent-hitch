@@ -18,6 +18,7 @@ export interface ExecutionWorkerIdentity {
 export interface ExecutionLeaseHandle {
   readonly leaseId: string;
   current(): ExecutionLeaseV1;
+  accept(expectedEpoch?: number): Promise<ExecutionLeaseV1>;
   markRunning(expectedEpoch?: number): Promise<ExecutionLeaseV1>;
   heartbeat(expectedEpoch?: number): Promise<ExecutionLeaseV1>;
   release(expectedEpoch?: number): Promise<ExecutionLeaseV1>;
@@ -30,6 +31,7 @@ export async function createExecutionLease(input: {
   worker: ExecutionWorkerIdentity;
   reservation: ResourceVectorV1;
   ttlMs: number;
+  initialState?: "offered" | "accepted";
 }): Promise<ExecutionLeaseHandle> {
   validateWorker(input.worker);
   const reservation = parseResourceVector(input.reservation, "execution lease reservation");
@@ -38,6 +40,7 @@ export async function createExecutionLease(input: {
   const leaseId = `lease_${randomUUID().replaceAll("-", "")}`;
   const issuedAt = new Date();
   const file = path.join(await ensureDir(path.join(input.evalDirectory, "leases")), `${leaseId}.json`);
+  const initialState = input.initialState ?? "accepted";
   let lease = parseExecutionLease({
     schema_version: "1",
     lease_id: leaseId,
@@ -48,12 +51,11 @@ export async function createExecutionLease(input: {
     collision_domain_id: input.worker.collisionDomainId,
     ...(input.worker.parentAllocationId ? { parent_allocation_id: input.worker.parentAllocationId } : {}),
     reservation,
-    state: "accepted",
+    state: initialState,
     epoch: 1,
     resource_epochs: [1],
     issued_at: issuedAt.toISOString(),
-    accepted_at: issuedAt.toISOString(),
-    heartbeat_at: issuedAt.toISOString(),
+    ...(initialState === "accepted" ? { accepted_at: issuedAt.toISOString(), heartbeat_at: issuedAt.toISOString() } : {}),
     expires_at: new Date(issuedAt.getTime() + input.ttlMs).toISOString(),
   });
   await atomicWriteJSON(file, lease);
@@ -67,6 +69,15 @@ export async function createExecutionLease(input: {
   return {
     leaseId,
     current: () => lease,
+    accept: (expectedEpoch = lease.epoch) => update(async () => {
+      lease = await mutateLease(file, lease.lease_id, expectedEpoch, async (current) => {
+        if (current.state === "accepted") return current;
+        if (current.state !== "offered") throw new TypeError(`execution lease cannot be accepted from ${current.state}`);
+        const now = new Date().toISOString();
+        return writeLease(file, renewedLease({ ...current, state: "accepted", accepted_at: now, heartbeat_at: now }, input.ttlMs));
+      });
+      return lease;
+    }),
     markRunning: (expectedEpoch = lease.epoch) => update(async () => {
       lease = await mutateLease(file, lease.lease_id, expectedEpoch, async (current) => {
         if (current.state === "running") return current;

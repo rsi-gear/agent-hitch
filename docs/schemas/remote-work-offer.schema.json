@@ -13,7 +13,7 @@
     "worker_id": { "type": "string", "pattern": "^worker_[a-z0-9][a-z0-9_-]{0,62}$" },
     "lease": { "$ref": "execution-lease.schema.json" },
     "work": { "$ref": "eval-execution-plan.schema.json#/properties/work_items/items" },
-    "state": { "enum": ["offered", "accepted", "rejected", "cancel-requested", "completed", "released", "expired"] },
+    "state": { "enum": ["offered", "accepted", "rejected", "cancel-requested", "completed", "release-requested", "released", "expired"] },
     "issued_at": { "type": "string", "format": "date-time" },
     "expires_at": { "type": "string", "format": "date-time" },
     "accepted_at": { "type": "string", "format": "date-time" },
