@@ -336,7 +336,10 @@ export async function verifyRuntimePayload(payloadRoot: string, manifest: Contro
     if (info.size !== file.size) {
       throw new ControllerRuntimeIntegrityError(`runtime payload size mismatch for ${file.path}: expected ${file.size}, got ${info.size}`);
     }
-    if (file.executable !== isExecutableMode(info.mode)) {
+    // NTFS does not expose a stable POSIX executable bit through Node. The
+    // signed manifest remains authoritative on Windows and materializers set
+    // its declared mode when the runtime is transported to a POSIX sandbox.
+    if (process.platform !== "win32" && file.executable !== isExecutableMode(info.mode)) {
       throw new ControllerRuntimeIntegrityError(`runtime payload executable bit mismatch for ${file.path}`);
     }
     const digest = await hashFile(absolute);

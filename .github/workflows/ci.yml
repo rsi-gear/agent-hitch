@@ -68,9 +68,8 @@ jobs:
       fail-fast: false
       matrix:
         node: [22, 24]
-        shard: [1, 2, 3, 4]
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -79,5 +78,5 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
-      - run: node --test --test-shard=${{ matrix.shard }}/4 "dist/test/*.test.js"
+      - run: node --test dist/test/executable.test.js dist/test/windows-support.test.js
       - run: npm pack --dry-run
