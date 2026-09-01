@@ -225,10 +225,14 @@ process.exit(2);
 
 export async function writeFakeHarbor(directory: string, {
   delayMs = 0,
+  candidateStartDelayMs = 0,
+  postResultDelayMs = 0,
   activityLog,
   leakEnvName,
 }: {
   delayMs?: number;
+  candidateStartDelayMs?: number;
+  postResultDelayMs?: number;
   activityLog?: string;
   /** Test-only: print one inherited value so callers can verify host log redaction. */
   leakEnvName?: string;
@@ -276,11 +280,21 @@ const finish = () => {
     fs.mkdirSync(trialOutput, {recursive:true});
     fs.writeFileSync(path.join(trialOutput, "result.json"), JSON.stringify(trial));
   }
-  activity("end");
-  process.stdout.write("Results written\\n");
+  activity("verifier-complete");
+  const complete = () => {
+    activity("end");
+    process.stdout.write("Results written\\n");
+  };
+  if (${postResultDelayMs} > 0) setTimeout(complete, ${postResultDelayMs});
+  else complete();
 };
-if (${delayMs} > 0) setTimeout(finish, ${delayMs});
-else finish();
+const runCandidate = () => {
+  activity("candidate-start");
+  if (${delayMs} > 0) setTimeout(finish, ${delayMs});
+  else finish();
+};
+if (${candidateStartDelayMs} > 0) setTimeout(runCandidate, ${candidateStartDelayMs});
+else runCandidate();
 `;
   await writeFile(file, source, { mode: 0o755 });
   await chmod(file, 0o755);

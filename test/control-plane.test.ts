@@ -497,7 +497,7 @@ test("eval scheduler fails an ambiguous interrupted execution without replaying 
   assert.equal((await readExecutionLeases(directory))[0]?.state, "lost");
 });
 
-test("eval scheduler reattaches a live local Harbor process and does not rerun the candidate", async (t) => {
+test("eval scheduler reattaches Harbor before Candidate start and executes the Candidate once", async (t) => {
   if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-live-recovery-"));
   t.after(() => forceRemove(root));
@@ -505,7 +505,7 @@ test("eval scheduler reattaches a live local Harbor process and does not rerun t
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
   const activityLog = path.join(root, "activity.jsonl");
-  const harbor = await writeFakeHarbor(root, { delayMs: 1_000, activityLog });
+  const harbor = await writeFakeHarbor(root, { candidateStartDelayMs: 1_000, activityLog });
   const npm = await writeFakeNpm(root);
   const child = spawn(process.execPath, [
     path.join(import.meta.dirname, "..", "test-support", "recovery-scheduler-child.js"),
@@ -520,6 +520,8 @@ test("eval scheduler reattaches a live local Harbor process and does not rerun t
   await waitFor(async () => {
     try { return (await readdir(path.join(evalDirectory, "provider", "leases"))).length === 1; } catch { return false; }
   }, 10_000);
+  await waitFor(async () => readFile(activityLog, "utf8").then((value) => value.includes('"type":"start"')).catch(() => false), 1_000);
+  assert.doesNotMatch(await readFile(activityLog, "utf8"), /"type":"candidate-start"/);
   child.kill("SIGKILL");
   await new Promise<void>((resolve) => child.once("close", () => resolve()));
 
@@ -543,6 +545,7 @@ test("eval scheduler reattaches a live local Harbor process and does not rerun t
   await waitFor(async () => readFile(activityLog, "utf8").then(() => true).catch(() => false), 1_000);
   const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
   assert.equal(activity.filter((entry) => entry.type === "start").length, 1);
+  assert.equal(activity.filter((entry) => entry.type === "candidate-start").length, 1);
   const leases = await readExecutionLeases(evalDirectory);
   assert.equal(leases.length, 1);
   assert.equal(leases[0]?.state, "released");
@@ -578,7 +581,8 @@ test("eval recovery restores the exact host model proxy route before reattaching
       readJSON<Record<string, unknown> | null>(proxyState, null),
       readdir(path.join(evalDirectory, "provider", "leases")).catch(() => []),
     ]);
-    return state !== null && leases.length === 1;
+    const candidateStarted = await readFile(activityLog, "utf8").then((value) => value.includes('"type":"candidate-start"')).catch(() => false);
+    return state !== null && leases.length === 1 && candidateStarted;
   }, 10_000);
   const routeBefore = await readJSON<Record<string, unknown>>(proxyState);
   child.kill("SIGKILL");
@@ -605,12 +609,63 @@ test("eval recovery restores the exact host model proxy route before reattaching
   assert.equal(routeAfter.capability_token, routeBefore.capability_token);
   const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
   assert.equal(activity.filter((entry) => entry.type === "start").length, 1);
+  assert.equal(activity.filter((entry) => entry.type === "candidate-start").length, 1);
   const trial = (status?.result?.trials as Array<{ run_id: string }>)[0];
   const bundle = await readJSON<{ capture: { mode: string; required: boolean; completeness: string } }>(path.join(root, "runs", trial!.run_id, "bundle.index.json"));
   assert.deepEqual(bundle.capture, {
     mode: "proxy", required: true, completeness: "none", interaction_count: 0,
     redaction: { policy: "hitch-provider-redaction-v1", status: "not-needed", rules: [] },
   });
+});
+
+test("eval recovery collects a verifier-complete local execution without rerunning the Candidate", async (t) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-terminal-collection-recovery-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const activityLog = path.join(root, "terminal-collection-activity.jsonl");
+  const harbor = await writeFakeHarbor(root, { postResultDelayMs: 1_000, activityLog });
+  const npm = await writeFakeNpm(root);
+  const child = spawn(process.execPath, [
+    path.join(import.meta.dirname, "..", "test-support", "recovery-scheduler-child.js"),
+    root,
+    harbor,
+    npm,
+    dataset,
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const evalId = await childEvalId(child);
+  const evalDirectory = path.join(root, "evals", evalId);
+  await waitFor(async () => readFile(activityLog, "utf8").then((value) => value.includes('"type":"verifier-complete"')).catch(() => false), 10_000);
+  assert.doesNotMatch(await readFile(activityLog, "utf8"), /"type":"end"/);
+  child.kill("SIGKILL");
+  await new Promise<void>((resolve) => child.once("close", () => resolve()));
+
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
+    trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
+    executor: (options) => runEval({
+      ...options,
+      harborExecutable: harbor,
+      env: { ...process.env, HITCH_NPM_PATH: npm },
+      trialBundleGraceMs: 0,
+    }),
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null), 10_000);
+  const status = await scheduler.status(evalId);
+  assert.equal((status?.result?.trials as unknown[] | undefined)?.length, 1);
+  const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
+  assert.equal(activity.filter((entry) => entry.type === "start").length, 1);
+  assert.equal(activity.filter((entry) => entry.type === "candidate-start").length, 1);
+  assert.equal(activity.filter((entry) => entry.type === "verifier-complete").length, 1);
+  assert.equal((await readExecutionLeases(evalDirectory)).length, 1);
+  const events = await readFile(path.join(evalDirectory, "events.jsonl"), "utf8");
+  assert.match(events, /"type":"eval\.work-item\.recovered"/);
 });
 
 test("eval recovery finalizes persisted progress without starting another Candidate", async (t) => {
