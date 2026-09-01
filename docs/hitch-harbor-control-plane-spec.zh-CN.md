@@ -431,7 +431,7 @@ API 输入使用同结构的 `EvalSubmissionInputV1`，但 `request` 接受 `Eva
 - 调度策略不参与 Harness、benchmark 或 observation identity。
 - `max_parallelism` 默认等于现有 `request.max_concurrent`，但仍受全局预算限制。
 - 服务端把缺省 execution policy 规范化后写入 `submission.json`；submission digest 同时覆盖 normalized request 与 execution policy，因此同一 idempotency key 不能被换成另一组资源或 provider 策略。
-- V1 本机 provider 已执行 `provider`、`max_parallelism`、`resources.default_trial`、build mode 和 `host-side` proxy/hybrid capture。`prebuild-required` 接受能够在 trial 前解析并安全注入 digest 的固定 registry 引用，以及满足保守 Dockerfile eligibility 的 task 主环境；Compose build、独立 verifier build、dynamic/resolution fallback 仍失败。尚不可执行的 remote provider、setup reservation、remote build cache 或 `in-sandbox` capture 必须在 admission 明确拒绝，不能只持久化后忽略。
+- V1 本机 provider 已执行 `provider`、`max_parallelism`、`resources.default_trial`、build mode 和 `host-side` proxy/hybrid capture；remote worker 已执行 generation/lease fenced work transport 和 lease-local `in-sandbox` proxy/hybrid capture。`prebuild-required` 接受能够在 trial 前解析并安全注入 digest 的固定 registry 引用，以及满足保守 Dockerfile eligibility 的 task 主环境；Compose build、独立 verifier build、dynamic/resolution fallback 仍失败。尚不可执行的 setup reservation 或 remote build cache 必须在 admission 明确拒绝，不能只持久化后忽略。
 
 ### 8.2 Resource vector
 
@@ -1426,6 +1426,8 @@ interface ModelInteractionV1 {
 
 - `host-side`：proxy 运行在 worker 上，sandbox 通过显式 endpoint/tunnel 访问；适合本机 Docker，便于集中采集和凭据托管。
 - `in-sandbox`：proxy sidecar 与 Agent 同一隔离域运行，再转发到 public 或 enterprise endpoint；适合远程 worker 或无法回连 host 的网络。
+
+remote worker 的 V1 sidecar runtime 按 work/lease epoch 隔离 capability token、append state 和 capture root；worker 可以并发同一 eval 的不同 work item，而不会共享可变 proxy state。worker 在本地封存 interaction evidence 后将其作为 Result Bundle 的一部分传输；controller 必须重新校验 capture 的 run、mode、required、topology、completeness、行序列和 payload regular-file 约束，不能要求一个不存在的 controller-local exporter，也不能信任 worker 的摘要。
 
 选择规则：
 

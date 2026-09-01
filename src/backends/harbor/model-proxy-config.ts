@@ -3,7 +3,7 @@ import { invalidInput } from "../../foundation/index.js";
 
 export function parseHarborModelProxyRoute(value: ModelProxyRouteV1): ModelProxyRouteV1 {
   if (value.schema_version !== "1" || !new Set(["proxy", "hybrid"]).has(value.mode)
-    || typeof value.required !== "boolean" || value.topology !== "host-side"
+    || typeof value.required !== "boolean" || !new Set(["host-side", "in-sandbox"]).has(value.topology)
     || !proxyTemplate(value.base_url_template, true) || !proxyTemplate(value.health_url_template, false)) {
     throw invalidInput("Harbor model proxy route is invalid");
   }

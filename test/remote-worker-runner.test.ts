@@ -107,6 +107,41 @@ test("a restarted runner does not execute an already accepted offer again", asyn
   assert.deepEqual((inspected.worker as { active_leases: unknown[] }).active_leases, []);
 });
 
+test("executor setup failure remains ownership-releasable", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-worker-setup-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} });
+  await server.start();
+  t.after(() => server.close());
+  const adminToken = (await readFile(statePaths(root).token, "utf8")).trim();
+  const registration = workerRegistration();
+  const credential = await RemoteWorkerHttpClient.register({ baseUrl: `http://127.0.0.1:${server.port}`, adminToken, registration });
+  const client = new RemoteWorkerHttpClient({ baseUrl: `http://127.0.0.1:${server.port}`, credential });
+  const { lease, work } = remoteWork("3");
+  const admin = await daemonClient(root);
+  const created = await admin.request(`/v1/workers/${registration.worker_id}/offers`, {
+    method: "POST", body: JSON.stringify({ lease, work, inputs: await stagedInputs(root) }),
+  });
+  const offered = created.offer as RemoteWorkOfferV1;
+  let recovered = 0;
+  const runner = new RemoteWorkerRunner({
+    client, capacity: registration.capacity.allocatable, once: true,
+    pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
+    execute: async () => { throw new Error("proxy setup failed before executor release callback"); },
+    releaseUnknown: async (offer) => {
+      assert.equal(offer.offer_id, offered.offer_id);
+      recovered += 1;
+    },
+  });
+  const running = runner.run();
+  const completed = await waitFor(async () => (await client.listOffers()).find((offer) => offer.offer_id === offered.offer_id && offer.state === "completed"));
+  assert.equal(completed.terminal?.status, "failed");
+  await admin.request(`/v1/workers/${registration.worker_id}/offers/${completed.offer_id}/release-request`, { method: "POST" });
+  await running;
+  assert.equal(recovered, 1);
+  assert.equal((await client.listOffers()).length, 0);
+});
+
 function workerRegistration() {
   return {
     schema_version: "1" as const, worker_id: "worker_packaged", provider: "remote-docker",

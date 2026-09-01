@@ -26,6 +26,7 @@ export interface HostModelProxyOptions {
   listenPort?: number;
   capabilityToken?: string;
   resumeExisting?: boolean;
+  topology?: "host-side" | "in-sandbox";
 }
 
 export interface HostModelProxyRuntimeIdentity {
@@ -77,7 +78,7 @@ export class HostModelProxy {
       schema_version: "1",
       mode: input.mode,
       required: input.required,
-      topology: "host-side",
+      topology: input.topology ?? "host-side",
       base_url_template: `${base}/{provider}`,
       health_url_template: `${base}/health`,
     };
@@ -207,7 +208,7 @@ export class HostModelProxy {
           evalId: this.evalId,
           mode: this.mode,
           required: this.required,
-          topology: "host-side",
+          topology: this.route.topology,
           credentialValues: this.credentials,
           resumeExisting: this.resumeExisting,
         });

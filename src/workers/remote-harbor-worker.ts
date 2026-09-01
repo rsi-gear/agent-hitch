@@ -6,7 +6,7 @@ import type { HarborPreparedArtifactUse } from "../backends/index.js";
 import { useControllerRuntimeDirectory } from "../controller-runtime/index.js";
 import type { ExecutionLeaseV1, RemoteWorkInputRefV1, RemoteWorkOfferV1 } from "../domain/index.js";
 import { atomicWriteJSON, ensureDir, statePaths } from "../foundation/index.js";
-import { dockerResourceOwnership, importEvalTrialRun, reapOwnedDockerResources, releaseExecutionLease, resolvedImageMapping, runtimeResourcesForTask, startDockerResourceObserver } from "../evals/index.js";
+import { dockerResourceOwnership, importEvalTrialRun, reapOwnedDockerResources, releaseExecutionLease, resolvedImageMapping, runtimeResourcesForTask, startDockerResourceObserver, startEvalModelCaptureRuntime } from "../evals/index.js";
 import { encodeRemoteResultEnvelope, materializeRemoteTreeEnvelope } from "../control-plane/index.js";
 import type { RemoteWorkerExecutor, RemoteWorkerExecutionResult } from "../control-plane/index.js";
 import { parseRemoteHarborWorkSpec } from "./remote-harbor-work-spec.js";
@@ -55,6 +55,16 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       sidecarLimits: runtimeResources.sidecarLimits, env, signal,
     });
     const backendDirectory = path.join(evalDirectory, "remote-work", offer.work.work_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
+    const captureRuntime = await startEvalModelCaptureRuntime({
+      plan: spec.plan.model_capture ?? { requested_mode: "native", effective_mode: "native", required: false },
+      evalId: offer.lease.eval_id,
+      // A remote worker may run multiple work items from one eval concurrently.
+      // Keep the capability token, append state and capture files lease-local.
+      evalDirectory: backendDirectory,
+      env: executionEnv,
+      runtimeTopology: "in-sandbox",
+      preservePlanOnOptionalFailure: true,
+    });
     let stoppedEvidence: Awaited<ReturnType<typeof observer.stop>> | undefined;
     const stopObserver = async () => stoppedEvidence ??= await observer.stop();
     const release = releaseRemoteResources({
@@ -75,6 +85,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         executionResources: runtimeResources.mainLimits,
         ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
         dockerOwnership: ownership, resolvedImages: resolvedImageMapping(offer.work.image_refs ?? []),
+        ...(captureRuntime.exporter ? { modelProxy: captureRuntime.exporter.route } : {}),
         env: executionEnv, ...(options.harborExecutable ? { harborExecutable: options.harborExecutable } : {}), signal,
         ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
         emit: publishEvent,
@@ -93,6 +104,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         benchmarkId: spec.request.benchmark_id, benchmarkRevision: spec.request.benchmark_revision,
         runtimeId: runtime.runtime_id, executionEvidence,
         ...(spec.plan.model_capture ? { modelCapturePlan: spec.plan.model_capture } : {}),
+        ...(captureRuntime.exporter ? { interactionCaptureExporter: captureRuntime.exporter } : {}),
         requireCompleteMarker: true, allowMissingBundleDiagnostic: true,
       }, trial);
       const body = await encodeRemoteResultEnvelope({
@@ -106,6 +118,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       await stopObserver().catch(() => undefined);
       return { status: signal.aborted ? "cancelled" : "failed", artifacts: [failureDiagnostic(errorCode(error))], release };
     } finally {
+      await captureRuntime.close().catch(() => undefined);
       for (const name of spec.credential_names) delete executionEnv[name];
     }
   };

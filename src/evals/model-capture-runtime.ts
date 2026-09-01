@@ -21,11 +21,16 @@ export async function startEvalModelCaptureRuntime(input: {
   evalId: string;
   evalDirectory: string;
   env: NodeJS.ProcessEnv;
+  /** Defaults to controller-owned host-side runtimes. Remote workers opt in to their sealed in-sandbox plan. */
+  runtimeTopology?: "host-side" | "in-sandbox";
+  /** A sealed remote plan cannot be rewritten after dispatch when optional proxy startup fails. */
+  preservePlanOnOptionalFailure?: boolean;
 }): Promise<EvalModelCaptureRuntime> {
   if (input.plan.effective_mode !== "proxy" && input.plan.effective_mode !== "hybrid") {
     return { plan: input.plan, close: async () => undefined };
   }
-  if (input.plan.topology === "in-sandbox") {
+  const runtimeTopology = input.runtimeTopology ?? "host-side";
+  if ((input.plan.topology ?? "host-side") !== runtimeTopology) {
     return { plan: input.plan, close: async () => undefined };
   }
   let proxy: HostModelProxy | undefined;
@@ -37,6 +42,7 @@ export async function startEvalModelCaptureRuntime(input: {
       mode: input.plan.effective_mode,
       required: input.plan.required,
       env: input.env,
+      topology: runtimeTopology,
       ...(persisted ? {
         listenPort: persisted.listen_port,
         capabilityToken: persisted.capability_token,
@@ -68,7 +74,10 @@ export async function startEvalModelCaptureRuntime(input: {
         cause: error,
       });
     }
-    return {
+    return input.preservePlanOnOptionalFailure ? {
+      plan: input.plan,
+      close: async () => undefined,
+    } : {
       plan: {
         requested_mode: input.plan.requested_mode,
         effective_mode: "native",

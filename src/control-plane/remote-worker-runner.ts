@@ -163,6 +163,10 @@ export class RemoteWorkerRunner {
       validateResult(result);
       job.cleanup = result.release;
     } catch (error) {
+      // Executor setup can fail before it has a chance to return its normal
+      // release callback. Keep the offer releasable through the same
+      // ownership-fenced recovery path used after a worker restart.
+      job.cleanup = () => this.releaseUnknown(job.offer);
       result = {
         status: job.controller.signal.aborted ? "cancelled" : "failed",
         artifacts: [{ kind: "diagnostic", body: diagnostic(error) }],

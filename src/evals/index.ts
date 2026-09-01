@@ -15,6 +15,8 @@ export type { BuildEvalExecutionPlanOptions } from "./execution-plan.js";
 export { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, acceptExecutionLease, createExecutionLease, heartbeatExecutionLease, markExecutionLeaseLost, markExecutionLeaseRunning, parseExecutionLease, readExecutionLeases, recoverExecutionLeases, reissueExecutionLease, releaseExecutionLease } from "./execution-leases.js";
 export type { ExecutionLeaseHandle, ExecutionWorkerIdentity } from "./execution-leases.js";
 export { runEval } from "./service.js";
+export { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
+export type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
 export { recoverLocalDockerEvalLeases } from "./recovery.js";
 export type { EvalLeaseRecoveryResult } from "./recovery.js";
 export type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageManifestLoader, EvalEnvironmentImageResolver, EvalExecutionPhase, EvalInteractionCaptureExporter, EvalRemoteWorkExecutionResult, EvalRemoteWorkExecutor, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";

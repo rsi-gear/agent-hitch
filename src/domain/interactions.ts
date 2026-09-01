@@ -19,7 +19,7 @@ export interface ModelProxyRouteV1 {
   schema_version: "1";
   mode: "proxy" | "hybrid";
   required: boolean;
-  topology: "host-side";
+  topology: "host-side" | "in-sandbox";
   base_url_template: string;
   health_url_template: string;
 }

@@ -99,17 +99,42 @@ export async function loadInteractionCapture(runDirectory: string): Promise<{
   ref: InteractionCaptureRefV1;
   interactions: ModelInteractionV1[];
 }> {
-  const ref = parseInteractionCaptureRef(await readJSON(path.join(runDirectory, "interactions", "interaction.ref.json")));
+  const refFile = path.join(runDirectory, "interactions", "interaction.ref.json");
+  await assertSafeCaptureFile(refFile, 1024 * 1024, "interaction capture ref");
+  const ref = parseInteractionCaptureRef(await readJSON(refFile));
+  if (ref.interactions_ref !== "interactions/interactions.jsonl") throw new TypeError("interaction capture rows ref is not canonical");
   const file = path.resolve(runDirectory, ...ref.interactions_ref.split("/"));
   if (!inside(runDirectory, file)) throw new TypeError("interaction capture ref escapes its run");
-  const info = await lstat(file);
-  if (!info.isFile() || info.isSymbolicLink() || info.size > 64 * 1024 * 1024) throw new TypeError("interaction capture rows are unsafe");
+  await assertSafeCaptureFile(file, 64 * 1024 * 1024, "interaction capture rows");
   const lines = (await readFile(file, "utf8")).split(/\r?\n/).filter(Boolean);
   const interactions = lines.map((line) => parseModelInteraction(JSON.parse(line) as unknown));
   if (interactions.length !== ref.interaction_count || interactions.some((row, index) => row.run_id !== ref.run_id || row.sequence !== index + 1)) {
     throw new TypeError("interaction capture rows do not match their ref");
   }
+  for (const interaction of interactions) {
+    await validatePayloadRef(runDirectory, interaction.interaction_id, interaction.request_ref, "request");
+    await validatePayloadRef(runDirectory, interaction.interaction_id, interaction.response_ref, "response");
+  }
   return { ref, interactions };
+}
+
+async function validatePayloadRef(
+  runDirectory: string,
+  interactionId: string,
+  ref: string | undefined,
+  kind: "request" | "response",
+): Promise<void> {
+  if (ref === undefined) return;
+  if (ref !== `interactions/payloads/${interactionId}.${kind}.json`) throw new TypeError(`interaction ${kind} payload ref is not canonical`);
+  const file = path.resolve(runDirectory, ...ref.split("/"));
+  if (!inside(runDirectory, file)) throw new TypeError(`interaction ${kind} payload ref escapes its run`);
+  await assertSafeCaptureFile(file, 8 * 1024 * 1024, `interaction ${kind} payload`);
+  await readJSON(file);
+}
+
+async function assertSafeCaptureFile(file: string, maximumBytes: number, label: string): Promise<void> {
+  const info = await lstat(file);
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > maximumBytes) throw new TypeError(`${label} is unsafe`);
 }
 
 function exact(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
