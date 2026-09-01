@@ -119,6 +119,10 @@ test("packaged remote worker runs in-sandbox proxy capture and transports sealed
   t.after(() => close(upstream));
   const workerEnv: NodeJS.ProcessEnv = {
     ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector, HITCH_DOCKER_PATH: docker,
+    // This fake Harbor runs on the worker host instead of in Docker. Declare
+    // that topology explicitly so Linux does not select the real Docker bridge
+    // gateway that production in-sandbox capture requires.
+    HITCH_MODEL_PROXY_BIND_HOST: "127.0.0.1", HITCH_MODEL_PROXY_ADVERTISED_HOST: "127.0.0.1",
     OPENAI_BASE_URL: `${upstreamUrl}/v1`, OPENAI_API_KEY: secret,
   };
   const server = new DaemonServer({
