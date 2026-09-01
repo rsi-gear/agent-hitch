@@ -96,6 +96,43 @@ test("one eval dispatches different tasks to two remote workers and atomically i
   assert.equal((await readExecutionLeases(path.join(root, "evals", evalId))).filter((lease) => lease.accepted_at !== undefined).length, 2);
 });
 
+test("remote eval fails fast when registered workers cannot run the prepared artifact platform", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-platform-mismatch-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "alpha"), { recursive: true });
+  await writeFile(path.join(dataset, "alpha", "task.toml"), "");
+  const npm = await writeFakeNpm(root);
+  const harbor = await writeFakeHarbor(root);
+  const inspector = await writeResourceInspector(root);
+  const registry = new RemoteWorkerRegistry({ root });
+  const protocol = new RemoteWorkerProtocol({ root, registry });
+  await Promise.all([registry.initialize(), protocol.initialize()]);
+  await registry.register({ ...registration("worker_remote_wrong_platform"), platforms: ["unsupported/test-platform"] });
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
+    trialResources: DEFAULT_TRIAL, remoteWorkers: registry, remoteWorkerProtocol: protocol,
+    dockerResourceReaper: async () => ({ schema_version: "1", root_id: "test", scanned: 0, deleted: [], retained: [], issues: [] }),
+    executor: (options) => runEval({ ...options, harborExecutable: harbor, env: { ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector } }),
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  const evalId = await scheduler.submit({
+    request: { dataset, harness_ref: "pi@version:1.2.3", max_concurrent: 1 },
+    execution: {
+      provider: "remote-docker", max_parallelism: 1,
+      resources: { default_trial: DEFAULT_TRIAL }, build: { mode: "backend" },
+      model_capture: { mode: "native", required: false },
+    },
+  });
+  await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null), 10_000);
+  const status = await scheduler.status(evalId);
+  assert.equal(status?.result?.status, "failed");
+  assert.equal((status?.result?.error as { code?: string })?.code, "execution_provider_unavailable");
+  assert.equal(status?.leases.length, 0, "an incompatible worker must not receive a lease");
+});
+
 async function simulateCrashAfterRemoteCompletion(
   root: string,
   evalId: string,

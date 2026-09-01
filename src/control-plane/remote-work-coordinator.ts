@@ -131,7 +131,19 @@ export class RemoteWorkCoordinator {
   private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0], inputs: RemoteWorkInputRefV1[]) {
     for (;;) {
       if (input.signal?.aborted) throw cancelled();
-      const workers = (await this.registry.list()).filter((worker) => compatible(worker, input.workItem, input.preparedArtifact.platform, input.modelCapturePlan));
+      const registered = (await this.registry.list()).filter((worker) => !worker.revoked_at && worker.worker.provider === input.workItem.provider);
+      const capable = registered.filter((worker) => supports(worker, input.workItem, input.preparedArtifact.platform, input.modelCapturePlan));
+      if (registered.length > 0 && capable.length === 0) {
+        throw new HitchError(`no remote worker supports ${input.workItem.backend} on ${input.preparedArtifact.platform}`, {
+          code: "execution_provider_unavailable", exitCode: 10,
+        });
+      }
+      if (capable.length > 0 && !capable.some((worker) => fits(input.workItem.reservation, worker.worker.capacity.allocatable))) {
+        throw new HitchError("remote work item exceeds every compatible worker capacity", {
+          code: "resource_request_unsatisfiable", exitCode: 10,
+        });
+      }
+      const workers = capable.filter((worker) => compatible(worker, input.workItem));
       for (const worker of workers.sort(workerOrder)) {
         const collisionKey = evalTaskCollisionKey(input.request, input.workItem.task_ids[0] as string, worker.worker.collision_domain_id);
         const collision = this.collisions.tryAcquire(`${input.evalId}:${input.workItem.work_id}`, [collisionKey]);
@@ -242,11 +254,12 @@ export class RemoteWorkCoordinator {
   }
 }
 
-function compatible(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1, platform: string, capture?: { effective_mode: string; topology?: string }): boolean {
-  return worker.worker.status === "ready" && !worker.revoked_at && worker.worker.provider === work.provider
-    && worker.worker.capabilities.backends.includes(work.backend) && worker.worker.capabilities.platforms.includes(platform)
-    && (capture?.effective_mode !== "proxy" && capture?.effective_mode !== "hybrid" || capture.topology === "in-sandbox" && worker.provider_status.features.model_proxy)
-    && fits(work.reservation, available(worker.worker.capacity.allocatable, worker.worker.capacity.allocated));
+function supports(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1, platform: string, capture?: { effective_mode: string; topology?: string }): boolean {
+  return worker.worker.capabilities.backends.includes(work.backend) && worker.worker.capabilities.platforms.includes(platform)
+    && (capture?.effective_mode !== "proxy" && capture?.effective_mode !== "hybrid" || capture.topology === "in-sandbox" && worker.provider_status.features.model_proxy);
+}
+function compatible(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1): boolean {
+  return worker.worker.status === "ready" && fits(work.reservation, available(worker.worker.capacity.allocatable, worker.worker.capacity.allocated));
 }
 
 function remoteBackendResult(worker: RemoteWorkerPublicRecordV1, offered: RemoteWorkOfferV1, terminal: RemoteWorkOfferV1, trial: Record<string, unknown> | null, backendDirectory: string | null) {
