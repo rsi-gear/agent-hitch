@@ -29,12 +29,25 @@ test("CLI preserves typed exit code for invalid commands", () => {
   assert.match(result.stderr, /unknown command/);
 });
 
+test("CLI environment image GC is a dry run unless --apply is explicit", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-cli-image-gc-"));
+  t.after(() => forceRemove(root));
+  const result = spawnSync(process.execPath, [executable, "--root", root, "images", "gc", "--json"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || undefined);
+  const report = JSON.parse(result.stdout) as { dry_run: boolean; scanned: number; removed: unknown[] };
+  assert.equal(report.dry_run, true);
+  assert.equal(report.scanned, 0);
+  assert.deepEqual(report.removed, []);
+});
+
 test("CLI exposes harness revision commands and rejects mixed legacy selection", () => {
   const help = spawnSync(process.execPath, [executable, "--help"], { encoding: "utf8" });
   assert.match(help.stdout, /hitch resolve <harness-ref>/);
   assert.match(help.stdout, /--harness <ref>/);
   assert.match(help.stdout, /--workspace-mode <mode>/);
   assert.match(help.stdout, /hitch workspace inspect <run-id>/);
+  assert.match(help.stdout, /hitch images gc/);
+  assert.match(help.stdout, /hitch images pin/);
   assert.match(help.stdout, /hitch runs candidate <run-id>/);
   assert.match(help.stdout, /hitch eval run \[--backend harbor\] --dataset <ref>/);
   assert.match(help.stdout, /hitch eval submit \[--backend harbor\]/);

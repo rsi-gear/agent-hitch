@@ -27,6 +27,8 @@ export interface StatePaths {
   controllerRuntimeLocks: string;
   controllerRuntimes: string;
   environmentImages: string;
+  environmentImagePins: string;
+  environmentImageReferenceLocks: string;
   buildRecords: string;
   buildLocks: string;
   buildIndexes: string;
@@ -85,6 +87,8 @@ export function statePaths(root: string): StatePaths {
     controllerRuntimeLocks: path.join(root, "locks", "controller-runtimes"),
     controllerRuntimes: path.join(root, "store", "controller-runtimes", "sha256"),
     environmentImages: path.join(root, "store", "environment-images", "sha256"),
+    environmentImagePins: path.join(root, "store", "environment-image-pins", "sha256"),
+    environmentImageReferenceLocks: path.join(root, "locks", "environment-image-references"),
     buildRecords: path.join(root, "store", "build-records", "sha256"),
     buildLocks: path.join(root, "locks", "builds"),
     buildIndexes: path.join(root, "indexes", "builds"),

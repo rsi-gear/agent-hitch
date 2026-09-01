@@ -187,6 +187,8 @@ process.exit(2);
   const argv = await readFile(argvLog, "utf8");
   assert.match(argv, /REGISTRY_TOKEN/);
   assert.match(argv, /registry\.example\/hitch-cache/);
+  assert.match(argv, /io\.hitch\.environment-image-root-id/);
+  assert.match(argv, /io\.hitch\.environment-image-cache-key/);
   assert.equal(argv.includes(firstSecret), false);
   assert.equal(argv.includes(secondSecret), false);
   const observations = (await readFile(observationLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));

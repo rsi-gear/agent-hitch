@@ -1,6 +1,6 @@
 import path from "node:path";
 import { prepareHarness, resolveHarness } from "../artifacts/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, ensureDir, invalidInput, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
 import type { HarborBackendResult, LocalGitTransportUse } from "../backends/index.js";
@@ -100,7 +100,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     });
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
     const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
+    await withEnvironmentImageReferenceLock(root, () => beginEvalEnvironmentImagePlanning(evalDirectory, evalId));
     const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
+    await withEnvironmentImageReferenceLock(root, () => writeEvalEnvironmentImageReferences(evalDirectory, evalId, localPlanning.environmentImages));
     const taskResources = localPlanning.taskResources;
     const plannedTasks = localTaskIds?.length ?? null;
     const plannedTrials = plannedTasks === null ? null : plannedTasks * normalized.attempts;

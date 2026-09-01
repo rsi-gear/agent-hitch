@@ -15,6 +15,7 @@ import { trajectoryCommand } from "./commands/trajectory.js";
 import { feedbackCommand } from "./commands/feedback.js";
 import { daemonCommand } from "./commands/daemon.js";
 import { workerCommand } from "./commands/worker.js";
+import { imagesCommand } from "./commands/images.js";
 
 export async function main(argv: string[]): Promise<void> {
   const args = [...argv];
@@ -35,6 +36,7 @@ export async function main(argv: string[]): Promise<void> {
     case "feedback": return feedbackCommand(args, root);
     case "daemon": return daemonCommand(args, root);
     case "worker": return workerCommand(args, root);
+    case "images": return imagesCommand(args, root);
     case "help":
     case "--help":
     case "-h":

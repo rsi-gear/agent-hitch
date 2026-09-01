@@ -69,13 +69,19 @@ Docker observer, verifies every planned digest, and proves a forged Verifier
 digest fails closed. The command builds from a temporary export of the selected
 local base, so it does not require registry access.
 
-Remaining work:
-
-- image reference GC.
+Every Hitch-built image carries root-id and cache-key labels. Eval planning
+writes a provisional image-reference record under a global reference fence
+before the execution plan is published. `hitch images gc` is a dry run by
+default; `--apply` is required to remove anything. GC holds the same fence and
+retains images referenced by non-terminal evals, self-consistent sealed bundle
+indexes, or explicit `hitch images pin` records. A local build tag is eligible
+only after its config digest, root-id label, and cache-key label all match the
+stored manifest. Registry-owned images are never deleted. The default minimum
+age is 24 hours and can be changed with `--minimum-age`.
 
 Successful, failed, and in-progress records have a stable `build_<id>` index.
 An authenticated daemon exposes them at `GET /v1/builds/{build-id}` together
 with the verified manifest when one has been promoted.
 
-Any unresolved or build-context path remains explicitly `backend-build`; it is
-never described as prebuilt.
+Any unresolved or unsupported build-context path remains explicitly
+`backend-build`; it is never described as prebuilt.

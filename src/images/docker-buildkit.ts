@@ -1,8 +1,9 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Sha256 } from "../domain/index.js";
-import { HitchError, credentialValuesFromEnv, ensureDir, redactCredentialText, runCommand, statePaths } from "../foundation/index.js";
+import { HitchError, credentialValuesFromEnv, ensureDir, hitchRootId, redactCredentialText, runCommand, statePaths } from "../foundation/index.js";
 import type { EnvironmentImageBuilder, EnvironmentImageBuilderOutput } from "./service.js";
+import { ENVIRONMENT_IMAGE_LABELS } from "./ownership.js";
 
 export interface DockerBuildKitBuilderOptions {
   root: string;
@@ -57,7 +58,9 @@ export class DockerBuildKitBuilder implements EnvironmentImageBuilder {
     const metadataFile = path.join(temporary, "metadata.json");
     try {
       const args = ["buildx", "build", "--progress", "plain", "--load", "--metadata-file", metadataFile,
-        "--platform", input.platform, "--file", path.join(input.contextDirectory, input.dockerfile), "--tag", input.outputReference];
+        "--platform", input.platform, "--file", path.join(input.contextDirectory, input.dockerfile), "--tag", input.outputReference,
+        "--label", `${ENVIRONMENT_IMAGE_LABELS.rootId}=${hitchRootId(this.root)}`,
+        "--label", `${ENVIRONMENT_IMAGE_LABELS.cacheKey}=${input.cacheKey}`];
       if (input.target) args.push("--target", input.target);
       for (const [name, value] of Object.entries(input.buildArgs)) args.push("--build-arg", `${name}=${value}`);
       for (const name of input.secretNames) args.push("--secret", `id=${name},env=${name}`);

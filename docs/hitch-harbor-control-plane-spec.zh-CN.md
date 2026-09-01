@@ -1047,6 +1047,13 @@ resolve immutable inputs
 - Docker image 删除必须按 digest 和 Hitch label 双重确认。
 - GC 不在 eval critical path 内自动执行大规模 prune。
 
+V1 操作入口为 `hitch images gc`，默认只输出 dry-run 报告；只有显式
+`--apply` 才执行删除。`hitch images pin/unpin` 管理 operator pin。eval
+规划与 GC 共享 image-reference fence，规划必须先持久化 provisional refs
+再发布 execution plan；引用记录缺失或 sealed bundle index 自校验失败时
+GC 整体 fail closed。仅 Hitch 构建的兼容 tag 可删除，registry-owned image
+始终由 registry/Docker 自身生命周期管理。
+
 ## 13. Execution Provider 与 worker
 
 ### 13.1 契约

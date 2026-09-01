@@ -6,7 +6,7 @@ import path from "node:path";
 import { ResourceLedger, WorkItemDispatcher } from "../src/control-plane/index.js";
 import { localEnvironmentImageBuild } from "../src/control-plane/eval-image-resolution.js";
 import { parseEvalExecutionPlan, readExecutionLeases, runEval } from "../src/evals/index.js";
-import { hitchRootId, readJSON } from "../src/foundation/index.js";
+import { hitchRootId, readEvalEnvironmentImageReferences, readJSON } from "../src/foundation/index.js";
 import { loadEnvironmentImageManifest } from "../src/images/index.js";
 import type { EnvironmentImageBuilder } from "../src/images/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
@@ -266,6 +266,10 @@ test("planned task Dockerfiles are built once and injected as immutable prebuilt
   const image = plan.work_items[0]?.image_refs?.[0];
   assert.equal(image?.resolution, "prebuilt");
   assert.equal(image?.manifest_digest, manifestDigest);
+  const provisional = await readEvalEnvironmentImageReferences(evalDirectory, result.eval_id as string);
+  assert.deepEqual(provisional && { state: provisional.state, image_ids: provisional.image_ids }, {
+    state: "planned", image_ids: [image?.image_id],
+  });
   const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "work-items", plan.work_items[0]!.work_id, "epoch-000001", "job.json"));
   const kwargs = (config.environment as Record<string, Record<string, unknown>>).kwargs;
   assert.ok(kwargs);

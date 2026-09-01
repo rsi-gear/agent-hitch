@@ -99,6 +99,9 @@ Usage:
   hitch workspace inspect <run-id> [--json]
   hitch workspace path <run-id>
   hitch workspace remove <run-id> [--force] [--json]
+  hitch images gc [--minimum-age <duration>] [--apply] [--json]
+  hitch images pin <sha256:image-id> [--reason <text>]
+  hitch images unpin <sha256:image-id>
   hitch trajectory inspect <run-id> [--json]
   hitch feedback list <run-id> [--json]
   hitch feedback put <run-id> --message <id> --rating positive|negative [--note <text>] [--if-version <v>] [--json]

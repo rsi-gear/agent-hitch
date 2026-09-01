@@ -8,6 +8,8 @@ export { withFileLock } from "./locks.js";
 export { captureProcessIdentity, inspectProcessIdentity, validateProcessIdentity } from "./process-identity.js";
 export type { ProcessIdentityStatus, ProcessIdentityV1 } from "./process-identity.js";
 export type { FileLockOptions } from "./locks.js";
+export { beginEvalEnvironmentImagePlanning, readEvalEnvironmentImageReferences, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "./environment-image-references.js";
+export type { EvalEnvironmentImageReferencesV1 } from "./environment-image-references.js";
 export { consumeLines } from "./line-stream.js";
 export { packageRoot, packageVersion } from "./package-root.js";
 export { delay, terminateProcess } from "./process.js";
