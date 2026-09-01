@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createExecutionLease, dockerOwnershipLabelMap, dockerResourceOwnership, markExecutionLeaseLost, reapOwnedDockerResources } from "../src/evals/index.js";
@@ -97,6 +98,57 @@ test("Docker reaper refuses deletion when ownership changes between inspection a
   assert.equal(removed, false);
   assert.equal(report.deleted.length, 0);
   assert.ok(report.issues.some((entry) => entry.stage === "delete" && /ownership changed/.test(entry.message)));
+});
+
+test("Docker reaper resumes cleanup after its process dies between owned resource deletions", async (t) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-docker-reaper-crash-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const evalDirectory = path.join(root, "evals", evalId);
+  const released = await lease(evalDirectory, "f", "released");
+  const labels = dockerOwnershipLabelMap(dockerResourceOwnership(root, released.active));
+  const stateFile = path.join(root, "docker-state.json");
+  await writeFile(stateFile, `${JSON.stringify({
+    resources: [
+      { id: "container-owned", kind: "container", labels },
+      { id: "network-owned", kind: "network", labels },
+    ],
+  })}\n`);
+  const child = spawn(process.execPath, [
+    path.join(import.meta.dirname, "..", "test-support", "reaper-crash-child.js"),
+    root,
+    stateFile,
+  ], { stdio: "ignore" });
+  const terminal = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  assert.equal(terminal.code, null);
+  assert.equal(terminal.signal, "SIGKILL");
+  const remaining = (JSON.parse(await readFile(stateFile, "utf8")) as {
+    resources: Array<{ id: string; kind: "container" | "network" | "volume"; labels: Record<string, string> }>;
+  }).resources;
+  assert.deepEqual(remaining.map((resource) => resource.id), ["network-owned"]);
+
+  const resources = new Map(remaining.map((resource) => [resource.id, resource]));
+  const report = await reapOwnedDockerResources({
+    root,
+    run: async (args) => {
+      const kind = args[0] as "container" | "network" | "volume";
+      if (args[1] === "ls") return { stdout: [...resources.values()].filter((resource) => resource.kind === kind).map((resource) => resource.id).join("\n") };
+      if (args[1] === "inspect") {
+        const resource = resources.get(args[2] as string);
+        if (!resource) throw new Error("resource not found");
+        return { stdout: JSON.stringify([kind === "container"
+          ? { Id: resource.id, Config: { Labels: resource.labels } }
+          : kind === "volume" ? { Name: resource.id, Labels: resource.labels } : { Id: resource.id, Labels: resource.labels }]) };
+      }
+      resources.delete(args.at(-1) as string);
+      return { stdout: "" };
+    },
+  });
+  assert.deepEqual(report.deleted.map((resource) => resource.id), ["network-owned"]);
+  assert.equal(report.issues.length, 0);
+  assert.equal(resources.size, 0);
 });
 
 async function lease(evalDirectory: string, workCharacter: string, terminal: "released" | "running" | "lost") {
