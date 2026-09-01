@@ -61,7 +61,7 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
 
 function container(value: unknown, index: number): ObservedContainerResourcesV1 {
   const record = exact(value, ["container_id", "first_observed_at", "last_observed_at"], `execution evidence container ${index}`, [
-    "name", "image_reference", "image_config_digest", "peak_memory_bytes", "oom_killed", "exit_code", "exit_reason",
+    "name", "image_reference", "image_config_digest", "peak_memory_bytes", "cpu_time_ns", "oom_killed", "exit_code", "exit_reason",
   ]);
   if (typeof record.container_id !== "string" || !/^[a-f0-9]{12,64}$/.test(record.container_id)
     || (record.name !== undefined && !validText(record.name, 256)) || !timestamp(record.first_observed_at) || !timestamp(record.last_observed_at)
@@ -69,6 +69,7 @@ function container(value: unknown, index: number): ObservedContainerResourcesV1 
     || (record.image_config_digest !== undefined && (typeof record.image_config_digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(record.image_config_digest)))
     || Date.parse(record.last_observed_at as string) < Date.parse(record.first_observed_at as string)
     || (record.peak_memory_bytes !== undefined && (!Number.isSafeInteger(record.peak_memory_bytes) || (record.peak_memory_bytes as number) < 0))
+    || (record.cpu_time_ns !== undefined && (!Number.isSafeInteger(record.cpu_time_ns) || (record.cpu_time_ns as number) < 0))
     || (record.oom_killed !== undefined && typeof record.oom_killed !== "boolean")
     || (record.exit_code !== undefined && (!Number.isSafeInteger(record.exit_code) || (record.exit_code as number) < 0 || (record.exit_code as number) > 255))
     || (record.exit_reason !== undefined && !validText(record.exit_reason, 512))) throw new TypeError(`execution evidence container ${index} is invalid`);

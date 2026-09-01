@@ -8,7 +8,7 @@ import { dockerOwnershipLabelMap, startDockerResourceObserver } from "../src/eva
 import { verifyTrialEnvironmentImageExecution } from "../src/evals/trial-environment-evidence.js";
 
 const docker = process.env.HITCH_DOCKER_PATH || "docker";
-const base = process.env.HITCH_DOCKER_CANARY_BASE || "alpine:3.20";
+const base = process.env.HITCH_DOCKER_CANARY_BASE || "ubuntu:24.04";
 const platform = process.env.HITCH_DOCKER_CANARY_PLATFORM || "linux/amd64";
 const nonce = randomBytes(8).toString("hex");
 const temporary = await mkdtemp(path.join(tmpdir(), "hitch-docker-image-canary-"));
@@ -45,7 +45,7 @@ try {
     "ADD rootfs.tar /",
     "ARG HITCH_CANARY_ROLE",
     "LABEL io.hitch.canary-role=$HITCH_CANARY_ROLE",
-    "ENTRYPOINT [\"/bin/sh\", \"-c\", \"while :; do sleep 1; done\"]",
+    "ENTRYPOINT [\"/bin/sh\", \"-c\", \"i=0; while [ \\\"$i\\\" -lt 50000 ]; do i=$((i+1)); done; while :; do sleep 1; done\"]",
     "",
   ].join("\n"));
 
@@ -88,10 +88,16 @@ try {
   if (execution.observed.containers.length !== roles.length) throw new Error("observer did not capture all canary containers");
 
   const actual = new Map<string, Sha256>();
+  const cpuTimes = new Map<string, number>();
+  const peakMemory = new Map<string, number>();
   for (const container of execution.observed.containers) {
     const role = roles.find((entry) => container.name?.includes(`-${entry}-${nonce}`));
     if (!role || !container.image_config_digest) throw new Error("observer returned incomplete role image evidence");
+    if (!Number.isSafeInteger(container.cpu_time_ns) || (container.cpu_time_ns as number) <= 0) throw new Error(`observer did not record cumulative ${role} CPU time`);
+    if (!Number.isSafeInteger(container.peak_memory_bytes) || (container.peak_memory_bytes as number) <= 0) throw new Error(`observer did not record peak ${role} memory`);
     actual.set(role, container.image_config_digest);
+    cpuTimes.set(role, container.cpu_time_ns as number);
+    peakMemory.set(role, container.peak_memory_bytes as number);
   }
   for (const role of roles) if (actual.get(role) !== expected.get(role)) throw new Error(`observer recorded the wrong ${role} config digest`);
 
@@ -112,6 +118,8 @@ try {
     compose: run(["compose", "version", "--short"]).stdout.trim(),
     platform,
     observed_config_digests: Object.fromEntries(roles.map((role) => [role, expected.get(role)])),
+    observed_cpu_time_ns: Object.fromEntries(roles.map((role) => [role, cpuTimes.get(role)])),
+    observed_peak_memory_bytes: Object.fromEntries(roles.map((role) => [role, peakMemory.get(role)])),
     forged_verifier_digest_rejected: true,
   }, null, 2)}\n`);
 } finally {

@@ -2,6 +2,7 @@ import type { DockerResourceOwnershipV1, ExecutionEvidenceV1, ObservedContainerR
 import { runCommand } from "../foundation/index.js";
 import { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, validateDockerResourceOwnership } from "./docker-ownership.js";
 import { parseExecutionEvidence } from "./execution-evidence.js";
+import { readDockerEngineContainerStats } from "./docker-engine-stats.js";
 
 export interface DockerResourceObserverOptions {
   ownership: DockerResourceOwnershipV1;
@@ -14,6 +15,7 @@ export interface DockerResourceObserverOptions {
   signal?: AbortSignal;
   intervalMs?: number;
   run?: (args: string[]) => Promise<{ stdout: string; stderr?: string }>;
+  engineStats?: (containerId: string) => Promise<{ cpu_time_ns?: number; memory_bytes?: number }>;
 }
 
 export interface DockerResourceObserver {
@@ -29,6 +31,7 @@ interface MutableContainer {
   first_observed_at: string;
   last_observed_at: string;
   peak_memory_bytes?: number;
+  cpu_time_ns?: number;
   oom_killed?: boolean;
   exit_code?: number;
   exit_reason?: string;
@@ -49,6 +52,11 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
       failureCode: "docker_resource_observation_failed",
     },
   ));
+  const engineStats = options.engineStats ?? (options.run ? undefined : (containerId: string) => readDockerEngineContainerStats(containerId, {
+    env,
+    ...(options.signal ? { signal: options.signal } : {}),
+    timeoutMs: 2_000,
+  }));
   const startedAt = new Date().toISOString();
   const containers = new Map<string, MutableContainer>();
   const issues: string[] = [];
@@ -63,7 +71,7 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
     tail = tail.then(async () => {
       if (options.signal?.aborted) return;
       try {
-        await poll(ownership, command, containers, issues);
+        await poll(ownership, command, engineStats, containers, issues);
         sampleCount += 1;
       } catch (error) {
         addIssue(issues, (error as Error)?.message || String(error));
@@ -103,6 +111,7 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
 async function poll(
   ownership: DockerResourceOwnershipV1,
   command: (args: string[]) => Promise<{ stdout: string; stderr?: string }>,
+  engineStats: ((containerId: string) => Promise<{ cpu_time_ns?: number; memory_bytes?: number }>) | undefined,
   containers: Map<string, MutableContainer>,
   issues: string[],
 ): Promise<void> {
@@ -117,7 +126,7 @@ async function poll(
   const ids = [...new Set(listed.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean))].sort();
   if (ids.length > 256 || ids.some((id) => !/^[a-f0-9]{12,64}$/.test(id))) throw new TypeError("Docker resource observation returned invalid container IDs");
   for (const id of ids) {
-    try { await observeContainer(id, ownership, command, containers); }
+    try { await observeContainer(id, ownership, command, engineStats, containers); }
     catch (error) { addIssue(issues, (error as Error)?.message || String(error)); }
   }
 }
@@ -126,6 +135,7 @@ async function observeContainer(
   id: string,
   ownership: DockerResourceOwnershipV1,
   command: (args: string[]) => Promise<{ stdout: string; stderr?: string }>,
+  engineStats: ((containerId: string) => Promise<{ cpu_time_ns?: number; memory_bytes?: number }>) | undefined,
   containers: Map<string, MutableContainer>,
 ): Promise<void> {
   const inspected = JSON.parse((await command(["container", "inspect", id])).stdout) as unknown;
@@ -166,7 +176,14 @@ async function observeContainer(
     observed.exit_reason = rawReason.replace(/[\0\r\n]/g, " ").slice(0, 512);
   }
   if (state.Running === true) {
-    try {
+    if (engineStats) {
+      try {
+        const stats = await engineStats(item.Id);
+        if (stats.cpu_time_ns !== undefined) observed.cpu_time_ns = Math.max(observed.cpu_time_ns ?? 0, stats.cpu_time_ns);
+        if (stats.memory_bytes !== undefined) observed.peak_memory_bytes = Math.max(observed.peak_memory_bytes ?? 0, stats.memory_bytes);
+      } catch { /* CLI evidence remains useful when the Engine stats API is unavailable. */ }
+    }
+    if (observed.peak_memory_bytes === undefined) try {
       const stats = await command(["container", "stats", "--no-stream", "--format", "{{json .}}", item.Id]);
       const line = stats.stdout.split(/\r?\n/).find((entry) => entry.trim());
       const parsed = line ? JSON.parse(line) as unknown : null;
@@ -184,7 +201,8 @@ function observation(
   issues: string[],
 ): ExecutionEvidenceV1["observed"] {
   const containers = [...values.values()].sort((left, right) => left.container_id.localeCompare(right.container_id)) as ObservedContainerResourcesV1[];
-  const unavailable: ExecutionEvidenceV1["observed"]["unavailable_fields"] = ["cpu_time_ns"];
+  const unavailable: ExecutionEvidenceV1["observed"]["unavailable_fields"] = [];
+  if (!containers.some((entry) => entry.cpu_time_ns !== undefined)) unavailable.push("cpu_time_ns");
   if (!containers.some((entry) => entry.peak_memory_bytes !== undefined)) unavailable.push("peak_memory_bytes");
   if (!containers.some((entry) => entry.exit_code !== undefined || entry.oom_killed !== undefined)) unavailable.push("exit_status");
   if (!containers.some((entry) => entry.image_reference !== undefined || entry.image_config_digest !== undefined)) unavailable.push("image_identity");

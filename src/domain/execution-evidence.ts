@@ -9,6 +9,7 @@ export interface ObservedContainerResourcesV1 {
   first_observed_at: string;
   last_observed_at: string;
   peak_memory_bytes?: number;
+  cpu_time_ns?: number;
   oom_killed?: boolean;
   exit_code?: number;
   exit_reason?: string;

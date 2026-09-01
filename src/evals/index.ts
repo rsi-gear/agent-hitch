@@ -8,6 +8,8 @@ export { deriveTaskResourceRequirement, resolveLocalTaskPlanningInputs, resolveL
 export type { LocalTaskPlanningInputV1 } from "./task-resources.js";
 export { parseExecutionEvidence } from "./execution-evidence.js";
 export { parseDockerMemoryBytes, startDockerResourceObserver } from "./docker-resource-observer.js";
+export { parseDockerEngineContainerStats, readDockerEngineContainerStats } from "./docker-engine-stats.js";
+export type { DockerEngineContainerStatsV1 } from "./docker-engine-stats.js";
 export type { DockerResourceObserver, DockerResourceObserverOptions } from "./docker-resource-observer.js";
 export type { BuildEvalExecutionPlanOptions } from "./execution-plan.js";
 export { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, acceptExecutionLease, createExecutionLease, heartbeatExecutionLease, markExecutionLeaseLost, markExecutionLeaseRunning, parseExecutionLease, readExecutionLeases, recoverExecutionLeases, reissueExecutionLease, releaseExecutionLease } from "./execution-leases.js";

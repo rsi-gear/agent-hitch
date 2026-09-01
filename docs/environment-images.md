@@ -65,9 +65,10 @@ was actually observed during the trial.
 
 `npm run canary:docker-images` starts three ownership-labeled containers with
 distinct main, sidecar, and separate-Verifier config digests. It runs the real
-Docker observer, verifies every planned digest, and proves a forged Verifier
-digest fails closed. The command builds from a temporary export of the selected
-local base, so it does not require registry access.
+Docker observer, verifies every planned digest, records each container's
+Engine-reported cumulative CPU nanoseconds, and proves a forged Verifier digest
+fails closed. The command builds from a temporary export of the selected local
+base, so it does not require registry access.
 
 Every Hitch-built image carries root-id and cache-key labels. Eval planning
 writes a provisional image-reference record under a global reference fence

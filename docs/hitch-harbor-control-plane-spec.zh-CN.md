@@ -1143,7 +1143,7 @@ Hitch 通过 Harbor 自定义 Docker environment 在读取任务 `docker-compose
 - backend directory 必须包含 `eval_id/work_id/lease_epoch`，防止迟到进程覆盖新执行结果。
 - provider 记录 Harbor PID、process start identity、Docker resource IDs 和最后心跳。
 - provider 尽力从 Docker stats/cgroup 采集 peak memory、CPU time、OOM 和退出原因；无法采集时将 observed resources 标记为 unavailable，不能用 reservation 冒充实际用量。
-- 本机 observer 只能通过精确的 root/lease/epoch label filter 枚举容器，并在采样前复核完整 ownership。V1 Docker CLI 采样器可提供 peak memory、OOM、退出码和退出原因；无法可靠取得累计 CPU time 时必须在 `unavailable_fields` 中记录 `cpu_time_ns`。未观察到任何受控容器时状态为 `unavailable`，观察到部分字段时为 `partial`；两种状态都随 requested reservation 与实际 enforced limits 一起封存在 run 的 `execution.json`。
+- 本机 observer 只能通过精确的 root/lease/epoch label filter 枚举容器，并在采样前复核完整 ownership。V1 优先从 Docker Engine stats 的 `cpu_stats.cpu_usage.total_usage` 和 `memory_stats.usage` 采集容器生命周期累计 CPU 纳秒与 memory sample，Engine memory 不可用时用 Docker CLI stats 兜底；OOM、退出码和退出原因来自 inspect。多次采样的 CPU 与 peak memory 都只允许单调取最大值。Engine endpoint 不可用或返回不安全整数时必须在 `unavailable_fields` 中记录 `cpu_time_ns`，不能从瞬时 `CPUPerc` 猜测。未观察到任何受控容器时状态为 `unavailable`，观察到部分字段时为 `partial`；两种状态都随 requested reservation 与实际 enforced limits 一起封存在 run 的 `execution.json`，bundle resource summary 对各受控容器的累计 CPU time 求和。
 
 ### 13.3 Remote worker
 

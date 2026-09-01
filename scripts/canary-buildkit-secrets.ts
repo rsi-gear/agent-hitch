@@ -8,7 +8,7 @@ import { gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 const SECRET_NAME = "HITCH_CANARY_SECRET";
 const MAX_SCAN_FILE_BYTES = 256 * 1024 * 1024;
 const docker = process.env.HITCH_DOCKER_PATH || "docker";
-const base = process.env.HITCH_DOCKER_CANARY_BASE || "alpine:3.20";
+const base = process.env.HITCH_DOCKER_CANARY_BASE || "ubuntu:24.04";
 const platform = process.env.HITCH_DOCKER_CANARY_PLATFORM || "linux/amd64";
 const temporary = await mkdtemp(path.join(tmpdir(), "hitch-buildkit-secret-canary-"));
 const context = path.join(temporary, "context");

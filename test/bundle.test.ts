@@ -19,7 +19,7 @@ test("result bundle index seals every run file and detects later mutation", asyn
   await atomicWriteJSON(path.join(directory, "execution.json"), {
     provider: "local-docker", worker_id: "worker-test", lease_id: `lease_${"a".repeat(32)}`,
     reservation: { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 },
-    observed: { sample_count: 2, containers: [] },
+    observed: { sample_count: 2, containers: [{ cpu_time_ns: 123_456 }, { cpu_time_ns: 654_321 }] },
   });
   const runtimeId = `sha256:${"c".repeat(64)}` as const;
   await atomicWriteJSON(path.join(directory, "runtime.ref.json"), {
@@ -50,7 +50,7 @@ test("result bundle index seals every run file and detects later mutation", asyn
   assert.deepEqual(index.environment, { images: [], provider: "local-docker", worker_id: "worker-test", lease_id: `lease_${"a".repeat(32)}` });
   assert.deepEqual(index.resources, {
     requested: { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 },
-    observed: { sample_count: 2, container_count: 0, oom_killed_containers: 0 },
+    observed: { sample_count: 2, container_count: 2, cpu_time_ns: 777_777, oom_killed_containers: 0 },
   });
   assert.deepEqual(index.capture, {
     mode: "off", required: false, completeness: "none", interaction_count: 0,

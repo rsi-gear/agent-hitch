@@ -256,10 +256,13 @@ function resourcesFromExecution(execution: Record<string, unknown>): ResultBundl
   const observedValue = asRecord(execution.observed);
   const containers = Array.isArray(observedValue.containers) ? observedValue.containers.map(asRecord) : [];
   const peaks = containers.map((container) => container.peak_memory_bytes).filter((value): value is number => Number.isSafeInteger(value) && (value as number) >= 0);
+  const cpuTimes = containers.map((container) => container.cpu_time_ns).filter((value): value is number => Number.isSafeInteger(value) && (value as number) >= 0);
+  const cpuTime = cpuTimes.reduce((total, value) => total + value, 0);
   const observed = {
     ...(Number.isSafeInteger(observedValue.sample_count) && (observedValue.sample_count as number) >= 0 ? { sample_count: observedValue.sample_count as number } : {}),
     container_count: containers.length,
     ...(peaks.length > 0 ? { peak_memory_bytes: Math.max(...peaks) } : {}),
+    ...(cpuTimes.length > 0 && Number.isSafeInteger(cpuTime) ? { cpu_time_ns: cpuTime } : {}),
     oom_killed_containers: containers.filter((container) => container.oom_killed === true).length,
   };
   return { requested, observed };
