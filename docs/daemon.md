@@ -84,6 +84,13 @@ For local datasets with known task membership, resource and task-collision
 permits are granted per work item by an eval-level deficit round-robin queue.
 Opaque datasets retain one coarse allocation. `/health` exposes the dispatcher
 under `eval_scheduler.work_items` in addition to the aggregate resource ledger.
+The same response keeps the compatibility fields and adds `scheduler.resources`,
+local/remote `workers`, and bounded `metrics` for queue/planning/build/setup,
+Agent, Verifier and collection time, requested/admitted/effective parallelism,
+cache outcomes, lease recovery, rerun type, bundle/capture completeness and
+cleanup residue. Harbor wrapper timing evidence keeps Agent and Verifier time
+separate; `backend_agent_verifier` remains an explicitly named fallback metric
+when an older Harbor integration does not publish phase timing.
 
 ## Resource policy
 
@@ -109,9 +116,9 @@ hitch daemon start \
 
 | Value | Default | Meaning |
 | --- | --- | --- |
-| CPU capacity | `max-concurrent * 1000` millicores | Shared admission budget |
-| Memory capacity | `max-concurrent * 1024` MiB | Shared admission budget |
-| Container slots | `max-concurrent` | Maximum admitted Harbor trials |
+| CPU capacity | Docker VM CPUs minus 1 CPU; conservative `1000` millicore fallback | Shared admission budget |
+| Memory capacity | Docker VM memory minus 1 GiB; conservative `1024` MiB fallback | Shared admission budget |
+| Container slots | Minimum of `max-concurrent`, CPU fit, and memory fit; `1` when Docker memory is unavailable | Maximum admitted Harbor trials |
 | Build slots | `1` | Reserved lane for later managed image builds |
 | GPU capacity | omitted (`0`) | Whole Docker-visible devices; must be set explicitly |
 | Ephemeral disk capacity | omitted (`0`) | Shared writable-storage admission quota; must be set explicitly |
@@ -127,6 +134,15 @@ returns both `resource_policy` and the live `resources` ledger; human-readable
 status prints allocated versus total CPU, memory, container, build, and configured GPU slots.
 The selected policy is also persisted in `daemon.json`, so detached startup and
 operators inspecting the state root see the same configuration.
+
+Each flag also has an environment-policy equivalent: `HITCH_CAPACITY_CPU_MILLIS`,
+`HITCH_CAPACITY_MEMORY_MIB`, `HITCH_CONTAINER_SLOTS`, `HITCH_BUILD_SLOTS`,
+`HITCH_CAPACITY_GPUS`, `HITCH_CAPACITY_EPHEMERAL_DISK_MIB`,
+`HITCH_RUN_CPU_MILLIS`, `HITCH_RUN_MEMORY_MIB`, `HITCH_EVAL_CPU_MILLIS`,
+`HITCH_EVAL_MEMORY_MIB`, `HITCH_EVAL_GPUS`, and
+`HITCH_EVAL_EPHEMERAL_DISK_MIB`. A CLI flag wins over its environment value;
+otherwise Hitch probes the Docker Engine for CPU and memory before using the
+conservative fallback. GPU and ephemeral-disk capacity are never inferred.
 
 ## Lifecycle
 

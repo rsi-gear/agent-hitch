@@ -52,6 +52,7 @@ export async function recoverLocalDockerEvalLeases(input: {
           expectedEpoch: current.epoch,
         });
         emit({ type: "eval.lease.recovery-failed", lease_id: lease.lease_id, code: failure.code });
+        emit({ type: "eval.work.lost", work_id: lease.work_id, lease_id: lease.lease_id, code: failure.code });
       }
     }
   } catch (error) {
@@ -60,6 +61,7 @@ export async function recoverLocalDockerEvalLeases(input: {
       const current = (await readExecutionLeases(input.evalDirectory)).find((entry) => entry.lease_id === lease.lease_id);
       if (current && activeLease(current)) await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: current.lease_id, expectedEpoch: current.epoch });
       emit({ type: "eval.lease.recovery-failed", lease_id: lease.lease_id, code: failure.code });
+      emit({ type: "eval.work.lost", work_id: lease.work_id, lease_id: lease.lease_id, code: failure.code });
     }
   } finally {
     await captureRuntime?.close().catch(() => undefined);
@@ -75,6 +77,7 @@ async function recoverLease(
   emit: (event: Record<string, unknown>) => void,
   captureRuntime?: EvalModelCaptureRuntime,
 ): Promise<void> {
+  if (Date.parse(lease.expires_at) <= Date.now()) emit({ type: "lease.expired", work_id: lease.work_id, lease_id: lease.lease_id, lease_epoch: lease.epoch, worker_id: lease.worker_id });
   if (lease.provider !== "local-docker") throw ambiguous(`unsupported recovery provider: ${lease.provider}`);
   const provider = new LocalDockerExecutionProvider({
     root: input.root,
@@ -90,6 +93,7 @@ async function recoverLease(
   emit({ type: "eval.lease.recovery-probed", lease_id: lease.lease_id, lease_epoch: lease.epoch, state: probe.state });
   if (probe.state === "released") {
     await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });
+    emit({ type: "lease.recovered", work_id: lease.work_id, lease_id: lease.lease_id, lease_epoch: lease.epoch, state: "already-released" });
     return;
   }
   if (probe.state !== "running" && probe.state !== "terminal-uncollected") {
@@ -119,7 +123,9 @@ async function recoverLease(
     }
     await provider.release(lease.lease_id, reissued.epoch);
     await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: reissued.epoch });
+    emit({ type: "lease.released", work_id: lease.work_id, lease_id: lease.lease_id, lease_epoch: reissued.epoch, worker_id: lease.worker_id });
     emit({ type: "eval.lease.recovered", lease_id: lease.lease_id, lease_epoch: reissued.epoch, state: "released" });
+    emit({ type: "lease.recovered", lease_id: lease.lease_id, lease_epoch: reissued.epoch, state: "released" });
   } finally {
     clearInterval(timer);
     await heartbeatTail;

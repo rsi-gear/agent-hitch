@@ -1,4 +1,4 @@
-export { EventSink } from "./events.js";
+export { EventSink, MAX_RUN_EVENT_BYTES } from "./events.js";
 export type { HitchEvent } from "./events.js";
 export { validateRunRequest } from "./request.js";
 export type { RunRequestInput, ValidatedRunRequest } from "./request.js";

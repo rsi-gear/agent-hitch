@@ -12,6 +12,7 @@ import shlex
 import shutil
 import stat as stat_module
 import tempfile
+import time
 import uuid
 from urllib.parse import urlparse
 from datetime import datetime, timezone
@@ -117,6 +118,13 @@ class HitchHarborAgent(BaseAgent):
         return self._hitch_version
 
     async def setup(self, environment: BaseEnvironment) -> None:
+        started_ns = time.monotonic_ns()
+        try:
+            await self._setup(environment)
+        finally:
+            self._write_phase_timing("setup", started_ns)
+
+    async def _setup(self, environment: BaseEnvironment) -> None:
         if not self.hitch_runtime_dir.is_dir():
             raise RuntimeError(f"Hitch runtime directory does not exist: {self.hitch_runtime_dir}")
         # The manifest declares the CLI entrypoint (relative to the upload
@@ -312,6 +320,26 @@ class HitchHarborAgent(BaseAgent):
         if self.workdir is None:
             raise RuntimeError("Hitch agent setup() must resolve the Harbor task working directory before run()")
         return self.workdir
+
+    def _write_phase_timing(self, phase: str, started_ns: int) -> None:
+        if phase not in {"setup", "agent"}:
+            raise ValueError("invalid Harbor agent phase timing")
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        target = self.logs_dir / "hitch-phase-timings.json"
+        value: dict[str, Any] = {"schema_version": "1", "phases": {}}
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else None
+            if isinstance(existing, dict) and existing.get("schema_version") == "1" and isinstance(existing.get("phases"), dict):
+                value = existing
+        except (OSError, json.JSONDecodeError):
+            pass
+        value["phases"][phase] = {
+            "duration_ms": max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(target)
 
     def _verify_harness_artifact_host(self) -> dict[str, Any]:
         """Pin host artifact metadata before Harbor copies the directory."""
@@ -948,6 +976,18 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         return entrypoint
 
     async def run(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+    ) -> None:
+        started_ns = time.monotonic_ns()
+        try:
+            await self._run(instruction, environment, context)
+        finally:
+            self._write_phase_timing("agent", started_ns)
+
+    async def _run(
         self,
         instruction: str,
         environment: BaseEnvironment,

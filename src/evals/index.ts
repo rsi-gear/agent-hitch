@@ -1,7 +1,7 @@
 export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, DEFAULT_INFRASTRUCTURE_RETRIES, DEFAULT_INFRASTRUCTURE_RETRY_BACKOFF_MS, newEvalId, resolveBenchmarkReference, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 export type { EvalRequestInput } from "./request.js";
 export type { EvalRequest } from "../domain/index.js";
-export { EvalEventSink } from "./events.js";
+export { EvalEventSink, MAX_EVAL_EVENT_BYTES } from "./events.js";
 export { buildEvalExecutionPlan, parseEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
 export { runtimeResourcesForTask } from "./execution-plan-resources.js";
 export { deriveTaskResourceRequirement, resolveLocalTaskPlanningInputs, resolveLocalTaskResourceRequirements, HARBOR_EGRESS_SIDECAR_RESOURCES } from "./task-resources.js";

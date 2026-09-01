@@ -14,12 +14,14 @@ export async function handleWorkerProtocolRoute(input: {
   registry: RemoteWorkerRegistry;
   protocol: RemoteWorkerProtocol;
   adminToken: string;
+  onEvent?: (event: Record<string, unknown>) => void;
 }): Promise<boolean> {
   const { request, response, url, registry, protocol } = input;
   if (request.method === "POST" && url.pathname === "/v1/workers/register") {
     if (!authorized(request, input.adminToken)) unauthorized(response);
     else {
       const registered = await registry.register(await readBodyJSON(request));
+      input.onEvent?.({ type: "worker.registered", worker_id: registered.worker.worker.worker_id, generation: registered.worker.generation });
       json(response, 201, {
         schema_version: "1",
         worker: registered.worker,
@@ -38,7 +40,10 @@ export async function handleWorkerProtocolRoute(input: {
     else {
       const heartbeat = parseRemoteWorkerHeartbeat(await readBodyJSON(request));
       await protocol.validateHeartbeatLeases(workerId, heartbeat);
-      json(response, 200, { schema_version: "1", worker: await registry.heartbeat(workerId, heartbeat) });
+      const worker = await registry.heartbeat(workerId, heartbeat);
+      input.onEvent?.({ type: "worker.heartbeat", worker_id: workerId, generation: heartbeat.generation, health: heartbeat.health });
+      for (const lease of heartbeat.active_leases) input.onEvent?.({ type: "lease.renewed", worker_id: workerId, lease_id: lease.lease_id, lease_epoch: lease.epoch });
+      json(response, 200, { schema_version: "1", worker });
     }
     return true;
   }

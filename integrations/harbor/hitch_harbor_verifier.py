@@ -11,7 +11,9 @@ import asyncio
 import json
 import re
 import shutil
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +119,13 @@ class HitchRetryingVerifier(Verifier):
         self.infrastructure_retry_backoff_ms = infrastructure_retry_backoff_ms
 
     async def verify(self) -> VerifierResult:
+        started_ns = time.monotonic_ns()
+        try:
+            return await self._verify_with_retries()
+        finally:
+            self._write_phase_timing(started_ns)
+
+    async def _verify_with_retries(self) -> VerifierResult:
         # Do not trust a control file left by the candidate or a prior phase.
         await self._remove_files(CONTROL_NAMES)
         attempts: list[dict[str, Any]] = []
@@ -178,6 +187,20 @@ class HitchRetryingVerifier(Verifier):
                 await asyncio.sleep(backoff_seconds)
 
         raise AssertionError("unreachable verifier retry state")
+
+    def _write_phase_timing(self, started_ns: int) -> None:
+        self._write_json(
+            "hitch-phase-timings.json",
+            {
+                "schema_version": "1",
+                "phases": {
+                    "verifier": {
+                        "duration_ms": max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+            },
+        )
 
     async def _clear_outputs(self) -> None:
         await self._remove_files(OUTPUT_NAMES)

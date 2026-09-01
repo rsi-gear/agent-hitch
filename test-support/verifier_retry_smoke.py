@@ -137,6 +137,8 @@ async def main(source: Path) -> None:
             "test_runner_missing",
         ]
         assert not (verifier_dir / "infrastructure-error.json").exists()
+        timing = json.loads((verifier_dir / "hitch-phase-timings.json").read_text())
+        assert timing["phases"]["verifier"]["duration_ms"] >= 0
 
         failed_dir = Path(temporary) / "real-failure"
         failed = module.HitchRetryingVerifier(

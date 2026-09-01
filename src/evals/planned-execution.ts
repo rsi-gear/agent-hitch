@@ -4,7 +4,7 @@ import { runHarborBackend } from "../backends/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
 import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalId, EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionLeaseV1 } from "../domain/index.js";
-import { HitchError } from "../foundation/index.js";
+import { HitchError, readJSON } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease } from "./execution-leases.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
@@ -28,16 +28,10 @@ import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
 import { loadTrialEnvironmentImages, prebuiltTaskImage, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
-
-export interface PlannedBackendRun {
-  attempt: number;
-  workId: string;
-  tasks: string[];
-  refs: EvalTrialRefV1[];
-  leaseId: string;
-  run: HarborBackendResult;
-  environmentImages?: TrialEnvironmentImagesV1;
-}
+import { FairSemaphore, assertTaskSlotPlan, workOrder } from "./planned-execution-support.js";
+import type { PlannedBackendRun } from "./planned-execution-support.js";
+export type { PlannedBackendRun } from "./planned-execution-support.js";
+import { harborPhaseTimingEvents } from "./harbor-phase-timings.js";
 
 export interface ExecutePlannedHarborOptions {
   evalId: EvalId;
@@ -91,6 +85,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       try {
         let parentAllocationId: string | undefined;
         if (options.admission) {
+          const admissionStartedAt = Date.now();
           const permit = await options.admission.acquire({
             evalId: options.evalId,
             workItem: item,
@@ -99,6 +94,13 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
           });
           parentAllocationId = permit.allocationId;
           release = permit.release;
+          const waitMs = Date.now() - admissionStartedAt;
+          if (waitMs > 0) options.sink.emit({
+            type: "eval.resource.blocked",
+            work_id: item.work_id,
+            duration_ms: waitMs,
+            reason: "resource-or-collision-admission",
+          });
           options.sink.emit({
             type: "eval.work-item.admitted",
             work_id: item.work_id,
@@ -123,8 +125,24 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
           process_exit_code: completed.run.backend.process_exit_code,
           result_available: completed.run.rawResult !== null,
         });
+        options.sink.emit({
+          type: "eval.work.completed",
+          work_id: item.work_id,
+          lease_id: completed.leaseId,
+          task_id: taskId,
+          attempt: item.logical_attempt,
+          process_exit_code: completed.run.backend.process_exit_code,
+          result_available: completed.run.rawResult !== null,
+        });
         if (failed) stopDispatch = true;
       } catch (error) {
+        options.sink.emit({
+          type: "eval.work.lost",
+          work_id: item.work_id,
+          task_id: taskId,
+          attempt: item.logical_attempt,
+          code: (error as { code?: string }).code || "work_execution_failed",
+        });
         executionFailure ??= error;
         stopDispatch = true;
         break;
@@ -201,10 +219,39 @@ async function executeWorkItem(
   });
   const epoch = lease.current().epoch;
   const providerProcess = { recorded: false };
+  options.sink.emit({
+    type: "lease.offered",
+    work_id: item.work_id,
+    lease_id: lease.leaseId,
+    lease_epoch: epoch,
+    worker_id: options.worker.workerId,
+  });
   await lease.markRunning(epoch);
+  options.sink.emit({
+    type: "lease.accepted",
+    work_id: item.work_id,
+    lease_id: lease.leaseId,
+    lease_epoch: epoch,
+    worker_id: options.worker.workerId,
+  });
   await options.onWorkItemState?.(item.work_id, lease.leaseId, "running");
   options.sink.emit({
+    type: "eval.work.leased",
+    work_id: item.work_id,
+    lease_id: lease.leaseId,
+    lease_epoch: lease.current().epoch,
+    reservation: item.reservation,
+  });
+  options.sink.emit({
     type: "eval.work-item.started",
+    work_id: item.work_id,
+    lease_id: lease.leaseId,
+    lease_epoch: lease.current().epoch,
+    task_id: item.task_ids[0],
+    attempt: item.logical_attempt,
+  });
+  options.sink.emit({
+    type: "eval.work.started",
     work_id: item.work_id,
     lease_id: lease.leaseId,
     lease_epoch: lease.current().epoch,
@@ -239,6 +286,13 @@ async function executeWorkItem(
     if (providerProcess.recorded) await releaseLocalDockerProcessRecord({ root: options.root, leaseId: lease.leaseId, epoch });
     const released = await lease.release(epoch);
     options.sink.emit({
+      type: "lease.released",
+      work_id: item.work_id,
+      lease_id: lease.leaseId,
+      lease_epoch: released.epoch,
+      worker_id: options.worker.workerId,
+    });
+    options.sink.emit({
       type: "eval.work-item.lease-released",
       work_id: item.work_id,
       lease_id: lease.leaseId,
@@ -246,6 +300,7 @@ async function executeWorkItem(
       state: released.state,
     });
     if (options.dockerResourceReaper) {
+      options.sink.emit({ type: "sandbox.cleanup.started", work_id: item.work_id, lease_id: lease.leaseId });
       try {
         const report = await options.dockerResourceReaper({
           root: options.root,
@@ -253,8 +308,10 @@ async function executeWorkItem(
           env: options.env,
         });
         options.sink.emit({ type: "eval.work-item.resources-reaped", work_id: item.work_id, lease_id: lease.leaseId, scanned: report.scanned, deleted: report.deleted.length, issues: report.issues.length });
+        options.sink.emit({ type: "sandbox.cleanup.completed", work_id: item.work_id, lease_id: lease.leaseId, scanned: report.scanned, deleted: report.deleted.length, residual_resources: report.issues.length });
       } catch (error) {
         options.sink.emit({ type: "eval.work-item.reaper-failed", work_id: item.work_id, lease_id: lease.leaseId, code: (error as { code?: string }).code || "docker_reaper_failed" });
+        options.sink.emit({ type: "sandbox.cleanup.failed", work_id: item.work_id, lease_id: lease.leaseId, code: (error as { code?: string }).code || "docker_reaper_failed" });
       }
     }
     await options.onWorkItemState?.(item.work_id, lease.leaseId, "terminal");
@@ -364,6 +421,8 @@ async function executeLeasedWorkItem(
       }
     },
   }).finally(async () => { await resourceObserver.stop(); });
+  const collectionStartedAt = Date.now();
+  for (const event of await harborPhaseTimingEvents(harborJobDirectory, run.rawResult)) options.sink.emit(event);
   const terminalRefs = await importEvalTrialRuns({
     root: options.root,
     evalId: options.evalId,
@@ -384,6 +443,7 @@ async function executeLeasedWorkItem(
     rawResult: run.rawResult,
   }, refs);
   for (const ref of terminalRefs) await publish(ref);
+  options.sink.emit({ type: "eval.collection.completed", work_id: item.work_id, duration_ms: Date.now() - collectionStartedAt });
   if (run.rawResult !== null) assertBackendTrialSet(run.rawResult, refs);
   return { attempt: logicalAttempt, workId: item.work_id, tasks: [taskId], refs, run, ...(environmentImages ? { environmentImages } : {}) };
 }
@@ -407,6 +467,8 @@ class ProgressPublisher {
         benchmarkId: this.options.request.benchmark_id,
         benchmarkRevision: this.options.request.benchmark_revision,
       });
+      const bundle = await readJSON<{ bundle_digest?: string }>(path.join(this.options.root, "runs", ref.run_id, "bundle.index.json"));
+      this.options.sink.emit({ type: "result.bundle.sealed", work_id: workId, run_id: ref.run_id, trial_id: ref.trial_id, bundle_digest: bundle.bundle_digest });
       this.progress = next;
       await writeEvalProgress(this.options.evalDirectory, this.progress);
       this.options.sink.emit({
@@ -432,58 +494,4 @@ class ProgressPublisher {
   current(): EvalProgressV1 {
     return this.progress;
   }
-}
-
-class FairSemaphore {
-  private available: number;
-  private readonly waiters: Array<() => void> = [];
-
-  constructor(capacity: number) {
-    this.available = capacity;
-  }
-
-  async acquire(signal?: AbortSignal): Promise<() => void> {
-    if (signal?.aborted) throw new Error("eval work item scheduling was cancelled");
-    if (this.available > 0) {
-      this.available -= 1;
-      return this.releaseFunction();
-    }
-    await new Promise<void>((resolve, reject) => {
-      const ready = () => {
-        signal?.removeEventListener("abort", aborted);
-        resolve();
-      };
-      const aborted = () => {
-        const index = this.waiters.indexOf(ready);
-        if (index >= 0) this.waiters.splice(index, 1);
-        reject(new Error("eval work item scheduling was cancelled"));
-      };
-      this.waiters.push(ready);
-      signal?.addEventListener("abort", aborted, { once: true });
-    });
-    return this.releaseFunction();
-  }
-
-  private releaseFunction(): () => void {
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const next = this.waiters.shift();
-      if (next) next();
-      else this.available += 1;
-    };
-  }
-}
-
-function assertTaskSlotPlan(plan: EvalExecutionPlanV1): void {
-  if (plan.membership !== "known" || plan.work_items.length === 0
-    || plan.work_items.some((item) => item.opaque_membership || item.task_ids.length !== 1 || item.slots.length !== 1
-      || item.logical_attempt === null || item.requested_parallelism !== 1)) {
-    throw new TypeError("planned Harbor execution requires one known trial slot per work item");
-  }
-}
-
-function workOrder(plan: EvalExecutionPlanV1, workId: string): number {
-  return plan.work_items.findIndex((item) => item.work_id === workId);
 }

@@ -32,8 +32,9 @@ export function localEnvironmentImageBuild(
   root: string,
   acquireBuildSlot: (signal?: AbortSignal) => Promise<{ release(): void }>,
   builder: EnvironmentImageBuilder = new DockerBuildKitBuilder({ root }),
+  onEvent: (event: Record<string, unknown>) => void = () => {},
 ): EvalEnvironmentImageBuilder {
-  const images = new EnvironmentImageService({ root, builder, acquireBuildSlot });
+  const images = new EnvironmentImageService({ root, builder, acquireBuildSlot, onEvent });
   return async (input) => {
     const baseImages = await inspectPinnedDockerfileBases(input.contextDirectory, input.dockerfile);
     const built = await images.build({

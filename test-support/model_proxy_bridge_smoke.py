@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,9 @@ async def main(source: Path, logs: Path) -> None:
         hitch_runtime_dir=str(logs),
         model_capture=route,
     )
+    agent._write_phase_timing("agent", time.monotonic_ns())
+    timing = __import__("json").loads((logs / "hitch-phase-timings.json").read_text())
+    assert timing["phases"]["agent"]["duration_ms"] >= 0
     run_id = "run_" + "b" * 32
     healthy = Environment(0)
     variables, status = await agent._model_proxy_environment(healthy, run_id)

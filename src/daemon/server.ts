@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createReadStream } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
 import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
@@ -12,6 +11,10 @@ import type { StatePaths } from "../foundation/index.js";
 import type { EvalId, ResourceVectorV1, RunId } from "../domain/index.js";
 import { acquireInstanceLock, authorized, ensureToken, releaseInstanceLock } from "./auth.js";
 import { handleRemoteWorkRoute, handleWorkerProtocolRoute } from "./worker-routes.js";
+import { DaemonTelemetry } from "./telemetry.js";
+import { healthParallelism, healthResources, workerHealth } from "./health.js";
+import { boundedControlEvent, boundedMessage } from "./logging.js";
+import { completeLineSize, isLineBoundary, streamFileRange } from "./event-stream.js";
 
 export interface DaemonServerOptions {
   root: string;
@@ -56,6 +59,7 @@ export class DaemonServer {
   private readonly evalTrialResources: ResourceVectorV1;
   private readonly evalExecutor: EvalSchedulerOptions["executor"] | undefined;
   private readonly evalRerunExecutor: EvalRerunExecutor | undefined;
+  private readonly telemetry = new DaemonTelemetry();
 
   constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor, credentialEnv }: DaemonServerOptions) {
     this.paths = statePaths(root);
@@ -96,7 +100,7 @@ export class DaemonServer {
         maxConcurrent: this.maxConcurrent,
         resources: this.resources,
         runResources: this.runResources,
-        onEvent: (event) => this.logger("event", { type: event.type, run_id: event.run_id }),
+        onEvent: (event) => this.observeRunEvent(event),
       });
       await this.scheduler.initialize();
       const collisions = new CollisionLockManager();
@@ -108,7 +112,7 @@ export class DaemonServer {
         remoteWorkers: this.remoteWorkers,
         remoteWorkerProtocol: this.remoteWorkerProtocol,
         ...(this.evalExecutor ? { executor: this.evalExecutor } : {}),
-        onEvent: (event) => this.logger("event", { type: event.type, eval_id: event.eval_id }),
+        onEvent: (event) => this.observeControlEvent(event),
       });
       await this.evalScheduler.initialize();
       this.evalRerunScheduler = new EvalRerunScheduler({
@@ -117,18 +121,18 @@ export class DaemonServer {
         trialResources: this.evalTrialResources,
         collisions,
         ...(this.evalRerunExecutor ? { executor: this.evalRerunExecutor } : {}),
-        onEvent: (event) => this.logger("event", { type: event.type, eval_id: event.eval_id, rerun_id: event.rerun_id }),
+        onEvent: (event) => this.observeControlEvent(event),
       });
       await this.evalRerunScheduler.initialize();
 
       this.server = createServer((request, response) => {
         this.handle(request, response).catch((error) => {
-          this.logger("request_error", { error: (error as Error).message, path: request.url });
+          this.logger("request_error", { error: boundedMessage((error as Error).message), path: boundedMessage(request.url || "", 2_048) });
           const status = errorStatus(error);
           json(response, status, {
             error: {
               code: (error as { code?: string }).code || "internal_error",
-              message: (error as Error).message,
+              message: boundedMessage((error as Error).message),
               exit_code: Number.isInteger((error as { exitCode?: unknown }).exitCode) ? (error as { exitCode: number }).exitCode : 12,
             },
           });
@@ -198,10 +202,10 @@ export class DaemonServer {
   async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url || "/", `http://127.0.0.1:${this.port}`);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json(response, 200, this.health());
+      return json(response, 200, await this.health());
     }
 
-    const workerRoute = { request, response, url, registry: this.remoteWorkers, protocol: this.remoteWorkerProtocol, adminToken: this.token || "" };
+    const workerRoute = { request, response, url, registry: this.remoteWorkers, protocol: this.remoteWorkerProtocol, adminToken: this.token || "", onEvent: (event: Record<string, unknown>) => this.observeControlEvent(event) };
     if (await handleWorkerProtocolRoute(workerRoute) || await handleRemoteWorkRoute(workerRoute)) return;
 
     if (!authorized(request, this.token || "")) {
@@ -327,7 +331,16 @@ export class DaemonServer {
     json(response, 404, { error: { code: "not_found", message: "endpoint not found" } });
   }
 
-  health(): Record<string, unknown> {
+  async health(): Promise<Record<string, unknown>> {
+    const runScheduler = this.scheduler?.snapshot() || null;
+    const evalScheduler = this.evalScheduler?.snapshot() || null;
+    const resourceSnapshot = this.resources?.snapshot() || null;
+    const remoteWorkers = await this.remoteWorkers.list().catch(() => []);
+    const workers = workerHealth(
+      remoteWorkers,
+      this.evalScheduler?.providerSnapshot(),
+      Number((evalScheduler?.work_items as { active?: unknown } | undefined)?.active ?? 0),
+    );
     return {
       schema_version: SCHEMA_VERSION,
       status: this.ready ? "running" : this.closing ? "stopping" : "starting",
@@ -338,12 +351,35 @@ export class DaemonServer {
       uptime_seconds: Math.floor((Date.now() - this.startedAt.getTime()) / 1000),
       agents: this.agents?.filter((agent) => (agent as { status?: string }).status === "available").map((agent) => (agent as { id: string }).id) || [],
       harnesses: this.agents?.filter((agent) => (agent as { status?: string }).status === "available").map((agent) => (agent as { id: string }).id) || [],
-      scheduler: this.scheduler?.snapshot() || null,
-      eval_scheduler: this.evalScheduler?.snapshot() || null,
+      scheduler: runScheduler ? {
+        ...runScheduler,
+        queued_runs: runScheduler.queued,
+        queued_evals: Number(evalScheduler?.queued ?? 0),
+        active_work_items: Number((evalScheduler?.work_items as { active?: unknown } | undefined)?.active ?? 0),
+        resources: healthResources(resourceSnapshot),
+      } : null,
+      eval_scheduler: evalScheduler,
       eval_rerun_scheduler: this.evalRerunScheduler?.snapshot() || null,
-      resources: this.resources?.snapshot() || null,
+      resources: resourceSnapshot,
       resource_policy: this.resourcePolicy(),
+      workers,
+      metrics: {
+        ...this.telemetry.snapshot(),
+        parallelism: healthParallelism(evalScheduler),
+        resources: healthResources(resourceSnapshot),
+        workers,
+      },
     };
+  }
+
+  private observeRunEvent(event: Record<string, unknown>): void {
+    this.telemetry.observe(event);
+    this.logger("event", boundedControlEvent(event));
+  }
+
+  private observeControlEvent(event: Record<string, unknown>): void {
+    this.telemetry.observe(event);
+    this.logger("event", boundedControlEvent(event));
   }
 
   private resourcePolicy(): Record<string, ResourceVectorV1> {
@@ -396,47 +432,6 @@ function httpErrorCode(status: number): string {
   if (status === 400) return "invalid_input";
   if (status === 404) return "not_found";
   return "daemon_request_failed";
-}
-
-function streamFileRange(file: string, start: number, end: number, response: ServerResponse): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const stream = createReadStream(file, { start, end });
-    stream.once("error", reject);
-    response.once("error", reject);
-    response.once("finish", resolve);
-    stream.pipe(response);
-  });
-}
-
-async function completeLineSize(file: string, size: number): Promise<number> {
-  if (size === 0) return 0;
-  const handle = await open(file, "r");
-  try {
-    let end = size;
-    while (end > 0) {
-      const start = Math.max(0, end - 64 * 1024);
-      const buffer = Buffer.allocUnsafe(end - start);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
-      const newline = buffer.subarray(0, bytesRead).lastIndexOf(0x0a);
-      if (newline >= 0) return start + newline + 1;
-      end = start;
-    }
-    return 0;
-  } finally {
-    await handle.close();
-  }
-}
-
-async function isLineBoundary(file: string, offset: number): Promise<boolean> {
-  if (offset === 0) return true;
-  const handle = await open(file, "r");
-  try {
-    const buffer = Buffer.allocUnsafe(1);
-    const { bytesRead } = await handle.read(buffer, 0, 1, offset - 1);
-    return bytesRead === 1 && buffer[0] === 0x0a;
-  } finally {
-    await handle.close();
-  }
 }
 
 async function readBodyJSON(request: IncomingMessage, limit = 1_048_576): Promise<unknown> {

@@ -20,6 +20,7 @@ test("ten concurrent requests for one environment image invoke BuildKit once", a
   let invocations = 0;
   let activeSlots = 0;
   let peakSlots = 0;
+  const events: Record<string, unknown>[] = [];
   const builder: EnvironmentImageBuilder = {
     id: "buildkit_test",
     probe: async (reference, digest) => built.get(reference) === digest,
@@ -46,7 +47,7 @@ test("ten concurrent requests for one environment image invoke BuildKit once", a
     secretNames: ["REGISTRY_TOKEN"],
     baseImages: [{ reference: "example/base", digest: `sha256:${"a".repeat(64)}` as Sha256 }],
   };
-  const services = Array.from({ length: 10 }, () => new EnvironmentImageService({ root, builder, acquireBuildSlot }));
+  const services = Array.from({ length: 10 }, () => new EnvironmentImageService({ root, builder, acquireBuildSlot, onEvent: (event) => events.push(event) }));
   const results = await Promise.all(services.map((service) => service.build(request)));
   assert.equal(invocations, 1);
   assert.equal(peakSlots, 1);
@@ -54,6 +55,11 @@ test("ten concurrent requests for one environment image invoke BuildKit once", a
   assert.equal(new Set(results.map((entry) => entry.manifest.image_id)).size, 1);
   assert.equal(results.filter((entry) => entry.cacheHit === false).length, 1);
   assert.equal(results.filter((entry) => entry.cacheHit === true).length, 9);
+  assert.equal(events.filter((event) => event.type === "build.queued").length, 10);
+  assert.equal(events.filter((event) => event.type === "build.started").length, 1);
+  assert.equal(events.filter((event) => event.type === "build.completed").length, 1);
+  assert.equal(events.filter((event) => event.type === "build.cache_hit").length, 9);
+  assert.ok(events.some((event) => event.type === "build.wait" && Number(event.duration_ms) >= 0));
   const manifest = results[0]!.manifest;
   assert.deepEqual(manifest.build.secret_names, ["REGISTRY_TOKEN"]);
   assert.equal(JSON.stringify(manifest).includes("top-build-arg-value"), false, "build arg values must not be stored in the manifest");
@@ -67,7 +73,7 @@ test("ten concurrent requests for one environment image invoke BuildKit once", a
   assert.equal(inspected?.record.state, "succeeded");
   assert.equal(inspected?.manifest?.image_id, manifest.image_id);
 
-  const restarted = new EnvironmentImageService({ root, builder });
+  const restarted = new EnvironmentImageService({ root, builder, onEvent: (event) => events.push(event) });
   const cached = await restarted.build(request);
   assert.equal(cached.cacheHit, true);
   assert.equal(invocations, 1);

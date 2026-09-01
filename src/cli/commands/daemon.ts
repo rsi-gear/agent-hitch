@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonServer, daemonClient, probeDaemonHealth, readDaemonLogs, startDetachedDaemon } from "../../daemon/index.js";
 import type { DaemonResourcePolicy } from "../../daemon/index.js";
 import { discoverAgents } from "../../adapters/index.js";
-import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger } from "../../foundation/index.js";
+import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger, runCommand } from "../../foundation/index.js";
 import { assertNoArgs, parseRunRequest, takeFlag, takeOption } from "../arguments.js";
 import { waitForDaemonRun } from "../output.js";
 
@@ -25,9 +25,9 @@ export async function daemonCommand(args: string[], root: string): Promise<void>
 async function daemonServe(args: string[], root: string): Promise<void> {
   const port = Number(takeOption(args, "--port") || DEFAULT_PORT);
   const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
-  const resourcePolicy = parseDaemonResourcePolicy(args, maxConcurrent);
-  assertNoArgs(args);
   validatePort(port);
+  const resourcePolicy = await parseDaemonResourcePolicy(args, maxConcurrent);
+  assertNoArgs(args);
   return serveDaemon(root, port, maxConcurrent, resourcePolicy);
 }
 
@@ -52,9 +52,9 @@ async function daemonStart(args: string[], root: string): Promise<void> {
   const foreground = takeFlag(args, "--foreground");
   const port = Number(takeOption(args, "--port") || DEFAULT_PORT);
   const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
-  const resourcePolicy = parseDaemonResourcePolicy(args, maxConcurrent);
-  assertNoArgs(args);
   validatePort(port);
+  const resourcePolicy = await parseDaemonResourcePolicy(args, maxConcurrent);
+  assertNoArgs(args);
   const health = await probeDaemonHealth(root);
   if (health?.status === "running") throw new HitchError(`daemon is already running (pid ${health.pid})`, { code: "already_running", exitCode: 2 });
   if (foreground) return serveDaemon(root, port, maxConcurrent, resourcePolicy);
@@ -72,30 +72,84 @@ async function daemonStart(args: string[], root: string): Promise<void> {
   throw new HitchError(`daemon did not become ready; see ${child.errorLog}`, { code: "daemon_start_failed", exitCode: 12 });
 }
 
-function parseDaemonResourcePolicy(args: string[], maxConcurrent: number): DaemonResourcePolicy {
-  const capacityCpu = parsePositive(takeOption(args, "--capacity-cpu-millis"), maxConcurrent * 1_000, "--capacity-cpu-millis");
-  const capacityMemory = mib(parsePositive(takeOption(args, "--capacity-memory-mib"), maxConcurrent * 1_024, "--capacity-memory-mib"), "--capacity-memory-mib");
-  const containerSlots = parseNonNegative(takeOption(args, "--container-slots"), maxConcurrent, "--container-slots");
-  const buildSlots = parseNonNegative(takeOption(args, "--build-slots"), 1, "--build-slots");
-  const capacityGpuOption = takeOption(args, "--capacity-gpus");
+export async function parseDaemonResourcePolicy(
+  args: string[],
+  maxConcurrent: number,
+  options: {
+    env?: NodeJS.ProcessEnv;
+    detect?: (env: NodeJS.ProcessEnv) => Promise<{ cpu_millis?: number; memory_bytes?: number }>;
+  } = {},
+): Promise<DaemonResourcePolicy> {
+  const env = options.env ?? process.env;
+  const capacityCpuOption = policyOption(takeOption(args, "--capacity-cpu-millis"), env.HITCH_CAPACITY_CPU_MILLIS);
+  const capacityMemoryOption = policyOption(takeOption(args, "--capacity-memory-mib"), env.HITCH_CAPACITY_MEMORY_MIB);
+  const containerSlotsOption = policyOption(takeOption(args, "--container-slots"), env.HITCH_CONTAINER_SLOTS);
+  const buildSlotsOption = policyOption(takeOption(args, "--build-slots"), env.HITCH_BUILD_SLOTS);
+  const capacityGpuOption = policyOption(takeOption(args, "--capacity-gpus"), env.HITCH_CAPACITY_GPUS);
   const capacityGpus = parseNonNegative(capacityGpuOption, 0, "--capacity-gpus");
-  const capacityDiskOption = takeOption(args, "--capacity-ephemeral-disk-mib");
+  const capacityDiskOption = policyOption(takeOption(args, "--capacity-ephemeral-disk-mib"), env.HITCH_CAPACITY_EPHEMERAL_DISK_MIB);
   const capacityDisk = mib(parseNonNegative(capacityDiskOption, 0, "--capacity-ephemeral-disk-mib"), "--capacity-ephemeral-disk-mib");
-  const runCpu = parsePositive(takeOption(args, "--run-cpu-millis"), 1_000, "--run-cpu-millis");
-  const runMemory = mib(parsePositive(takeOption(args, "--run-memory-mib"), 512, "--run-memory-mib"), "--run-memory-mib");
-  const evalCpu = parsePositive(takeOption(args, "--eval-cpu-millis"), 1_000, "--eval-cpu-millis");
-  const evalMemory = mib(parsePositive(takeOption(args, "--eval-memory-mib"), 1_024, "--eval-memory-mib"), "--eval-memory-mib");
-  const evalGpuOption = takeOption(args, "--eval-gpus");
+  const runCpu = parsePositive(policyOption(takeOption(args, "--run-cpu-millis"), env.HITCH_RUN_CPU_MILLIS), 1_000, "--run-cpu-millis");
+  const runMemory = mib(parsePositive(policyOption(takeOption(args, "--run-memory-mib"), env.HITCH_RUN_MEMORY_MIB), 512, "--run-memory-mib"), "--run-memory-mib");
+  const evalCpu = parsePositive(policyOption(takeOption(args, "--eval-cpu-millis"), env.HITCH_EVAL_CPU_MILLIS), 1_000, "--eval-cpu-millis");
+  const evalMemory = mib(parsePositive(policyOption(takeOption(args, "--eval-memory-mib"), env.HITCH_EVAL_MEMORY_MIB), 1_024, "--eval-memory-mib"), "--eval-memory-mib");
+  const evalGpuOption = policyOption(takeOption(args, "--eval-gpus"), env.HITCH_EVAL_GPUS);
   const evalGpus = parseNonNegative(evalGpuOption, 0, "--eval-gpus");
-  const evalDiskOption = takeOption(args, "--eval-ephemeral-disk-mib");
+  const evalDiskOption = policyOption(takeOption(args, "--eval-ephemeral-disk-mib"), env.HITCH_EVAL_EPHEMERAL_DISK_MIB);
   const evalDisk = mib(parseNonNegative(evalDiskOption, 0, "--eval-ephemeral-disk-mib"), "--eval-ephemeral-disk-mib");
   if (evalGpus > capacityGpus) throw invalidInput("--eval-gpus cannot exceed --capacity-gpus");
   if (evalDisk > capacityDisk) throw invalidInput("--eval-ephemeral-disk-mib cannot exceed --capacity-ephemeral-disk-mib");
+  const detected = capacityCpuOption === undefined || capacityMemoryOption === undefined || containerSlotsOption === undefined
+    ? await (options.detect ?? detectDockerResourceCapacity)(env)
+    : {};
+  const capacityCpu = parsePositive(capacityCpuOption, detected.cpu_millis ?? 1_000, "--capacity-cpu-millis");
+  const capacityMemory = mib(parsePositive(capacityMemoryOption, detected.memory_bytes === undefined ? 1_024 : bytesToWholeMib(detected.memory_bytes), "--capacity-memory-mib"), "--capacity-memory-mib");
+  const derivedSlots = capacityMemoryOption === undefined && detected.memory_bytes === undefined
+    ? 1
+    : Math.min(maxConcurrent, Math.floor(capacityCpu / evalCpu), Math.floor(capacityMemory / evalMemory));
+  const containerSlots = parseNonNegative(containerSlotsOption, derivedSlots, "--container-slots");
+  const buildSlots = parseNonNegative(buildSlotsOption, 1, "--build-slots");
   return {
     capacity: { cpu_millis: capacityCpu, memory_bytes: capacityMemory, container_slots: containerSlots, build_slots: buildSlots, ...(capacityGpuOption === undefined ? {} : { gpu_count: capacityGpus }), ...(capacityDiskOption === undefined ? {} : { ephemeral_disk_bytes: capacityDisk }) },
     run: { cpu_millis: runCpu, memory_bytes: runMemory, container_slots: 0, build_slots: 0 },
     eval_trial: { cpu_millis: evalCpu, memory_bytes: evalMemory, container_slots: 1, build_slots: 0, ...(evalGpuOption === undefined ? {} : { gpu_count: evalGpus }), ...(evalDiskOption === undefined ? {} : { ephemeral_disk_bytes: evalDisk }) },
   };
+}
+
+export async function detectDockerResourceCapacity(env: NodeJS.ProcessEnv = process.env): Promise<{ cpu_millis?: number; memory_bytes?: number }> {
+  try {
+    const docker = env.HITCH_DOCKER_PATH?.trim() || "docker";
+    const output = await runCommand(docker, ["info", "--format", "{{json .}}"], {
+      env,
+      timeoutMs: 5_000,
+      failureCode: "docker_capacity_detection_failed",
+    });
+    const info = JSON.parse(output.stdout) as { NCPU?: unknown; MemTotal?: unknown };
+    const cpus = Number(info.NCPU);
+    const memory = Number(info.MemTotal);
+    const cpuMillis = Number.isSafeInteger(cpus) && cpus > 0 ? Math.max(1_000, (cpus - 1) * 1_000) : undefined;
+    const memoryBytes = Number.isSafeInteger(memory) && memory > 0
+      ? Math.max(1024 * 1024, Math.floor((memory - 1024 ** 3) / (1024 * 1024)) * 1024 * 1024)
+      : undefined;
+    return {
+      ...(cpuMillis === undefined ? {} : { cpu_millis: cpuMillis }),
+      ...(memoryBytes === undefined ? {} : { memory_bytes: memoryBytes }),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function policyOption(cli: string | undefined, environment: string | undefined): string | undefined {
+  if (cli !== undefined) return cli;
+  const value = environment?.trim();
+  return value ? value : undefined;
+}
+
+function bytesToWholeMib(value: number): number {
+  const result = Math.floor(value / (1024 * 1024));
+  if (!Number.isSafeInteger(result) || result <= 0) throw invalidInput("detected Docker memory capacity is invalid");
+  return result;
 }
 
 function parsePositive(value: string | undefined, fallback: number, name: string): number {

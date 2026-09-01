@@ -5,6 +5,8 @@ import path from "node:path";
 import type { EvalId } from "../domain/index.js";
 import { SCHEMA_VERSION, ensureDir } from "../foundation/index.js";
 
+export const MAX_EVAL_EVENT_BYTES = 64 * 1024;
+
 export class EvalEventSink {
   readonly path: string;
   private readonly evalId: EvalId;
@@ -28,16 +30,25 @@ export class EvalEventSink {
   }
 
   emit(event: Record<string, unknown>): Record<string, unknown> {
-    const framed = {
+    const identity = {
       schema_version: SCHEMA_VERSION,
       sequence: ++this.sequence,
       timestamp: new Date().toISOString(),
       eval_id: this.evalId,
-      ...event,
     };
-    this.pending = this.pending.then(() => writeChunk(this.stream as WriteStream, `${JSON.stringify(framed)}\n`));
-    try { this.onEvent(framed); } catch { /* Observers cannot break eval persistence. */ }
-    return framed;
+    const framed = { ...identity, ...event };
+    const encoded = JSON.stringify(framed);
+    const persisted = Buffer.byteLength(encoded) <= MAX_EVAL_EVENT_BYTES
+      ? framed
+      : {
+          ...identity,
+          type: boundedType(event.type),
+          truncated: true,
+          original_bytes: Buffer.byteLength(encoded),
+        };
+    this.pending = this.pending.then(() => writeChunk(this.stream as WriteStream, `${JSON.stringify(persisted)}\n`));
+    try { this.onEvent(persisted); } catch { /* Observers cannot break eval persistence. */ }
+    return persisted;
   }
 
   async close(): Promise<void> {
@@ -47,6 +58,11 @@ export class EvalEventSink {
     failure ||= this.streamError;
     if (failure) throw failure;
   }
+}
+
+function boundedType(value: unknown): string {
+  const type = typeof value === "string" && value ? value : "eval.event.truncated";
+  return type.slice(0, 256);
 }
 
 async function lastCommittedSequence(file: string): Promise<number> {

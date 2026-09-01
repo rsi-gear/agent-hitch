@@ -330,7 +330,8 @@ test("accepted remote work reconnects with exact lease proof instead of being re
 test("daemon remote-worker API separates admin registration from worker heartbeat credentials", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-worker-api-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} });
+  const logs: Array<{ type: string; fields: Record<string, unknown> }> = [];
+  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: (type, fields) => logs.push({ type, fields }) });
   await server.start();
   t.after(() => server.close());
   const client = await daemonClient(root);
@@ -349,6 +350,12 @@ test("daemon remote-worker API separates admin registration from worker heartbea
     body: JSON.stringify(heartbeatBody),
   });
   assert.equal(heartbeat.status, 200);
+  assert.ok(logs.some((entry) => entry.type === "event" && entry.fields.type === "worker.registered" && entry.fields.worker_id === "worker_remote_a"));
+  assert.ok(logs.some((entry) => entry.type === "event" && entry.fields.type === "worker.heartbeat" && entry.fields.worker_id === "worker_remote_a"));
+  const health = await client.request("/health") as { workers: { healthy: number; lost: number }; metrics: { event_counts: Record<string, number> } };
+  assert.equal(health.workers.healthy, 2);
+  assert.equal(health.workers.lost, 0);
+  assert.equal(health.metrics.event_counts["worker.registered"], 1);
   const unauthorized = await fetch(`http://127.0.0.1:${server.port}/v1/workers/worker_remote_a/heartbeat`, {
     method: "POST",
     headers: { authorization: `Bearer ${"f".repeat(64)}`, "content-type": "application/json" },

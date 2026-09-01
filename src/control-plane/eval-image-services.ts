@@ -15,6 +15,7 @@ export class EvalImageServices {
     resources: ResourceLedger;
     resolver?: EvalEnvironmentImageResolver;
     builder?: EvalEnvironmentImageBuilder;
+    onEvent?: (event: Record<string, unknown>) => void;
   }) {
     this.root = input.root;
     this.resolver = input.resolver ?? localRegistryImageResolution(input.root);
@@ -22,7 +23,7 @@ export class EvalImageServices {
     else if (input.provider === "local-docker" && input.resources.canEverFit({ cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 1 })) {
       const admission = new BuildSlotAdmission(input.resources);
       this.buildAdmission = admission;
-      this.builder = localEnvironmentImageBuild(input.root, (signal) => admission.acquire(signal));
+      this.builder = localEnvironmentImageBuild(input.root, (signal) => admission.acquire(signal), undefined, input.onEvent);
     }
   }
 

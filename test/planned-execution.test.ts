@@ -109,6 +109,12 @@ test("planned local execution overlaps different tasks and serializes attempts o
   )));
   assert.ok(providerRecords.every((record) => record.state === "released" && record.lease_epoch === 1));
   assert.ok(providerRecords.every((record) => String(record.backend_directory).includes(`/epoch-000001`)));
+  const eventTypes = new Set((await readFile(path.join(evalDirectory, "events.jsonl"), "utf8")).trim().split("\n").map((line) => (JSON.parse(line) as { type: string }).type));
+  for (const type of [
+    "eval.planning.started", "eval.plan.created", "eval.work.queued", "eval.work.leased", "eval.work.started",
+    "eval.work.completed", "eval.finalizing", "lease.offered", "lease.accepted", "lease.released",
+    "sandbox.cleanup.started", "sandbox.cleanup.completed", "result.bundle.sealed",
+  ]) assert.ok(eventTypes.has(type), `missing lifecycle event ${type}`);
 
   const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Activity);
   for (const task of ["one", "two"]) {

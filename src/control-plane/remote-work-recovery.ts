@@ -46,6 +46,7 @@ export async function recoverRemoteWorkerEvalLeases(input: {
       failure ??= { code: typed ? error.code : "execution_state_ambiguous", message: (error as Error)?.message || String(error) };
       await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch }).catch(() => undefined);
       input.emit?.({ type: "eval.lease.recovery-failed", lease_id: lease.lease_id, code: failure.code });
+      input.emit?.({ type: "eval.work.lost", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id, code: failure.code });
     }
   }
   return failure
@@ -54,13 +55,16 @@ export async function recoverRemoteWorkerEvalLeases(input: {
 }
 
 async function recoverLease(input: Parameters<typeof recoverRemoteWorkerEvalLeases>[0], lease: ExecutionLeaseV1, reconnectTimeoutMs: number): Promise<void> {
+  if (Date.parse(lease.expires_at) <= Date.now()) input.emit?.({ type: "lease.expired", work_id: lease.work_id, lease_id: lease.lease_id, lease_epoch: lease.epoch, worker_id: lease.worker_id });
   let offer = await input.protocol.findOfferForLease(lease.worker_id, lease.lease_id);
   if (!offer || !sameLease(offer, lease)) throw ambiguous(`remote provider has no matching durable offer for ${lease.lease_id}`);
   if (offer.state === "offered") {
     offer = await input.protocol.withdrawUnacceptedOffer(offer.worker_id, offer.offer_id);
     if (offer.state === "expired") {
+      input.emit?.({ type: "lease.expired", lease_id: lease.lease_id, lease_epoch: lease.epoch, worker_id: lease.worker_id });
       await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });
       input.emit?.({ type: "eval.lease.recovered", lease_id: lease.lease_id, lease_epoch: lease.epoch, state: "not-started" });
+      input.emit?.({ type: "lease.recovered", lease_id: lease.lease_id, lease_epoch: lease.epoch, state: "not-started" });
       return;
     }
   }
@@ -78,6 +82,7 @@ async function recoverLease(input: Parameters<typeof recoverRemoteWorkerEvalLeas
   else if (!input.cancelRequested) throw new HitchError(`recovered remote work ended as ${offer.terminal?.status ?? "unknown"}`, { code: "remote_work_failed", exitCode: 13 });
   await finishRelease(input, current, offer);
   input.emit?.({ type: "eval.lease.recovered", lease_id: lease.lease_id, lease_epoch: lease.epoch, state: "released" });
+  input.emit?.({ type: "lease.recovered", lease_id: lease.lease_id, lease_epoch: lease.epoch, state: "released" });
 }
 
 async function waitForTerminal(
@@ -153,6 +158,7 @@ async function collectRemoteResult(input: Parameters<typeof recoverRemoteWorkerE
 }
 
 async function finishRelease(input: Parameters<typeof recoverRemoteWorkerEvalLeases>[0], lease: ExecutionLeaseV1, terminal: RemoteWorkOfferV1): Promise<void> {
+  input.emit?.({ type: "sandbox.cleanup.started", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id });
   let offer = terminal.state === "released" ? terminal : await input.protocol.requestRelease(terminal.worker_id, terminal.offer_id);
   const deadline = Date.now() + input.releaseTimeoutMs;
   while (offer.state !== "released" && Date.now() < deadline) {
@@ -161,6 +167,8 @@ async function finishRelease(input: Parameters<typeof recoverRemoteWorkerEvalLea
   }
   if (offer.state === "released") {
     await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });
+    input.emit?.({ type: "lease.released", work_id: lease.work_id, lease_id: lease.lease_id, lease_epoch: lease.epoch, worker_id: lease.worker_id });
+    input.emit?.({ type: "sandbox.cleanup.completed", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id, residual_resources: 0 });
     return;
   }
   await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });

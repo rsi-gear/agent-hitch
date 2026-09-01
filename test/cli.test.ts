@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFakeDocker, writeFakeHarbor, writeFakeNpm, writeFakePython, forceRemove } from "../test-support/helpers.js";
 import { packageVersion } from "../src/foundation/index.js";
+import { parseDaemonResourcePolicy } from "../src/cli/commands/daemon.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -27,6 +28,53 @@ test("CLI preserves typed exit code for invalid commands", () => {
   const result = spawnSync(process.execPath, [executable, "not-a-command"], { encoding: "utf8" });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /unknown command/);
+});
+
+test("daemon resource policy follows CLI, environment, Docker detection, and conservative fallback order", async () => {
+  const detectedArgs: string[] = [];
+  const detected = await parseDaemonResourcePolicy(detectedArgs, 8, {
+    env: {},
+    detect: async () => ({ cpu_millis: 9_000, memory_bytes: 7 * 1024 ** 3 }),
+  });
+  assert.deepEqual(detected.capacity, {
+    cpu_millis: 9_000,
+    memory_bytes: 7 * 1024 ** 3,
+    container_slots: 7,
+    build_slots: 1,
+  });
+  assert.deepEqual(detectedArgs, []);
+
+  let detectionCalls = 0;
+  const explicitArgs = ["--capacity-cpu-millis", "6000", "--container-slots", "3"];
+  const explicit = await parseDaemonResourcePolicy(explicitArgs, 8, {
+    env: {
+      HITCH_CAPACITY_CPU_MILLIS: "5000",
+      HITCH_CAPACITY_MEMORY_MIB: "8192",
+      HITCH_CONTAINER_SLOTS: "5",
+      HITCH_BUILD_SLOTS: "2",
+      HITCH_EVAL_CPU_MILLIS: "2000",
+      HITCH_EVAL_MEMORY_MIB: "2048",
+    },
+    detect: async () => { detectionCalls += 1; return {}; },
+  });
+  assert.equal(detectionCalls, 0);
+  assert.deepEqual(explicit.capacity, {
+    cpu_millis: 6_000,
+    memory_bytes: 8 * 1024 ** 3,
+    container_slots: 3,
+    build_slots: 2,
+  });
+  assert.equal(explicit.eval_trial.cpu_millis, 2_000);
+  assert.equal(explicit.eval_trial.memory_bytes, 2 * 1024 ** 3);
+  assert.deepEqual(explicitArgs, []);
+
+  const conservative = await parseDaemonResourcePolicy([], 8, { env: {}, detect: async () => ({}) });
+  assert.deepEqual(conservative.capacity, {
+    cpu_millis: 1_000,
+    memory_bytes: 1024 ** 3,
+    container_slots: 1,
+    build_slots: 1,
+  });
 });
 
 test("CLI environment image GC is a dry run unless --apply is explicit", async (t) => {

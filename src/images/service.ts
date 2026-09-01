@@ -49,25 +49,36 @@ export interface EnvironmentImageServiceOptions {
   root: string;
   builder: EnvironmentImageBuilder;
   acquireBuildSlot?: (signal?: AbortSignal) => Promise<{ release(): void }>;
+  onEvent?: (event: Record<string, unknown>) => void;
 }
 
 export class EnvironmentImageService {
   private readonly root: string;
   private readonly builder: EnvironmentImageBuilder;
   private readonly acquireBuildSlot: ((signal?: AbortSignal) => Promise<{ release(): void }>) | undefined;
+  private readonly onEvent: (event: Record<string, unknown>) => void;
   private readonly active = new Map<Sha256, Promise<{ manifest: EnvironmentImageManifestV1; cacheHit: boolean }>>();
 
-  constructor({ root, builder, acquireBuildSlot }: EnvironmentImageServiceOptions) {
+  constructor({ root, builder, acquireBuildSlot, onEvent = () => {} }: EnvironmentImageServiceOptions) {
     if (!root || !builder.id) throw new TypeError("environment image service identity is invalid");
     this.root = root;
     this.builder = builder;
     this.acquireBuildSlot = acquireBuildSlot;
+    this.onEvent = onEvent;
   }
 
   async build(input: BuildEnvironmentImageInput): Promise<{ manifest: EnvironmentImageManifestV1; cacheHit: boolean }> {
     const resolved = await resolveInput(input);
+    const buildId = buildIdentity(resolved.cacheKey);
+    this.emit({ type: "build.queued", build_id: buildId, cache_key: resolved.cacheKey, task_id: input.taskId });
     const current = this.active.get(resolved.cacheKey);
-    if (current) return current;
+    if (current) {
+      const waitStartedAt = Date.now();
+      return current.then((result) => {
+        this.emit({ type: "build.wait", build_id: buildId, cache_key: resolved.cacheKey, duration_ms: Date.now() - waitStartedAt });
+        return result;
+      });
+    }
     const operation = this.buildLocked(resolved, input.signal).finally(() => this.active.delete(resolved.cacheKey));
     this.active.set(resolved.cacheKey, operation);
     return operation;
@@ -75,20 +86,28 @@ export class EnvironmentImageService {
 
   private async buildLocked(input: ResolvedInput, signal?: AbortSignal): Promise<{ manifest: EnvironmentImageManifestV1; cacheHit: boolean }> {
     const paths = statePaths(this.root);
+    const lockRequestedAt = Date.now();
     return withFileLock(paths.buildLocks, input.cacheKey, async () => {
+      const lockWaitMs = Date.now() - lockRequestedAt;
+      if (lockWaitMs > 0) this.emit({ type: "build.wait", build_id: buildIdentity(input.cacheKey), cache_key: input.cacheKey, duration_ms: lockWaitMs });
       const cached = await this.cached(input.cacheKey);
-      if (cached && await this.builder.probe(cached.output.reference, cached.output.manifest_digest, cached.platform, cached.output.config_digest)) return { manifest: cached, cacheHit: true };
+      if (cached && await this.builder.probe(cached.output.reference, cached.output.manifest_digest, cached.platform, cached.output.config_digest)) {
+        this.emit({ type: "build.cache_hit", build_id: buildIdentity(input.cacheKey), cache_key: input.cacheKey, image_id: cached.image_id });
+        return { manifest: cached, cacheHit: true };
+      }
       const now = new Date().toISOString();
+      const started = Date.now();
       const ownerId = randomUUID();
       const recordBase = {
         schema_version: "1" as const,
-        build_id: `build_${input.cacheKey.slice("sha256:".length, "sha256:".length + 32)}`,
+        build_id: buildIdentity(input.cacheKey),
         cache_key: input.cacheKey,
         owner_id: ownerId,
         builder_id: this.builder.id,
         started_at: now,
       };
       await this.writeRecord(parseEnvironmentBuildRecord({ ...recordBase, state: "running" }));
+      this.emit({ type: "build.started", build_id: recordBase.build_id, cache_key: input.cacheKey });
       let slot: { release(): void } | undefined;
       try {
         slot = await this.acquireBuildSlot?.(signal);
@@ -128,6 +147,7 @@ export class EnvironmentImageService {
         const manifest = parseEnvironmentImageManifest({ ...withoutIdentity, image_id: environmentImageIdentity(withoutIdentity), created_at: new Date().toISOString() });
         await this.writeManifest(manifest);
         await this.writeRecord(parseEnvironmentBuildRecord({ ...recordBase, state: "succeeded", image_id: manifest.image_id, completed_at: new Date().toISOString() }));
+        this.emit({ type: "build.completed", build_id: recordBase.build_id, cache_key: input.cacheKey, image_id: manifest.image_id, duration_ms: Date.now() - started });
         return { manifest, cacheHit: false };
       } catch (error) {
         const code = error instanceof HitchError ? error.code : "image_build_failed";
@@ -137,6 +157,7 @@ export class EnvironmentImageService {
           completed_at: new Date().toISOString(),
           error: { code, message: "environment image build failed" },
         }));
+        this.emit({ type: "build.failed", build_id: recordBase.build_id, cache_key: input.cacheKey, code, duration_ms: Date.now() - started });
         throw new HitchError("environment image build failed", { code, exitCode: error instanceof HitchError ? error.exitCode : 12, cause: error });
       } finally { slot?.release(); }
     }, { timeoutCode: "image_build_locked", timeoutExitCode: 12, ...(signal ? { signal } : {}) });
@@ -170,6 +191,14 @@ export class EnvironmentImageService {
     if (!existing) await atomicWriteJSON(index, { schema_version: "1", build_id: record.build_id, cache_key: record.cache_key });
     await atomicWriteJSON(file, record);
   }
+
+  private emit(event: Record<string, unknown>): void {
+    try { this.onEvent(event); } catch { /* Build observers cannot alter image identity. */ }
+  }
+}
+
+function buildIdentity(cacheKey: Sha256): string {
+  return `build_${cacheKey.slice("sha256:".length, "sha256:".length + 32)}`;
 }
 
 interface ResolvedInput {

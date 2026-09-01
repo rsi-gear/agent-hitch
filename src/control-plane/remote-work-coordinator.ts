@@ -84,6 +84,7 @@ export class RemoteWorkCoordinator {
     let released = false;
     let terminalOffer: RemoteWorkOfferV1 | undefined;
     await input.onLeaseState(lease.leaseId, "running");
+    input.emit({ type: "eval.work.leased", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, reservation: input.workItem.reservation });
     input.emit({ type: "lease.offered", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, offer_id: offer.offer_id });
     try {
       const acceptedOffer = await this.waitFor(input, offer, (current) => current.state !== "offered");
@@ -92,6 +93,7 @@ export class RemoteWorkCoordinator {
       await lease.accept();
       await lease.markRunning();
       input.emit({ type: "lease.accepted", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, offer_id: offer.offer_id });
+      input.emit({ type: "eval.work.started", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id });
       const completed = await this.withHeartbeat(lease, async () => this.waitFor(input, acceptedOffer, (current) => current.state === "completed" || current.state === "release-requested" || current.state === "released"));
       terminal = true;
       terminalOffer = completed;
@@ -127,6 +129,7 @@ export class RemoteWorkCoordinator {
         run: remoteBackendResult(worker, offer, completed, imported.trial, imported.backendDirectory),
       };
     } catch (error) {
+      input.emit({ type: "eval.work.lost", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, code: (error as { code?: string }).code || "remote_work_failed" });
       if (terminalOffer && !released) {
         await this.finishRelease(input, terminalOffer, lease.current()).catch(() => undefined);
       }
@@ -246,6 +249,7 @@ export class RemoteWorkCoordinator {
   }
 
   private async finishRelease(input: Parameters<EvalRemoteWorkExecutor>[0], completed: RemoteWorkOfferV1, lease: ExecutionLeaseV1): Promise<void> {
+    input.emit({ type: "sandbox.cleanup.started", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id });
     let offer = await this.protocol.requestRelease(completed.worker_id, completed.offer_id);
     const deadline = Date.now() + this.releaseTimeoutMs;
     while (offer.state !== "released" && Date.now() < deadline && !input.signal?.aborted) {
@@ -255,6 +259,7 @@ export class RemoteWorkCoordinator {
     if (offer.state === "released") {
       await this.releaseLease(input, lease);
       input.emit({ type: "lease.released", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id });
+      input.emit({ type: "sandbox.cleanup.completed", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id, residual_resources: 0 });
       return;
     }
     await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });

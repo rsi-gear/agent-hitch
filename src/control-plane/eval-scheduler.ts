@@ -2,7 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
-import { EvalEventSink, newEvalId, parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
+import { newEvalId, parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
 import type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
@@ -22,12 +22,14 @@ import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { schedulerCapturePlan, schedulerQueuedEval } from "./scheduler-eval-entry.js";
 import type { SchedulerQueuedEval } from "./scheduler-eval-entry.js";
+import { emitPersistedEvalEvent, updateEvalControl } from "./eval-control-state.js";
 
 type QueuedEval = SchedulerQueuedEval;
 
 interface ActiveEval {
   controller: AbortController;
   lease?: ResourceLease;
+  requestedParallelism: number;
   admittedParallelism: number;
   collisions?: CollisionLease;
   fineGrained: boolean;
@@ -107,7 +109,7 @@ export class EvalScheduler {
     this.collisions = collisions;
     this.workItems = new WorkItemDispatcher({ resources, collisions });
     this.dockerResourceReaper = dockerResourceReaper;
-    this.environmentImages = new EvalImageServices({ root, provider, resources, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}) });
+    this.environmentImages = new EvalImageServices({ root, provider, resources, onEvent: this.onEvent, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}) });
     this.remoteWork = remoteWorkers && remoteWorkerProtocol
       ? new RemoteWorkCoordinator({ root, registry: remoteWorkers, protocol: remoteWorkerProtocol, collisions })
       : undefined;
@@ -258,6 +260,7 @@ export class EvalScheduler {
       const [entry] = this.queue.splice(queuedIndex, 1);
       if (!entry) return "not_cancellable";
       const now = new Date().toISOString();
+      await this.emitPersisted(entry.directory, evalId, { type: "eval.cancel.requested", phase: "queued" });
       await writeSyntheticEvalResult({ directory: entry.directory, evalId: entry.evalId, request: entry.request, status: "cancelled", code: "cancelled", message: "eval cancelled before launch", completedAt: now });
       await this.updateControl(entry.directory, (control) => ({
         ...control,
@@ -272,6 +275,7 @@ export class EvalScheduler {
     if (active) {
       const directory = path.join(this.evalsRoot, evalId);
       const now = new Date().toISOString();
+      await this.emitPersisted(directory, evalId, { type: "eval.cancel.requested", phase: "running" });
       await this.updateControl(directory, (control) => ({
         ...control,
         state: "cancelling",
@@ -292,6 +296,7 @@ export class EvalScheduler {
       accepting: this.accepting,
       active: [...this.active.entries()].map(([evalId, active]) => ({
         eval_id: evalId,
+        requested_parallelism: active.requestedParallelism,
         admitted_parallelism: active.fineGrained ? this.workItems.evalSnapshot(evalId)?.active ?? 0 : active.admittedParallelism,
         ...(active.lease ? { allocation_id: active.lease.allocation.allocation_id } : {}),
         collision_keys: active.collisions?.keys ?? [],
@@ -365,7 +370,7 @@ export class EvalScheduler {
 
   private start(entry: QueuedEval, parallelism: number, fineGrained: boolean, lease?: ResourceLease, collisions?: CollisionLease): void {
     const controller = new AbortController();
-    this.active.set(entry.evalId, { controller, admittedParallelism: parallelism, fineGrained, ...(lease ? { lease } : {}), ...(collisions ? { collisions } : {}) });
+    this.active.set(entry.evalId, { controller, requestedParallelism: entry.execution.max_parallelism, admittedParallelism: parallelism, fineGrained, ...(lease ? { lease } : {}), ...(collisions ? { collisions } : {}) });
     const completion = this.execute(entry, parallelism, fineGrained, lease, controller)
       .catch((error) => this.recordUnexpectedFailure(entry, error))
       .finally(() => {
@@ -380,6 +385,13 @@ export class EvalScheduler {
 
   private async execute(entry: QueuedEval, parallelism: number, fineGrained: boolean, lease: ResourceLease | undefined, controller: AbortController): Promise<void> {
     const remote = entry.execution.provider !== this.provider;
+    const queuedControl = parseEvalControl(await readJSON(path.join(entry.directory, "control.json")));
+    await this.emitPersisted(entry.directory, entry.evalId, {
+      type: "eval.dispatch.started",
+      duration_ms: Math.max(0, Date.now() - Date.parse(queuedControl.created_at)),
+      requested_parallelism: entry.execution.max_parallelism,
+      admitted_parallelism: fineGrained ? 0 : parallelism,
+    });
     await this.updateControl(entry.directory, (control) => ({
       ...control,
       state: "planning",
@@ -472,25 +484,10 @@ export class EvalScheduler {
   }
 
   private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> {
-    return withFileLock(path.join(directory, ".locks"), "control", async () => {
-      const current = parseEvalControl(await readJSON(path.join(directory, "control.json")));
-      const next = parseEvalControl({
-        ...update(current),
-        schema_version: "1",
-        eval_id: current.eval_id,
-        generation: current.generation + 1,
-        created_at: current.created_at,
-        updated_at: new Date().toISOString(),
-      });
-      await atomicWriteJSON(path.join(directory, "control.json"), next);
-      return next;
-    }, { timeoutCode: "eval_control_locked", timeoutExitCode: 12 });
+    return updateEvalControl(directory, update);
   }
 
   private async emitPersisted(directory: string, evalId: EvalId, event: Record<string, unknown>): Promise<void> {
-    const sink = new EvalEventSink(directory, evalId, this.onEvent);
-    await sink.open();
-    sink.emit(event);
-    await sink.close();
+    return emitPersistedEvalEvent(directory, evalId, this.onEvent, event);
   }
 }

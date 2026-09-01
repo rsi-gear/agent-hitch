@@ -203,67 +203,48 @@ resolution/cache      providers          and capture
 
 ### 6.1 新增与调整的模块
 
+实现采用下列模块所有权；不再建立早期草案中的独立 `execution/` 目录，以避免
+Execution Provider 的持久状态与 eval lease 生命周期形成双向依赖：
+
 ```text
 src/
   domain/
-    resources.ts
-    control-plane.ts
-    images.ts
-    interactions.ts
+    resources.ts, control-plane.ts, workers.ts
+    images.ts, interactions.ts, execution-*.ts
 
   images/
-    contract.ts
-    resolver.ts
-    buildkit.ts
-    store.ts
-    integrity.ts
-    gc.ts
-    index.ts
-
-  execution/
-    contract.ts
-    catalog.ts
-    leases.ts
-    workers.ts
-    local-docker.ts
-    remote-worker.ts
-    recovery.ts
-    index.ts
+    context.ts, registry.ts, docker-buildkit.ts
+    manifest.ts, records.ts, service.ts, gc.ts
 
   model-access/
-    contract.ts
-    proxy.ts
-    capture.ts
-    policy.ts
-    index.ts
+    policy.ts, proxy.ts, capture.ts, records.ts
 
   control-plane/
-    admission.ts
-    planner.ts
-    scheduler.ts
-    resources.ts
-    service.ts
-    state.ts
-    recovery.ts
-    cancellation.ts
-    index.ts
+    resources.ts, work-dispatcher.ts, collisions.ts
+    eval-scheduler.ts, rerun-scheduler.ts
+    remote-workers.ts, remote-worker-protocol.ts
+    remote-work-coordinator.ts, remote-work-recovery.ts
 
   evals/
-    planner.ts
-    finalizer.ts
-    service.ts                 # 保留 direct mode；逐步变薄
+    execution-plan.ts, execution-leases.ts
+    local-docker-provider.ts, recovery.ts
+    planned-execution.ts, service.ts
 
   backends/harbor/
-    planner.ts
-    runner.ts
-    image-overlay.ts
-    backend.ts                 # 兼容 facade
+    backend.ts, environment-config.ts, process.ts
+
+  workers/
+    remote-harbor-worker.ts, remote-harbor-work-spec.ts
 
   daemon/
-    server.ts
-    client.ts
-    scheduler.ts               # 迁移后仅保留兼容导出或删除
+    server.ts, worker-routes.ts, telemetry.ts
+    scheduler.ts               # legacy run 的兼容 scheduler
 ```
+
+其中 `evals/` 拥有 physical execution、lease 文件和本机恢复机制；
+`control-plane/` 拥有跨 eval admission、调度以及远端 worker 协议；`workers/`
+是可独立打包运行的 worker 入口。三者通过 `domain/` 契约和各自公开 facade
+交互，不复制一份全局 execution mutable state。
 
 ### 6.2 依赖方向
 
@@ -272,19 +253,20 @@ src/
 ```text
 domain
   <- foundation
-  <- adapters / images / execution / model-access / backends
+  <- adapters / images / model-access / backends
   <- revisions / artifacts / controller-runtime / trajectories / runs / evals
   <- control-plane
-  <- daemon / cli
+  <- workers / daemon / cli
 ```
 
 具体约束：
 
 - `domain/` 不得依赖 Node.js API。
 - `images/` 不得依赖 `evals/`、`control-plane/`、`daemon/` 或 CLI。
-- `execution/` 只依赖纯契约和底层机制，不导入 `EvalService`。
 - `backends/` 接受显式计划、identity 和路径，不读取 daemon 内部状态。
-- `control-plane/` 是业务编排所有者，可以调用 eval planner、backend、image 和 execution facade。
+- `evals/` 拥有 physical execution、lease 与 provider recovery；不得依赖 `control-plane/`。
+- `control-plane/` 是跨 eval 编排所有者，通过 `evals/` facade 调用执行能力。
+- `workers/` 是远端执行入口，可以调用公开的 backend/eval/control-plane 契约，但不得依赖 daemon 或 CLI。
 - `daemon/` 只负责认证、HTTP、进程生命周期和调用 control-plane facade。
 - 必须同步更新 `scripts/check-architecture.ts`，对新增模块执行依赖方向和 cycle 检查。
 
@@ -299,15 +281,16 @@ domain
 | `artifacts` | `domain`, `foundation`, `adapters`, `revisions` |
 | `controller-runtime` | `domain`, `foundation` |
 | `images` | `domain`, `foundation` |
-| `execution` | `domain`, `foundation` |
 | `model-access` | `domain`, `foundation` |
 | `trajectories` | `domain`, `foundation`, `adapters` |
+| `feedback` | `domain`, `foundation`, `trajectories` |
 | `workspaces` | `domain`, `foundation` |
 | `runs` | `domain`, `foundation`, `adapters`, `revisions`, `artifacts`, `workspaces`, `trajectories`, `model-access` |
 | `backends` | `domain`, `foundation` |
-| `evals` | `domain`, `foundation`, `backends`, `runs`, `artifacts`, `revisions`, `controller-runtime`, `workspaces`, `trajectories` |
-| `control-plane` | 除 `daemon`、`cli` 外的上述业务 facade |
-| `daemon` | `domain`, `foundation`, `control-plane` |
+| `evals` | `domain`, `foundation`, `backends`, `runs`, `artifacts`, `revisions`, `controller-runtime`, `workspaces`, `trajectories`, `model-access` |
+| `control-plane` | `domain`, `foundation`, `adapters`, `model-access`, `evals`, `images` |
+| `workers` | `domain`, `foundation`, `artifacts`, `backends`, `controller-runtime`, `evals`, `control-plane` |
+| `daemon` | `domain`, `foundation`, `runs`, `workspaces`, `control-plane` |
 | `cli` | 所有公开 facade |
 
 ## 7. 状态目录与权威记录
@@ -328,18 +311,23 @@ domain
       progress.json
       result.json
       leases/
-        lease_<id>.ref.json
+        lease_<id>.json
+      provider/
+        leases/
+          lease_<id>.json
       harbor/
-        work-<id>/
+        work-items/
+          work_<id>/
+            epoch-<n>/
+      reruns/
+        rerun_<id>/
+          submission.json
+          state.json
+          events.jsonl
+          result.json
 
   workers/
     worker_<id>.json
-
-  leases/
-    active/
-      lease_<id>.json
-    terminal/
-      lease_<id>.json
 
   store/
     environment-images/
@@ -353,7 +341,6 @@ domain
 
   locks/
     builds/<64-hex>.lock
-    trial-slots/<64-hex>.lock
 
   runs/
     run_<id>/
@@ -369,6 +356,16 @@ domain
         interaction.ref.json
         interactions.jsonl
 ```
+
+`evals/<eval-id>/leases/<lease-id>.json` 是 lease 的唯一权威 mutable 记录，文件内
+的 `state` 区分 active/terminal；不再维护一份全局 `leases/active|terminal`
+副本。`provider/leases/` 只保存本机 provider 的进程/目录恢复证据，不是第二份
+lease 状态。这样 daemon 在更新 epoch、恢复和终止时只需完成一次原子写，不存在
+跨目录双写中断后两份 lease 状态不一致的问题。
+
+同 root 由 `daemon.lock` 保证单控制面进程，trial collision mutex 因而由该进程内
+的 `CollisionLockManager` 持有并从队列重建；它不创建第二套磁盘锁。跨 worker 的
+隔离边界由持久化的 `collision_domain_id`、lease 与 worker generation 共同校验。
 
 ### 7.2 文件权威性
 
@@ -1702,6 +1699,7 @@ eval.finalizing
 eval.cancel.requested
 
 build.queued
+build.wait
 build.started
 build.cache_hit
 build.completed
@@ -1721,9 +1719,18 @@ sandbox.cleanup.completed
 sandbox.cleanup.failed
 interaction.capture.degraded
 result.bundle.sealed
+
+eval.setup.completed
+eval.agent.completed
+eval.verifier.completed
+eval.collection.completed
 ```
 
 事件不得包含 prompt、credential value、完整模型请求/响应或无界异常文本。
+单条持久事件编码上限为 64 KiB；超过上限时只保留 schema、sequence、timestamp、
+run/eval identity、截断后的 event type、`truncated=true` 和原始字节数。HTTP/daemon
+错误消息最多保留 4096 字符，结构化 daemon event log 只输出身份、阶段、时长、
+状态和稳定错误码白名单字段。
 
 ### 21.2 健康状态
 
@@ -1761,6 +1768,11 @@ V1 至少在结构化 daemon logs/health 中暴露：
 - cleanup failure 和残留资源数量。
 
 Prometheus endpoint 可以后续增加，不是 V1 阻塞条件。
+
+Agent 与 Verifier 时长由 Harbor Agent/Verifier wrapper 分别写入有界 timing evidence，
+控制面按 regular-file、hardlink、大小和严格 schema 校验后转为事件；旧 Harbor
+integration 缺少该证据时只能暴露明确命名的 `backend_agent_verifier` 合并时长，
+不得伪造两个独立 phase duration。
 
 ## 22. 配置与默认策略
 
@@ -1965,21 +1977,21 @@ Docker/Harbor canary 至少包含：
 
 本规范完成必须同时满足：
 
-- [ ] eval 可以通过 daemon API 提交、查询、跟随、取消和恢复。
-- [ ] 全局资源预留覆盖多个并发 eval，而不是只限制单个 Harbor job。
-- [ ] `max_concurrent` 不可突破 CPU、内存、容器和 backend safe parallelism。
-- [ ] 不同任务可并行，同一 collision domain 内的同任务 attempt 默认互斥。
-- [ ] 相同 image build 被内容寻址和 keyed lock 去重。
-- [ ] Harbor 仍是 task/environment/Verifier 语义权威。
-- [ ] verifier-only retry 永不重跑 Candidate Agent。
-- [ ] daemon/worker 崩溃恢复不会产生重复权威 run。
-- [ ] reaper 只清理带正确 root/lease/epoch 所有权的资源。
-- [ ] 现有 immutable Harness artifact 和 controller runtime 机制未被旁路。
-- [ ] 每个新 sealed run 都能生成并验证 Result Bundle index。
-- [ ] 模型代理是可选能力，关闭时不影响现有 Agent。
-- [ ] credentials 不进入构建缓存、控制记录、事件或结果包。
-- [ ] legacy direct eval 和历史记录继续可读。
-- [ ] 完整 TypeScript、architecture、syntax 和 test suite 通过。
+- [x] eval 可以通过 daemon API 提交、查询、跟随、取消和恢复。
+- [x] 全局资源预留覆盖多个并发 eval，而不是只限制单个 Harbor job。
+- [x] `max_concurrent` 不可突破 CPU、内存、容器和 backend safe parallelism。
+- [x] 不同任务可并行，同一 collision domain 内的同任务 attempt 默认互斥。
+- [x] 相同 image build 被内容寻址和 keyed lock 去重。
+- [x] Harbor 仍是 task/environment/Verifier 语义权威。
+- [x] verifier-only retry 永不重跑 Candidate Agent。
+- [x] daemon/worker 崩溃恢复不会产生重复权威 run。
+- [x] reaper 只清理带正确 root/lease/epoch 所有权的资源。
+- [x] 现有 immutable Harness artifact 和 controller runtime 机制未被旁路。
+- [x] 每个新 sealed run 都能生成并验证 Result Bundle index。
+- [x] 模型代理是可选能力，关闭时不影响现有 Agent。
+- [x] credentials 不进入构建缓存、控制记录、事件或结果包。
+- [x] legacy direct eval 和历史记录继续可读。
+- [x] 完整 TypeScript、architecture、syntax 和 test suite 通过。
 
 ## 27. 明确设计决策
 

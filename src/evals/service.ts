@@ -27,6 +27,7 @@ import { finalizeEvalResult } from "./eval-finalization.js";
 import { harborPreparedArtifact, preparedHarnessEvent } from "./prepared-harness.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import { recoverPromotedEvalTrialPublications } from "./trial-publication-recovery.js";
+import { emitEvalPlanLifecycle } from "./eval-lifecycle-events.js";
 export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
@@ -45,7 +46,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   let progress: EvalProgressV1 | null = null;
   let captureRuntime: Awaited<ReturnType<typeof startEvalModelCaptureRuntime>> | undefined;
   try {
+    const planningStartedAt = Date.now();
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
+    sink.emit({ type: "eval.planning.started" });
     await onControlPhase?.("planning");
     const requestedReference = parseHarnessReference(normalized.harness_ref);
     const resolvedRevision = await resolveHarness(normalized.harness_ref, { root, env });
@@ -191,6 +194,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       work_items: executionPlan.work_items.length,
       membership: executionPlan.membership,
     });
+    emitEvalPlanLifecycle(sink, executionPlan, planningStartedAt);
     await onControlPhase?.("running", executionPlanWorkState(executionPlan, progress));
     if (localTransport) {
       await verifyLocalGitTransport(localTransport, {
