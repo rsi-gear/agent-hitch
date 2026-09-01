@@ -88,6 +88,7 @@ test("packaged worker executes a staged remote eval through Harbor and returns a
   assert.match(evidence, /"provider": "remote-docker"/);
   assert.match(evidence, /"worker_id": "worker_harbor_e2e"/);
   assert.equal((await client.listOffers()).length, 0, "the control plane must explicitly release the completed offer");
+  await server.close();
   for (const root of [controllerRoot, workerRoot]) {
     for (const file of await regularFiles(root)) {
       assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `remote credential leaked into ${path.relative(root, file)}`);
@@ -207,6 +208,7 @@ test("packaged remote worker runs in-sandbox proxy capture and transports sealed
   assert.equal(ref.topology, "in-sandbox");
   assert.equal(ref.completeness, "complete");
   assert.equal(ref.interaction_count, 1);
+  await server.close();
   for (const root of [controllerRoot, workerRoot]) {
     for (const file of await regularFiles(root)) {
       assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `remote capture credential leaked into ${path.relative(root, file)}`);
