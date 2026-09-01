@@ -19,6 +19,8 @@ import { importRemoteResultEnvelope } from "./remote-result-transport.js";
 import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 
+export const DEFAULT_REMOTE_WORKER_RECONNECT_TIMEOUT_MS = 45_000;
+
 export async function recoverRemoteWorkerEvalLeases(input: {
   root: string;
   evalId: EvalId;
@@ -29,13 +31,15 @@ export async function recoverRemoteWorkerEvalLeases(input: {
   cancelRequested?: boolean;
   pollIntervalMs: number;
   releaseTimeoutMs: number;
+  reconnectTimeoutMs?: number;
   emit?: (event: Record<string, unknown>) => void;
 }): Promise<EvalLeaseRecoveryResult> {
+  const reconnectTimeoutMs = boundedReconnectTimeout(input.reconnectTimeoutMs ?? DEFAULT_REMOTE_WORKER_RECONNECT_TIMEOUT_MS);
   const recovered: string[] = [];
   let failure: { code: string; message: string } | undefined;
   for (const lease of input.leases.filter(activeRemoteLease)) {
     try {
-      await recoverLease(input, lease);
+      await recoverLease(input, lease, reconnectTimeoutMs);
       recovered.push(lease.lease_id);
     } catch (error) {
       const typed = error instanceof HitchError;
@@ -49,7 +53,7 @@ export async function recoverRemoteWorkerEvalLeases(input: {
     : { status: "resumable", recovered_lease_ids: recovered };
 }
 
-async function recoverLease(input: Parameters<typeof recoverRemoteWorkerEvalLeases>[0], lease: ExecutionLeaseV1): Promise<void> {
+async function recoverLease(input: Parameters<typeof recoverRemoteWorkerEvalLeases>[0], lease: ExecutionLeaseV1, reconnectTimeoutMs: number): Promise<void> {
   let offer = await input.protocol.findOfferForLease(lease.worker_id, lease.lease_id);
   if (!offer || !sameLease(offer, lease)) throw ambiguous(`remote provider has no matching durable offer for ${lease.lease_id}`);
   if (offer.state === "offered") {
@@ -66,7 +70,7 @@ async function recoverLease(input: Parameters<typeof recoverRemoteWorkerEvalLeas
   if (current.state === "accepted") current = await markExecutionLeaseRunning({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });
   input.emit?.({ type: "eval.lease.recovery-probed", lease_id: lease.lease_id, lease_epoch: lease.epoch, state: offer.state });
   if (input.cancelRequested && offer.state === "accepted") offer = await input.protocol.requestCancel(offer.worker_id, offer.offer_id);
-  if (offer.state === "accepted" || offer.state === "cancel-requested") offer = await waitForTerminal(input, offer, current);
+  if (offer.state === "accepted" || offer.state === "cancel-requested") offer = await waitForTerminal(input, offer, current, reconnectTimeoutMs);
   if (offer.state !== "completed" && offer.state !== "release-requested" && offer.state !== "released") {
     throw ambiguous(`remote work did not reach collectable terminal state: ${offer.state}`);
   }
@@ -80,9 +84,12 @@ async function waitForTerminal(
   input: Parameters<typeof recoverRemoteWorkerEvalLeases>[0],
   initial: RemoteWorkOfferV1,
   lease: ExecutionLeaseV1,
+  reconnectTimeoutMs: number,
 ): Promise<RemoteWorkOfferV1> {
   let offer = initial;
   let heartbeatFailure: unknown;
+  let unavailableSince: number | undefined;
+  let reportedUnavailable = false;
   let tail = Promise.resolve();
   const timer = setInterval(() => {
     tail = tail.then(() => heartbeatExecutionLease({
@@ -93,7 +100,17 @@ async function waitForTerminal(
   try {
     while (offer.state === "accepted" || offer.state === "cancel-requested") {
       const worker = await input.registry.get(offer.worker_id);
-      if (!worker || worker.worker.status !== "ready") throw ambiguous(`remote worker became unavailable during recovery: ${offer.worker_id}`);
+      if (worker?.revoked_at) throw ambiguous(`remote worker was revoked during recovery: ${offer.worker_id}`);
+      if (workerProvesLease(worker, lease)) {
+        if (reportedUnavailable) input.emit?.({ type: "worker.reconnected", worker_id: offer.worker_id, lease_id: lease.lease_id, lease_epoch: lease.epoch });
+        unavailableSince = undefined;
+        reportedUnavailable = false;
+      } else {
+        unavailableSince ??= Date.now();
+        if (!reportedUnavailable) input.emit?.({ type: "worker.heartbeat_missed", worker_id: offer.worker_id, lease_id: lease.lease_id, lease_epoch: lease.epoch });
+        reportedUnavailable = true;
+        if (Date.now() - unavailableSince >= reconnectTimeoutMs) throw ambiguous(`remote worker did not reconnect with active lease: ${offer.worker_id}`);
+      }
       await delay(input.pollIntervalMs);
       offer = await input.protocol.getOffer(offer.worker_id, offer.offer_id) ?? (() => { throw ambiguous("remote work offer disappeared during recovery"); })();
     }
@@ -160,6 +177,14 @@ function acceptedOrLater(offer: RemoteWorkOfferV1): boolean {
 function sameLease(offer: RemoteWorkOfferV1, lease: ExecutionLeaseV1): boolean {
   return offer.lease.lease_id === lease.lease_id && offer.lease.epoch === lease.epoch && offer.worker_id === lease.worker_id
     && offer.lease.eval_id === lease.eval_id && offer.lease.work_id === lease.work_id;
+}
+function workerProvesLease(worker: Awaited<ReturnType<RemoteWorkerRegistry["get"]>>, lease: ExecutionLeaseV1): boolean {
+  return worker?.worker.status === "ready"
+    && worker.active_leases.some((active) => active.lease_id === lease.lease_id && active.epoch === lease.epoch);
+}
+function boundedReconnectTimeout(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 5 * 60_000) throw new TypeError("remote worker reconnect timeout is invalid");
+  return value;
 }
 function ambiguous(message: string): HitchError { return new HitchError(message, { code: "execution_state_ambiguous", exitCode: 12 }); }
 function delay(milliseconds: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }

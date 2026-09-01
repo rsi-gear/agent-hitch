@@ -8,7 +8,7 @@ import { evalTaskCollisionKey } from "./eval-records.js";
 import { importRemoteResultEnvelope } from "./remote-result-transport.js";
 import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
-import { recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
+import { DEFAULT_REMOTE_WORKER_RECONNECT_TIMEOUT_MS, recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
 import { prepareRemoteWorkInputs } from "./remote-work-inputs.js";
 
 export interface RemoteWorkCoordinatorOptions {
@@ -18,6 +18,7 @@ export interface RemoteWorkCoordinatorOptions {
   collisions: CollisionLockManager;
   pollIntervalMs?: number;
   releaseTimeoutMs?: number;
+  reconnectTimeoutMs?: number;
 }
 
 export class RemoteWorkCoordinator {
@@ -28,6 +29,7 @@ export class RemoteWorkCoordinator {
   private readonly collisions: CollisionLockManager;
   private readonly pollIntervalMs: number;
   private readonly releaseTimeoutMs: number;
+  private readonly reconnectTimeoutMs: number;
 
   constructor(input: RemoteWorkCoordinatorOptions) {
     this.root = input.root;
@@ -36,6 +38,7 @@ export class RemoteWorkCoordinator {
     this.collisions = input.collisions;
     this.pollIntervalMs = boundedInterval(input.pollIntervalMs ?? 100, "remote work poll interval");
     this.releaseTimeoutMs = boundedInterval(input.releaseTimeoutMs ?? 10_000, "remote work release timeout");
+    this.reconnectTimeoutMs = boundedReconnectTimeout(input.reconnectTimeoutMs ?? DEFAULT_REMOTE_WORKER_RECONNECT_TIMEOUT_MS);
     this.execute = (execution) => this.executeWork(execution);
   }
 
@@ -54,10 +57,10 @@ export class RemoteWorkCoordinator {
     return (await this.providerWorkers(provider)).some((worker) => fits(reservation, worker.worker.capacity.allocatable));
   }
 
-  recoverEvalLeases(input: Omit<Parameters<typeof recoverRemoteWorkerEvalLeases>[0], "root" | "registry" | "protocol" | "pollIntervalMs" | "releaseTimeoutMs">) {
+  recoverEvalLeases(input: Omit<Parameters<typeof recoverRemoteWorkerEvalLeases>[0], "root" | "registry" | "protocol" | "pollIntervalMs" | "releaseTimeoutMs" | "reconnectTimeoutMs">) {
     return recoverRemoteWorkerEvalLeases({
       ...input, root: this.root, registry: this.registry, protocol: this.protocol,
-      pollIntervalMs: this.pollIntervalMs, releaseTimeoutMs: this.releaseTimeoutMs,
+      pollIntervalMs: this.pollIntervalMs, releaseTimeoutMs: this.releaseTimeoutMs, reconnectTimeoutMs: this.reconnectTimeoutMs,
     });
   }
 
@@ -84,7 +87,7 @@ export class RemoteWorkCoordinator {
       await lease.accept();
       await lease.markRunning();
       input.emit({ type: "lease.accepted", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, offer_id: offer.offer_id });
-      const completed = await this.withHeartbeat(input, lease, worker, async () => this.waitFor(input, acceptedOffer, (current) => current.state === "completed" || current.state === "release-requested" || current.state === "released"));
+      const completed = await this.withHeartbeat(lease, async () => this.waitFor(input, acceptedOffer, (current) => current.state === "completed" || current.state === "release-requested" || current.state === "released"));
       terminal = true;
       if (!completed.terminal) throw ambiguous("remote worker completed without terminal evidence");
       const artifacts = completed.terminal.artifacts.filter((artifact) => artifact.kind === "result-bundle");
@@ -116,7 +119,7 @@ export class RemoteWorkCoordinator {
       };
     } catch (error) {
       if (input.signal?.aborted) await this.protocol.requestCancel(worker.worker.worker_id, offer.offer_id).catch(() => undefined);
-      if (!accepted) await lease.release().catch(() => undefined);
+      if (!accepted) await this.withdrawOrFenceAcceptedRace(input.evalDirectory, offer, lease);
       else if (!terminal) await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: lease.leaseId, expectedEpoch: lease.current().epoch }).catch(() => undefined);
       throw error;
     } finally {
@@ -159,24 +162,35 @@ export class RemoteWorkCoordinator {
 
   private async waitFor(input: Parameters<EvalRemoteWorkExecutor>[0], initial: RemoteWorkOfferV1, ready: (offer: RemoteWorkOfferV1) => boolean): Promise<RemoteWorkOfferV1> {
     let offer = initial;
+    let unavailableSince: number | undefined;
+    let reportedUnavailable = false;
     for (;;) {
       if (ready(offer)) return offer;
       if (input.signal?.aborted) throw cancelled();
-      const worker = await this.registry.get(offer.worker_id);
-      if (!worker || worker.worker.status !== "ready") throw ambiguous(`remote worker became unavailable: ${offer.worker_id}`);
       await delay(this.pollIntervalMs, input.signal);
       offer = await this.protocol.getOffer(offer.worker_id, offer.offer_id) ?? (() => { throw ambiguous("remote work offer disappeared"); })();
       if (offer.state === "rejected" || offer.state === "expired") return offer;
+      if (ready(offer)) return offer;
+      const worker = await this.registry.get(offer.worker_id);
+      if (worker?.revoked_at) throw ambiguous(`remote worker was revoked: ${offer.worker_id}`);
+      if (workerAvailableForOffer(worker, offer)) {
+        if (reportedUnavailable) input.emit({ type: "worker.reconnected", worker_id: offer.worker_id, lease_id: offer.lease.lease_id, lease_epoch: offer.lease.epoch });
+        unavailableSince = undefined;
+        reportedUnavailable = false;
+      } else {
+        unavailableSince ??= Date.now();
+        if (!reportedUnavailable) input.emit({ type: "worker.heartbeat_missed", worker_id: offer.worker_id, lease_id: offer.lease.lease_id, lease_epoch: offer.lease.epoch });
+        reportedUnavailable = true;
+        if (Date.now() - unavailableSince >= this.reconnectTimeoutMs) throw ambiguous(`remote worker did not reconnect: ${offer.worker_id}`);
+      }
     }
   }
 
-  private async withHeartbeat<T>(input: Parameters<EvalRemoteWorkExecutor>[0], lease: Awaited<ReturnType<typeof createExecutionLease>>, worker: RemoteWorkerPublicRecordV1, operation: () => Promise<T>): Promise<T> {
+  private async withHeartbeat<T>(lease: Awaited<ReturnType<typeof createExecutionLease>>, operation: () => Promise<T>): Promise<T> {
     let failure: unknown;
     let tail = Promise.resolve();
     const timer = setInterval(() => {
       tail = tail.then(async () => {
-        const current = await this.registry.get(worker.worker.worker_id);
-        if (!current || current.worker.status !== "ready") throw ambiguous(`remote worker heartbeat expired: ${worker.worker.worker_id}`);
         await lease.heartbeat();
       }).catch((error) => { failure ??= error; });
     }, DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS);
@@ -190,6 +204,21 @@ export class RemoteWorkCoordinator {
       clearInterval(timer);
       await tail;
     }
+  }
+
+  private async withdrawOrFenceAcceptedRace(evalDirectory: string, offer: RemoteWorkOfferV1, lease: Awaited<ReturnType<typeof createExecutionLease>>): Promise<void> {
+    const withdrawn = await this.protocol.withdrawUnacceptedOffer(offer.worker_id, offer.offer_id).catch(async () => {
+      await markExecutionLeaseLost({ evalDirectory, leaseId: lease.leaseId, expectedEpoch: lease.current().epoch }).catch(() => undefined);
+      return null;
+    });
+    if (!withdrawn) return;
+    if (!acceptedOrLater(withdrawn)) {
+      await lease.release().catch(() => undefined);
+      return;
+    }
+    await lease.accept().catch(() => undefined);
+    await this.protocol.requestCancel(offer.worker_id, offer.offer_id).catch(() => undefined);
+    await markExecutionLeaseLost({ evalDirectory, leaseId: lease.leaseId, expectedEpoch: lease.current().epoch }).catch(() => undefined);
   }
 
   private async finishRelease(input: Parameters<EvalRemoteWorkExecutor>[0], completed: RemoteWorkOfferV1, lease: ExecutionLeaseV1): Promise<void> {
@@ -256,8 +285,14 @@ function acceptedOrLater(offer: RemoteWorkOfferV1): boolean {
   return new Set(["accepted", "cancel-requested", "completed", "release-requested", "released"]).has(offer.state)
     && typeof offer.accepted_at === "string" && typeof offer.accept_receipt_digest === "string";
 }
+function workerAvailableForOffer(worker: RemoteWorkerPublicRecordV1 | null, offer: RemoteWorkOfferV1): boolean {
+  if (worker?.worker.status !== "ready") return false;
+  if (offer.state === "offered") return true;
+  return worker.active_leases.some((lease) => lease.lease_id === offer.lease.lease_id && lease.epoch === offer.lease.epoch);
+}
 function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots"]; }
 function boundedInterval(value: number, label: string): number { if (!Number.isSafeInteger(value) || value < 1 || value > 60_000) throw new TypeError(`${label} is invalid`); return value; }
+function boundedReconnectTimeout(value: number): number { if (!Number.isSafeInteger(value) || value < 1 || value > 5 * 60_000) throw new TypeError("remote worker reconnect timeout is invalid"); return value; }
 function ambiguous(message: string): HitchError { return new HitchError(message, { code: "execution_state_ambiguous", exitCode: 12 }); }
 function cancelled(): HitchError { return new HitchError("remote work was cancelled", { code: "cancelled", exitCode: 9 }); }
 

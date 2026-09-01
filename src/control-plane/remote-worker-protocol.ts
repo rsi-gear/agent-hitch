@@ -265,7 +265,7 @@ export class RemoteWorkerProtocol {
   }
 
   async validateHeartbeatLeases(workerId: string, heartbeat: RemoteWorkerHeartbeatV1): Promise<void> {
-    await this.requireWorkerGeneration(workerId, heartbeat.generation);
+    await this.registry.validateHeartbeatGeneration(workerId, heartbeat.generation);
     for (const lease of heartbeat.active_leases) {
       const offer = await this.offerForLease(lease.lease_id).catch(() => null);
       if (!offer || offer.worker_id !== workerId || offer.generation !== heartbeat.generation

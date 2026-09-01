@@ -103,6 +103,13 @@ export class RemoteWorkerRegistry {
     return publicRecord(persisted);
   }
 
+  async validateHeartbeatGeneration(workerId: string, generation: number): Promise<void> {
+    if (!WORKER_ID.test(workerId) || !Number.isSafeInteger(generation) || generation < 1) throw invalidWorker("remote worker heartbeat identity is invalid");
+    const current = await this.requirePersisted(workerId);
+    if (current.revoked_at) throw new HitchError("remote worker identity is revoked", { code: "worker_revoked", exitCode: 11 });
+    if (generation !== current.generation) throw new HitchError("remote worker generation is stale", { code: "worker_generation_mismatch", exitCode: 12 });
+  }
+
   async revoke(workerId: string): Promise<RemoteWorkerPublicRecordV1> {
     if (!WORKER_ID.test(workerId)) throw invalidWorker("remote worker id is invalid");
     const persisted = await withFileLock(this.locks, workerId, async () => {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { RemoteWorkInputStore, RemoteWorkerProtocol, RemoteWorkerRegistry, recoverRemoteWorkerEvalLeases } from "../src/control-plane/index.js";
 import { createExecutionLease, readExecutionLeases } from "../src/evals/index.js";
 import { sha256Bytes, statePaths } from "../src/foundation/index.js";
@@ -214,6 +215,60 @@ test("remote recovery withdraws an unaccepted offer before it can be safely requ
   assert.equal((await readExecutionLeases(evalDirectory))[0]?.state, "released");
 });
 
+test("accepted remote work reconnects with exact lease proof instead of being replayed", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-reconnect-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const registry = new RemoteWorkerRegistry({ root, heartbeatTtlMs: 1_000 });
+  const protocol = new RemoteWorkerProtocol({ root, registry });
+  await Promise.all([registry.initialize(), protocol.initialize()]);
+  await registry.register(registration());
+  const { work } = remoteWork();
+  const evalDirectory = path.join(root, "evals", work.eval_id);
+  await mkdir(evalDirectory, { recursive: true });
+  const lease = await createExecutionLease({
+    evalDirectory, evalId: work.eval_id, workId: work.work_id,
+    worker: { workerId: "worker_remote_a", provider: "remote-docker", collisionDomainId: "docker-engine:remote-a" },
+    reservation: work.reservation, ttlMs: 60_000, initialState: "offered",
+  });
+  const offer = await protocol.createOffer("worker_remote_a", lease.current(), work);
+  await protocol.acceptOffer("worker_remote_a", {
+    schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce, generation: offer.generation,
+    accepted: true, sent_at: new Date().toISOString(),
+  });
+  await delay(1_050);
+  assert.equal((await registry.get("worker_remote_a"))?.worker.status, "offline");
+  const events: Array<Record<string, unknown>> = [];
+  const reconnect = (async () => {
+    await waitForState(protocol, "worker_remote_a", offer.offer_id, "cancel-requested");
+    const heartbeat = {
+      schema_version: "1" as const, generation: offer.generation, health: "healthy" as const,
+      allocated: work.reservation, active_leases: [{ lease_id: lease.leaseId, epoch: 1 }], sent_at: new Date().toISOString(),
+    };
+    await protocol.validateHeartbeatLeases("worker_remote_a", heartbeat);
+    await registry.heartbeat("worker_remote_a", heartbeat);
+    await delay(20);
+    await protocol.releaseOffer("worker_remote_a", {
+      schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce, generation: offer.generation,
+      lease_id: lease.leaseId, epoch: 1, sent_at: new Date().toISOString(),
+    });
+  })();
+  const recovered = await recoverRemoteWorkerEvalLeases({
+    root, evalId: work.eval_id as EvalId, evalDirectory, leases: [lease.current()], registry, protocol,
+    cancelRequested: true, pollIntervalMs: 5, releaseTimeoutMs: 100, reconnectTimeoutMs: 500,
+    emit: (event) => { events.push(event); },
+  });
+  await reconnect;
+
+  assert.equal(recovered.status, "resumable", JSON.stringify(recovered));
+  assert.deepEqual(recovered.recovered_lease_ids, [lease.leaseId]);
+  const leases = await readExecutionLeases(evalDirectory);
+  assert.equal(leases.length, 1, "recovery must not create a second physical execution");
+  assert.equal(leases[0]?.state, "released");
+  assert.equal((await protocol.getOffer("worker_remote_a", offer.offer_id))?.state, "released");
+  assert.ok(events.some((event) => event.type === "worker.heartbeat_missed"));
+  assert.ok(events.some((event) => event.type === "worker.reconnected"));
+});
+
 test("daemon remote-worker API separates admin registration from worker heartbeat credentials", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-worker-api-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -307,3 +362,12 @@ test("daemon remote-worker API separates admin registration from worker heartbea
   });
   assert.equal(afterRevoke.status, 401);
 });
+
+async function waitForState(protocol: RemoteWorkerProtocol, workerId: string, offerId: string, state: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    if ((await protocol.getOffer(workerId, offerId))?.state === state) return;
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for remote offer state: ${state}`);
+    await delay(5);
+  }
+}
