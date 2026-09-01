@@ -10,7 +10,7 @@ import type { BackendWorkItemV1, EvalControlV1, EvalRequest, ResourceVectorV1, S
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
 import { createExecutionLease, readExecutionLeases, runEval, validateEvalRequest } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
-import { atomicWriteJSON, delay, readJSON, sha256JSON } from "../src/foundation/index.js";
+import { atomicWriteJSON, delay, readJSON, sha256Bytes, sha256JSON } from "../src/foundation/index.js";
 import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 import { EnvironmentImageService } from "../src/images/index.js";
 
@@ -253,6 +253,93 @@ test("queued eval recovery preserves its pinned execution policy", async (t) => 
   assert.equal(observed?.maxConcurrentOverride, 1);
   assert.deepEqual(observed?.executionResources, execution.resources.default_trial);
   assert.deepEqual((await scheduler.status(evalId))?.execution, execution);
+});
+
+test("startup repairs an idempotency index missing after durable eval submission", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-idempotency-recovery-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const evalId = "eval_11111111111111111111111111111111";
+  const directory = path.join(root, "evals", evalId);
+  await mkdir(directory, { recursive: true });
+  const normalized = await validateEvalRequest(request(1));
+  const execution = {
+    provider: "local-docker",
+    max_parallelism: 1,
+    resources: { default_trial: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 } },
+    build: { mode: "backend" as const },
+    model_capture: { mode: "native" as const, required: false },
+  };
+  const idempotencyKey = "submission-before-index-crash";
+  const idempotencyKeyHash = sha256Bytes(idempotencyKey);
+  const submissionDigest = sha256JSON({ request: normalized, execution });
+  const now = new Date().toISOString();
+  await atomicWriteJSON(path.join(directory, "request.json"), normalized);
+  await atomicWriteJSON(path.join(directory, "submission.json"), {
+    schema_version: "1", eval_id: evalId, request: normalized, execution,
+    submission_digest: submissionDigest, idempotency_key_hash: idempotencyKeyHash, submitted_at: now,
+  });
+  await atomicWriteJSON(path.join(directory, "control.json"), {
+    schema_version: "1", eval_id: evalId, generation: 0, state: "queued",
+    requested_parallelism: 1, admitted_parallelism: 0, active_leases: [], queued_work_items: [], terminal_work_items: [],
+    created_at: now, updated_at: now,
+  });
+
+  let executions = 0;
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 2_000, memory_bytes: 2 * GIB, container_slots: 2, build_slots: 1 }),
+    trialResources: TRIAL,
+    executor: async (options) => { executions += 1; return fakeEvalExecutor(1)(options); },
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+
+  const retried = await scheduler.submit({ request: request(1), execution, idempotency_key: idempotencyKey });
+  assert.equal(retried, evalId);
+  await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null));
+  assert.equal(executions, 1);
+  const index = await readJSON<Record<string, unknown>>(path.join(root, "indexes", "eval-idempotency", `${idempotencyKeyHash.slice("sha256:".length)}.json`));
+  assert.deepEqual(index, { schema_version: "1", eval_id: evalId, submission_digest: submissionDigest });
+  assert.match(await readFile(path.join(directory, "events.jsonl"), "utf8"), /"type":"eval\.idempotency-index\.recovered"/);
+});
+
+test("startup rejects an idempotency index rebound to another eval", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-idempotency-conflict-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const evalId = "eval_22222222222222222222222222222222";
+  const directory = path.join(root, "evals", evalId);
+  await mkdir(directory, { recursive: true });
+  const normalized = await validateEvalRequest(request(1));
+  const execution = {
+    provider: "local-docker",
+    max_parallelism: 1,
+    resources: { default_trial: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 } },
+    build: { mode: "backend" as const },
+    model_capture: { mode: "native" as const, required: false },
+  };
+  const keyHash = sha256Bytes("conflicting-recovery-key");
+  const now = new Date().toISOString();
+  await atomicWriteJSON(path.join(directory, "request.json"), normalized);
+  await atomicWriteJSON(path.join(directory, "submission.json"), {
+    schema_version: "1", eval_id: evalId, request: normalized, execution,
+    submission_digest: sha256JSON({ request: normalized, execution }), idempotency_key_hash: keyHash, submitted_at: now,
+  });
+  await atomicWriteJSON(path.join(directory, "control.json"), {
+    schema_version: "1", eval_id: evalId, generation: 0, state: "queued",
+    requested_parallelism: 1, admitted_parallelism: 0, active_leases: [], queued_work_items: [], terminal_work_items: [],
+    created_at: now, updated_at: now,
+  });
+  await atomicWriteJSON(path.join(root, "indexes", "eval-idempotency", `${keyHash.slice("sha256:".length)}.json`), {
+    schema_version: "1", eval_id: "eval_33333333333333333333333333333333", submission_digest: sha256JSON({ forged: true }),
+  });
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 2_000, memory_bytes: 2 * GIB, container_slots: 2, build_slots: 1 }),
+    trialResources: TRIAL,
+    executor: fakeEvalExecutor(1),
+  });
+  await assert.rejects(scheduler.initialize(), /idempotency index conflicts with recovered submission/);
+  await scheduler.shutdown();
 });
 
 test("local evals dispatch work items fairly across evals without exceeding the shared vector ledger", async (t) => {

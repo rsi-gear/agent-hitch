@@ -758,6 +758,9 @@ HTTP 规则：
 - key 只在同一个 Hitch root 内有效。
 - 服务端存储 key 到 normalized submission digest 的映射；digest 排除 `idempotency_key` 和服务端生成的 `submitted_at`。
 - 同 key、同 digest 返回原 `eval_id`；同 key、不同 digest 返回 `409 idempotency_conflict`。
+- `submission.json` 先于幂等索引持久化；daemon 若在两次原子写之间崩溃，启动恢复必须从 submission 中封存的
+  `idempotency_key_hash`、`submission_digest` 和 `eval_id` 重建缺失索引并产生恢复事件。已有索引若指向
+  另一 eval、digest 或包含非规范字段，启动失败关闭，不得接受同 key 的新提交。
 - 客户端断线后重试不得创建第二个 eval。
 
 ### 9.3 CLI

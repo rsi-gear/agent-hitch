@@ -1,10 +1,10 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ExecutionLeaseV1 } from "../domain/index.js";
-import { SCHEMA_VERSION, atomicWriteJSON, readJSON } from "../foundation/index.js";
+import { SCHEMA_VERSION, atomicWriteJSON, readJSON, withFileLock } from "../foundation/index.js";
 import { EvalEventSink, parseEvalExecutionPlan, readExecutionLeases, recoverLocalDockerEvalLeases } from "../evals/index.js";
 import type { EvalLeaseRecoveryResult } from "../evals/index.js";
-import { isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState } from "./eval-records.js";
+import { idempotencyIndexPath, isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState } from "./eval-records.js";
 
 export interface RecoveredEvalEntry {
   evalId: EvalId;
@@ -37,6 +37,12 @@ export async function recoverPersistedEvals(input: {
     if (!submissionValue || !controlValue) continue;
     const submission = await parseEvalSubmission(submissionValue, evalId);
     const control = parseEvalControl(controlValue);
+    if (await repairIdempotencyIndex(input.root, submission)) {
+      const sink = new EvalEventSink(directory, evalId, input.onEvent);
+      await sink.open();
+      sink.emit({ type: "eval.idempotency-index.recovered", idempotency_key_hash: submission.idempotency_key_hash });
+      await sink.close();
+    }
     const result = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
     if (result) {
       if (!isTerminalControl(control.state)) await updateControl(directory, (current) => ({ ...withoutAllocation(current), state: terminalControlState(result.status) }));
@@ -99,6 +105,31 @@ export async function recoverPersistedEvals(input: {
     await sink.close();
   }
   return queue;
+}
+
+async function repairIdempotencyIndex(root: string, submission: Awaited<ReturnType<typeof parseEvalSubmission>>): Promise<boolean> {
+  const keyHash = submission.idempotency_key_hash;
+  if (!keyHash) return false;
+  return withFileLock(path.join(root, "locks", "eval-idempotency"), keyHash, async () => {
+    const file = idempotencyIndexPath(root, keyHash);
+    const expected = {
+      schema_version: "1",
+      eval_id: submission.eval_id,
+      submission_digest: submission.submission_digest,
+    };
+    const existing = await readJSON<Record<string, unknown> | null>(file, null);
+    if (existing === null) {
+      await atomicWriteJSON(file, expected);
+      return true;
+    }
+    if (Object.keys(existing).length !== Object.keys(expected).length
+      || existing.schema_version !== expected.schema_version
+      || existing.eval_id !== expected.eval_id
+      || existing.submission_digest !== expected.submission_digest) {
+      throw new TypeError(`eval idempotency index conflicts with recovered submission: ${submission.eval_id}`);
+    }
+    return false;
+  }, { timeoutCode: "idempotency_locked", timeoutExitCode: 12 });
 }
 
 function combinedRecovery(results: EvalLeaseRecoveryResult[]): EvalLeaseRecoveryResult {
