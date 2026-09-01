@@ -643,6 +643,7 @@ test("Harbor bridge diagnostic reader promotes OCI stdout when the legacy messag
   const trialDirectory = await mkdtemp(path.join(tmpdir(), "hitch-bridge-stdout-diagnostic-"));
   t.after(() => forceRemove(trialDirectory));
   await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+  const secret = "bridge-secret-value-not-provider-shaped";
   await atomicWriteJSON(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), {
     schema_version: "1",
     code: "hitch_process_failed",
@@ -652,12 +653,16 @@ test("Harbor bridge diagnostic reader promotes OCI stdout when the legacy messag
       stdout_tail: 'chdir to cwd ("/app") failed: no such file or directory',
       stderr_tail: "",
     },
+    last_event: { api_key: secret, detail: "Authorization: Bearer abcdefghijklmnop" },
   });
 
-  const diagnostic = await readHarborBridgeError(trialDirectory);
+  const diagnostic = await readHarborBridgeError(trialDirectory, [secret]);
   assert.ok(diagnostic);
   assert.match(diagnostic.message, /chdir to cwd \("\/app"\) failed/);
   assert.doesNotMatch(diagnostic.message, /no diagnostic output/);
+  assert.equal(diagnostic.raw.includes(secret), false);
+  assert.equal(diagnostic.raw.includes("abcdefghijklmnop"), false);
+  assert.match(diagnostic.raw, /\[REDACTED\]/);
 });
 
 test("Harbor bridge uploads compatible artifacts and host-caches one target-platform build across concurrent trials", async (t) => {

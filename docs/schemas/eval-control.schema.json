@@ -22,8 +22,8 @@
       "additionalProperties": false,
       "required": ["code", "message"],
       "properties": {
-        "code": { "type": "string", "minLength": 1 },
-        "message": { "type": "string" }
+        "code": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "message": { "type": "string", "maxLength": 4096 }
       }
     },
     "created_at": { "type": "string", "format": "date-time" },

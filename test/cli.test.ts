@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { writeFakeDocker, writeFakeHarbor, writeFakeNpm, writeFakePython, forceRemove } from "../test-support/helpers.js";
 import { packageVersion } from "../src/foundation/index.js";
 import { parseDaemonResourcePolicy } from "../src/cli/commands/daemon.js";
+import { buildDaemonEvalSubmission, parseEvalExecutionOptions } from "../src/cli/commands/eval.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -77,6 +78,70 @@ test("daemon resource policy follows CLI, environment, Docker detection, and con
   });
 });
 
+test("CLI eval execution policy flags produce a complete daemon submission", () => {
+  const args = [
+    "--provider", "remote-docker",
+    "--cpu-per-trial", "2",
+    "--memory-per-trial", "4GiB",
+    "--build-mode", "backend",
+    "--model-capture", "hybrid",
+    "--require-model-capture",
+  ];
+  const options = parseEvalExecutionOptions(args);
+  assert.deepEqual(args, []);
+  assert.deepEqual(options, {
+    explicit: true,
+    provider: "remote-docker",
+    cpu_millis: 2_000,
+    memory_bytes: 4 * 1024 ** 3,
+    build_mode: "backend",
+    model_capture: "hybrid",
+    require_model_capture: true,
+  });
+  const request = { dataset: "demo@1.0", harness_ref: "pi@version:1.2.3", max_concurrent: 8 };
+  const submission = buildDaemonEvalSubmission(request, options, {
+    cpu_millis: 1_000,
+    memory_bytes: 1024 ** 3,
+    container_slots: 1,
+    build_slots: 0,
+    gpu_count: 1,
+    ephemeral_disk_bytes: 8 * 1024 ** 3,
+  });
+  assert.deepEqual(submission, {
+    schema_version: "1",
+    request,
+    execution: {
+      provider: "remote-docker",
+      max_parallelism: 8,
+      resources: { default_trial: {
+        cpu_millis: 2_000,
+        memory_bytes: 4 * 1024 ** 3,
+        container_slots: 1,
+        build_slots: 0,
+        gpu_count: 1,
+        ephemeral_disk_bytes: 8 * 1024 ** 3,
+      } },
+      build: { mode: "backend" },
+      model_capture: { mode: "hybrid", required: true },
+    },
+  });
+  assert.throws(() => parseEvalExecutionOptions(["--memory-per-trial", "1000MB"]), /B, KiB, MiB, or GiB/);
+  assert.throws(() => parseEvalExecutionOptions(["--model-capture", "off", "--require-model-capture"]), /cannot be combined/);
+});
+
+test("CLI refuses to run a control-plane eval rerun without its daemon", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-cli-control-plane-rerun-"));
+  t.after(() => forceRemove(root));
+  const evalId = `eval_${"8".repeat(32)}`;
+  await mkdir(path.join(root, "evals", evalId), { recursive: true });
+  await writeFile(path.join(root, "evals", evalId, "submission.json"), "{}\n");
+  const result = spawnSync(process.execPath, [
+    executable, "--root", root, "eval", "rerun", evalId, "--invalid",
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /control-plane eval reruns require a running daemon/);
+});
+
 test("CLI environment image GC is a dry run unless --apply is explicit", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-cli-image-gc-"));
   t.after(() => forceRemove(root));
@@ -99,6 +164,9 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /hitch runs candidate <run-id>/);
   assert.match(help.stdout, /hitch eval run \[--backend harbor\] --dataset <ref>/);
   assert.match(help.stdout, /hitch eval submit \[--backend harbor\]/);
+  assert.match(help.stdout, /--cpu-per-trial <integer-cpus>/);
+  assert.match(help.stdout, /--memory-per-trial <size>/);
+  assert.match(help.stdout, /--model-capture off\|native\|proxy\|hybrid/);
   assert.match(help.stdout, /hitch eval watch <eval-id>/);
   assert.match(help.stdout, /hitch eval cancel <eval-id>/);
   assert.match(help.stdout, /hitch eval rerun <eval-id> \(--invalid \| --task <name>/);

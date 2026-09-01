@@ -199,6 +199,7 @@ export async function runInfrastructureRetries(
               benchmarkRevision: options.request.benchmark_revision,
               publicationMode: "replace-invalid",
               runtimeId: options.controllerRuntime.runtime_id,
+              env: options.env,
               ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
               ...(options.interactionCaptureExporter ? {
                 interactionCaptureExporter: options.interactionCaptureExporter,
@@ -229,6 +230,7 @@ export async function runInfrastructureRetries(
         benchmarkRevision: options.request.benchmark_revision,
         publicationMode: "replace-invalid",
         runtimeId: options.controllerRuntime.runtime_id,
+        env: options.env,
         ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
         ...(options.interactionCaptureExporter ? {
           interactionCaptureExporter: options.interactionCaptureExporter,

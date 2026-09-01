@@ -89,8 +89,11 @@ Usage:
   hitch compare model|harness [filters] [--reference-run <run-id>] [--json]
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
-  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>]
-  hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>]
+  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>] [execution policy]
+  hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>] [execution policy]
+    execution policy: [--provider <id>] [--cpu-per-trial <integer-cpus>] [--memory-per-trial <size>]
+      [--build-mode backend|prebuild-preferred|prebuild-required]
+      [--model-capture off|native|proxy|hybrid] [--require-model-capture]
   hitch eval watch <eval-id> [--output json|jsonl]
   hitch eval cancel <eval-id>
   hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--daemon] [--output json]

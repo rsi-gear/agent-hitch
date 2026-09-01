@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { CREDENTIAL_REDACTION_MARKER, createCredentialRedactionTransform, redactCredentialText } from "../src/foundation/index.js";
+import { CREDENTIAL_REDACTION_MARKER, createCredentialRedactionTransform, redactCredentialText, safeDiagnosticMessage } from "../src/foundation/index.js";
+import { boundedMessage } from "../src/daemon/logging.js";
 
 test("credential redaction covers known values, headers, bearer tokens, and query secrets", () => {
   const secret = "custom-value-that-is-not-provider-shaped";
@@ -21,6 +22,22 @@ test("credential redaction covers known values, headers, bearer tokens, and quer
   assert.ok(result.text.includes(CREDENTIAL_REDACTION_MARKER));
   assert.equal(result.redactions.get("known-credential-value-v1"), 1);
   assert.ok((result.redactions.get("sensitive-field-v1") ?? 0) >= 2);
+});
+
+test("diagnostic messages are redacted and bounded before persistence", () => {
+  const secret = "diagnostic-secret-value";
+  const message = safeDiagnosticMessage(new Error(`${secret} ${"x".repeat(10_000)}`), [secret]);
+  assert.equal(message.includes(secret), false);
+  assert.ok(message.includes(CREDENTIAL_REDACTION_MARKER));
+  assert.ok(message.endsWith("…[truncated]"));
+  assert.equal(message.length, 4_096);
+});
+
+test("daemon request/log messages redact generic credential forms", () => {
+  const output = boundedMessage(`Authorization: Bearer abcdefghijklmnop ${"x".repeat(10_000)}`);
+  assert.equal(output.includes("abcdefghijklmnop"), false);
+  assert.match(output, /\[REDACTED\]/);
+  assert.ok(output.length <= 4_096);
 });
 
 test("stream redaction handles a credential split across chunks", async () => {

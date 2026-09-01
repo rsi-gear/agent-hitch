@@ -404,6 +404,7 @@ async function executeLeasedWorkItem(
           benchmarkId: options.request.benchmark_id,
           benchmarkRevision: options.request.benchmark_revision,
           runtimeId: options.controllerRuntime.runtime_id,
+          env: options.env,
           ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),
           ...(options.interactionCaptureExporter ? {
             interactionCaptureExporter: options.interactionCaptureExporter,
@@ -434,6 +435,7 @@ async function executeLeasedWorkItem(
     benchmarkId: options.request.benchmark_id,
     benchmarkRevision: options.request.benchmark_revision,
     runtimeId: options.controllerRuntime.runtime_id,
+    env: options.env,
     ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),
     ...(options.interactionCaptureExporter ? {
       interactionCaptureExporter: options.interactionCaptureExporter,

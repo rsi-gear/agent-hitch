@@ -1,7 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, hitchRootId, readJSON, safeDiagnosticMessage, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { newEvalId, parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
 import type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources } from "./resources.js";
@@ -50,6 +50,7 @@ export interface EvalSchedulerOptions {
   environmentImageBuilder?: EvalEnvironmentImageBuilder;
   remoteWorkers?: RemoteWorkerRegistry;
   remoteWorkerProtocol?: RemoteWorkerProtocol;
+  credentialEnv?: NodeJS.ProcessEnv;
 }
 
 export interface SubmitEvalOptions {
@@ -89,13 +90,14 @@ export class EvalScheduler {
   private readonly dockerResourceReaper: EvalDockerResourceReaper;
   private readonly environmentImages: EvalImageServices;
   private readonly remoteWork: RemoteWorkCoordinator | undefined;
+  private readonly credentialEnv: NodeJS.ProcessEnv;
   private queue: QueuedEval[] = [];
   private active = new Map<EvalId, ActiveEval>();
   private completions = new Map<EvalId, Promise<void>>();
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol }: EvalSchedulerOptions) {
+  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol, credentialEnv = process.env }: EvalSchedulerOptions) {
     this.root = root;
     this.evalsRoot = statePaths(root).evals;
     this.resources = resources;
@@ -109,6 +111,7 @@ export class EvalScheduler {
     this.collisions = collisions;
     this.workItems = new WorkItemDispatcher({ resources, collisions });
     this.dockerResourceReaper = dockerResourceReaper;
+    this.credentialEnv = credentialEnv;
     this.environmentImages = new EvalImageServices({ root, provider, resources, onEvent: this.onEvent, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}) });
     this.remoteWork = remoteWorkers && remoteWorkerProtocol
       ? new RemoteWorkCoordinator({ root, registry: remoteWorkers, protocol: remoteWorkerProtocol, collisions })
@@ -423,6 +426,7 @@ export class EvalScheduler {
       precreated: true,
       resumeExisting: entry.resumeExisting,
       root: this.root,
+      env: this.credentialEnv,
       signal: controller.signal,
       onEvent: this.onEvent,
       ...(remote ? {} : { dockerResourceReaper: this.dockerResourceReaper }),
@@ -452,7 +456,9 @@ export class EvalScheduler {
     const now = new Date().toISOString();
     const cancelled = this.active.get(entry.evalId)?.controller.signal.aborted === true;
     const code = cancelled ? "cancelled" : "control_plane_error";
-    const message = cancelled ? "eval was cancelled" : (error as Error)?.message || String(error);
+    const message = cancelled
+      ? "eval was cancelled"
+      : safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.pass_env, this.credentialEnv));
     await writeSyntheticEvalResult({ directory: entry.directory, evalId: entry.evalId, request: entry.request, status: cancelled ? "cancelled" : "failed", code, message, completedAt: now });
     await this.updateControl(entry.directory, (control) => {
       const { allocation_id: _allocationId, ...released } = control;
@@ -464,7 +470,7 @@ export class EvalScheduler {
   private async recoverInterruptedEvals(): Promise<void> {
     const remoteWork = this.remoteWork;
     const recovered = await recoverPersistedEvals({
-      root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent,
+      root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent, credentialEnv: this.credentialEnv,
       ...(remoteWork ? { recoverProviderLeases: (input: Parameters<RemoteWorkCoordinator["recoverEvalLeases"]>[0]) => remoteWork.recoverEvalLeases(input) } : {}),
     });
     for (const entry of recovered) {

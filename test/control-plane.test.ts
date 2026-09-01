@@ -889,12 +889,48 @@ test("daemon exposes queued eval status and terminal result", async (t) => {
   assert.equal((build.manifest as { image_id: Sha256 }).image_id, built.manifest.image_id);
   const accepted = await client.request("/v1/evals", { method: "POST", body: JSON.stringify(request(4)) });
   assert.match(accepted.eval_id as string, /^eval_[a-f0-9]{32}$/);
+  assert.deepEqual(accepted.links, {
+    self: `/v1/evals/${accepted.eval_id as string}`,
+    events: `/v1/evals/${accepted.eval_id as string}/events`,
+    cancel: `/v1/evals/${accepted.eval_id as string}/cancel`,
+  });
   const status = await waitForStatus(client, accepted.eval_id as string);
   assert.equal(status.result.status, "succeeded");
   assert.equal((status.control as { requested_parallelism: number }).requested_parallelism, 4);
   assert.equal((status.control as { admitted_parallelism: number }).admitted_parallelism, 1);
   const events = await client.requestWithMetadata(`/v1/evals/${accepted.eval_id as string}/events?offset=0`);
   assert.match(String(events.payload), /"type":"eval.queued"/);
+});
+
+test("daemon eval scheduler redacts and bounds unexpected failure evidence", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-eval-safe-error-"));
+  const secret = "eval-control-secret-value";
+  const server = new DaemonServer({
+    root,
+    port: 0,
+    maxConcurrent: 1,
+    logger: () => {},
+    credentialEnv: { EVAL_CONTROL_SECRET: secret },
+    evalExecutor: async () => { throw new Error(`${secret} ${"z".repeat(8_000)}`); },
+  });
+  await server.start();
+  t.after(async () => {
+    await server.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const client = await daemonClient(root);
+  const accepted = await client.request("/v1/evals", {
+    method: "POST",
+    body: JSON.stringify({ ...request(1), pass_env: ["EVAL_CONTROL_SECRET"] }),
+  });
+  const status = await waitForStatus(client, accepted.eval_id as string);
+  const resultMessage = ((status.result.error as Record<string, unknown>).message as string);
+  const controlMessage = ((status.control.error as Record<string, unknown>).message as string);
+  assert.equal(resultMessage.includes(secret), false);
+  assert.equal(controlMessage, resultMessage);
+  assert.equal(resultMessage.length, 4_096);
+  const events = await client.requestWithMetadata(`/v1/evals/${accepted.eval_id as string}/events?offset=0`);
+  assert.equal(String(events.payload).includes(secret), false);
 });
 
 test("daemon eval submission is idempotent and rejects key reuse for different requests", async (t) => {

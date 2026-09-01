@@ -30,6 +30,7 @@ export interface CollectOnlyRerunInput {
   progress: EvalProgressV1;
   previousResult: Record<string, unknown> | null;
   selectedTrials: EvalTrialSlot[];
+  env?: NodeJS.ProcessEnv;
 }
 
 interface CollectedSource {
@@ -146,6 +147,7 @@ async function collectSlot(
           benchmarkRevision: input.request.benchmark_revision,
           publicationMode: "replace-invalid",
           runtimeId,
+          env: input.env ?? process.env,
           requireCompleteMarker: true,
         }, trial, index, imported);
         if (!imported.some((entry) => entry.trial_id === ref.trial_id)) imported.push(ref);

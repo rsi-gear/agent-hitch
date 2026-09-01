@@ -118,7 +118,10 @@ export function parseEvalControl(value: unknown): EvalControlV1 {
   }
   const error = control.error;
   if (error !== undefined && (!error || typeof error !== "object" || Array.isArray(error)
-    || typeof (error as Record<string, unknown>).code !== "string" || typeof (error as Record<string, unknown>).message !== "string")) {
+    || typeof (error as Record<string, unknown>).code !== "string" || !(error as Record<string, unknown>).code
+    || ((error as Record<string, unknown>).code as string).length > 256
+    || typeof (error as Record<string, unknown>).message !== "string"
+    || ((error as Record<string, unknown>).message as string).length > 4_096)) {
     throw new TypeError("eval control error is invalid");
   }
   const activeLeases = controlItems(control.active_leases, "active_leases", /^lease_[a-f0-9]{32}$/);

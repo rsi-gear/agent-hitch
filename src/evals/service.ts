@@ -1,17 +1,15 @@
 import path from "node:path";
 import { prepareHarness, resolveHarness } from "../artifacts/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, ensureDir, invalidInput, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, credentialValuesFromEnv, ensureDir, invalidInput, safeDiagnosticMessage, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
 import type { HarborBackendResult, LocalGitTransportUse } from "../backends/index.js";
-import { ensureControllerRuntime, writeRuntimeReference } from "../controller-runtime/index.js";
-import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
+import { ensureControllerRuntime, writeRuntimeReference, type ControllerRuntimeUseResult } from "../controller-runtime/index.js";
 import type { EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { EvalEventSink } from "./events.js";
 import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
-import { infrastructureFailureTrials, runInfrastructureRetries } from "./infrastructure-retry.js";
-import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
+import { infrastructureFailureTrials, runInfrastructureRetries, type InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 import { invalidTrialSlots } from "./rerun-slots.js";
 import { prepareEvalDirectory } from "./directory.js";
@@ -316,6 +314,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
               benchmarkId: normalized.benchmark_id,
               benchmarkRevision: normalized.benchmark_revision,
               runtimeId: controllerRuntime.runtime_id,
+              env,
               modelCapturePlan: activeCaptureRuntime.plan,
               ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
               requireCompleteMarker: true,
@@ -341,6 +340,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         benchmarkId: normalized.benchmark_id,
         benchmarkRevision: normalized.benchmark_revision,
         runtimeId: controllerRuntime.runtime_id,
+        env,
         modelCapturePlan: activeCaptureRuntime.plan,
         ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
         rawResult: backendRun.rawResult,
@@ -485,7 +485,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       exit_code: signal?.aborted ? 9 : typed ? error.exitCode : 12,
       error: {
         code: signal?.aborted ? "cancelled" : typed ? error.code : "internal_error",
-        message: (error as Error)?.message || String(error),
+        message: safeDiagnosticMessage(error, credentialValuesFromEnv(normalized.pass_env, env)),
       },
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,

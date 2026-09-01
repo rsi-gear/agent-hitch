@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { inspectEvalRuntimeKind } from "../controller-runtime/index.js";
 import type { ExecutionLeaseV1 } from "../domain/index.js";
@@ -82,4 +82,13 @@ export async function inspectEval(evalId: string, { root }: { root: string }): P
     result: await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null),
     runtime_storage: await inspectEvalRuntimeKind(directory),
   };
+}
+
+export async function isControlPlaneEval(root: string, evalId: string): Promise<boolean> {
+  try {
+    return (await lstat(path.join(statePaths(root).evals, evalId, "submission.json"))).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }

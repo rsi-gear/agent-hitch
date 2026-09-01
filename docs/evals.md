@@ -67,6 +67,11 @@ hitch eval submit \
   --dataset terminal-bench@2.0 \
   --harness codex@version:0.92.0 \
   --max-concurrent 8 \
+  --provider local-docker \
+  --cpu-per-trial 2 \
+  --memory-per-trial 4GiB \
+  --build-mode prebuild-preferred \
+  --model-capture native \
   --idempotency-key nightly-terminal-bench
 hitch eval watch eval_<id>
 hitch eval cancel eval_<id>
@@ -78,11 +83,29 @@ request fails with `idempotency_conflict`. A direct Harbor eval is rejected
 while a daemon owns the same root so it cannot bypass the shared quota. Use a
 separate `--root` when deliberate isolation is required.
 
-The initial local provider uses conservative logical reservations per Harbor
-trial (one CPU, 1 GiB memory, and one container slot). These reservations bound
-admission; they do not yet configure Docker cgroup limits or inspect live host
-memory. The complete target architecture and its later provider/build/cache
-phases are specified in `hitch-harbor-control-plane-spec.zh-CN.md`.
+When any execution-policy option is present, the CLI reads the daemon's
+current `resource_policy.eval_trial` from `/health`, overlays the explicit
+CPU/memory values, and submits the resulting complete immutable policy. CPU is
+an integer number of cores; memory accepts `B`, `KiB`, `MiB`, or `GiB` and must
+resolve to a whole number of MiB. These options require `--daemon` or
+`eval submit`; direct mode rejects them rather than pretending to enforce a
+control-plane policy.
+
+The local provider uses conservative logical reservations when task metadata
+does not declare resources. For known local tasks, validated task/Compose
+limits and sidecars form the admitted reservation, and the generated Harbor
+overlay applies representable CPU, memory, GPU and ownership settings to the
+controlled Docker services. Runtime observation and explicit unavailability
+are sealed in `execution.json`.
+
+Host-side proxy/hybrid capture never opens a wildcard listener. macOS and
+Windows bind to loopback; Linux inspects Docker's `bridge` network and binds to
+that specific host gateway so trial containers can reach it without exposing a
+public interface. Deployments with a different Docker network may set
+`HITCH_MODEL_PROXY_BIND_HOST` and `HITCH_MODEL_PROXY_ADVERTISED_HOST`, but the
+bind value must be a concrete IP address; `0.0.0.0` and `::` are rejected.
+Required capture fails closed when no safe reachable binding is available,
+while optional capture records its existing degradation path.
 
 Known local task work items enter a shared deficit round-robin dispatcher.
 Capacity is acquired atomically per work item, the dispatcher rotates after
@@ -352,6 +375,12 @@ hitch eval rerun <eval-id> --invalid --type candidate-restart --output json
 hitch eval rerun <eval-id> --task task-a --task task-b --type candidate-restart --output json
 hitch eval rerun <eval-id> --invalid --type candidate-restart --daemon --output json
 ```
+
+An eval containing daemon `submission.json` is always rerun through the daemon
+endpoint. The CLI auto-routes it when the matching daemon is healthy and fails
+with `control_plane_required` when that daemon is absent; it never falls back
+to the direct rerun implementation. Terminal legacy evals without a submission
+envelope retain the direct path.
 
 `--type` is explicit in audit records and defaults to `candidate-restart` for
 backward compatibility. Rerun/recovery operations have distinct semantics:

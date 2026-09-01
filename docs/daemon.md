@@ -194,6 +194,12 @@ Run requests are validated against the contract represented by
 
 `POST /v1/evals` accepts an optional `Idempotency-Key` header. The key is
 hashed before persistence and is scoped to the daemon's state root.
+The accepted response includes stable `self`, `events`, and `cancel` links.
+`hitch eval run --daemon` and `hitch eval submit` expose execution-policy flags
+for provider, integer CPU cores per trial, whole-MiB memory size, build mode,
+capture mode, and required capture. When any such flag is used, the CLI reads
+the daemon's advertised eval-trial defaults and sends a complete immutable
+execution policy rather than guessing omitted resource dimensions.
 
 Every planned local Harbor work item writes an execution lease under
 `evals/<eval-id>/leases/`. The lease records its worker, collision domain,

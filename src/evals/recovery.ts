@@ -25,6 +25,7 @@ export async function recoverLocalDockerEvalLeases(input: {
   evalId: EvalId;
   evalDirectory: string;
   leases: ExecutionLeaseV1[];
+  env?: NodeJS.ProcessEnv;
   cancelRequested?: boolean;
   emit?: (event: Record<string, unknown>) => void;
 }): Promise<EvalLeaseRecoveryResult> {
@@ -72,7 +73,7 @@ export async function recoverLocalDockerEvalLeases(input: {
 }
 
 async function recoverLease(
-  input: { root: string; evalId: EvalId; evalDirectory: string; cancelRequested?: boolean },
+  input: { root: string; evalId: EvalId; evalDirectory: string; cancelRequested?: boolean; env?: NodeJS.ProcessEnv },
   lease: ExecutionLeaseV1,
   emit: (event: Record<string, unknown>) => void,
   captureRuntime?: EvalModelCaptureRuntime,
@@ -133,7 +134,7 @@ async function recoverLease(
 }
 
 async function collectRecoveredWork(
-  input: { root: string; evalId: EvalId; evalDirectory: string },
+  input: { root: string; evalId: EvalId; evalDirectory: string; env?: NodeJS.ProcessEnv },
   lease: ExecutionLeaseV1,
   backendDirectory: string,
   emit: (event: Record<string, unknown>) => void,
@@ -160,6 +161,7 @@ async function collectRecoveredWork(
     benchmarkId: state.progress.benchmark_id,
     benchmarkRevision: state.progress.benchmark_revision,
     ...(runtimeId ? { runtimeId } : {}),
+    env: input.env ?? process.env,
     ...(state.executionPlan.model_capture ? { modelCapturePlan: captureRuntime?.plan ?? state.executionPlan.model_capture } : {}),
     ...(captureRuntime?.exporter ? { interactionCaptureExporter: captureRuntime.exporter } : {}),
     rawResult,
@@ -180,6 +182,7 @@ async function restoreModelCaptureForRecovery(input: {
   evalId: EvalId;
   evalDirectory: string;
   leases: ExecutionLeaseV1[];
+  env?: NodeJS.ProcessEnv;
 }): Promise<EvalModelCaptureRuntime | undefined> {
   if (!input.leases.some(activeLease)) return undefined;
   const state = await loadEvalResumeState(input.evalDirectory);
@@ -188,7 +191,7 @@ async function restoreModelCaptureForRecovery(input: {
   if (!await readModelProxyRuntimeState(input.evalDirectory, input.evalId, plan)) {
     throw ambiguous("recoverable model proxy has no persisted endpoint identity");
   }
-  const runtime = await startEvalModelCaptureRuntime({ plan, evalId: input.evalId, evalDirectory: input.evalDirectory, env: process.env });
+  const runtime = await startEvalModelCaptureRuntime({ plan, evalId: input.evalId, evalDirectory: input.evalDirectory, env: input.env ?? process.env });
   if (!runtime.route || !runtime.exporter) {
     await runtime.close().catch(() => undefined);
     throw ambiguous("recoverable model proxy endpoint could not be restored");

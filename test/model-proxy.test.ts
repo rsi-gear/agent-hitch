@@ -7,7 +7,38 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { atomicWriteJSON } from "../src/foundation/index.js";
 import { HostModelProxy, loadInteractionCapture } from "../src/model-access/index.js";
-import { startEvalModelCaptureRuntime } from "../src/evals/model-capture-runtime.js";
+import { resolveModelProxyBinding, startEvalModelCaptureRuntime } from "../src/evals/model-capture-runtime.js";
+
+const LOOPBACK_PROXY_ENV = {
+  HITCH_MODEL_PROXY_BIND_HOST: "127.0.0.1",
+  HITCH_MODEL_PROXY_ADVERTISED_HOST: "127.0.0.1",
+};
+
+test("host model proxy rejects wildcard listener addresses", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-model-proxy-wildcard-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await assert.rejects(HostModelProxy.start({
+    captureRoot: path.join(root, "capture"),
+    evalId: `eval_${"0".repeat(32)}`,
+    mode: "proxy",
+    required: true,
+    bindHost: "0.0.0.0",
+  }), /specific local IP address/);
+});
+
+test("Linux host model proxy binds only to the inspected Docker bridge gateway", async () => {
+  let observedDocker = "";
+  const binding = await resolveModelProxyBinding({ HITCH_DOCKER_PATH: "/safe/docker" }, {
+    platform: "linux",
+    inspectDockerBridge: async (docker) => {
+      observedDocker = docker;
+      return [{ Subnet: "172.17.0.0/16", Gateway: "172.17.0.1" }];
+    },
+  });
+  assert.equal(observedDocker, "/safe/docker");
+  assert.deepEqual(binding, { bindHost: "172.17.0.1", advertisedHost: "host.docker.internal" });
+  await assert.rejects(resolveModelProxyBinding({ HITCH_MODEL_PROXY_BIND_HOST: "::" }), /specific local IP/);
+});
 
 test("host model proxy streams provider traffic and seals redacted run-scoped evidence", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-model-proxy-"));
@@ -137,11 +168,11 @@ test("eval model capture runtime persists and restores the exact Harbor route", 
   t.after(() => rm(root, { recursive: true, force: true }));
   const evalId = `eval_${"1".repeat(32)}`;
   const plan = { requested_mode: "proxy" as const, effective_mode: "proxy" as const, required: true, topology: "host-side" as const };
-  const first = await startEvalModelCaptureRuntime({ plan, evalId, evalDirectory: root, env: {} });
+  const first = await startEvalModelCaptureRuntime({ plan, evalId, evalDirectory: root, env: LOOPBACK_PROXY_ENV });
   assert.ok(first.route);
   const originalRoute = first.route;
   await first.close();
-  const restored = await startEvalModelCaptureRuntime({ plan, evalId, evalDirectory: root, env: {} });
+  const restored = await startEvalModelCaptureRuntime({ plan, evalId, evalDirectory: root, env: LOOPBACK_PROXY_ENV });
   t.after(() => restored.close());
   assert.deepEqual(restored.route, originalRoute);
 });
@@ -153,7 +184,7 @@ test("remote capture runtime preserves an in-sandbox route and evidence topology
   const runId = `run_${"3".repeat(32)}`;
   const plan = { requested_mode: "proxy" as const, effective_mode: "proxy" as const, required: false, topology: "in-sandbox" as const };
   const runtime = await startEvalModelCaptureRuntime({
-    plan, evalId, evalDirectory: root, env: {}, runtimeTopology: "in-sandbox", preservePlanOnOptionalFailure: true,
+    plan, evalId, evalDirectory: root, env: LOOPBACK_PROXY_ENV, runtimeTopology: "in-sandbox", preservePlanOnOptionalFailure: true,
   });
   t.after(() => runtime.close());
   assert.equal(runtime.route?.topology, "in-sandbox");
@@ -216,7 +247,7 @@ test("required remote capture fails closed when its sealed proxy endpoint cannot
   });
   await assert.rejects(startEvalModelCaptureRuntime({
     plan: { requested_mode: "proxy", effective_mode: "proxy", required: true, topology: "in-sandbox" },
-    evalId, evalDirectory: root, env: {}, runtimeTopology: "in-sandbox", preservePlanOnOptionalFailure: true,
+    evalId, evalDirectory: root, env: LOOPBACK_PROXY_ENV, runtimeTopology: "in-sandbox", preservePlanOnOptionalFailure: true,
   }), (error: unknown) => (error as { code?: string }).code === "model_proxy_unavailable");
 });
 

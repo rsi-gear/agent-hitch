@@ -110,7 +110,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
   let captureRuntime: EvalModelCaptureRuntime | undefined;
   try {
-    if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
+    if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials, env: options.env ?? process.env });
     if (selectedTrials.length > 0) {
       const executionPlan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(options.evalDirectory, "execution-plan.json")));
       if (executionPlan.eval_id !== options.evalId) throw unavailable("eval execution plan identity changed");
@@ -205,6 +205,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
                 benchmarkRevision: request.benchmark_revision,
                 publicationMode: "replace-invalid",
                 runtimeId: runtime.runtime_id,
+                env: options.env ?? process.env,
                 modelCapturePlan: activeCaptureRuntime.plan,
                 ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
                 requireCompleteMarker: true,
@@ -231,6 +232,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           benchmarkRevision: request.benchmark_revision,
           publicationMode: "replace-invalid",
           runtimeId: runtime.runtime_id,
+          env: options.env ?? process.env,
           modelCapturePlan: activeCaptureRuntime.plan,
           ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
           rawResult: backendRun.rawResult,

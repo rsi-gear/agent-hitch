@@ -9,7 +9,7 @@ import type {
   ResourceVectorV1,
   Sha256,
 } from "../domain/index.js";
-import { HitchError } from "../foundation/index.js";
+import { HitchError, safeDiagnosticMessage } from "../foundation/index.js";
 import { parseRemoteWorkOffer } from "./remote-worker-protocol.js";
 
 const TOKEN = /^[a-f0-9]{64}$/;
@@ -163,7 +163,7 @@ async function call(request: typeof fetch, url: URL, token: string, init: Reques
   const headers = new Headers(init.headers);
   headers.set("authorization", `Bearer ${token}`);
   try { response = await request(url, { ...init, headers }); }
-  catch (error) { throw clientError(`remote worker request failed: ${safeMessage(error)}`); }
+  catch (error) { throw clientError(`remote worker request failed: ${safeDiagnosticMessage(error, [token], 512)}`); }
   if (response.ok) return response;
   const body = (await response.text()).slice(0, MAX_ERROR_BYTES);
   let message = `HTTP ${response.status}`;
@@ -172,7 +172,7 @@ async function call(request: typeof fetch, url: URL, token: string, init: Reques
     if (typeof error.code === "string") message += ` ${error.code}`;
     if (typeof error.message === "string") message += `: ${error.message}`;
   } catch { /* Keep the bounded status-only error. */ }
-  throw clientError(`remote worker request failed: ${message}`);
+  throw clientError(`remote worker request failed: ${safeDiagnosticMessage(message, [token], 512)}`);
 }
 
 async function responseJSON(response: Response, maximum = MAX_ERROR_BYTES): Promise<unknown> {
@@ -216,5 +216,4 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function digest(body: Buffer): Sha256 { return `sha256:${createHash("sha256").update(body).digest("hex")}`; }
-function safeMessage(error: unknown): string { return ((error as Error)?.message || String(error)).slice(0, 512); }
 function clientError(message: string): HitchError { return new HitchError(message, { code: "remote_worker_client_error", exitCode: 10 }); }

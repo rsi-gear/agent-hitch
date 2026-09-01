@@ -59,6 +59,7 @@ export class DaemonServer {
   private readonly evalTrialResources: ResourceVectorV1;
   private readonly evalExecutor: EvalSchedulerOptions["executor"] | undefined;
   private readonly evalRerunExecutor: EvalRerunExecutor | undefined;
+  private readonly credentialEnv: NodeJS.ProcessEnv;
   private readonly telemetry = new DaemonTelemetry();
 
   constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor, credentialEnv }: DaemonServerOptions) {
@@ -74,6 +75,7 @@ export class DaemonServer {
     this.evalTrialResources = validateResourceVector(evalTrialResources || { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 }, "daemon eval trial reservation");
     this.evalExecutor = evalExecutor;
     this.evalRerunExecutor = evalRerunExecutor;
+    this.credentialEnv = credentialEnv ?? process.env;
     this.remoteWorkers = new RemoteWorkerRegistry({ root: this.paths.root });
     this.remoteWorkerProtocol = new RemoteWorkerProtocol({ root: this.paths.root, registry: this.remoteWorkers, ...(credentialEnv ? { credentialEnv } : {}) });
     this.startedAt = new Date();
@@ -100,6 +102,7 @@ export class DaemonServer {
         maxConcurrent: this.maxConcurrent,
         resources: this.resources,
         runResources: this.runResources,
+        credentialEnv: this.credentialEnv,
         onEvent: (event) => this.observeRunEvent(event),
       });
       await this.scheduler.initialize();
@@ -111,6 +114,7 @@ export class DaemonServer {
         collisions,
         remoteWorkers: this.remoteWorkers,
         remoteWorkerProtocol: this.remoteWorkerProtocol,
+        credentialEnv: this.credentialEnv,
         ...(this.evalExecutor ? { executor: this.evalExecutor } : {}),
         onEvent: (event) => this.observeControlEvent(event),
       });
@@ -121,6 +125,7 @@ export class DaemonServer {
         trialResources: this.evalTrialResources,
         collisions,
         ...(this.evalRerunExecutor ? { executor: this.evalRerunExecutor } : {}),
+        credentialEnv: this.credentialEnv,
         onEvent: (event) => this.observeControlEvent(event),
       });
       await this.evalRerunScheduler.initialize();
@@ -246,11 +251,20 @@ export class DaemonServer {
       const header = request.headers["idempotency-key"];
       if (Array.isArray(header)) throw invalidInput("idempotency-key header must appear once");
       const evalId = await this.evalScheduler?.submit(requestBody as EvalRequestInput, header ? { idempotencyKey: header } : {});
-      return json(response, 202, { schema_version: SCHEMA_VERSION, eval_id: evalId, status: "queued" });
+      return json(response, 202, {
+        schema_version: SCHEMA_VERSION,
+        eval_id: evalId,
+        status: "queued",
+        links: {
+          self: `/v1/evals/${evalId}`,
+          events: `/v1/evals/${evalId}/events`,
+          cancel: `/v1/evals/${evalId}/cancel`,
+        },
+      });
     }
     if (request.method === "POST" && url.pathname === "/shutdown") {
       json(response, 202, { schema_version: SCHEMA_VERSION, status: "shutting_down" });
-      setImmediate(() => this.close().catch((error) => this.logger("shutdown_error", { error: (error as Error).message })));
+      setImmediate(() => this.close().catch((error) => this.logger("shutdown_error", { error: boundedMessage((error as Error).message) })));
       return;
     }
 

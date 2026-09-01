@@ -1,5 +1,5 @@
 import type { RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, ResourceVectorV1 } from "../domain/index.js";
-import { HitchError } from "../foundation/index.js";
+import { HitchError, safeDiagnosticMessage } from "../foundation/index.js";
 import { ResourceLedger } from "./resources.js";
 import { RemoteWorkerHttpClient } from "./remote-worker-client.js";
 
@@ -169,7 +169,7 @@ export class RemoteWorkerRunner {
       job.cleanup = () => this.releaseUnknown(job.offer);
       result = {
         status: job.controller.signal.aborted ? "cancelled" : "failed",
-        artifacts: [{ kind: "diagnostic", body: diagnostic(error) }],
+        artifacts: [{ kind: "diagnostic", body: diagnostic(error, [...credentials.values()]) }],
       };
     } finally {
       credentials.clear();
@@ -219,8 +219,8 @@ function validateResult(value: RemoteWorkerExecutionResult): void {
   }
 }
 
-function diagnostic(error: unknown): Buffer {
-  return Buffer.from(`${JSON.stringify({ schema_version: "1", error: safeMessage(error), at: new Date().toISOString() })}\n`);
+function diagnostic(error: unknown, credentialValues: readonly string[]): Buffer {
+  return Buffer.from(`${JSON.stringify({ schema_version: "1", error: safeDiagnosticMessage(error, credentialValues, 2_048), at: new Date().toISOString() })}\n`);
 }
 
 function rejectionCode(error: unknown): string {
@@ -252,5 +252,4 @@ function interval(value: number, label: string): number {
   return value;
 }
 
-function safeMessage(error: unknown): string { return ((error as Error)?.message || String(error)).slice(0, 2_048); }
 function runnerError(message: string): HitchError { return new HitchError(message, { code: "remote_worker_invalid_input", exitCode: 12 }); }

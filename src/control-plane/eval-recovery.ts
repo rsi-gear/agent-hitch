@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ExecutionLeaseV1 } from "../domain/index.js";
-import { SCHEMA_VERSION, atomicWriteJSON, readJSON, withFileLock } from "../foundation/index.js";
+import { SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, readJSON, safeDiagnosticMessage, withFileLock } from "../foundation/index.js";
 import { EvalEventSink, parseEvalExecutionPlan, readExecutionLeases, recoverLocalDockerEvalLeases } from "../evals/index.js";
 import type { EvalLeaseRecoveryResult } from "../evals/index.js";
 import { idempotencyIndexPath, isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState } from "./eval-records.js";
@@ -18,6 +18,7 @@ export async function recoverPersistedEvals(input: {
   root: string;
   evalsRoot: string;
   onEvent?: (event: Record<string, unknown>) => void;
+  credentialEnv?: NodeJS.ProcessEnv;
   recoverProviderLeases?: (input: {
     evalId: EvalId;
     evalDirectory: string;
@@ -36,6 +37,7 @@ export async function recoverPersistedEvals(input: {
     const controlValue = await readJSON<unknown | null>(path.join(directory, "control.json"), null);
     if (!submissionValue || !controlValue) continue;
     const submission = await parseEvalSubmission(submissionValue, evalId);
+    const credentialValues = credentialValuesFromEnv(submission.request.pass_env, input.credentialEnv ?? process.env);
     const control = parseEvalControl(controlValue);
     if (await repairIdempotencyIndex(input.root, submission)) {
       const sink = new EvalEventSink(directory, evalId, input.onEvent);
@@ -63,6 +65,7 @@ export async function recoverPersistedEvals(input: {
       evalId,
       evalDirectory: directory,
       leases: localLeases,
+      env: input.credentialEnv ?? process.env,
       cancelRequested: control.state === "cancelling",
       emit: (event) => sink.emit(event),
     })];
@@ -84,7 +87,7 @@ export async function recoverPersistedEvals(input: {
     if (recovery.status === "ambiguous") {
       const now = new Date().toISOString();
       const code = recovery.code || "execution_state_ambiguous";
-      const message = recovery.message || "daemon restarted while eval execution state was ambiguous";
+      const message = safeDiagnosticMessage(recovery.message || "daemon restarted while eval execution state was ambiguous", credentialValues);
       await writeSyntheticResult(directory, evalId, submission.request, control, "failed", code, message, now);
       await updateControl(directory, (current) => ({ ...withoutAllocation(current), state: "failed", error: { code, message } }));
       sink.emit({ type: "eval.recovered", status: "failed", code });

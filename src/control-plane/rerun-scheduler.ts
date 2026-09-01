@@ -11,7 +11,7 @@ import {
 } from "../evals/index.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions, RerunSelector } from "../evals/index.js";
 import { EvalEventSink } from "../evals/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, invalidInput, readJSON, safeDiagnosticMessage, statePaths } from "../foundation/index.js";
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
 import { defaultEvalExecutionPolicy, evalCollisionKeys, isTerminalControl, parseEvalControl, parseEvalSubmission } from "./eval-records.js";
@@ -33,6 +33,7 @@ export interface EvalRerunSchedulerOptions {
   collisionDomainId?: string;
   executor?: EvalRerunExecutor;
   onEvent?: (event: Record<string, unknown>) => void;
+  credentialEnv?: NodeJS.ProcessEnv;
 }
 
 export interface EvalRerunStatus {
@@ -67,6 +68,7 @@ export class EvalRerunScheduler {
   private readonly collisionDomainId: string;
   private readonly executor: EvalRerunExecutor;
   private readonly onEvent: (event: Record<string, unknown>) => void;
+  private readonly credentialEnv: NodeJS.ProcessEnv;
   private readonly unsubscribeResources: () => void;
   private readonly unsubscribeCollisions: () => void;
   private readonly queue: QueuedRerun[] = [];
@@ -75,7 +77,7 @@ export class EvalRerunScheduler {
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, collisions = new CollisionLockManager(), collisionDomainId = "local-docker", executor = rerunEval, onEvent = () => {} }: EvalRerunSchedulerOptions) {
+  constructor({ root, resources, trialResources, collisions = new CollisionLockManager(), collisionDomainId = "local-docker", executor = rerunEval, onEvent = () => {}, credentialEnv = process.env }: EvalRerunSchedulerOptions) {
     this.root = root;
     this.rerunsRoot = statePaths(root).evals;
     this.resources = resources;
@@ -84,6 +86,7 @@ export class EvalRerunScheduler {
     this.collisionDomainId = collisionDomainId;
     this.executor = executor;
     this.onEvent = onEvent;
+    this.credentialEnv = credentialEnv;
     this.unsubscribeResources = resources.subscribe(() => this.scheduleDrain());
     this.unsubscribeCollisions = collisions.subscribe(() => this.scheduleDrain());
   }
@@ -205,7 +208,7 @@ export class EvalRerunScheduler {
     const controller = new AbortController();
     this.active.set(entry.rerunId, { controller, resources, collisions });
     const completion = this.execute(entry, parallelism, resources, controller)
-      .catch((error) => this.fail(entry, errorCode(error), boundedMessage(error)))
+      .catch((error) => this.fail(entry, errorCode(error), safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.pass_env, this.credentialEnv))))
       .finally(() => {
         this.active.delete(entry.rerunId);
         this.completions.delete(entry.rerunId);
@@ -232,6 +235,7 @@ export class EvalRerunScheduler {
       root: this.root,
       maxConcurrentOverride: parallelism,
       executionResources: rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial),
+      env: this.credentialEnv,
       signal: controller.signal,
     });
     await atomicWriteJSON(path.join(entry.directory, "result.json"), result);
@@ -404,11 +408,6 @@ function assertRerunStateIdentity(state: Record<string, unknown>, evalId: EvalId
 
 function errorCode(error: unknown): string {
   return error instanceof HitchError ? error.code : "eval_rerun_failed";
-}
-
-function boundedMessage(error: unknown): string {
-  const message = (error as Error)?.message || String(error);
-  return message.slice(0, 4_096);
 }
 
 function rerunResourceUnit(type: EvalRerunType, trialResources: ResourceVectorV1): ResourceVectorV1 {

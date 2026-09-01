@@ -15,6 +15,20 @@ import { statePaths } from "../src/foundation/index.js";
 const ZERO = { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 };
 const CAPACITY = { cpu_millis: 2_000, memory_bytes: 2 * 1024 ** 3, container_slots: 2, build_slots: 1 };
 
+test("remote worker client redacts its bearer credential from transport failures", async () => {
+  const token = "a".repeat(64);
+  const client = new RemoteWorkerHttpClient({
+    baseUrl: "http://127.0.0.1:1",
+    credential: { schema_version: "1", worker_id: "worker_packaged", generation: 1, token },
+    request: async () => { throw new Error(`transport failed with Authorization: Bearer ${token}`); },
+  });
+  await assert.rejects(client.listOffers(), (error: unknown) => {
+    assert.equal((error as Error).message.includes(token), false);
+    assert.match((error as Error).message, /\[REDACTED\]/);
+    return true;
+  });
+});
+
 test("packaged remote worker client and runner complete the HTTP offer lifecycle", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-worker-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -110,7 +124,8 @@ test("a restarted runner does not execute an already accepted offer again", asyn
 test("executor setup failure remains ownership-releasable", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-worker-setup-failure-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} });
+  const secret = "remote-setup-failure-secret-must-be-redacted";
+  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, credentialEnv: { CUSTOM_REMOTE_SECRET: secret } });
   await server.start();
   t.after(() => server.close());
   const adminToken = (await readFile(statePaths(root).token, "utf8")).trim();
@@ -120,14 +135,14 @@ test("executor setup failure remains ownership-releasable", async (t) => {
   const { lease, work } = remoteWork("3");
   const admin = await daemonClient(root);
   const created = await admin.request(`/v1/workers/${registration.worker_id}/offers`, {
-    method: "POST", body: JSON.stringify({ lease, work, inputs: await stagedInputs(root) }),
+    method: "POST", body: JSON.stringify({ lease, work, inputs: await stagedInputs(root), credential_names: ["CUSTOM_REMOTE_SECRET"] }),
   });
   const offered = created.offer as RemoteWorkOfferV1;
   let recovered = 0;
   const runner = new RemoteWorkerRunner({
     client, capacity: registration.capacity.allocatable, once: true,
     pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
-    execute: async () => { throw new Error("proxy setup failed before executor release callback"); },
+    execute: async ({ credentials }) => { throw new Error(`proxy setup failed with ${credentials.get("CUSTOM_REMOTE_SECRET")}`); },
     releaseUnknown: async (offer) => {
       assert.equal(offer.offer_id, offered.offer_id);
       recovered += 1;
@@ -140,6 +155,9 @@ test("executor setup failure remains ownership-releasable", async (t) => {
   await running;
   assert.equal(recovered, 1);
   assert.equal((await client.listOffers()).length, 0);
+  for (const file of await regularFiles(root)) {
+    assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `executor diagnostic leaked credential into ${path.relative(root, file)}`);
+  }
 });
 
 function workerRegistration() {

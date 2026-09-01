@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
+import { isIP } from "node:net";
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from "node:http";
 import { cp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -95,12 +96,15 @@ export class HostModelProxy {
     if (input.capabilityToken !== undefined && !/^[a-f0-9]{48}$/.test(input.capabilityToken)) {
       throw new TypeError("host model proxy capability token is invalid");
     }
+    const bindHost = input.bindHost ?? "127.0.0.1";
+    if (isIP(bindHost) === 0 || bindHost === "0.0.0.0" || bindHost === "::") {
+      throw new TypeError("host model proxy bind address must be a specific local IP address");
+    }
     const token = input.capabilityToken ?? randomBytes(24).toString("hex");
     let proxy: HostModelProxy | undefined;
     const server = http.createServer((request, response) => {
       proxy?.handle(request, response).catch((error) => respondError(response, 502, "model_proxy_failed", error));
     });
-    const bindHost = input.bindHost ?? (process.platform === "linux" ? "0.0.0.0" : "127.0.0.1");
     const port = await listen(server, bindHost, input.listenPort ?? 0);
     proxy = new HostModelProxy(input, server, token, port);
     return proxy;

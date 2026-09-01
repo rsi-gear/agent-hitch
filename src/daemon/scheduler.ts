@@ -2,7 +2,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { createQueuedRun, executeRun, sealTerminalManifest } from "../runs/index.js";
 import type { QueuedRun, RunRequestInput } from "../runs/index.js";
-import { SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON } from "../foundation/index.js";
+import { SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage } from "../foundation/index.js";
 import { cancelPlannedWorkspace, recoverInterruptedWorkspace } from "../workspaces/index.js";
 import type { WorkspacePlan } from "../workspaces/index.js";
 import type { ResolvedRevision, RunId } from "../domain/index.js";
@@ -13,7 +13,7 @@ import type { ResourceLease } from "../control-plane/index.js";
 interface QueuedEntry {
   runId: RunId;
   directory: string;
-  request: RunRequestInput;
+  request: QueuedRun["request"];
   resolvedRevision: ResolvedRevision;
   workspacePlan: WorkspacePlan;
 }
@@ -31,6 +31,7 @@ export interface SchedulerOptions {
   onEvent?: (event: Record<string, unknown>) => void;
   resources?: ResourceLedger;
   runResources?: ResourceVectorV1;
+  credentialEnv?: NodeJS.ProcessEnv;
 }
 
 export class Scheduler {
@@ -40,19 +41,21 @@ export class Scheduler {
   readonly onEvent: (event: Record<string, unknown>) => void;
   readonly resources: ResourceLedger | undefined;
   readonly runResources: ResourceVectorV1;
+  readonly credentialEnv: NodeJS.ProcessEnv;
   private queue: QueuedEntry[] = [];
   private active = new Map<RunId, ActiveRun>();
   private completions = new Map<RunId, Promise<unknown>>();
   private accepting = true;
   private readonly unsubscribe: (() => void) | undefined;
 
-  constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {}, resources, runResources = zeroResources() }: SchedulerOptions) {
+  constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {}, resources, runResources = zeroResources(), credentialEnv = process.env }: SchedulerOptions) {
     this.runsRoot = runsRoot;
     this.root = root;
     this.maxConcurrent = maxConcurrent;
     this.onEvent = onEvent;
     this.resources = resources;
     this.runResources = runResources;
+    this.credentialEnv = credentialEnv;
     this.unsubscribe = resources?.subscribe(() => this.drain());
   }
 
@@ -149,7 +152,7 @@ export class Scheduler {
         },
       }).catch(async (error) => {
         await this.recordUnexpectedFailure(entry, error);
-        this.onEvent({ type: "scheduler.error", run_id: entry.runId, error: (error as Error).message });
+        this.onEvent({ type: "scheduler.error", run_id: entry.runId, code: "scheduler_error" });
       }).finally(() => {
         this.active.delete(entry.runId);
         this.completions.delete(entry.runId);
@@ -169,7 +172,10 @@ export class Scheduler {
       run_id: entry.runId,
       status: "failed",
       exit_code: 12,
-      error: { code: "scheduler_error", message: (error as Error)?.message || String(error) },
+      error: {
+        code: "scheduler_error",
+        message: safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.credential_names, this.credentialEnv)),
+      },
       completed_at: now,
     };
     await atomicWriteJSON(resultPath, result);

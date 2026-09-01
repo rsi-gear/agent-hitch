@@ -25,6 +25,17 @@ export interface CredentialRedactionResult {
   redactions: Map<string, number>;
 }
 
+export function safeDiagnosticMessage(
+  value: unknown,
+  credentialValues: readonly string[] = [],
+  maxCharacters = 4_096,
+): string {
+  if (!Number.isSafeInteger(maxCharacters) || maxCharacters < 32) throw new TypeError("diagnostic message limit is invalid");
+  const message = redactCredentialText((value as Error)?.message || String(value ?? ""), credentialValues).text;
+  const marker = "…[truncated]";
+  return message.length <= maxCharacters ? message : `${message.slice(0, maxCharacters - marker.length)}${marker}`;
+}
+
 export function redactCredentialText(value: string, credentialValues: readonly string[] = []): CredentialRedactionResult {
   const redactions = new Map<string, number>();
   let text = String(value);

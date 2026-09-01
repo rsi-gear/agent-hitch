@@ -1,6 +1,6 @@
 import { cp, lstat, mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { atomicWriteJSON, ensureDir, readJSON, statePaths, writePrivateFile } from "../foundation/index.js";
+import { atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage, statePaths, writePrivateFile } from "../foundation/index.js";
 import type { ResolvedRevision } from "../artifacts/index.js";
 import { validateRunContext } from "../domain/index.js";
 import type { EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, RunObservationV1, Sha256 } from "../domain/index.js";
@@ -24,7 +24,6 @@ import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./intera
 import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-import-identity.js";
 import { writeEvalTrialPublication } from "./trial-publication.js";
 import type { EvalTrialPublicationMode } from "./trial-publication.js";
-
 export interface ImportEvalRunsOptions {
   root: string;
   evalId: string;
@@ -42,6 +41,7 @@ export interface ImportEvalRunsOptions {
   modelCapturePlan?: ModelCapturePlanV1;
   interactionCaptureExporter?: EvalInteractionCaptureExporter;
   publicationMode?: EvalTrialPublicationMode;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
@@ -95,12 +95,13 @@ export async function importEvalTrialRun(
     return ref;
   } catch (error) {
     if (error instanceof TrialBundlePendingError || error instanceof TrialIdentityConflictError) throw error;
+    const safeMessage = safeDiagnosticMessage(error, credentialValuesFromEnv(options.request.pass_env ?? [], options.env ?? process.env));
     if (bundle) {
       await atomicWriteJSON(path.join(path.dirname(bundle), "hitch-run-import-error.json"), {
         schema_version: "1",
         trial_id: trialId,
         code: "run_bundle_import_failed",
-        message: (error as Error).message,
+        message: safeMessage,
         recorded_at: new Date().toISOString(),
       }).catch(() => {});
     }
@@ -109,7 +110,7 @@ export async function importEvalTrialRun(
       trial: {
         ...trial,
         exception_info: "hitch-run-bundle-import-failed",
-        hitch_import_error: (error as Error).message,
+        hitch_import_error: safeMessage,
       },
       taskId,
       trialId,
@@ -272,7 +273,10 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
     await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
     const bridgeError = input.trial.exception_info
-      ? await readHarborBridgeError(input.trialDirectory)
+      ? await readHarborBridgeError(
+        input.trialDirectory,
+        credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env),
+      )
       : null;
     const bridgeErrorRef = bridgeError ? "diagnostics/harbor-bridge-error.json" : undefined;
     if (bridgeError && bridgeErrorRef) {

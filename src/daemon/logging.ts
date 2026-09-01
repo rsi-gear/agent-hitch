@@ -1,3 +1,5 @@
+import { redactCredentialText } from "../foundation/index.js";
+
 const SAFE_EVENT_FIELDS = new Set([
   "type", "eval_id", "rerun_id", "run_id", "worker_id", "work_id", "lease_id", "build_id",
   "rerun_type", "duration_ms", "code", "observation_status", "residual_resources",
@@ -5,7 +7,7 @@ const SAFE_EVENT_FIELDS = new Set([
 ]);
 
 export function boundedMessage(value: unknown, limit = 4_096): string {
-  const text = typeof value === "string" ? value : String(value ?? "");
+  const text = redactCredentialText(typeof value === "string" ? value : String(value ?? "")).text;
   return text.length <= limit ? text : `${text.slice(0, limit - 15)}…[truncated]`;
 }
 

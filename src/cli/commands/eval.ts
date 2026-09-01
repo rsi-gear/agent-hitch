@@ -1,7 +1,8 @@
 import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "../../backends/index.js";
-import { inspectEval, listEvals, parseEvalRerunType, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
+import type { EvalExecutionPolicyV1, ResourceVectorV1 } from "../../domain/index.js";
+import { inspectEval, isControlPlaneEval, listEvals, parseEvalRerunType, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
 import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
-import { HitchError, SCHEMA_VERSION, invalidInput } from "../../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, invalidInput, positiveInteger } from "../../foundation/index.js";
 import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
 import { waitForDaemonEval, waitForDaemonEvalRerun } from "../output.js";
 
@@ -26,7 +27,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   if (!evalIdValue) throw invalidInput("eval rerun requires an eval ID");
   const evalId = validateEvalId(evalIdValue);
   const invalid = takeFlag(args, "--invalid");
-  const useDaemon = takeFlag(args, "--daemon");
+  let useDaemon = takeFlag(args, "--daemon");
   const taskNames = takeRepeatedOption(args, "--task");
   const rerunType = parseEvalRerunType(takeOption(args, "--type") || "candidate-restart");
   const output = takeOption(args, "--output") || "json";
@@ -34,6 +35,15 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   assertNoArgs(args);
   if (output !== "json") throw invalidInput("eval rerun --output must be json");
   if (invalid === (taskNames.length > 0)) throw invalidInput("eval rerun requires exactly one of --invalid or --task");
+  if (!useDaemon && await isControlPlaneEval(root, evalId)) {
+    if (!(await probeDaemonHealth(root))) {
+      throw new HitchError("control-plane eval reruns require a running daemon; start it and retry with --daemon", {
+        code: "control_plane_required",
+        exitCode: 2,
+      });
+    }
+    useDaemon = true;
+  }
   if (useDaemon) {
     if (harborExecutable !== undefined) throw invalidInput("eval rerun --harbor cannot be combined with --daemon");
     const client = await daemonClient(root);
@@ -116,6 +126,7 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
   const requestedEvalId = takeOption(args, "--eval-id");
+  const executionOptions = parseEvalExecutionOptions(args);
   const request = parseEvalRequest(args);
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
@@ -123,15 +134,17 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
     if (requestedEvalId !== undefined) throw invalidInput("--eval-id is unavailable with --daemon; submission IDs are server-assigned");
     if (harborExecutable !== undefined) throw invalidInput("--harbor is unavailable with --daemon; configure Harbor for the daemon environment");
     const client = await daemonClient(root);
+    const submission = await daemonEvalSubmission(client, request, executionOptions);
     const accepted = await client.request("/v1/evals", {
       method: "POST",
-      body: JSON.stringify(request),
+      body: JSON.stringify(submission),
       ...(idempotencyKey ? { headers: { "idempotency-key": idempotencyKey } } : {}),
     });
     const result = await waitForDaemonEval(client, accepted.eval_id as string, output);
     process.exitCode = result.exit_code as number;
     return;
   }
+  if (executionOptions.explicit) throw invalidInput("eval execution policy options require --daemon or eval submit");
   if (idempotencyKey !== undefined) throw invalidInput("--idempotency-key requires --daemon");
   if ((await probeDaemonHealth(root))?.status === "running") {
     throw new HitchError("the daemon controls this root; use hitch eval run --daemon or a separate --root", {
@@ -162,15 +175,132 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
 
 async function evalSubmitCommand(args: string[], root: string): Promise<void> {
   const idempotencyKey = takeOption(args, "--idempotency-key");
+  const executionOptions = parseEvalExecutionOptions(args);
   const request = parseEvalRequest(args);
   assertNoArgs(args);
   const client = await daemonClient(root);
+  const submission = await daemonEvalSubmission(client, request, executionOptions);
   const accepted = await client.request("/v1/evals", {
     method: "POST",
-    body: JSON.stringify(request),
+    body: JSON.stringify(submission),
     ...(idempotencyKey ? { headers: { "idempotency-key": idempotencyKey } } : {}),
   });
   process.stdout.write(`${JSON.stringify(accepted, null, 2)}\n`);
+}
+
+export interface EvalCliExecutionOptions {
+  explicit: boolean;
+  provider?: string;
+  cpu_millis?: number;
+  memory_bytes?: number;
+  build_mode?: EvalExecutionPolicyV1["build"]["mode"];
+  model_capture?: EvalExecutionPolicyV1["model_capture"]["mode"];
+  require_model_capture: boolean;
+}
+
+export function parseEvalExecutionOptions(args: string[]): EvalCliExecutionOptions {
+  const provider = takeOption(args, "--provider");
+  const cpuValue = takeOption(args, "--cpu-per-trial");
+  const memoryValue = takeOption(args, "--memory-per-trial");
+  const buildMode = takeOption(args, "--build-mode");
+  const modelCapture = takeOption(args, "--model-capture");
+  const requireModelCapture = takeFlag(args, "--require-model-capture");
+  if (provider !== undefined && (!provider.trim() || /[\0\r\n]/.test(provider))) throw invalidInput("--provider must be a non-empty provider id");
+  if (buildMode !== undefined && !new Set(["backend", "prebuild-preferred", "prebuild-required"]).has(buildMode)) {
+    throw invalidInput("--build-mode must be backend, prebuild-preferred, or prebuild-required");
+  }
+  if (modelCapture !== undefined && !new Set(["off", "native", "proxy", "hybrid"]).has(modelCapture)) {
+    throw invalidInput("--model-capture must be off, native, proxy, or hybrid");
+  }
+  if (modelCapture === "off" && requireModelCapture) throw invalidInput("--model-capture off cannot be combined with --require-model-capture");
+  const cpu = cpuValue === undefined ? undefined : positiveInteger(cpuValue, "--cpu-per-trial") * 1_000;
+  if (cpu !== undefined && !Number.isSafeInteger(cpu)) throw invalidInput("--cpu-per-trial is too large");
+  return {
+    explicit: provider !== undefined || cpuValue !== undefined || memoryValue !== undefined || buildMode !== undefined || modelCapture !== undefined || requireModelCapture,
+    ...(provider === undefined ? {} : { provider: provider.trim() }),
+    ...(cpu === undefined ? {} : { cpu_millis: cpu }),
+    ...(memoryValue === undefined ? {} : { memory_bytes: parseMemorySize(memoryValue) }),
+    ...(buildMode === undefined ? {} : { build_mode: buildMode as EvalExecutionPolicyV1["build"]["mode"] }),
+    ...(modelCapture === undefined ? {} : { model_capture: modelCapture as EvalExecutionPolicyV1["model_capture"]["mode"] }),
+    require_model_capture: requireModelCapture,
+  };
+}
+
+export function buildDaemonEvalSubmission(
+  request: Record<string, unknown>,
+  options: EvalCliExecutionOptions,
+  defaultTrial: ResourceVectorV1,
+): Record<string, unknown> {
+  if (!options.explicit) return request;
+  const maxParallelism = request.max_concurrent;
+  if (!Number.isSafeInteger(maxParallelism) || (maxParallelism as number) < 1) throw invalidInput("eval max_concurrent is invalid");
+  const resources: ResourceVectorV1 = {
+    ...defaultTrial,
+    ...(options.cpu_millis === undefined ? {} : { cpu_millis: options.cpu_millis }),
+    ...(options.memory_bytes === undefined ? {} : { memory_bytes: options.memory_bytes }),
+  };
+  if (resources.cpu_millis < 1 || resources.memory_bytes < 1 || resources.container_slots < 1 || resources.build_slots !== 0) {
+    throw new HitchError("daemon eval trial resource defaults are invalid", { code: "daemon_resource_policy_invalid", exitCode: 12 });
+  }
+  return {
+    schema_version: SCHEMA_VERSION,
+    request,
+    execution: {
+      provider: options.provider ?? "local-docker",
+      max_parallelism: maxParallelism,
+      resources: { default_trial: resources },
+      build: { mode: options.build_mode ?? "prebuild-preferred" },
+      model_capture: { mode: options.model_capture ?? "native", required: options.require_model_capture },
+    },
+  };
+}
+
+async function daemonEvalSubmission(
+  client: Awaited<ReturnType<typeof daemonClient>>,
+  request: Record<string, unknown>,
+  options: EvalCliExecutionOptions,
+): Promise<Record<string, unknown>> {
+  if (!options.explicit) return request;
+  const health = await client.request("/health");
+  const policy = health.resource_policy;
+  const evalTrial = policy && typeof policy === "object" && !Array.isArray(policy)
+    ? (policy as Record<string, unknown>).eval_trial
+    : undefined;
+  return buildDaemonEvalSubmission(request, options, parseHealthResourceVector(evalTrial));
+}
+
+function parseHealthResourceVector(value: unknown): ResourceVectorV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HitchError("daemon health has no eval trial resource policy", { code: "daemon_resource_policy_unavailable", exitCode: 12 });
+  }
+  const record = value as Record<string, unknown>;
+  const required = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
+  if (required.some((field) => !Number.isSafeInteger(record[field]) || (record[field] as number) < 0)
+    || (record.gpu_count !== undefined && (!Number.isSafeInteger(record.gpu_count) || (record.gpu_count as number) < 0))
+    || (record.ephemeral_disk_bytes !== undefined && (!Number.isSafeInteger(record.ephemeral_disk_bytes) || (record.ephemeral_disk_bytes as number) < 0))) {
+    throw new HitchError("daemon health eval trial resource policy is invalid", { code: "daemon_resource_policy_invalid", exitCode: 12 });
+  }
+  return {
+    cpu_millis: record.cpu_millis as number,
+    memory_bytes: record.memory_bytes as number,
+    container_slots: record.container_slots as number,
+    build_slots: record.build_slots as number,
+    ...(record.gpu_count === undefined ? {} : { gpu_count: record.gpu_count as number }),
+    ...(record.ephemeral_disk_bytes === undefined ? {} : { ephemeral_disk_bytes: record.ephemeral_disk_bytes as number }),
+  };
+}
+
+function parseMemorySize(value: string): number {
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)(B|KiB|MiB|GiB)$/i);
+  if (!match) throw invalidInput("--memory-per-trial must use B, KiB, MiB, or GiB units");
+  const amount = Number(match[1]);
+  const unit = (match[2] as string).toLowerCase();
+  const multiplier = unit === "gib" ? 1024 ** 3 : unit === "mib" ? 1024 ** 2 : unit === "kib" ? 1024 : 1;
+  const bytes = amount * multiplier;
+  if (!Number.isSafeInteger(bytes) || bytes < 1024 ** 2 || bytes % (1024 ** 2) !== 0) {
+    throw invalidInput("--memory-per-trial must be a positive whole number of MiB");
+  }
+  return bytes;
 }
 
 async function evalWatchCommand(args: string[], root: string): Promise<void> {
