@@ -78,6 +78,7 @@ export async function prepareRemoteWorkInputs(input: {
   preparedArtifact: Parameters<EvalRemoteWorkExecutor>[0]["preparedArtifact"];
   runtimeDirectory: string;
   runtimeId: string;
+  credentialNames?: readonly string[];
 }): Promise<RemoteWorkInputRefV1[]> {
   const store = new RemoteWorkInputStore(input.root);
   await store.initialize();
@@ -90,6 +91,7 @@ export async function prepareRemoteWorkInputs(input: {
     harness_artifact: { ...input.preparedArtifact, directory: "harness-artifact" },
     controller_runtime: { runtime_id: input.runtimeId, directory: "controller-runtime" },
     task: { task_id: taskId, directory: "task-input" },
+    credential_names: [...(input.credentialNames ?? [])].sort(),
   })}\n`);
   const [workSpec, harness, runtime, task] = await Promise.all([
     store.put("work-spec", "json", spec),

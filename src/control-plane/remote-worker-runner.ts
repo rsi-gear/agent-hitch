@@ -12,6 +12,8 @@ export interface RemoteWorkerExecutionResult {
 export interface RemoteWorkerExecutorInput {
   offer: RemoteWorkOfferV1;
   inputs: ReadonlyMap<RemoteWorkInputRefV1["kind"], Buffer>;
+  /** Process-memory only; the runner clears this map after executor settlement. */
+  credentials: ReadonlyMap<string, string>;
   signal: AbortSignal;
   emit(type: string, payload?: Record<string, unknown>): Promise<void>;
 }
@@ -148,13 +150,16 @@ export class RemoteWorkerRunner {
     job.offer = accepted;
     job.accepted = true;
     await this.heartbeat();
+    const credentials = new Map(Object.entries((await retry(
+      () => this.client.credentials(job.offer), this.retryIntervalMs, job.controller.signal,
+    )).credentials));
     let sequence = 0;
     const emit = (type: string, payload?: Record<string, unknown>) => retry(
       () => this.client.emit(job.offer, ++sequence, type, payload), this.retryIntervalMs, job.controller.signal,
     );
     let result: RemoteWorkerExecutionResult;
     try {
-      result = await this.execute({ offer: job.offer, inputs, signal: job.controller.signal, emit });
+      result = await this.execute({ offer: job.offer, inputs, credentials, signal: job.controller.signal, emit });
       validateResult(result);
       job.cleanup = result.release;
     } catch (error) {
@@ -162,6 +167,8 @@ export class RemoteWorkerRunner {
         status: job.controller.signal.aborted ? "cancelled" : "failed",
         artifacts: [{ kind: "diagnostic", body: diagnostic(error) }],
       };
+    } finally {
+      credentials.clear();
     }
     const artifacts: RemoteWorkArtifactRefV1[] = [];
     for (const artifact of result.artifacts ?? []) {

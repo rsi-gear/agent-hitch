@@ -1,13 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, RemoteWorkerHeartbeatV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteCredentialEnvelopeV1, RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, RemoteWorkerHeartbeatV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { parseExecutionLease } from "../evals/index.js";
 import { validateResourceVector } from "./resources.js";
 import { RemoteWorkerArtifactStore } from "./remote-worker-artifacts.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { RemoteWorkInputStore } from "./remote-work-inputs.js";
+import { RemoteCredentialEnvelopeIssuer, canonicalRemoteCredentialNames } from "./remote-worker-credentials.js";
 
 const OFFER_ID = /^offer_[a-f0-9]{32}$/;
 const LEASE_ID = /^lease_[a-f0-9]{32}$/;
@@ -19,10 +20,11 @@ export class RemoteWorkerProtocol {
   private readonly directory: string;
   private readonly locks: string;
   private readonly offerTtlMs: number;
+  private readonly credentials: RemoteCredentialEnvelopeIssuer;
   private readonly artifacts: RemoteWorkerArtifactStore;
   private readonly inputs: RemoteWorkInputStore;
 
-  constructor(input: { root: string; registry: RemoteWorkerRegistry; offerTtlMs?: number }) {
+  constructor(input: { root: string; registry: RemoteWorkerRegistry; offerTtlMs?: number; credentialEnvelopeTtlMs?: number; credentialEnv?: NodeJS.ProcessEnv }) {
     const ttl = input.offerTtlMs ?? DEFAULT_OFFER_TTL_MS;
     if (!input.root || !Number.isSafeInteger(ttl) || ttl < 1_000 || ttl > 5 * 60_000) throw new TypeError("remote worker protocol configuration is invalid");
     const paths = statePaths(input.root);
@@ -30,6 +32,10 @@ export class RemoteWorkerProtocol {
     this.directory = paths.workerProtocol;
     this.locks = paths.workerProtocolLocks;
     this.offerTtlMs = ttl;
+    this.credentials = new RemoteCredentialEnvelopeIssuer({
+      ...(input.credentialEnv ? { env: input.credentialEnv } : {}),
+      ...(input.credentialEnvelopeTtlMs === undefined ? {} : { ttlMs: input.credentialEnvelopeTtlMs }),
+    });
     this.artifacts = new RemoteWorkerArtifactStore({ root: input.root });
     this.inputs = new RemoteWorkInputStore(input.root);
   }
@@ -38,12 +44,17 @@ export class RemoteWorkerProtocol {
     await Promise.all([ensureDir(this.directory), ensureDir(this.locks), this.artifacts.initialize(), this.inputs.initialize()]);
   }
 
-  async createOffer(workerId: string, leaseValue: ExecutionLeaseV1, workValue: BackendWorkItemV1, inputRefs: RemoteWorkInputRefV1[] = []): Promise<RemoteWorkOfferV1> {
+  credentialNamesFor(explicitNames: readonly string[]): string[] {
+    return this.credentials.namesFor(explicitNames);
+  }
+
+  async createOffer(workerId: string, leaseValue: ExecutionLeaseV1, workValue: BackendWorkItemV1, inputRefs: RemoteWorkInputRefV1[] = [], credentialNames: readonly string[] = []): Promise<RemoteWorkOfferV1> {
     return withFileLock(this.locks, `offers-${workerId}`, async () => {
       const worker = await this.requireReadyWorker(workerId);
       const lease = parseExecutionLease(leaseValue);
       const work = parseRemoteWorkItem(workValue);
       const inputs = inputRefs.map(parseInputRef);
+      const credentials = this.credentials.requireAvailable(credentialNames);
       if (new Set(inputs.map((entry) => entry.kind)).size !== inputs.length) throw protocolError("remote work inputs are duplicated");
       if (lease.state !== "offered" || lease.worker_id !== workerId || lease.provider !== worker.worker.provider
         || lease.collision_domain_id !== worker.worker.collision_domain_id || lease.work_id !== work.work_id
@@ -62,6 +73,7 @@ export class RemoteWorkerProtocol {
         lease,
         work,
         ...(inputs.length > 0 ? { inputs } : {}),
+        ...(credentials.length > 0 ? { credential_names: credentials } : {}),
         state: "offered",
         issued_at: now.toISOString(),
         expires_at: new Date(now.getTime() + this.offerTtlMs).toISOString(),
@@ -264,6 +276,11 @@ export class RemoteWorkerProtocol {
     return offer;
   }
 
+  async issueCredentialEnvelope(workerId: string, leaseId: string, generation: number, epoch: number): Promise<RemoteCredentialEnvelopeV1> {
+    const offer = await this.activeOfferForLease(workerId, leaseId, generation, epoch);
+    return this.credentials.issue(offer);
+  }
+
   async validateHeartbeatLeases(workerId: string, heartbeat: RemoteWorkerHeartbeatV1): Promise<void> {
     await this.registry.validateHeartbeatGeneration(workerId, heartbeat.generation);
     for (const lease of heartbeat.active_leases) {
@@ -336,7 +353,7 @@ export class RemoteWorkerProtocol {
 
 export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   const record = exact(value, [
-    "schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "inputs", "state", "issued_at", "expires_at",
+    "schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "inputs", "credential_names", "state", "issued_at", "expires_at",
     "accepted_at", "completed_at", "released_at", "rejection_code", "terminal",
     "accept_receipt_digest", "terminal_receipt_digest", "release_receipt_digest",
   ], "remote work offer");
@@ -352,11 +369,13 @@ export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   const work = parseRemoteWorkItem(record.work);
   const inputs = record.inputs === undefined ? undefined : Array.isArray(record.inputs) ? record.inputs.map(parseInputRef) : (() => { throw protocolError("remote work inputs are invalid"); })();
   if (inputs && new Set(inputs.map((entry) => entry.kind)).size !== inputs.length) throw protocolError("remote work inputs are duplicated");
+  const credentialNames = record.credential_names === undefined ? undefined : canonicalRemoteCredentialNames(record.credential_names as readonly string[]);
   const terminal = record.terminal === undefined ? undefined : parseTerminal(record.terminal);
   if (lease.worker_id !== record.worker_id || lease.work_id !== work.work_id || lease.eval_id !== work.eval_id
     || (record.state === "completed" || record.state === "release-requested" || record.state === "released") !== (terminal !== undefined)) throw protocolError("remote work offer evidence is inconsistent");
-  return { ...record, ...(inputs ? { inputs } : {}) } as unknown as RemoteWorkOfferV1;
+  return { ...record, ...(inputs ? { inputs } : {}), ...(credentialNames?.length ? { credential_names: credentialNames } : {}) } as unknown as RemoteWorkOfferV1;
 }
+
 
 function parseRemoteWorkItem(value: unknown): BackendWorkItemV1 {
   const record = exact(value, ["schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots", "opaque_membership", "requested_parallelism", "reservation", "provider", "image_refs"], "remote work item");

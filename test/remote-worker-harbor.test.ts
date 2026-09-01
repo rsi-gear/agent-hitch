@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RemoteWorkerHttpClient, RemoteWorkerRunner } from "../src/control-plane/index.js";
@@ -20,15 +20,19 @@ test("packaged worker executes a staged remote eval through Harbor and returns a
   const dataset = path.join(controllerRoot, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), "");
+  const secret = "controller-only-short-ttl-secret";
   const npm = await writeFakeNpm(controllerRoot);
-  const harbor = await writeFakeHarbor(controllerRoot);
+  const harbor = await writeFakeHarbor(controllerRoot, { leakEnvName: "CUSTOM_REMOTE_SECRET" });
   const inspector = await writeResourceInspector(controllerRoot);
   const docker = await writeEmptyDocker(controllerRoot);
-  const env = { ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector, HITCH_DOCKER_PATH: docker };
+  const workerEnv: NodeJS.ProcessEnv = { ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector, HITCH_DOCKER_PATH: docker };
+  delete workerEnv.CUSTOM_REMOTE_SECRET;
+  const controllerEnv = { ...workerEnv, CUSTOM_REMOTE_SECRET: secret };
   const server = new DaemonServer({
     root: controllerRoot, port: 0, maxConcurrent: 1, logger: () => {},
     resourceCapacity: { ...TRIAL, build_slots: 1 }, evalTrialResources: TRIAL,
-    evalExecutor: (options) => runEval({ ...options, harborExecutable: harbor, env }),
+    credentialEnv: { CUSTOM_REMOTE_SECRET: secret },
+    evalExecutor: (options) => runEval({ ...options, harborExecutable: harbor, env: controllerEnv }),
   });
   await server.start();
   t.after(() => server.close());
@@ -43,7 +47,7 @@ test("packaged worker executes a staged remote eval through Harbor and returns a
   };
   const credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration });
   const client = new RemoteWorkerHttpClient({ baseUrl, credential });
-  const execution = { root: workerRoot, env, harborExecutable: harbor, dockerExecutable: docker, trialBundleGraceMs: 0 };
+  const execution = { root: workerRoot, env: workerEnv, harborExecutable: harbor, dockerExecutable: docker, trialBundleGraceMs: 0 };
   const runner = new RemoteWorkerRunner({
     client, capacity: TRIAL, execute: remoteHarborWorker(execution), once: true,
     releaseUnknown: (offer) => releaseRemoteHarborOffer(execution, offer),
@@ -54,7 +58,10 @@ test("packaged worker executes a staged remote eval through Harbor and returns a
   const submitted = await admin.request("/v1/evals", {
     method: "POST",
     body: JSON.stringify({
-      request: { dataset, harness_ref: "pi@version:1.2.3", max_concurrent: 1, infrastructure_retries: 0 },
+      request: {
+        dataset, harness_ref: "pi@version:1.2.3", max_concurrent: 1, infrastructure_retries: 0,
+        pass_env: ["CUSTOM_REMOTE_SECRET"],
+      },
       execution: {
         provider: "remote-docker", max_parallelism: 1, resources: { default_trial: TRIAL },
         build: { mode: "backend" }, model_capture: { mode: "native", required: false },
@@ -77,7 +84,22 @@ test("packaged worker executes a staged remote eval through Harbor and returns a
   assert.match(evidence, /"provider": "remote-docker"/);
   assert.match(evidence, /"worker_id": "worker_harbor_e2e"/);
   assert.equal((await client.listOffers()).length, 0, "the control plane must explicitly release the completed offer");
+  for (const root of [controllerRoot, workerRoot]) {
+    for (const file of await regularFiles(root)) {
+      assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `remote credential leaked into ${path.relative(root, file)}`);
+    }
+  }
 });
+
+async function regularFiles(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await regularFiles(target));
+    else if (entry.isFile()) files.push(target);
+  }
+  return files;
+}
 
 async function writeResourceInspector(root: string): Promise<string> {
   const executable = path.join(root, "fake-resource-inspector");

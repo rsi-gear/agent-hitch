@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   RemoteWorkArtifactRefV1,
+  RemoteCredentialEnvelopeV1,
   RemoteWorkInputRefV1,
   RemoteWorkOfferV1,
   RemoteWorkerHeartbeatV1,
@@ -14,6 +15,7 @@ import { parseRemoteWorkOffer } from "./remote-worker-protocol.js";
 const TOKEN = /^[a-f0-9]{64}$/;
 const WORKER = /^worker_[a-z0-9][a-z0-9_-]{0,62}$/;
 const MAX_ERROR_BYTES = 8_192;
+const MAX_CREDENTIAL_ENVELOPE_BYTES = 1024 * 1024;
 
 export interface RemoteWorkerCredentialV1 {
   schema_version: "1";
@@ -85,6 +87,16 @@ export class RemoteWorkerHttpClient {
   }
 
   accept(offer: RemoteWorkOfferV1): Promise<RemoteWorkOfferV1> { return this.receipt(offer, "accept", { accepted: true }); }
+
+  async credentials(offer: RemoteWorkOfferV1): Promise<RemoteCredentialEnvelopeV1> {
+    this.assertOffer(offer);
+    if (offer.state !== "accepted") throw clientError("remote credentials require an accepted offer");
+    const response = await this.call(
+      `v1/workers/${this.workerId}/leases/${offer.lease.lease_id}/credentials?generation=${this.generation}&epoch=${offer.lease.epoch}`,
+    );
+    if (response.headers.get("cache-control") !== "no-store") throw clientError("remote credential response is cacheable");
+    return parseCredentialEnvelope(object(object(await responseJSON(response, MAX_CREDENTIAL_ENVELOPE_BYTES)).envelope), offer);
+  }
   reject(offer: RemoteWorkOfferV1, rejectionCode: string): Promise<RemoteWorkOfferV1> {
     if (!rejectionCode || rejectionCode.length > 128 || !/^[a-z0-9][a-z0-9._-]*$/.test(rejectionCode)) throw clientError("remote work rejection code is invalid");
     return this.receipt(offer, "accept", { accepted: false, rejection_code: rejectionCode });
@@ -163,10 +175,31 @@ async function call(request: typeof fetch, url: URL, token: string, init: Reques
   throw clientError(`remote worker request failed: ${message}`);
 }
 
-async function responseJSON(response: Response): Promise<unknown> {
-  const text = (await response.text()).slice(0, MAX_ERROR_BYTES);
+async function responseJSON(response: Response, maximum = MAX_ERROR_BYTES): Promise<unknown> {
+  const raw = await response.text();
+  if (Buffer.byteLength(raw) > maximum) throw clientError("remote worker response exceeds its size limit");
+  const text = raw.slice(0, maximum);
   try { return JSON.parse(text) as unknown; }
   catch { throw clientError("remote worker response is not valid JSON"); }
+}
+
+function parseCredentialEnvelope(record: Record<string, unknown>, offer: RemoteWorkOfferV1): RemoteCredentialEnvelopeV1 {
+  const allowed = new Set(["schema_version", "worker_id", "generation", "offer_id", "lease_id", "epoch", "issued_at", "expires_at", "credentials"]);
+  const credentials = object(record.credentials);
+  const names = Object.keys(credentials).sort();
+  const expected = [...(offer.credential_names ?? [])].sort();
+  if (Object.keys(record).some((key) => !allowed.has(key)) || record.schema_version !== "1"
+    || record.worker_id !== offer.worker_id || record.generation !== offer.generation || record.offer_id !== offer.offer_id
+    || record.lease_id !== offer.lease.lease_id || record.epoch !== offer.lease.epoch
+    || typeof record.issued_at !== "string" || typeof record.expires_at !== "string"
+    || !Number.isFinite(Date.parse(record.issued_at)) || !Number.isFinite(Date.parse(record.expires_at))
+    || Date.parse(record.expires_at) <= Date.now() || Date.parse(record.expires_at) - Date.parse(record.issued_at) > 5 * 60_000
+    || JSON.stringify(names) !== JSON.stringify(expected)
+    || names.some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)
+      || typeof credentials[name] !== "string" || Buffer.byteLength(credentials[name] as string) > 64 * 1024)) {
+    throw clientError("remote credential envelope is invalid");
+  }
+  return record as unknown as RemoteCredentialEnvelopeV1;
 }
 
 function parseBaseUrl(value: string): URL {

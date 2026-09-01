@@ -213,6 +213,14 @@ resolved only from that process environment and are removed from provider
 capture, trajectory, result, event and diagnostic evidence before persistence;
 Harbor host stdout/stderr use the same bounded streaming redactor.
 
+For remote workers, offers and content-addressed work specs likewise contain
+only credential names. A worker can fetch values only after accepting the exact
+offer, through a worker-authenticated endpoint fenced by generation, lease ID
+and epoch. The response is a short-TTL `no-store` envelope; the packaged runner
+keeps it in process memory, overlays it on the Harbor execution environment,
+and clears the map when execution settles. Credential envelopes are not events,
+input artifacts, result artifacts, or persistent worker state.
+
 ## Records
 
 Each eval is stored at `~/.hitch/evals/eval_<id>/` (or below `--root`):

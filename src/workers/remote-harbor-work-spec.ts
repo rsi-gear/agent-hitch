@@ -12,12 +12,13 @@ export interface RemoteHarborWorkSpecV1 {
   harness_artifact: HarborPreparedArtifactUse;
   controller_runtime: { runtime_id: string; directory: "controller-runtime" };
   task: { task_id: string; directory: "task-input" };
+  credential_names: string[];
 }
 
 export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOfferV1): RemoteHarborWorkSpecV1 {
   const spec = exact(value, [
-    "schema_version", "request", "plan", "work", "resolution", "harness_artifact", "controller_runtime", "task",
-  ], "remote Harbor work spec");
+    "schema_version", "request", "plan", "work", "resolution", "harness_artifact", "controller_runtime", "task", "credential_names",
+  ], "remote Harbor work spec", ["credential_names"]);
   if (spec.schema_version !== "1") throw specError("remote Harbor work spec version is invalid");
   const request = parseRequest(spec.request);
   const plan = parseEvalExecutionPlan(spec.plan);
@@ -28,17 +29,22 @@ export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOffer
   const harnessArtifact = parseArtifact(spec.harness_artifact);
   const runtime = exact(spec.controller_runtime, ["runtime_id", "directory"], "remote controller runtime");
   const task = exact(spec.task, ["task_id", "directory"], "remote task input");
+  const credentialNames = spec.credential_names === undefined && offer.credential_names === undefined
+    ? []
+    : environmentNames(spec.credential_names) ? [...spec.credential_names as string[]].sort() : (() => { throw specError("remote credential names are invalid"); })();
   if (runtime.directory !== "controller-runtime" || typeof runtime.runtime_id !== "string" || !/^sha256:[a-f0-9]{64}$/.test(runtime.runtime_id)
     || task.directory !== "task-input" || task.task_id !== work.task_ids[0] || work.task_ids.length !== 1
     || harnessArtifact.directory !== "harness-artifact" || harnessArtifact.harness_id !== resolution.harness_id
     || harnessArtifact.revision_identity !== resolution.identity || request.harness_ref !== resolution.requested_ref
-    || request.benchmark_id !== plan.benchmark.id || request.benchmark_revision !== plan.benchmark.revision) {
+    || request.benchmark_id !== plan.benchmark.id || request.benchmark_revision !== plan.benchmark.revision
+    || JSON.stringify(credentialNames) !== JSON.stringify(offer.credential_names ?? [])) {
     throw specError("remote Harbor work inputs do not match their pinned identities");
   }
   return {
     schema_version: "1", request, plan, work, resolution, harness_artifact: harnessArtifact,
     controller_runtime: { runtime_id: runtime.runtime_id, directory: "controller-runtime" },
     task: { task_id: task.task_id as string, directory: "task-input" },
+    credential_names: credentialNames,
   };
 }
 
@@ -83,9 +89,9 @@ function parseArtifact(value: unknown): HarborPreparedArtifactUse {
   return artifact as unknown as HarborPreparedArtifactUse;
 }
 
-function exact(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+function exact(value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> {
   if (!object(value)) throw specError(`${label} must be an object`);
-  if (keys.some((key) => !(key in value)) || Object.keys(value).some((key) => !keys.includes(key))) throw specError(`${label} fields are invalid`);
+  if (keys.some((key) => !(key in value) && !optional.includes(key)) || Object.keys(value).some((key) => !keys.includes(key))) throw specError(`${label} fields are invalid`);
   return value;
 }
 

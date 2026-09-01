@@ -23,11 +23,15 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
   if (!options.root) throw new TypeError("remote Harbor worker root is required");
   const root = path.resolve(options.root);
   const env = options.env ?? process.env;
-  return async ({ offer, inputs, signal, emit }): Promise<RemoteWorkerExecutionResult> => {
+  return async ({ offer, inputs, credentials, signal, emit }): Promise<RemoteWorkerExecutionResult> => {
     const workspace = path.join(statePaths(root).workerStaging, offer.lease.lease_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
     await removeWorkerWorkspace(workspace);
     await mkdir(workspace, { recursive: true, mode: 0o700 });
     const spec = parseRemoteHarborWorkSpec(parseJSON(required(inputs, "work-spec")), offer);
+    if (JSON.stringify([...credentials.keys()].sort()) !== JSON.stringify(spec.credential_names)) {
+      throw new TypeError("remote credential envelope does not match its work spec");
+    }
+    const executionEnv: NodeJS.ProcessEnv = { ...env, ...Object.fromEntries(credentials) };
     const harnessDirectory = path.join(workspace, "harness-artifact");
     const runtimeDirectory = path.join(workspace, "controller-runtime");
     const datasetDirectory = await ensureDir(path.join(workspace, "dataset"));
@@ -71,7 +75,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         executionResources: runtimeResources.mainLimits,
         ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
         dockerOwnership: ownership, resolvedImages: resolvedImageMapping(offer.work.image_refs ?? []),
-        env, ...(options.harborExecutable ? { harborExecutable: options.harborExecutable } : {}), signal,
+        env: executionEnv, ...(options.harborExecutable ? { harborExecutable: options.harborExecutable } : {}), signal,
         ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
         emit: publishEvent,
       });
@@ -101,6 +105,8 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       await eventTail.catch(() => undefined);
       await stopObserver().catch(() => undefined);
       return { status: signal.aborted ? "cancelled" : "failed", artifacts: [failureDiagnostic(errorCode(error))], release };
+    } finally {
+      for (const name of spec.credential_names) delete executionEnv[name];
     }
   };
 }

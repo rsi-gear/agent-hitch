@@ -122,12 +122,19 @@ test("remote work protocol fences offers, events, terminal receipts, and release
   const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-protocol-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const registry = new RemoteWorkerRegistry({ root });
-  const protocol = new RemoteWorkerProtocol({ root, registry });
+  const secret = "lease-fenced-remote-secret";
+  const protocol = new RemoteWorkerProtocol({
+    root, registry, credentialEnvelopeTtlMs: 5_000, credentialEnv: { CUSTOM_REMOTE_SECRET: secret },
+  });
   await Promise.all([registry.initialize(), protocol.initialize()]);
   await registry.register(registration());
   const { lease, work } = remoteWork(3);
-  const offer = await protocol.createOffer("worker_remote_a", lease, work);
+  const offer = await protocol.createOffer("worker_remote_a", lease, work, [], ["CUSTOM_REMOTE_SECRET"]);
   assert.equal(offer.state, "offered");
+  assert.deepEqual(offer.credential_names, ["CUSTOM_REMOTE_SECRET"]);
+  assert.equal(JSON.stringify(offer).includes(secret), false);
+  await assert.rejects(protocol.issueCredentialEnvelope("worker_remote_a", lease.lease_id, 1, 1),
+    (error: unknown) => (error as { code?: string }).code === "worker_protocol_invalid");
   await assert.rejects(protocol.createOffer("worker_remote_a", {
     ...lease, lease_id: `lease_${"f".repeat(32)}`, work_id: `work_${"1".repeat(32)}`,
   }, {
@@ -142,6 +149,12 @@ test("remote work protocol fences offers, events, terminal receipts, and release
   };
   const accepted = await protocol.acceptOffer("worker_remote_a", accept);
   assert.equal(accepted.state, "accepted");
+  const envelope = await protocol.issueCredentialEnvelope("worker_remote_a", lease.lease_id, 1, 1);
+  assert.deepEqual(envelope.credentials, { CUSTOM_REMOTE_SECRET: secret });
+  assert.equal(envelope.offer_id, offer.offer_id);
+  assert.equal(Date.parse(envelope.expires_at) - Date.parse(envelope.issued_at), 5_000);
+  await assert.rejects(protocol.issueCredentialEnvelope("worker_remote_a", lease.lease_id, 1, 2),
+    (error: unknown) => (error as { code?: string }).code === "worker_protocol_invalid");
   await protocol.validateHeartbeatLeases("worker_remote_a", {
     schema_version: "1", generation: 1, health: "healthy", allocated: work.reservation,
     active_leases: [{ lease_id: lease.lease_id, epoch: 1 }], sent_at: new Date().toISOString(),
@@ -179,6 +192,8 @@ test("remote work protocol fences offers, events, terminal receipts, and release
   };
   const completed = await protocol.completeOffer("worker_remote_a", complete);
   assert.equal(completed.state, "completed");
+  await assert.rejects(protocol.issueCredentialEnvelope("worker_remote_a", lease.lease_id, 1, 1),
+    (error: unknown) => (error as { code?: string }).code === "worker_protocol_invalid");
   assert.deepEqual(await protocol.completeOffer("worker_remote_a", complete), completed);
   const release = {
     schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce, generation: 1,

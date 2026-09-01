@@ -68,6 +68,21 @@ export async function handleRemoteWorkRoute(input: {
   adminToken: string;
 }): Promise<boolean> {
   const { request, response, url, registry, protocol } = input;
+  const credentialMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/credentials$/);
+  if (credentialMatch && request.method === "GET") {
+    const workerId = credentialMatch[1] as string;
+    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    else {
+      const envelope = await protocol.issueCredentialEnvelope(
+        workerId, credentialMatch[2] as string,
+        positiveGeneration(url.searchParams.get("generation")), positiveGeneration(url.searchParams.get("epoch")),
+      );
+      response.setHeader("cache-control", "no-store");
+      response.setHeader("pragma", "no-cache");
+      json(response, 200, { schema_version: "1", envelope });
+    }
+    return true;
+  }
   const inputMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/inputs\/(sha256:[a-f0-9]{64})$/);
   if (inputMatch && request.method === "GET") {
     const workerId = inputMatch[1] as string;
@@ -102,7 +117,10 @@ export async function handleRemoteWorkRoute(input: {
       if (!authorized(request, input.adminToken)) unauthorized(response);
       else {
         const body = objectBody(await readBodyJSON(request));
-        const offer = await protocol.createOffer(workerId, body.lease as ExecutionLeaseV1, body.work as BackendWorkItemV1, body.inputs as RemoteWorkInputRefV1[] | undefined);
+        const offer = await protocol.createOffer(
+          workerId, body.lease as ExecutionLeaseV1, body.work as BackendWorkItemV1,
+          body.inputs as RemoteWorkInputRefV1[] | undefined, body.credential_names as string[] | undefined,
+        );
         json(response, 201, { schema_version: "1", offer });
       }
       return true;

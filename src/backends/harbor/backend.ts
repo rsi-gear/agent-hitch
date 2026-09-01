@@ -467,7 +467,7 @@ async function discoverHarbor(explicit: string | undefined, root: string, env: N
 }
 
 function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.ProcessEnv): string[] {
-  const names = new Set(HARBOR_CREDENTIAL_ENV.filter((name) => env[name] !== undefined));
+  const names = new Set<string>(HARBOR_CREDENTIAL_ENV.filter((name) => env[name] !== undefined));
   for (const name of explicitNames || []) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw invalidInput(`invalid environment variable name: ${name}`);
     if (env[name] === undefined) throw invalidInput(`environment variable is not set: ${name}`);

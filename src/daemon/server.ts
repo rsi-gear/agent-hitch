@@ -24,6 +24,8 @@ export interface DaemonServerOptions {
   evalTrialResources?: ResourceVectorV1;
   evalExecutor?: EvalSchedulerOptions["executor"];
   evalRerunExecutor?: EvalRerunExecutor;
+  /** Test/deployment injection point; credential values remain process-local. */
+  credentialEnv?: NodeJS.ProcessEnv;
 }
 
 export class DaemonServer {
@@ -55,7 +57,7 @@ export class DaemonServer {
   private readonly evalExecutor: EvalSchedulerOptions["executor"] | undefined;
   private readonly evalRerunExecutor: EvalRerunExecutor | undefined;
 
-  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor }: DaemonServerOptions) {
+  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor, credentialEnv }: DaemonServerOptions) {
     this.paths = statePaths(root);
     this.rootId = hitchRootId(this.paths.root);
     this.instanceId = randomBytes(16).toString("hex");
@@ -69,7 +71,7 @@ export class DaemonServer {
     this.evalExecutor = evalExecutor;
     this.evalRerunExecutor = evalRerunExecutor;
     this.remoteWorkers = new RemoteWorkerRegistry({ root: this.paths.root });
-    this.remoteWorkerProtocol = new RemoteWorkerProtocol({ root: this.paths.root, registry: this.remoteWorkers });
+    this.remoteWorkerProtocol = new RemoteWorkerProtocol({ root: this.paths.root, registry: this.remoteWorkers, ...(credentialEnv ? { credentialEnv } : {}) });
     this.startedAt = new Date();
     this.closedPromise = new Promise((resolve) => { this.resolveClosed = resolve; });
   }

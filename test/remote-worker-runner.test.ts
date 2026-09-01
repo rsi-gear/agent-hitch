@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -18,7 +18,10 @@ const CAPACITY = { cpu_millis: 2_000, memory_bytes: 2 * 1024 ** 3, container_slo
 test("packaged remote worker client and runner complete the HTTP offer lifecycle", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-worker-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} });
+  const secret = "remote-envelope-value-must-not-persist";
+  const server = new DaemonServer({
+    root, port: 0, maxConcurrent: 1, logger: () => {}, credentialEnv: { CUSTOM_REMOTE_SECRET: secret },
+  });
   await server.start();
   t.after(() => server.close());
   const adminToken = (await readFile(statePaths(root).token, "utf8")).trim();
@@ -36,7 +39,7 @@ test("packaged remote worker client and runner complete the HTTP offer lifecycle
   const { lease, work } = remoteWork("1");
   const admin = await daemonClient(root);
   const created = await admin.request(`/v1/workers/${registration.worker_id}/offers`, {
-    method: "POST", body: JSON.stringify({ lease, work, inputs }),
+    method: "POST", body: JSON.stringify({ lease, work, inputs, credential_names: ["CUSTOM_REMOTE_SECRET"] }),
   });
   const offered = created.offer as RemoteWorkOfferV1;
   const received = new Map<RemoteWorkInputRefV1["kind"], Buffer>();
@@ -44,9 +47,10 @@ test("packaged remote worker client and runner complete the HTTP offer lifecycle
   const runner = new RemoteWorkerRunner({
     client, capacity: registration.capacity.allocatable, once: true,
     pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
-    execute: async ({ offer, inputs: downloaded, emit }) => {
+    execute: async ({ offer, inputs: downloaded, credentials, emit }) => {
       executions += 1;
       assert.equal(offer.offer_id, offered.offer_id);
+      assert.equal(credentials.get("CUSTOM_REMOTE_SECRET"), secret);
       for (const [kind, body] of downloaded) received.set(kind, body);
       await emit("worker.test", { accepted: true });
       return { status: "succeeded", artifacts: [{ kind: "diagnostic", body: Buffer.from("sealed-diagnostic") }] };
@@ -68,6 +72,9 @@ test("packaged remote worker client and runner complete the HTTP offer lifecycle
   assert.deepEqual(record.worker.capacity.allocated, ZERO);
   const persisted = await readFile(path.join(statePaths(root).workers, `${registration.worker_id}.json`), "utf8");
   assert.equal(persisted.includes(credential.token), false, "the bearer token must never be persisted in plaintext");
+  for (const file of await regularFiles(root)) {
+    assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `credential envelope leaked into ${path.relative(root, file)}`);
+  }
 });
 
 test("a restarted runner does not execute an already accepted offer again", async (t) => {
@@ -124,6 +131,16 @@ function remoteWork(suffix: string) {
     reservation: work.reservation, state: "offered" as const, epoch: 1, resource_epochs: [1],
     issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(),
   } };
+}
+
+async function regularFiles(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await regularFiles(target));
+    else if (entry.isFile()) files.push(target);
+  }
+  return files;
 }
 
 async function stagedInputs(root: string): Promise<RemoteWorkInputRefV1[]> {

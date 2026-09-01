@@ -69,12 +69,14 @@ export class RemoteWorkCoordinator {
   }
 
   private async executeWork(input: Parameters<EvalRemoteWorkExecutor>[0]): ReturnType<EvalRemoteWorkExecutor> {
+    const credentialNames = this.protocol.credentialNamesFor(input.request.pass_env);
     const inputs = await prepareRemoteWorkInputs({
       root: input.root, request: input.request, plan: input.plan, work: input.workItem,
       resolvedRevision: input.resolvedRevision, preparedArtifact: input.preparedArtifact,
       runtimeDirectory: input.runtimeDirectory, runtimeId: input.runtimeId,
+      credentialNames,
     });
-    const dispatch = await this.dispatch(input, inputs);
+    const dispatch = await this.dispatch(input, inputs, credentialNames);
     const { worker, lease, offer, collision } = dispatch;
     let accepted = false;
     let terminal = false;
@@ -136,7 +138,7 @@ export class RemoteWorkCoordinator {
     }
   }
 
-  private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0], inputs: RemoteWorkInputRefV1[]) {
+  private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0], inputs: RemoteWorkInputRefV1[], credentialNames: readonly string[]) {
     for (;;) {
       if (input.signal?.aborted) throw cancelled();
       const registered = (await this.registry.list()).filter((worker) => !worker.revoked_at && worker.worker.provider === input.workItem.provider);
@@ -168,7 +170,7 @@ export class RemoteWorkCoordinator {
           initialState: "offered",
         });
         try {
-          const offer = await this.protocol.createOffer(worker.worker.worker_id, lease.current(), input.workItem, inputs);
+          const offer = await this.protocol.createOffer(worker.worker.worker_id, lease.current(), input.workItem, inputs, credentialNames);
           return { worker, lease, offer, collision };
         } catch (error) {
           await lease.release().catch(() => undefined);

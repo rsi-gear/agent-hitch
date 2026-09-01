@@ -120,6 +120,8 @@ export interface RemoteWorkOfferV1 {
   lease: ExecutionLeaseV1;
   work: BackendWorkItemV1;
   inputs?: RemoteWorkInputRefV1[];
+  /** Names only. Values are delivered by a separate lease-fenced, no-store envelope. */
+  credential_names?: string[];
   state: "offered" | "accepted" | "rejected" | "cancel-requested" | "completed" | "release-requested" | "released" | "expired";
   issued_at: string;
   expires_at: string;
@@ -131,6 +133,18 @@ export interface RemoteWorkOfferV1 {
   accept_receipt_digest?: Sha256;
   terminal_receipt_digest?: Sha256;
   release_receipt_digest?: Sha256;
+}
+
+export interface RemoteCredentialEnvelopeV1 {
+  schema_version: "1";
+  worker_id: string;
+  generation: number;
+  offer_id: string;
+  lease_id: string;
+  epoch: number;
+  issued_at: string;
+  expires_at: string;
+  credentials: Record<string, string>;
 }
 
 export interface RemoteWorkerEventV1 {
