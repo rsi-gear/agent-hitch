@@ -39,7 +39,6 @@ export function localEnvironmentImageBuild(
     const built = await images.build({
       benchmarkId: input.benchmarkId,
       benchmarkRevision: input.benchmarkRevision,
-      taskId: input.taskId,
       contextDirectory: input.contextDirectory,
       dockerfile: input.dockerfile,
       platform: input.platform,

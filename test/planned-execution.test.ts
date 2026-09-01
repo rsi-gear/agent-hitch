@@ -277,6 +277,44 @@ test("planned task Dockerfiles are built once and injected as immutable prebuilt
   assert.equal(kwargs.hitch_resolved_images, undefined);
 });
 
+test("identical task Dockerfiles share one content-addressed build across task IDs", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-shared-build-"));
+  t.after(() => forceRemove(root));
+  const contexts = [path.join(root, "task-one"), path.join(root, "task-two")];
+  for (const context of contexts) {
+    await mkdir(context, { recursive: true });
+    await writeFile(path.join(context, "Dockerfile"), "FROM scratch\nCOPY payload /payload\n");
+    await writeFile(path.join(context, "payload"), "shared\n");
+  }
+  const manifestDigest = `sha256:${"7".repeat(64)}` as const;
+  const configDigest = `sha256:${"8".repeat(64)}` as const;
+  const built = new Map<string, typeof manifestDigest>();
+  let builds = 0;
+  const builder: EnvironmentImageBuilder = {
+    id: "planned-shared-build-test",
+    probe: async (reference, digest) => built.get(reference) === digest,
+    build: async (input) => {
+      builds += 1;
+      built.set(input.outputReference, manifestDigest);
+      return { reference: input.outputReference, manifest_digest: manifestDigest, config_digest: configDigest, platform: input.platform };
+    },
+  };
+  const imageBuilder = localEnvironmentImageBuild(root, async () => ({ release: () => {} }), builder);
+  const first = await imageBuilder({
+    benchmarkId: "shared-build", benchmarkRevision: "1", taskId: "one",
+    contextDirectory: contexts[0] as string, dockerfile: "Dockerfile", platform: "linux/amd64",
+  });
+  const second = await imageBuilder({
+    benchmarkId: "shared-build", benchmarkRevision: "1", taskId: "two",
+    contextDirectory: contexts[1] as string, dockerfile: "Dockerfile", platform: "linux/amd64",
+  });
+  assert.equal(builds, 1);
+  assert.equal(first.cache_hit, false);
+  assert.equal(second.cache_hit, true);
+  assert.equal(second.image_id, first.image_id);
+  assert.equal((await loadEnvironmentImageManifest(root, first.image_id)).source.task_id, undefined);
+});
+
 interface Activity {
   type: "start" | "end";
   time: number;

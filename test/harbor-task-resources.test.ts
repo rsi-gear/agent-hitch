@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseHarborTaskResourceDeclaration } from "../src/backends/index.js";
+import { inspectHarborTaskResources, parseHarborTaskResourceDeclaration } from "../src/backends/index.js";
 
 test("Harbor task inspector validates task semantics and extracts Compose hard limits", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-task-resources-"));
@@ -86,4 +86,28 @@ test("task resource declaration accepts only the supported main Dockerfile build
     ...declaration,
     environment_builds: [{ source: "compose", service: "database", context: "..", dockerfile: "Otherfile" }],
   }), /environment build 0 is invalid/);
+});
+
+test("Harbor task inspection preserves a virtualenv Python symlink", { skip: process.platform === "win32" }, async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hitch-task-venv-python-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const task = path.join(directory, "task");
+  const bin = path.join(directory, "bin");
+  await mkdir(task);
+  await mkdir(bin);
+  await writeFile(path.join(task, "task.toml"), 'schema_version = "1.4"\n');
+  const harbor = path.join(bin, "harbor");
+  await writeFile(harbor, '#!/usr/bin/env node\nif (process.argv.includes("--version")) process.stdout.write("harbor 0.21.0\\n");\n', { mode: 0o755 });
+  const interpreter = path.join(directory, "fake-python-target");
+  const declaration = {
+    schema_version: "1", task: {}, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }],
+    provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [],
+  };
+  await writeFile(interpreter, `#!/usr/bin/env node
+if (!process.argv[1].endsWith("/bin/python")) process.exit(9);
+process.stdout.write(${JSON.stringify(JSON.stringify(declaration))});
+`, { mode: 0o755 });
+  await symlink(interpreter, path.join(bin, "python"));
+  const inspected = await inspectHarborTaskResources({ root: directory, taskDirectory: task, harborExecutable: harbor });
+  assert.deepEqual(inspected, declaration);
 });

@@ -32,6 +32,19 @@ machine/trial inputs with `HITCH_LOAD_CANARY_EXPECT_CPUS`,
 `HITCH_LOAD_CANARY_EXPECT_MEMORY_MIB`, `HITCH_LOAD_CANARY_TRIALS`,
 `HITCH_DOCKER_CANARY_BASE`, and `HITCH_DOCKER_PATH`.
 
+`npm run canary:harbor-load` exercises the same fixed-capacity policy through
+the full managed-Harbor path. It creates 20 offline local tasks and an immutable
+local fake Pi harness, requires exactly two admitted and running trial
+containers, one shared environment build followed by 19 cache hits, no OOM or
+resource leak, cleanup within 60 seconds, and a verified result bundle for
+every valid trial. One valid trial deliberately earns zero and one trial
+deliberately omits verifier reward evidence; the report proves the real zero is
+retained while the invalid trial is excluded from reward aggregation. The
+Harbor executable and pinned local Node base may be overridden with
+`HITCH_HARBOR_LOAD_CANARY_PATH` and `HITCH_HARBOR_LOAD_CANARY_BASE`. The
+offline final image also uses a preloaded support base containing Git; override
+it with `HITCH_HARBOR_LOAD_CANARY_SUPPORT_BASE`.
+
 ```bash
 hitch daemon start \
   --max-concurrent 8 \

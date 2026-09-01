@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { HitchError, packageRoot, resolveExecutable, runCommand } from "../../foundation/index.js";
 import { locateHarbor } from "./tools.js";
@@ -167,10 +168,26 @@ async function harborPython(harborExecutable: string, env: NodeJS.ProcessEnv): P
   }
   for (const candidate of candidates) {
     if (!candidate) continue;
-    const resolved = await resolveExecutable(candidate, env.PATH || "");
+    const resolved = path.isAbsolute(candidate) || candidate.includes("/") || candidate.includes("\\")
+      ? await preserveExecutableShim(candidate)
+      : await resolveExecutable(candidate, env.PATH || "");
     if (resolved) return resolved;
   }
   return null;
+}
+
+async function preserveExecutableShim(candidate: string): Promise<string | null> {
+  const resolved = path.resolve(candidate);
+  try {
+    await access(resolved, constants.X_OK);
+    if ((await lstat(resolved)).isDirectory()) return null;
+    // A virtualenv's python is commonly a symlink to the base interpreter.
+    // Spawning the symlink is what activates the venv prefix and site-packages;
+    // realpath would silently turn it back into the system interpreter.
+    return resolved;
+  } catch {
+    return null;
+  }
 }
 
 function resourcePair(value: unknown, label: string): { cpu_millis?: number; memory_bytes?: number; gpu_count?: number } {

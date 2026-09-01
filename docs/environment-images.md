@@ -14,6 +14,12 @@ base-image digests, and secret names. Secret values are passed to BuildKit only
 through `--secret id=NAME,env=NAME`; they are not included in cache keys,
 manifests, build records, or errors.
 
+Eval task ownership is recorded by the execution plan's `task_ids`, not by the
+build identity. Different tasks in the same immutable benchmark revision that
+have byte-identical build contexts therefore share one image ID and one keyed
+build; each task still carries its own image-use evidence into its result
+bundle.
+
 Builds are serialized by a persistent cache-key lock under `locks/builds/`.
 After acquiring the lock, every caller rechecks the stored manifest and probes
 the actual local image identity. Ten independent service instances requesting
