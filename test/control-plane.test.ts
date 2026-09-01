@@ -597,6 +597,70 @@ test("eval recovery restores the exact host model proxy route before reattaching
   });
 });
 
+test("eval recovery finalizes persisted progress without starting another Candidate", async (t) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-finalizing-recovery-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const activityLog = path.join(root, "finalizing-activity.jsonl");
+  const harbor = await writeFakeHarbor(root, { activityLog });
+  const npm = await writeFakeNpm(root);
+  const createScheduler = () => new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
+    trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
+    executor: (options) => runEval({
+      ...options,
+      harborExecutable: harbor,
+      env: { ...process.env, HITCH_NPM_PATH: npm },
+      trialBundleGraceMs: 0,
+    }),
+  });
+
+  const first = createScheduler();
+  await first.initialize();
+  const evalId = await first.submit({
+    dataset,
+    harness_ref: "pi@version:1.2.3",
+    attempts: 1,
+    max_concurrent: 1,
+    infrastructure_retries: 0,
+  });
+  await waitFor(() => first.status(evalId).then((status) => status?.result !== null), 10_000);
+  await first.shutdown();
+
+  const evalDirectory = path.join(root, "evals", evalId);
+  const resultBeforeCrash = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "result.json"));
+  const completed = await readJSON<EvalControlV1>(path.join(evalDirectory, "control.json"));
+  const { error: _error, allocation_id: _allocation, ...base } = completed;
+  await rm(path.join(evalDirectory, "result.json"), { force: true });
+  await atomicWriteJSON(path.join(evalDirectory, "control.json"), {
+    ...base,
+    state: "finalizing",
+    generation: completed.generation + 1,
+    updated_at: new Date().toISOString(),
+  });
+  const leasesBefore = await readExecutionLeases(evalDirectory);
+  assert.equal(leasesBefore.length, 1);
+  assert.equal(leasesBefore[0]?.state, "released");
+
+  const recovered = createScheduler();
+  await recovered.initialize();
+  t.after(() => recovered.shutdown());
+  await waitFor(() => recovered.status(evalId).then((status) => status?.result !== null), 10_000);
+  const status = await recovered.status(evalId);
+  assert.equal(status?.result?.status, resultBeforeCrash.status, JSON.stringify(status?.result));
+  assert.equal(status?.control.state, completed.state);
+  assert.deepEqual(status?.result?.trials, resultBeforeCrash.trials);
+  assert.equal((await readExecutionLeases(evalDirectory)).length, 1, "finalization recovery must not create another physical lease");
+  const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
+  assert.equal(activity.filter((entry) => entry.type === "start").length, 1, "finalization recovery must not start Harbor again");
+  const events = await readFile(path.join(evalDirectory, "events.jsonl"), "utf8");
+  assert.match(events, /"type":"eval\.recovered","status":"queued","recovery":"resume"/);
+});
+
 test("daemon exposes queued eval status and terminal result", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-eval-"));
   const imageContext = path.join(root, "image-context");
