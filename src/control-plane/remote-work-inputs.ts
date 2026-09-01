@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalRequest, RemoteWorkInputRefV1, ResolvedRevision, Sha256 } from "../domain/index.js";
 import { HitchError, ensureDir, statePaths, withFileLock } from "../foundation/index.js";
@@ -9,8 +9,15 @@ const MAX_INPUT_BYTES = 256 * 1024 * 1024;
 const MAX_FILES = 100_000;
 const SHA256 = /^sha256:([a-f0-9]{64})$/;
 
-interface RemoteTreeFileV1 { path: string; mode: 420 | 493; size: number; sha256: Sha256; content_base64: string }
-export interface RemoteTreeEnvelopeV1 { schema_version: "1"; files: RemoteTreeFileV1[] }
+interface RemoteTreeDirectoryV1 { path: string; mode: number }
+interface RemoteTreeSymlinkV1 { path: string; target: string }
+interface RemoteTreeFileV1 { path: string; mode: number; size: number; sha256: Sha256; content_base64: string }
+export interface RemoteTreeEnvelopeV1 {
+  schema_version: "1";
+  directories: RemoteTreeDirectoryV1[];
+  files: RemoteTreeFileV1[];
+  symlinks: RemoteTreeSymlinkV1[];
+}
 
 export class RemoteWorkInputStore {
   private readonly directory: string;
@@ -96,25 +103,37 @@ export async function prepareRemoteWorkInputs(input: {
 export function parseRemoteTreeEnvelope(value: unknown): RemoteTreeEnvelopeV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw inputError("remote tree envelope is invalid");
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "schema_version" && key !== "files") || record.schema_version !== "1"
-    || !Array.isArray(record.files) || record.files.length < 1 || record.files.length > MAX_FILES) throw inputError("remote tree envelope is invalid");
+  if (Object.keys(record).some((key) => !["schema_version", "directories", "files", "symlinks"].includes(key)) || record.schema_version !== "1"
+    || !Array.isArray(record.files) || !Array.isArray(record.directories ?? []) || !Array.isArray(record.symlinks ?? [])) throw inputError("remote tree envelope is invalid");
   const files = record.files.map(parseFile);
-  const sorted = [...files].sort((left, right) => Buffer.from(left.path).compare(Buffer.from(right.path)));
-  if (JSON.stringify(files) !== JSON.stringify(sorted) || new Set(files.map((file) => file.path)).size !== files.length) throw inputError("remote tree files are not canonical and unique");
-  return { schema_version: "1", files };
+  const directories = (record.directories as unknown[] | undefined ?? []).map(parseDirectory);
+  const symlinks = (record.symlinks as unknown[] | undefined ?? []).map(parseSymlink);
+  const entries = [...directories, ...files, ...symlinks];
+  if (entries.length < 1 || entries.length > MAX_FILES || !canonical(directories) || !canonical(files) || !canonical(symlinks)
+    || new Set(entries.map((entry) => entry.path)).size !== entries.length) throw inputError("remote tree entries are not canonical and unique");
+  return { schema_version: "1", directories, files, symlinks };
 }
 
 export async function materializeRemoteTreeEnvelope(value: unknown, destination: string): Promise<void> {
   const envelope = parseRemoteTreeEnvelope(value);
   await mkdir(destination, { recursive: false, mode: 0o700 });
   try {
+    for (const directory of envelope.directories) await mkdir(path.join(destination, ...directory.path.split("/")), { recursive: false, mode: 0o700 });
     for (const file of envelope.files) {
       const target = path.join(destination, ...file.path.split("/"));
       await ensureDir(path.dirname(target));
-      await writeFile(target, Buffer.from(file.content_base64, "base64"), { flag: "wx", mode: file.mode });
+      await writeFile(target, Buffer.from(file.content_base64, "base64"), { flag: "wx", mode: 0o600 });
+      await chmod(target, file.mode);
     }
+    for (const link of envelope.symlinks) {
+      const target = path.join(destination, ...link.path.split("/"));
+      await ensureDir(path.dirname(target));
+      assertSafeSymlink(destination, target, link.target);
+      await symlink(link.target, target);
+    }
+    for (const directory of [...envelope.directories].reverse()) await chmod(path.join(destination, ...directory.path.split("/")), directory.mode);
   } catch (error) {
-    await rm(destination, { recursive: true, force: true });
+    await removeMaterializedTree(destination);
     throw error;
   }
 }
@@ -126,29 +145,39 @@ function validateRef(ref: RemoteWorkInputRefV1): void {
 }
 
 async function encodeTree(root: string): Promise<Buffer> {
-  const files = await walk(root);
-  const body = Buffer.from(`${JSON.stringify({ schema_version: "1", files })}\n`);
+  const entries = await walk(root);
+  const body = Buffer.from(`${JSON.stringify({ schema_version: "1", ...entries })}\n`);
   if (body.length > MAX_INPUT_BYTES) throw inputError("remote work input tree exceeds its size limit");
   return body;
 }
 
-async function walk(root: string, relative = ""): Promise<RemoteTreeFileV1[]> {
+async function walk(root: string, relative = ""): Promise<Omit<RemoteTreeEnvelopeV1, "schema_version">> {
   const directory = relative ? path.join(root, ...relative.split("/")) : root;
   const entries = await readdir(directory, { withFileTypes: true });
+  const directories: RemoteTreeDirectoryV1[] = [];
   const files: RemoteTreeFileV1[] = [];
+  const symlinks: RemoteTreeSymlinkV1[] = [];
   for (const entry of entries.sort((left, right) => Buffer.from(left.name).compare(Buffer.from(right.name)))) {
     const child = relative ? `${relative}/${entry.name}` : entry.name;
     safePath(child);
     const target = path.join(root, ...child.split("/"));
     const info = await lstat(target);
-    if (info.isDirectory()) files.push(...await walk(root, child));
+    if (info.isDirectory()) {
+      directories.push({ path: child, mode: safeMode(info.mode) });
+      const nested = await walk(root, child);
+      directories.push(...nested.directories); files.push(...nested.files); symlinks.push(...nested.symlinks);
+    }
     else if (info.isFile() && !info.isSymbolicLink() && info.nlink === 1) {
       const content = await readFile(target);
-      files.push({ path: child, mode: info.mode & 0o111 ? 0o755 : 0o644, size: content.length, sha256: hash(content), content_base64: content.toString("base64") });
+      files.push({ path: child, mode: safeMode(info.mode), size: content.length, sha256: hash(content), content_base64: content.toString("base64") });
+    } else if (info.isSymbolicLink()) {
+      const linkTarget = await readlink(target);
+      assertSafeSymlink(root, target, linkTarget);
+      symlinks.push({ path: child, target: linkTarget });
     } else throw inputError(`remote work input contains an unsafe entry: ${child}`);
-    if (files.length > MAX_FILES) throw inputError("remote work input has too many files");
+    if (directories.length + files.length + symlinks.length > MAX_FILES) throw inputError("remote work input has too many entries");
   }
-  return files.sort((left, right) => Buffer.from(left.path).compare(Buffer.from(right.path)));
+  return { directories: sort(directories), files: sort(files), symlinks: sort(symlinks) };
 }
 
 function parseFile(value: unknown): RemoteTreeFileV1 {
@@ -156,13 +185,66 @@ function parseFile(value: unknown): RemoteTreeFileV1 {
   const file = value as Record<string, unknown>;
   if (Object.keys(file).some((key) => !["path", "mode", "size", "sha256", "content_base64"].includes(key))) throw inputError("remote tree file is invalid");
   const relative = safePath(file.path);
-  if (file.mode !== 0o644 && file.mode !== 0o755 || !Number.isSafeInteger(file.size) || (file.size as number) < 0 || (file.size as number) > MAX_INPUT_BYTES
+  if (!validMode(file.mode) || !Number.isSafeInteger(file.size) || (file.size as number) < 0 || (file.size as number) > MAX_INPUT_BYTES
     || typeof file.sha256 !== "string" || !SHA256.test(file.sha256)
     || typeof file.content_base64 !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.content_base64)) throw inputError("remote tree file is invalid");
   const content = Buffer.from(file.content_base64, "base64");
   if (content.length !== file.size || hash(content) !== file.sha256) throw inputError(`remote tree file integrity failed: ${relative}`);
-  return { path: relative, mode: file.mode, size: file.size as number, sha256: file.sha256 as Sha256, content_base64: file.content_base64 };
+  return { path: relative, mode: file.mode as number, size: file.size as number, sha256: file.sha256 as Sha256, content_base64: file.content_base64 };
 }
+
+function parseDirectory(value: unknown): RemoteTreeDirectoryV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw inputError("remote tree directory is invalid");
+  const entry = value as Record<string, unknown>;
+  if (Object.keys(entry).some((key) => !["path", "mode"].includes(key)) || !validMode(entry.mode)) throw inputError("remote tree directory is invalid");
+  return { path: safePath(entry.path), mode: entry.mode as number };
+}
+
+function parseSymlink(value: unknown): RemoteTreeSymlinkV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw inputError("remote tree symlink is invalid");
+  const entry = value as Record<string, unknown>;
+  if (Object.keys(entry).some((key) => !["path", "target"].includes(key)) || typeof entry.target !== "string"
+    || !entry.target || entry.target.length > 4_096 || entry.target.includes("\\") || path.posix.isAbsolute(entry.target) || /[\0\r\n]/.test(entry.target)) {
+    throw inputError("remote tree symlink is invalid");
+  }
+  return { path: safePath(entry.path), target: entry.target };
+}
+
+function assertSafeSymlink(root: string, link: string, target: string): void {
+  if (!target || target.includes("\\") || path.isAbsolute(target) || /[\0\r\n]/.test(target)) throw inputError("remote tree symlink target is unsafe");
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(path.dirname(link), target);
+  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) throw inputError("remote tree symlink escapes its root");
+}
+
+async function removeMaterializedTree(directory: string): Promise<void> {
+  const info = await lstat(directory).catch(() => null);
+  if (!info) return;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await removeMaterializedTree(target);
+      continue;
+    }
+    if (!entry.isSymbolicLink()) await chmod(target, 0o600);
+    await rm(target, { force: true });
+  }
+  await chmod(directory, 0o700);
+  await rm(directory, { recursive: true, force: true });
+}
+
+function safeMode(value: number): number {
+  const mode = value & 0o7777;
+  if (!validMode(mode)) throw inputError("remote tree entry mode is unsafe");
+  return mode;
+}
+
+function validMode(value: unknown): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= 0o400 && (value as number) <= 0o777 && ((value as number) & 0o400) !== 0;
+}
+
+function canonical<T extends { path: string }>(entries: T[]): boolean { return JSON.stringify(entries) === JSON.stringify(sort(entries)); }
+function sort<T extends { path: string }>(entries: T[]): T[] { return [...entries].sort((left, right) => Buffer.from(left.path).compare(Buffer.from(right.path))); }
 
 async function resolveTaskDirectory(dataset: string, taskId: string): Promise<string> {
   if (!taskId || taskId.includes("/") || taskId.includes("\\") || taskId === "." || taskId === "..") throw inputError("remote task id is unsafe");

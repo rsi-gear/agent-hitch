@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BackendWorkItemV1, EvalRequest, EvalTrialRefV1, ExecutionLeaseV1, ResolvedRevision, Sha256 } from "../domain/index.js";
-import { HitchError, ensureDir, readJSON } from "../foundation/index.js";
+import { HitchError, atomicWriteJSON, ensureDir, readJSON } from "../foundation/index.js";
 import { importEvalTrialRun, parseExecutionEvidence } from "../evals/index.js";
 import type { TrialEnvironmentImagesV1 } from "../evals/index.js";
 
@@ -77,6 +77,7 @@ export async function importRemoteResultEnvelope(input: {
       || JSON.stringify(execution.reservation) !== JSON.stringify(input.work.reservation)) {
       throw transportError("remote result execution evidence does not match its lease");
     }
+    await writeTransportCompletionMarker(bundleDirectory, envelope, trialId);
     const ref = await importEvalTrialRun({
       root: input.root,
       evalId: input.lease.eval_id,
@@ -98,6 +99,16 @@ export async function importRemoteResultEnvelope(input: {
     await rm(backendDirectory, { recursive: true, force: true });
     throw error;
   }
+}
+
+async function writeTransportCompletionMarker(bundleDirectory: string, envelope: RemoteResultEnvelopeV1, trialId: string): Promise<void> {
+  const manifest = await readJSON<Record<string, unknown>>(path.join(bundleDirectory, "manifest.json"));
+  if (typeof manifest.run_id !== "string" || !/^run_[a-f0-9]{32}$/.test(manifest.run_id)) {
+    throw transportError("remote result bundle manifest has an invalid run identity");
+  }
+  await atomicWriteJSON(path.join(bundleDirectory, "bundle.complete.json"), {
+    schema_version: "1", run_id: manifest.run_id, eval_id: envelope.eval_id, trial_id: trialId,
+  });
 }
 
 export function parseRemoteResultEnvelope(value: unknown): RemoteResultEnvelopeV1 {

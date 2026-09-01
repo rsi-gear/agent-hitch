@@ -111,6 +111,8 @@ Usage:
   hitch daemon stop | status [--json] | logs [-n <lines>]
   hitch daemon submit --harness <ref> --prompt <text> [--workspace-mode <mode>] [--wait]
   hitch daemon cancel <run-id>
+  hitch worker register --server <url> --registration <json> --admin-token-file <file> --credential-file <file>
+  hitch worker run --server <url> --registration <json> --credential-file <file> [--harbor <path>] [--docker <path>] [--once]
 
 Eval:
   Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.
@@ -145,5 +147,9 @@ Harness refs:
 
 Global:
   --root <path>    Relocate all Hitch state (default: ~/.hitch)
+
+Remote workers:
+  Use a dedicated --root on each worker host. Registration rotates the worker credential and writes it with mode 0600.
+  The worker downloads content-addressed inputs before accepting a lease, runs Harbor with the same evidence contract, and waits for an explicit release request before cleanup.
 `;
 }

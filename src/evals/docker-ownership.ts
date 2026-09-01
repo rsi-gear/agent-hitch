@@ -12,13 +12,13 @@ export const DOCKER_OWNERSHIP_LABELS = {
 } as const;
 
 export function dockerResourceOwnership(root: string, lease: ExecutionLeaseV1, taskId?: string): DockerResourceOwnershipV1 {
-  if (lease.provider !== "local-docker") throw new TypeError("Docker ownership requires a local-docker lease");
+  if (!validProvider(lease.provider)) throw new TypeError("Docker ownership provider is invalid");
   if (taskId !== undefined && (!taskId || taskId.length > 4_096 || /[\0\r\n]/.test(taskId))) {
     throw new TypeError("Docker ownership task id is invalid");
   }
   return {
     root_id: hitchRootId(root),
-    provider: "local-docker",
+    provider: lease.provider,
     eval_id: lease.eval_id,
     work_id: lease.work_id,
     lease_id: lease.lease_id,
@@ -41,11 +41,15 @@ export function dockerOwnershipLabelMap(ownership: DockerResourceOwnershipV1): R
 }
 
 export function validateDockerResourceOwnership(value: DockerResourceOwnershipV1): DockerResourceOwnershipV1 {
-  if (!/^[a-f0-9]{24}$/.test(value.root_id) || value.provider !== "local-docker"
+  if (!/^[a-f0-9]{24}$/.test(value.root_id) || !validProvider(value.provider)
     || !/^eval_[a-f0-9]{32}$/.test(value.eval_id) || !/^work_[a-f0-9]{32}$/.test(value.work_id)
     || !/^lease_[a-f0-9]{32}$/.test(value.lease_id) || !Number.isSafeInteger(value.lease_epoch) || value.lease_epoch < 1
     || (value.task_id !== undefined && (!value.task_id || value.task_id.length > 4_096 || /[\0\r\n]/.test(value.task_id)))) {
     throw new TypeError("Docker resource ownership is invalid");
   }
   return value;
+}
+
+function validProvider(value: string): boolean {
+  return Boolean(value) && value.length <= 128 && /^[a-z0-9][a-z0-9._-]*$/.test(value);
 }

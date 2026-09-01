@@ -143,7 +143,7 @@ function ownershipFromLabels(labels: Record<string, string>): DockerResourceOwne
   if (epochLabel !== String(epoch)) throw new TypeError("Docker resource ownership epoch is not canonical");
   return validateDockerResourceOwnership({
     root_id: labels[DOCKER_OWNERSHIP_LABELS.rootId] || "",
-    provider: labels[DOCKER_OWNERSHIP_LABELS.provider] as "local-docker",
+    provider: labels[DOCKER_OWNERSHIP_LABELS.provider] || "",
     eval_id: labels[DOCKER_OWNERSHIP_LABELS.evalId] || "",
     work_id: labels[DOCKER_OWNERSHIP_LABELS.workId] || "",
     lease_id: labels[DOCKER_OWNERSHIP_LABELS.leaseId] || "",

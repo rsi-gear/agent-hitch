@@ -78,6 +78,8 @@ export class RemoteWorkCoordinator {
     const { worker, lease, offer, collision } = dispatch;
     let accepted = false;
     let terminal = false;
+    let released = false;
+    let terminalOffer: RemoteWorkOfferV1 | undefined;
     await input.onLeaseState(lease.leaseId, "running");
     input.emit({ type: "lease.offered", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, offer_id: offer.offer_id });
     try {
@@ -89,10 +91,12 @@ export class RemoteWorkCoordinator {
       input.emit({ type: "lease.accepted", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, offer_id: offer.offer_id });
       const completed = await this.withHeartbeat(lease, async () => this.waitFor(input, acceptedOffer, (current) => current.state === "completed" || current.state === "release-requested" || current.state === "released"));
       terminal = true;
+      terminalOffer = completed;
       if (!completed.terminal) throw ambiguous("remote worker completed without terminal evidence");
       const artifacts = completed.terminal.artifacts.filter((artifact) => artifact.kind === "result-bundle");
       if (completed.terminal.status !== "succeeded") {
         await this.finishRelease(input, completed, lease.current());
+        released = true;
         return { leaseId: lease.leaseId, refs: [], run: remoteBackendResult(worker, offer, completed, null, null) };
       }
       if (artifacts.length !== 1) throw ambiguous("remote worker success requires exactly one result bundle");
@@ -112,12 +116,16 @@ export class RemoteWorkCoordinator {
       await input.publish(imported.ref);
       input.emit({ type: "eval.work.completed", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, run_id: imported.ref.run_id });
       await this.finishRelease(input, completed, lease.current());
+      released = true;
       return {
         leaseId: lease.leaseId,
         refs: [imported.ref],
         run: remoteBackendResult(worker, offer, completed, imported.trial, imported.backendDirectory),
       };
     } catch (error) {
+      if (terminalOffer && !released) {
+        await this.finishRelease(input, terminalOffer, lease.current()).catch(() => undefined);
+      }
       if (input.signal?.aborted) await this.protocol.requestCancel(worker.worker.worker_id, offer.offer_id).catch(() => undefined);
       if (!accepted) await this.withdrawOrFenceAcceptedRace(input.evalDirectory, offer, lease);
       else if (!terminal) await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: lease.leaseId, expectedEpoch: lease.current().epoch }).catch(() => undefined);

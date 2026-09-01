@@ -4,7 +4,7 @@ import type { ExecutionLeaseV1 } from "./workers.js";
 
 export interface DockerResourceOwnershipV1 {
   root_id: string;
-  provider: "local-docker";
+  provider: string;
   eval_id: string;
   work_id: string;
   lease_id: string;

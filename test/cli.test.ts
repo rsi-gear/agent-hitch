@@ -49,6 +49,8 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /--container-slots <n>/);
   assert.match(help.stdout, /--build-slots <n>/);
   assert.match(help.stdout, /--eval-memory-mib <n>/);
+  assert.match(help.stdout, /hitch worker register --server <url>/);
+  assert.match(help.stdout, /hitch worker run --server <url>/);
 
   const result = spawnSync(process.execPath, [
     executable,

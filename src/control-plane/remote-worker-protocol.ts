@@ -334,7 +334,7 @@ export class RemoteWorkerProtocol {
   private eventPath(leaseId: string, sequence: number): string { return path.join(this.directory, "events", leaseId, `${String(sequence).padStart(12, "0")}.json`); }
 }
 
-function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
+export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   const record = exact(value, [
     "schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "inputs", "state", "issued_at", "expires_at",
     "accepted_at", "completed_at", "released_at", "rejection_code", "terminal",

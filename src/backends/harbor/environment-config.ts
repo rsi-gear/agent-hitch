@@ -78,7 +78,7 @@ function parseServiceLimits(value: HarborDockerServiceLimitsV1): HarborDockerSer
 }
 
 function harborOwnershipLabels(value: DockerResourceOwnershipV1): Record<string, string> {
-  if (!/^[a-f0-9]{24}$/.test(value.root_id) || value.provider !== "local-docker"
+  if (!/^[a-f0-9]{24}$/.test(value.root_id) || !value.provider || value.provider.length > 128 || !/^[a-z0-9][a-z0-9._-]*$/.test(value.provider)
     || !/^eval_[a-f0-9]{32}$/.test(value.eval_id) || !/^work_[a-f0-9]{32}$/.test(value.work_id)
     || !/^lease_[a-f0-9]{32}$/.test(value.lease_id) || !Number.isSafeInteger(value.lease_epoch) || value.lease_epoch < 1
     || (value.task_id !== undefined && (!value.task_id || value.task_id.length > 4_096 || /[\0\r\n]/.test(value.task_id)))) {

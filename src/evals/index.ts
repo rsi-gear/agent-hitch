@@ -3,6 +3,7 @@ export type { EvalRequestInput } from "./request.js";
 export type { EvalRequest } from "../domain/index.js";
 export { EvalEventSink } from "./events.js";
 export { buildEvalExecutionPlan, parseEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
+export { runtimeResourcesForTask } from "./execution-plan-resources.js";
 export { deriveTaskResourceRequirement, resolveLocalTaskPlanningInputs, resolveLocalTaskResourceRequirements, HARBOR_EGRESS_SIDECAR_RESOURCES } from "./task-resources.js";
 export type { LocalTaskPlanningInputV1 } from "./task-resources.js";
 export { parseExecutionEvidence } from "./execution-evidence.js";
@@ -28,6 +29,7 @@ export { LocalDockerExecutionProvider, adoptLocalDockerLeaseEpoch, parseExecutio
 export type { LocalDockerExecutionProviderOptions, LocalProviderExecutionRecordV1 } from "./local-docker-provider.js";
 export type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 export { loadTrialEnvironmentImages } from "./trial-environment-evidence.js";
+export { resolvedImageMapping } from "./environment-image-planning.js";
 export { runRemoteInfrastructureRetries } from "./remote-infrastructure-retry.js";
 export { loadEvalResumeState } from "./resume-state.js";
 export { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, dockerResourceOwnership, validateDockerResourceOwnership } from "./docker-ownership.js";

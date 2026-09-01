@@ -31,6 +31,7 @@ test("package exports contain only module facades", () => {
     "./backends",
     "./controller-runtime",
     "./control-plane",
+    "./workers",
     "./daemon",
     "./domain",
     "./evals",

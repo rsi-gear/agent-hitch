@@ -4,7 +4,7 @@ import path from "node:path";
 const SRC_ROOT = path.resolve("src");
 const MODULES = new Set([
   "domain", "foundation", "adapters", "revisions", "artifacts", "controller-runtime",
-  "images", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "daemon", "cli",
+  "images", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
 ]);
 const ALLOWED = new Map<string, Set<string>>([
   ["domain", new Set()],
@@ -22,6 +22,7 @@ const ALLOWED = new Map<string, Set<string>>([
   ["backends", new Set(["domain", "foundation"])],
   ["evals", new Set(["domain", "foundation", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
   ["control-plane", new Set(["domain", "foundation", "adapters", "model-access", "evals", "images"])],
+  ["workers", new Set(["domain", "foundation", "artifacts", "backends", "controller-runtime", "evals", "control-plane"])],
   ["daemon", new Set(["domain", "foundation", "runs", "workspaces", "control-plane"])],
   ["cli", new Set([...MODULES].filter((name) => name !== "cli"))],
 ]);

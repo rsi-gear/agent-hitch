@@ -139,7 +139,7 @@ async function observeContainer(
   const epoch = Number(rawLabels[DOCKER_OWNERSHIP_LABELS.leaseEpoch]);
   const actual = validateDockerResourceOwnership({
     root_id: String(rawLabels[DOCKER_OWNERSHIP_LABELS.rootId] ?? ""),
-    provider: rawLabels[DOCKER_OWNERSHIP_LABELS.provider] as "local-docker",
+    provider: String(rawLabels[DOCKER_OWNERSHIP_LABELS.provider] ?? ""),
     eval_id: String(rawLabels[DOCKER_OWNERSHIP_LABELS.evalId] ?? ""),
     work_id: String(rawLabels[DOCKER_OWNERSHIP_LABELS.workId] ?? ""),
     lease_id: String(rawLabels[DOCKER_OWNERSHIP_LABELS.leaseId] ?? ""),

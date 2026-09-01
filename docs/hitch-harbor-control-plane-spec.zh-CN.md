@@ -1147,6 +1147,22 @@ Hitch 通过 Harbor 自定义 Docker environment 在读取任务 `docker-compose
 6. `complete`：上报 terminal status 和 artifact refs。
 7. `cancel/release`：终止并回收属于该 lease 的资源。
 
+参考 CLI 生命周期：
+
+```text
+hitch worker register --server <url> --registration <json> \
+  --admin-token-file <file> --credential-file <file>
+hitch --root <dedicated-worker-root> worker run --server <url> \
+  --registration <json> --credential-file <file>
+```
+
+注册凭据只写入 `0600` 文件，不通过 worker 命令行传递。runner 必须先下载并校验完整的
+`work-spec`、Harness artifact、controller runtime 和 task input，确认本地容量后再 accept；accept
+之后才把 `(lease_id, epoch)` 放入 heartbeat。输入 tree envelope 必须保存规范化相对路径、精确目录/文件
+mode 和不逃逸根目录的内部相对 symlink，物化后重新执行 artifact/runtime integrity 校验，不能只验证 transport
+blob 的摘要。worker restart 遇到未知的 `accepted` offer 时不得再次执行 Candidate；只有已持久化的 terminal
+receipt 可以继续等待 release，`cancel-requested/release-requested` 则按本地持久化 lease 幂等清理后回执。
+
 远程协议的 transport 可以单独选择 HTTPS、gRPC 或队列；本规范固定语义，不固定 V1 transport。
 
 ### 13.4 Lease、心跳与 reaper
