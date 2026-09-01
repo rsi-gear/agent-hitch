@@ -162,6 +162,13 @@ hitch daemon start \
 hitch run --daemon --harness codex@version:0.92.0 --prompt-file task.md
 ```
 
+Windows is covered on Node 22 and 24, including npm/agent `.cmd` shims and the
+packaged-harness cache/integrity path. GPU-backed Harbor trials require a
+Docker host with GPU container support and explicit `--capacity-gpus` plus
+`--eval-gpus`; Hitch never guesses GPU capacity. A repository maintainer can
+run the real NVIDIA gate through the manually dispatched
+`NVIDIA GPU hardware canary` workflow on a compatible self-hosted runner.
+
 ## Documentation
 
 - [Design and architecture](docs/design.md)

@@ -22,6 +22,8 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run build
+      - name: Verify GPU admission and Harbor Compose delivery
+        run: node --test dist/test/control-plane.test.js dist/test/task-resources.test.js dist/test/harbor-environment.test.js
       - name: Verify scheduler admission and NVIDIA device access
         env:
           HITCH_GPU_CANARY_IMAGE: ${{ inputs.cuda_image }}

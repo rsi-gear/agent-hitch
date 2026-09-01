@@ -107,6 +107,20 @@ bind value must be a concrete IP address; `0.0.0.0` and `::` are rejected.
 Required capture fails closed when no safe reachable binding is available,
 while optional capture records its existing degradation path.
 
+Windows Node 22/24 is a supported host path for CLI/daemon operation, harness
+preparation and normal execution. Batch shims are launched through escaped
+`cmd.exe` arguments and executable discovery honors `PATHEXT`. Live reattach
+to an already-running local Harbor process after a daemon hard crash remains a
+POSIX-only capability; on Windows the persisted lease/result evidence still
+drives the typed lost, collect-only and explicit rerun paths instead of an
+automatic ambiguous Candidate replay.
+
+For GPU trials, Docker must already expose NVIDIA devices to containers. Set
+both daemon capacity and per-trial GPU count explicitly; fixed task/Compose
+counts are admitted and the final Harbor overlay emits the matching device
+reservation. Dynamic requests and `all` fail closed, and a non-GPU host stays
+compatible because no device request is written when the count is zero.
+
 Known local task work items enter a shared deficit round-robin dispatcher.
 Capacity is acquired atomically per work item, the dispatcher rotates after
 each grant, and a temporarily blocked task mutex does not prevent another task

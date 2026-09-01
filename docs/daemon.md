@@ -144,6 +144,21 @@ Each flag also has an environment-policy equivalent: `HITCH_CAPACITY_CPU_MILLIS`
 otherwise Hitch probes the Docker Engine for CPU and memory before using the
 conservative fallback. GPU and ephemeral-disk capacity are never inferred.
 
+GPU capacity is an admission promise made by the operator. Before enabling it
+in production, preload a digest-pinned CUDA image containing `nvidia-smi` and
+run:
+
+```bash
+HITCH_GPU_CANARY_IMAGE=<cuda-image@sha256:digest> npm run canary:gpu-hardware
+```
+
+The canary requires one declared device, proves a competing trial cannot enter
+until the GPU lease is released, checks Candidate and separate-Verifier
+representative containers each receive exactly one usable GPU, validates the
+Docker device request, and checks ledger cleanup. CI exposes the same gate as
+the manually dispatched `NVIDIA GPU hardware canary` workflow for a
+`self-hosted,linux,x64,gpu,nvidia` runner.
+
 ## Lifecycle
 
 ```text

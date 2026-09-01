@@ -1,6 +1,6 @@
 # Hitch Harbor 兼容实验控制面设计规范
 
-- 状态：Implementation candidate v0.2（GPU 硬件与 Windows CI 证据待补）
+- 状态：Implementation candidate v0.2（Windows CI 已验证；GPU 软件路径已实现，NVIDIA 真机证据需专用 runner）
 - 目标版本：`0.3.x`
 - 更新日期：2026-09-01
 - Hitch 基线：`0.2.5@4aa6da8`
@@ -1950,6 +1950,15 @@ npm run canary:packaged-harness
 HITCH_COLLISION_DOMAIN_DOCKER_HOSTS=<engine-a>,<engine-b> npm run canary:collision-domains
 HITCH_GPU_CANARY_IMAGE=<cuda-image-with-nvidia-smi> npm run canary:gpu-hardware
 ```
+
+Windows 必须进入 Node 22/24 的 typecheck/build/package、原生 run-engine/runtime
+支持套件与 packaged-harness 矩阵；POSIX-only 恢复和测试夹具不作为 Windows
+支持门禁。NVIDIA
+真机验收通过 `.github/workflows/gpu-hardware.yml` 在带有
+`self-hosted,linux,x64,gpu,nvidia` 标签的 runner 上手动触发；输入镜像必须已在
+runner 本地存在并以 digest 固定。硬件 canary 必须证明单卡竞争被 admission
+阻塞、Candidate 与 separate-Verifier 代表容器均只看到一张可用 GPU、Docker
+device request 明确存在且退出后无 ledger 泄漏。
 
 Docker/Harbor canary 至少包含：
 
