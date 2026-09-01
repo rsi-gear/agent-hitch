@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -359,7 +359,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-"));
   t.after(() => forceRemove(root));
   const fakeNpm = await writeFakeNpm(root);
-  const fakeHarbor = await writeFakeHarbor(root);
+  const fakeHarbor = await writeFakeHarbor(root, { leakEnvName: "OPENAI_API_KEY" });
   const evalId = newEvalId();
   const env = {
     ...process.env,
@@ -422,6 +422,7 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(piArtifact.node_version, process.version);
   assert.equal((agent.env as Record<string, unknown>).DEEPSEEK_API_KEY, "${DEEPSEEK_API_KEY}");
   assert.equal((agent.env as Record<string, unknown>).OPENAI_API_KEY, "${OPENAI_API_KEY}");
+  assert.deepEqual(kwargs.credential_names, ["DEEPSEEK_API_KEY", "OPENAI_API_KEY"]);
   assert.deepEqual(config.verifier, {
     import_path: "hitch_harbor_verifier:HitchRetryingVerifier",
     kwargs: {
@@ -430,6 +431,11 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
     },
   });
   assert.doesNotMatch(await readFile(path.join(directory, "harbor", "attempt-0001", "job.json"), "utf8"), /(?:deepseek-)?must-not-be-written/);
+  for (const file of await regularFiles(directory)) {
+    const persisted = await readFile(file);
+    assert.equal(persisted.includes(Buffer.from(env.DEEPSEEK_API_KEY)), false, `DeepSeek credential leaked into ${path.relative(directory, file)}`);
+    assert.equal(persisted.includes(Buffer.from(env.OPENAI_API_KEY)), false, `OpenAI credential leaked into ${path.relative(directory, file)}`);
+  }
   assert.deepEqual(config.datasets, [{ name: "demo", version: "1.0" }]);
   // New evals reference the shared controller runtime; they no longer contain
   // a complete runtime copy (spec §4.7).
@@ -447,6 +453,16 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(inspected.result?.status, "failed");
   assert.equal(inspected.runtime_storage, "controller-runtime-ref-v1");
 });
+
+async function regularFiles(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await regularFiles(target));
+    else if (entry.isFile()) files.push(target);
+  }
+  return files;
+}
 
 test("every project-installed version harness is host-prepared and handed to Harbor", async (t) => {
   const harnesses = [

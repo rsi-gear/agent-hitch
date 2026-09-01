@@ -306,6 +306,7 @@ def main() -> int:
             harness_artifact_cache_dir=str(cache_dir) if artifact_manifest else None,
             hitch_timeout_ms=5_000,
             agent_args=[],
+            credential_names=["CUSTOM_EVAL_SECRET"],
             model_name="openai/test-model",
             eval_id="eval_bridge_smoke",
             benchmark_id="benchmark",
@@ -416,6 +417,8 @@ def main() -> int:
         errors.append(f"prepare must use the manifest entrypoint {quoted_entry}")
     if f"node {quoted_entry} run" not in " ".join(env.execs):
         errors.append(f"run must use the manifest entrypoint {quoted_entry}")
+    if "--internal-credential-name CUSTOM_EVAL_SECRET" not in " ".join(env.execs):
+        errors.append("run did not receive the credential name handoff")
     if any("/opt/hitch/bin/hitch.js" in command for command in env.execs):
         errors.append("bridge still hardcodes /opt/hitch/bin/hitch.js")
     if second_env is not None:

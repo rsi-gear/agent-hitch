@@ -226,9 +226,12 @@ process.exit(2);
 export async function writeFakeHarbor(directory: string, {
   delayMs = 0,
   activityLog,
+  leakEnvName,
 }: {
   delayMs?: number;
   activityLog?: string;
+  /** Test-only: print one inherited value so callers can verify host log redaction. */
+  leakEnvName?: string;
 } = {}): Promise<string> {
   const file = path.join(directory, "fake-harbor");
   const source = `#!/usr/bin/env node
@@ -245,6 +248,11 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
   process.exit(2);
 }
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const leakEnvName = ${leakEnvName === undefined ? "null" : JSON.stringify(leakEnvName)};
+if (leakEnvName) {
+  process.stdout.write("inherited=" + (process.env[leakEnvName] || "") + "\\n");
+  process.stderr.write("Authorization: Bearer " + (process.env[leakEnvName] || "") + "\\n");
+}
 const output = path.join(config.jobs_dir, config.job_name);
 const logicalAttempt = config.agents[0].kwargs.logical_attempt || 1;
 const selectedTasks = config.datasets[0].task_names || null;

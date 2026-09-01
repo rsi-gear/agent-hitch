@@ -733,9 +733,13 @@ credentials:
 Initial implementations may support environment references. Native keychain and
 external secret-provider integrations can be added later.
 
-Hitch must redact known credential values from logs and diagnostics. It should
-prefer environment variables or protected files over command-line arguments,
-which may be visible in process listings.
+Hitch must redact known credential values from logs and diagnostics. Credential
+names may cross the Harbor JobConfig/bridge boundary, while values are resolved
+from the execution environment and never placed in Hitch process arguments.
+Provider capture, trajectory and run records apply the same known-value policy;
+Harbor host output is redacted as a bounded stream before it reaches logs or
+events. Protected files remain preferable for future non-environment secret
+providers.
 
 ## 17. Local filesystem layout
 

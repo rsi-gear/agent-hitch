@@ -6,7 +6,8 @@ export { buildManifest, newRunId, safeAgentArgsForPersistence } from "./manifest
 export type { RunManifest } from "./manifest.js";
 export { sealTerminalManifest } from "./finalizer.js";
 export { executeRun } from "./executor.js";
-export type { ExecuteRunOptions, NormalizedEvent } from "./executor.js";
+export type { ExecuteRunOptions } from "./executor.js";
+export type { NormalizedEvent } from "../adapters/index.js";
 export { createQueuedRun } from "./queued.js";
 export type { QueuedRun } from "./queued.js";
 export { canonicalJSON, isTerminal, loadRunRecord, projectRunRecord, sha256Bytes, sha256JSON, trajectoryRefV2 } from "./records.js";

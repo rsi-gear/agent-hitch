@@ -33,3 +33,35 @@ test("recoverable Harbor process writes directly to durable log files", async (t
   assert.ok(events.some((event) => event.type === "eval.backend.process-recorded" && event.process_id === processId));
   assert.equal(events.some((event) => event.type === "eval.backend.output"), false);
 });
+
+for (const recoverable of [false, true]) {
+  test(`${recoverable ? "recoverable" : "attached"} Harbor process redacts credential values before logs are persisted`, async (t) => {
+    if (recoverable && process.platform === "win32") return;
+    const directory = await mkdtemp(path.join(tmpdir(), "hitch-harbor-redaction-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const executable = path.join(directory, "secret-harbor");
+    const secret = "custom-secret-value-without-provider-prefix";
+    await writeFile(executable, "#!/bin/sh\nprintf 'out:%s\\n' \"$EVAL_SECRET\"\nprintf 'Authorization: Bearer abcdefghijklmnop\\n' >&2\n", { mode: 0o700 });
+    await chmod(executable, 0o700);
+    const events: Record<string, unknown>[] = [];
+    const result = await invokeHarbor(executable, [], {
+      cwd: directory,
+      env: { PATH: process.env.PATH, EVAL_SECRET: secret },
+      stdoutPath: path.join(directory, "stdout.log"),
+      stderrPath: path.join(directory, "stderr.log"),
+      emit: (event) => events.push(event),
+      redactEnvNames: ["EVAL_SECRET"],
+      ...(recoverable ? {
+        persistAcrossParentExit: true,
+        exitStatusPath: path.join(directory, "process-exit.json"),
+        onStarted: () => {},
+      } : {}),
+    });
+    assert.equal(result.code, 0);
+    const persisted = `${await readFile(path.join(directory, "stdout.log"), "utf8")}\n${await readFile(path.join(directory, "stderr.log"), "utf8")}`;
+    assert.equal(persisted.includes(secret), false);
+    assert.equal(persisted.includes("abcdefghijklmnop"), false);
+    assert.match(persisted, /\[REDACTED\]/);
+    assert.equal(JSON.stringify(events).includes(secret), false);
+  });
+}

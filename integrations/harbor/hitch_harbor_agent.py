@@ -61,6 +61,7 @@ class HitchHarborAgent(BaseAgent):
         local_source_transport: dict[str, Any] | None = None,
         hitch_timeout_ms: int = 900_000,
         agent_args: list[str] | None = None,
+        credential_names: list[str] | None = None,
         workdir: str | None = None,
         eval_id: str | None = None,
         benchmark_id: str | None = None,
@@ -81,6 +82,13 @@ class HitchHarborAgent(BaseAgent):
         self.candidate_id = candidate_id
         self.hitch_timeout_ms = int(hitch_timeout_ms)
         self.agent_args = list(agent_args or [])
+        raw_credential_names = list(credential_names or [])
+        if (
+            any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None for name in raw_credential_names)
+            or len(set(raw_credential_names)) != len(raw_credential_names)
+        ):
+            raise ValueError("credential_names must contain unique environment variable names")
+        self.credential_names = sorted(raw_credential_names)
         if workdir is not None and (not isinstance(workdir, str) or not workdir.strip()):
             raise ValueError("workdir must be a non-empty string when provided")
         self.workdir = workdir.strip() if isinstance(workdir, str) else None
@@ -1046,6 +1054,8 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             arguments.extend(["--model", shlex.quote(self.model_name)])
         for value in self.agent_args:
             arguments.extend(["--agent-arg", shlex.quote(value)])
+        for name in self.credential_names:
+            arguments.extend(["--internal-credential-name", shlex.quote(name)])
         command = (
             "set -o pipefail; "
             + " ".join(arguments)

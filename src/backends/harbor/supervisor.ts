@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { createCredentialRedactionTransform, credentialValuesFromEnv } from "../../foundation/index.js";
 
 interface ExitStatus {
   schema_version: "1";
@@ -9,37 +12,50 @@ interface ExitStatus {
 }
 
 async function main(): Promise<void> {
-  const [, , statusPath, executable, ...args] = process.argv;
-  if (!statusPath || !executable) {
-    process.stderr.write("Harbor supervisor requires status path and executable\n");
+  const [, , statusPath, stdoutPath, stderrPath, redactionNamesJSON, executable, ...args] = process.argv;
+  if (!statusPath || !stdoutPath || !stderrPath || !redactionNamesJSON || !executable) {
+    process.stderr.write("Harbor supervisor requires status/log paths, redaction names, and executable\n");
     process.exitCode = 2;
     return;
   }
-  const result = await supervise(executable, args);
+  const redactionNames = parseRedactionNames(redactionNamesJSON);
+  const result = await supervise(executable, args, stdoutPath, stderrPath, redactionNames);
   await persist(statusPath, result);
   process.exitCode = result.process_exit_code === null ? 1 : Math.max(0, Math.min(255, result.process_exit_code));
 }
 
-function supervise(executable: string, args: string[]): Promise<ExitStatus> {
+function supervise(executable: string, args: string[], stdoutPath: string, stderrPath: string, redactionNames: string[]): Promise<ExitStatus> {
   return new Promise((resolve) => {
+    const credentialValues = credentialValuesFromEnv(redactionNames, process.env);
     const child = spawn(executable, args, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    const streams = Promise.all([
+      pipeline(child.stdout, createCredentialRedactionTransform(credentialValues), createWriteStream(stdoutPath, { flags: "w", mode: 0o600 })),
+      pipeline(child.stderr, createCredentialRedactionTransform(credentialValues), createWriteStream(stderrPath, { flags: "w", mode: 0o600 })),
+    ]);
     let settled = false;
-    child.once("error", () => {
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
-      resolve(status(127, null));
-    });
+      streams.then(() => resolve(status(code, signal)), () => resolve(status(74, null)));
+    };
+    child.once("error", () => finish(127, null));
     child.once("close", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      resolve(status(code, signal));
+      finish(code, signal);
     });
   });
+}
+
+function parseRedactionNames(value: string): string[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value) as unknown; } catch { throw new TypeError("Harbor supervisor redaction names are invalid JSON"); }
+  if (!Array.isArray(parsed) || parsed.some((name) => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+    || new Set(parsed).size !== parsed.length) throw new TypeError("Harbor supervisor redaction names are invalid");
+  return [...parsed].sort();
 }
 
 function status(processExitCode: number | null, signal: NodeJS.Signals | null): ExitStatus {

@@ -19,6 +19,8 @@ export interface RunRequestInput {
   prompt?: unknown;
   timeout_ms?: unknown;
   agent_args?: unknown;
+  /** Names only; values remain process-local and are used to redact persisted evidence. */
+  credential_names?: unknown;
   context?: unknown;
   parent?: unknown;
   model_identity?: unknown;
@@ -33,6 +35,7 @@ export interface ValidatedRunRequest extends AdapterRequest {
   model_identity: ModelIdentityV1;
   protocol_identity: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256">;
   defer_benchmark_observation: boolean;
+  credential_names: string[];
 }
 
 export async function validateRunRequest(input: RunRequestInput): Promise<ValidatedRunRequest> {
@@ -40,7 +43,7 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
     throw invalidInput("run request must be a JSON object");
   }
   const allowedFields = new Set([
-    "schema_version", "harness_ref", "agent", "model", "cwd", "workspace_mode", "prompt", "timeout_ms", "agent_args",
+    "schema_version", "harness_ref", "agent", "model", "cwd", "workspace_mode", "prompt", "timeout_ms", "agent_args", "credential_names",
     "context", "parent", "model_identity", "protocol_identity", "defer_benchmark_observation",
   ]);
   const unexpectedField = Object.keys(input).find((field) => !allowedFields.has(field));
@@ -71,6 +74,10 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
   }
   if (input.agent_args !== undefined && (!Array.isArray(input.agent_args) || input.agent_args.some((arg) => typeof arg !== "string"))) {
     throw invalidInput("agent_args must be an array of strings");
+  }
+  if (input.credential_names !== undefined && (!Array.isArray(input.credential_names)
+    || input.credential_names.some((name) => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))) {
+    throw invalidInput("credential_names must contain environment variable names");
   }
   const request = normalizeRequest(input as Record<string, unknown>);
   const reference = parseHarnessReference(request.harness_ref);
@@ -116,6 +123,7 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
   }
   return {
     ...request,
+    credential_names: [...new Set((input.credential_names ?? []) as string[])].sort(),
     context,
     ...(parent ? { parent } : {}),
     model_identity: modelIdentity,

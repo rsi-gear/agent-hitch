@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { closeSync, createWriteStream, openSync } from "node:fs";
-import type { WriteStream } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { HitchError, consumeLines, terminateProcess } from "../../foundation/index.js";
+import { HitchError, consumeLines, createCredentialRedactionTransform, credentialValuesFromEnv, terminateProcess } from "../../foundation/index.js";
 
 const SUPERVISOR_PATH = fileURLToPath(new URL("./supervisor.js", import.meta.url));
 
@@ -13,18 +13,20 @@ export interface HarborProcessCallbacks {
   onExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
   persistAcrossParentExit?: boolean;
   exitStatusPath?: string;
+  redactEnvNames?: readonly string[];
 }
 
 export function invokeHarbor(
   executable: string,
   args: string[],
-  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, persistAcrossParentExit, exitStatusPath }: {
+  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, persistAcrossParentExit, exitStatusPath, redactEnvNames = [] }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     stdoutPath: string;
     stderrPath: string;
     signal?: AbortSignal;
     emit: (event: Record<string, unknown>) => void;
+    redactEnvNames?: readonly string[];
   } & HarborProcessCallbacks,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   if (onStarted && persistAcrossParentExit) {
@@ -37,11 +39,13 @@ export function invokeHarbor(
       emit,
       onStarted,
       exitStatusPath,
+      redactEnvNames,
       ...(signal ? { signal } : {}),
       ...(onExited ? { onExited } : {}),
     });
   }
   return new Promise((resolve, reject) => {
+    const credentialValues = credentialValuesFromEnv(redactEnvNames, env);
     const stdout = createWriteStream(stdoutPath, { flags: "w", mode: 0o600 });
     const stderr = createWriteStream(stderrPath, { flags: "w", mode: 0o600 });
     const child = spawn(executable, args, {
@@ -51,12 +55,27 @@ export function invokeHarbor(
       detached: process.platform !== "win32",
       windowsHide: true,
     });
-    child.stdout.pipe(stdout);
-    child.stderr.pipe(stderr);
-    consumeLines(child.stdout, (line) => emit({ type: "eval.backend.output", stream: "stdout", text: line }));
-    consumeLines(child.stderr, (line) => emit({ type: "eval.backend.output", stream: "stderr", text: line }));
+    const safeStdout = createCredentialRedactionTransform(credentialValues);
+    const safeStderr = createCredentialRedactionTransform(credentialValues);
+    consumeLines(safeStdout, (line) => emit({ type: "eval.backend.output", stream: "stdout", text: line }));
+    consumeLines(safeStderr, (line) => emit({ type: "eval.backend.output", stream: "stderr", text: line }));
     let settled = false;
     const abort = () => terminateProcess(child).catch(() => {});
+    const streams = Promise.all([
+      pipeline(child.stdout, safeStdout, stdout),
+      pipeline(child.stderr, safeStderr, stderr),
+    ]);
+    streams.catch((error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
+      abort();
+      reject(new HitchError(`failed to persist Harbor output: ${(error as Error).message}`, {
+        code: "harbor_log_write_failed",
+        exitCode: 12,
+        cause: error,
+      }));
+    });
     signal?.addEventListener("abort", abort, { once: true });
     const started = child.pid === undefined ? Promise.resolve() : Promise.resolve(onStarted?.(child.pid));
     started.catch((error) => {
@@ -89,7 +108,7 @@ export function invokeHarbor(
       settled = true;
       signal?.removeEventListener("abort", abort);
       const result = { code, signal: processSignal };
-      Promise.all([started, closeWriteStream(stdout), closeWriteStream(stderr)])
+      Promise.all([started, streams])
         .then(async () => { await onExited?.(result); resolve(result); })
         .catch(reject);
     });
@@ -100,7 +119,7 @@ export function invokeHarbor(
 function invokeRecoverableHarbor(
   executable: string,
   args: string[],
-  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, exitStatusPath }: {
+  { cwd, env, stdoutPath, stderrPath, signal, emit, onStarted, onExited, exitStatusPath, redactEnvNames }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     stdoutPath: string;
@@ -110,25 +129,20 @@ function invokeRecoverableHarbor(
     onStarted: (pid: number) => void | Promise<void>;
     onExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
     exitStatusPath: string;
+    redactEnvNames: readonly string[];
   },
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
-    const stdout = openSync(stdoutPath, "w", 0o600);
-    let stderr: number | undefined;
-    let child: ChildProcess;
-    try {
-      stderr = openSync(stderrPath, "w", 0o600);
-      child = spawn(process.execPath, [SUPERVISOR_PATH, exitStatusPath, executable, ...args], {
-        cwd,
-        env,
-        stdio: ["ignore", stdout, stderr],
-        detached: process.platform !== "win32",
-        windowsHide: true,
-      });
-    } finally {
-      closeSync(stdout);
-      if (stderr !== undefined) closeSync(stderr);
-    }
+    credentialValuesFromEnv(redactEnvNames, env);
+    const child: ChildProcess = spawn(process.execPath, [
+      SUPERVISOR_PATH, exitStatusPath, stdoutPath, stderrPath, JSON.stringify(redactEnvNames), executable, ...args,
+    ], {
+      cwd,
+      env,
+      stdio: "ignore",
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    });
     let settled = false;
     const abort = () => terminateProcess(child).catch(() => {});
     signal?.addEventListener("abort", abort, { once: true });
@@ -183,13 +197,4 @@ export async function readHarborProcessExitStatus(file: string): Promise<{ code:
     throw new TypeError("Harbor process exit status is invalid");
   }
   return { code: record.process_exit_code as number | null, signal: record.signal as NodeJS.Signals | null };
-}
-
-function closeWriteStream(stream: WriteStream): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (stream.closed) return resolve();
-    stream.once("error", reject);
-    stream.once("close", resolve);
-    stream.end();
-  });
 }

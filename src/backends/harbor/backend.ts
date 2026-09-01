@@ -142,6 +142,7 @@ export async function runHarborBackend({
     ...(modelProxy ? { modelProxy } : {}),
   });
   await atomicWriteJSON(configPath, config);
+  const credentialNames = credentialEnvironmentNames(request.pass_env, env);
   emit({
     type: "eval.backend.started",
     backend: "harbor",
@@ -167,6 +168,7 @@ export async function runHarborBackend({
       ...(recoverableProcess ? { persistAcrossParentExit: true } : {}),
       ...(recoverableProcess ? { exitStatusPath: path.join(backendDirectory, "process-exit.json") } : {}),
       emit,
+      redactEnvNames: credentialNames,
     });
   } finally {
     await monitor?.stop();
@@ -322,6 +324,7 @@ export async function buildHarborJobConfig({
   }
   const timeoutSeconds = request.timeout_ms > 0 ? Math.ceil(request.timeout_ms / 1_000) : null;
   const setupTimeoutSeconds = request.setup_timeout_ms > 0 ? Math.ceil(request.setup_timeout_ms / 1_000) : null;
+  const credentialNames = credentialEnvironmentNames(request.pass_env, env);
   const agent: Record<string, unknown> = {
     import_path: "hitch_harbor_agent:HitchHarborAgent",
     model_name: request.model || null,
@@ -380,9 +383,10 @@ export async function buildHarborJobConfig({
       } : {}),
       hitch_timeout_ms: request.timeout_ms,
       agent_args: request.agent_args,
+      credential_names: credentialNames,
       ...(modelProxy ? { model_capture: parseHarborModelProxyRoute(modelProxy) } : {}),
     },
-    env: credentialEnvironment(request.pass_env, env),
+    env: credentialEnvironment(credentialNames),
     include_logs: ["hitch-*"],
   };
   if (timeoutSeconds !== null) agent.override_timeout_sec = timeoutSeconds + 30;
@@ -462,14 +466,18 @@ async function discoverHarbor(explicit: string | undefined, root: string, env: N
   return located.executable;
 }
 
-function credentialEnvironment(explicitNames: string[], env: NodeJS.ProcessEnv): Record<string, string> {
+function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.ProcessEnv): string[] {
   const names = new Set(HARBOR_CREDENTIAL_ENV.filter((name) => env[name] !== undefined));
   for (const name of explicitNames || []) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw invalidInput(`invalid environment variable name: ${name}`);
     if (env[name] === undefined) throw invalidInput(`environment variable is not set: ${name}`);
     names.add(name);
   }
-  return Object.fromEntries([...names].sort().map((name) => [name, `\${${name}}`]));
+  return [...names].sort();
+}
+
+function credentialEnvironment(names: readonly string[]): Record<string, string> {
+  return Object.fromEntries(names.map((name) => [name, `\${${name}}`]));
 }
 
 function withBridgePythonPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

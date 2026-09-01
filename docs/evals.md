@@ -207,7 +207,11 @@ Dataset values must select an immutable revision and use Harbor conventions:
 
 Common provider credential variables are passed to Harbor as `${NAME}`
 references, not copied as secret values into `job.json`. Extra variables can be
-allowed explicitly with repeated `--pass-env NAME` options.
+allowed explicitly with repeated `--pass-env NAME` options. The Harbor bridge
+passes the same names—not their values—to the inner Hitch run. Values are
+resolved only from that process environment and are removed from provider
+capture, trajectory, result, event and diagnostic evidence before persistence;
+Harbor host stdout/stderr use the same bounded streaming redactor.
 
 ## Records
 

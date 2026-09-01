@@ -35,9 +35,9 @@ Last audited: 2026-09-01 on branch `codex/harbor-control-plane`.
 | Harness artifact/controller runtime are not bypassed | Implemented | Every eval resolves immutable artifact/runtime identities and validates them before Harbor handoff |
 | Every sealed run has a verified bundle index | Implemented | Run finalization creates the index and mutation tests verify it fails closed |
 | Model proxy optional/off-compatible | Implemented | Off/native remain non-proxy paths; optional proxy incompatibility degrades with evidence, required capture fails closed, and host-side proxy/hybrid traffic is captured without replacing Harbor reward or canonical trajectory |
-| Credentials absent from new records/caches | Partial | Explicit pass-env allowlist exists; image/capture/provider records and comprehensive secret-scanning tests do not |
+| Credentials absent from new records/caches | Partial | Explicit pass-env names are the only values carried through Harbor JobConfig and the Python bridge; the inner Hitch run resolves those names process-locally, redacts declared values from request/manifest/events/result/provider-native and canonical trajectory evidence, and records redaction counts. Attached and recoverable Harbor stdout/stderr are streamed through bounded field/value redaction before either logs or events see them. Unit, split-chunk/multiline/oversize-stream, complete run-directory and eval-directory secret scans cover the local Docker path | Remote short-TTL secret envelopes and BuildKit secret injection/cache canaries remain |
 | Legacy direct eval/history readable | Implemented | Direct eval and compatibility plan/rerun tests remain active |
-| Full repository checks pass | Implemented | `npm run check`; this row must be refreshed after every implementation change |
+| Full repository checks pass | Implemented | `npm run check` passes with 276 tests on 2026-09-01; this row must be refreshed after every implementation change |
 
 ## Required test gaps
 
@@ -51,7 +51,9 @@ Last audited: 2026-09-01 on branch `codex/harbor-control-plane`.
   accepted-worker reconnect and packaged-runner no-replay are covered, while
   broader promoted-bundle mutation attacks still need coverage.
 - Capture redaction for standard headers, custom secret headers and known
-  credential values is covered.
+  credential values is covered. Local Harbor host logs, bridge credential-name
+  handoff, provider capture and complete run/eval evidence trees are also
+  secret-scanned; remote secret-envelope and BuildKit cache tests remain.
 - Fixed-machine load/canary acceptance from sections 25.5 and 25.6.
 
 Update this document in the same commit that closes any row. Do not change a
