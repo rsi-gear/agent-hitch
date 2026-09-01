@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -59,8 +60,17 @@ try {
   }
 
   const cleanupStartedAt = Date.now();
+  const ownedBeforeCrash = await ownedResourceCount();
+  if (ownedBeforeCrash !== trials * 2) throw new Error(`load canary found ${ownedBeforeCrash} owned resources before cleanup instead of ${trials * 2}`);
+  const crash = spawn(process.execPath, [path.join(import.meta.dirname, "docker-reaper-crash-child.js"), root, docker], { stdio: "ignore" });
+  const crashed = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    crash.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  if (crashed.code !== null || crashed.signal !== "SIGKILL") throw new Error(`cleanup crash child exited unexpectedly: ${JSON.stringify(crashed)}`);
+  const ownedAfterCrash = await ownedResourceCount();
+  if (ownedAfterCrash !== ownedBeforeCrash - 1) throw new Error(`crashed cleanup removed ${ownedBeforeCrash - ownedAfterCrash} resources instead of exactly 1`);
   const report = await reapOwnedDockerResources({ root, dockerExecutable: docker, leaseIds: handles.map((handle) => handle.leaseId) });
-  cleanupDeleted = report.deleted.length;
+  cleanupDeleted = ownedBeforeCrash - ownedAfterCrash + report.deleted.length;
   if (report.issues.length > 0 || report.retained.length > 0) throw new Error(`fenced Docker cleanup was incomplete: ${JSON.stringify(report)}`);
   if (cleanupDeleted !== trials * 2) throw new Error(`fenced Docker cleanup deleted ${cleanupDeleted} resources instead of ${trials * 2}`);
   if (Date.now() - cleanupStartedAt > 60_000) throw new Error("fenced Docker cleanup exceeded 60 seconds");
@@ -82,6 +92,7 @@ try {
     maximum_running_containers: maximumRunningContainers,
     oom_killed: oomKilled,
     cleanup_deleted_resources: cleanupDeleted,
+    cleanup_recovered_after_sigkill: true,
     duration_ms: Date.now() - startedAt,
   }, null, 2)}\n`);
 } finally {
@@ -157,6 +168,14 @@ async function runTrial(index: number): Promise<void> {
 
 async function command(args: string[], timeoutMs = 15_000): Promise<{ stdout: string; stderr: string }> {
   return runCommand(docker, args, { env: process.env, timeoutMs, failureCode: "resource_load_canary_failed" });
+}
+
+async function ownedResourceCount(): Promise<number> {
+  const [containers, networks] = await Promise.all([
+    command(["container", "ls", "--all", "--filter", `label=io.hitch.eval-id=${evalId}`, "--format", "{{.ID}}"]),
+    command(["network", "ls", "--filter", `label=io.hitch.eval-id=${evalId}`, "--format", "{{.ID}}"]),
+  ]);
+  return [containers.stdout, networks.stdout].flatMap((value) => value.split(/\r?\n/).filter(Boolean)).length;
 }
 
 function integerEnv(name: string, fallback: number): number {
