@@ -139,6 +139,28 @@ test("remote worker capacity accounting preserves GPU availability", async (t) =
   assert.equal(heartbeat.provider_status.capacity.allocatable.gpu_count, 2);
 });
 
+test("remote worker capacity accounting preserves ephemeral disk availability", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-worker-disk-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const registry = new RemoteWorkerRegistry({ root });
+  await registry.initialize();
+  const registered = await registry.register(registration({
+    capacity: {
+      total: { ...TOTAL, ephemeral_disk_bytes: 100 * 1024 ** 3 },
+      reserved_for_system: { ...RESERVED, ephemeral_disk_bytes: 20 * 1024 ** 3 },
+      allocatable: { ...ALLOCATABLE, ephemeral_disk_bytes: 80 * 1024 ** 3 },
+    },
+  }));
+  const heartbeat = await registry.heartbeat("worker_remote_a", {
+    schema_version: "1", generation: registered.worker.generation, health: "healthy",
+    allocated: { ...ZERO, ephemeral_disk_bytes: 30 * 1024 ** 3 }, active_leases: [], sent_at: new Date().toISOString(),
+  });
+  assert.equal(heartbeat.worker.capacity.total.ephemeral_disk_bytes, 100 * 1024 ** 3);
+  assert.equal(heartbeat.worker.capacity.allocated.ephemeral_disk_bytes, 30 * 1024 ** 3);
+  assert.equal(heartbeat.provider_status.capacity.allocatable.ephemeral_disk_bytes, 80 * 1024 ** 3);
+  assert.equal(heartbeat.provider_status.capacity.allocated.ephemeral_disk_bytes, 30 * 1024 ** 3);
+});
+
 test("remote work protocol fences offers, events, terminal receipts, and release", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-protocol-"));
   t.after(() => rm(root, { recursive: true, force: true }));

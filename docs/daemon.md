@@ -98,11 +98,13 @@ hitch daemon start \
   --container-slots 8 \
   --build-slots 2 \
   --capacity-gpus 2 \
+  --capacity-ephemeral-disk-mib 32768 \
   --run-cpu-millis 1000 \
   --run-memory-mib 512 \
   --eval-cpu-millis 1000 \
   --eval-memory-mib 1024 \
-  --eval-gpus 1
+  --eval-gpus 1 \
+  --eval-ephemeral-disk-mib 4096
 ```
 
 | Value | Default | Meaning |
@@ -112,12 +114,15 @@ hitch daemon start \
 | Container slots | `max-concurrent` | Maximum admitted Harbor trials |
 | Build slots | `1` | Reserved lane for later managed image builds |
 | GPU capacity | omitted (`0`) | Whole Docker-visible devices; must be set explicitly |
+| Ephemeral disk capacity | omitted (`0`) | Shared writable-storage admission quota; must be set explicitly |
 | Direct run reservation | `1000` millicores, `512` MiB | Cost of one daemon agent run |
-| Harbor trial reservation | `1000` millicores, `1024` MiB, one container, GPU omitted | Cost of one admitted local trial |
+| Harbor trial reservation | `1000` millicores, `1024` MiB, one container, GPU/disk omitted | Cost of one admitted local trial |
 
 All values are non-overcommitted reservations. Harbor CPU/memory values become
 container hard limits, while a positive GPU value becomes a fixed Compose
-device reservation. `hitch daemon status --json`
+device reservation. Ephemeral disk is an admission quota and evidence field;
+Hitch does not claim a portable Docker hard limit where the provider cannot
+enforce one. `hitch daemon status --json`
 returns both `resource_policy` and the live `resources` ledger; human-readable
 status prints allocated versus total CPU, memory, container, build, and configured GPU slots.
 The selected policy is also persisted in `daemon.json`, so detached startup and

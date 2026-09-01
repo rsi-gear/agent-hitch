@@ -150,7 +150,7 @@ export function parseExecutionProviderStatus(value: unknown): ExecutionProviderS
   const total = providerResources(capacity.total, "total");
   const allocatable = providerResources(capacity.allocatable, "allocatable");
   const allocated = providerResources(capacity.allocated, "allocated");
-  for (const field of ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"] as const) {
+  for (const field of ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count", "ephemeral_disk_bytes"] as const) {
     if ((allocatable[field] ?? 0) > (total[field] ?? 0) || (allocated[field] ?? 0) > (allocatable[field] ?? 0)) throw new TypeError("execution provider capacity accounting is invalid");
   }
   return {
@@ -404,7 +404,7 @@ function exactRecord(value: unknown, keys: string[], label: string, optional: st
 }
 
 function providerResources(value: unknown, label: string): ExecutionProviderStatusV1["capacity"]["total"] {
-  const record = exactRecord(value, ["cpu_millis", "memory_bytes", "container_slots", "build_slots"], `execution provider ${label} resources`, ["gpu_count"]);
+  const record = exactRecord(value, ["cpu_millis", "memory_bytes", "container_slots", "build_slots"], `execution provider ${label} resources`, ["gpu_count", "ephemeral_disk_bytes"]);
   for (const entry of Object.values(record)) if (!Number.isSafeInteger(entry) || (entry as number) < 0) throw new TypeError(`execution provider ${label} resources are invalid`);
   return record as unknown as ExecutionProviderStatusV1["capacity"]["total"];
 }

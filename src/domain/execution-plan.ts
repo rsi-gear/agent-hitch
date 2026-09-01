@@ -67,6 +67,7 @@ export interface TaskResourceComponentV1 {
     cpu_millis: ResourceRequirementFieldV1;
     memory_bytes: ResourceRequirementFieldV1;
     gpu_count?: ResourceRequirementFieldV1;
+    ephemeral_disk_bytes?: ResourceRequirementFieldV1;
   };
 }
 
@@ -80,6 +81,7 @@ export interface TaskResourceRequirementV1 {
     container_slots: ResourceRequirementFieldV1;
     build_slots: ResourceRequirementFieldV1;
     gpu_count?: ResourceRequirementFieldV1;
+    ephemeral_disk_bytes?: ResourceRequirementFieldV1;
   };
   components: TaskResourceComponentV1[];
   diagnostics: string[];

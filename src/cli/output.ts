@@ -110,6 +110,7 @@ Usage:
     [--capacity-cpu-millis <n>] [--capacity-memory-mib <n>]
     [--container-slots <n>] [--build-slots <n>]
     [--capacity-gpus <n>] [--eval-gpus <n>]
+    [--capacity-ephemeral-disk-mib <n>] [--eval-ephemeral-disk-mib <n>]
     [--run-cpu-millis <n>] [--run-memory-mib <n>]
     [--eval-cpu-millis <n>] [--eval-memory-mib <n>]
   hitch daemon stop | status [--json] | logs [-n <lines>]

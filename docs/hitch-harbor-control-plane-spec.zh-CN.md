@@ -1,6 +1,6 @@
 # Hitch Harbor 兼容实验控制面设计规范
 
-- 状态：Draft v0.1
+- 状态：Implementation candidate v0.2（GPU 硬件与 Windows CI 证据待补）
 - 目标版本：`0.3.x`
 - 更新日期：2026-09-01
 - Hitch 基线：`0.2.5@4aa6da8`
@@ -453,6 +453,7 @@ interface ResourceVectorV1 {
 - `cpu_millis` 表示可调度配额，不等同于实际 CPU time。
 - `memory_bytes` 必须对应 Docker/worker 的硬限制或可审计的 admission limit。
 - `gpu_count` 只接受整卡数量；字段缺失保持旧记录兼容并等价于零。operator 必须通过 `--capacity-gpus` 显式声明本机可调度 GPU，不能从宿主机可见设备数推测 Docker VM 的可用容量。
+- `ephemeral_disk_bytes` 是 worker 可写临时存储的 admission quota；字段缺失保持旧记录兼容并等价于零。operator 通过 `--capacity-ephemeral-disk-mib` 和 `--eval-ephemeral-disk-mib` 显式声明。provider 无法提供可审计硬限额时必须把它标为 admission-only evidence，不能伪称 Docker 已执行硬限制。
 - 未知资源不能按零处理；必须使用 operator 配置的保守默认值。
 
 ### 8.3 Trial slot 与 work item
@@ -1932,6 +1933,10 @@ node --test "dist/test/*.test.js"
 npm run canary:buildkit-secrets
 npm run canary:docker-images
 npm run canary:resource-load
+npm run canary:harbor-load
+npm run canary:packaged-harness
+HITCH_COLLISION_DOMAIN_DOCKER_HOSTS=<engine-a>,<engine-b> npm run canary:collision-domains
+HITCH_GPU_CANARY_IMAGE=<cuda-image-with-nvidia-smi> npm run canary:gpu-hardware
 ```
 
 Docker/Harbor canary 至少包含：

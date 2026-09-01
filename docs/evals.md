@@ -52,7 +52,9 @@ hitch daemon start \
   --capacity-memory-mib 16384 \
   --container-slots 8 \
   --capacity-gpus 2 \
-  --eval-gpus 1
+  --eval-gpus 1 \
+  --capacity-ephemeral-disk-mib 32768 \
+  --eval-ephemeral-disk-mib 4096
 
 # Submit and wait for the terminal result.
 hitch eval run --daemon \

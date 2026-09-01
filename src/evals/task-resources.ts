@@ -95,6 +95,7 @@ export function deriveTaskResourceRequirement(input: {
   const mainCpu = chooseDeclared("cpu_millis", input.declaration.task.cpu_millis, mainCompose?.cpu_millis, input.defaultResources.cpu_millis, input.defaultSource, diagnostics);
   const mainMemory = chooseDeclared("memory_bytes", input.declaration.task.memory_bytes, mainCompose?.memory_bytes, input.defaultResources.memory_bytes, input.defaultSource, diagnostics);
   const gpuAware = input.defaultResources.gpu_count !== undefined || input.declaration.compose_services.some((service) => service.gpu_count !== undefined);
+  const diskAware = input.defaultResources.ephemeral_disk_bytes !== undefined;
   const mainGpu = gpuAware ? chooseSingle(mainCompose?.gpu_count, "compose", input.defaultResources.gpu_count ?? 0, input.defaultSource) : undefined;
   let runtimeCpu = mainCpu.value;
   let runtimeMemory = mainMemory.value;
@@ -110,6 +111,7 @@ export function deriveTaskResourceRequirement(input: {
     cpu_millis: withRuntimeMaximum(mainCpu, runtimeCpu),
     memory_bytes: withRuntimeMaximum(mainMemory, runtimeMemory),
     ...(mainGpu ? { gpu_count: mainGpu } : {}),
+    ...(diskAware ? { ephemeral_disk_bytes: field(input.defaultResources.ephemeral_disk_bytes ?? 0, input.defaultSource, true) } : {}),
   };
   const components: TaskResourceComponentV1[] = [component("main", "main", 1, mainRuntimeFields)];
   for (const service of input.declaration.compose_services.filter((entry) => entry.name !== "main")) {
@@ -117,6 +119,7 @@ export function deriveTaskResourceRequirement(input: {
       cpu_millis: chooseSingle(service.cpu_millis, "compose", input.defaultResources.cpu_millis, input.defaultSource),
       memory_bytes: chooseSingle(service.memory_bytes, "compose", input.defaultResources.memory_bytes, input.defaultSource),
       ...(gpuAware ? { gpu_count: chooseSingle(service.gpu_count, "compose", 0, "operator-default") } : {}),
+      ...(diskAware ? { ephemeral_disk_bytes: field(0, "derived-components", false) } : {}),
     }));
   }
   if (input.declaration.verifier.separate) {
@@ -124,6 +127,7 @@ export function deriveTaskResourceRequirement(input: {
       cpu_millis: withRuntimeMaximum(verifierCpu as ResourceRequirementFieldV1, runtimeCpu),
       memory_bytes: withRuntimeMaximum(verifierMemory as ResourceRequirementFieldV1, runtimeMemory),
       ...(gpuAware ? { gpu_count: field(0, "derived-components", false) } : {}),
+      ...(diskAware ? { ephemeral_disk_bytes: field(0, "derived-components", false) } : {}),
     }));
   }
   const providerSidecars = Number(input.declaration.provider_sidecars.main_egress) + Number(input.declaration.provider_sidecars.verifier_egress);
@@ -132,20 +136,22 @@ export function deriveTaskResourceRequirement(input: {
       cpu_millis: field(HARBOR_EGRESS_SIDECAR_RESOURCES.cpu_millis, "provider-policy", false),
       memory_bytes: field(HARBOR_EGRESS_SIDECAR_RESOURCES.memory_bytes, "provider-policy", false),
       ...(gpuAware ? { gpu_count: field(0, "provider-policy", false) } : {}),
+      ...(diskAware ? { ephemeral_disk_bytes: field(0, "provider-policy", false) } : {}),
     }));
   }
   const reservation = sumComponents(components);
-  const estimated = components.some((entry) => entry.fields.cpu_millis.estimated || entry.fields.memory_bytes.estimated || entry.fields.gpu_count?.estimated);
+  const estimated = components.some((entry) => entry.fields.cpu_millis.estimated || entry.fields.memory_bytes.estimated || entry.fields.gpu_count?.estimated || entry.fields.ephemeral_disk_bytes?.estimated);
   return {
     task_id: input.taskId,
     reservation,
-    main_limits: { cpu_millis: runtimeCpu, memory_bytes: runtimeMemory, container_slots: 1, build_slots: 0, ...(mainGpu ? { gpu_count: mainGpu.value } : {}) },
+    main_limits: { cpu_millis: runtimeCpu, memory_bytes: runtimeMemory, container_slots: 1, build_slots: 0, ...(mainGpu ? { gpu_count: mainGpu.value } : {}), ...(diskAware ? { ephemeral_disk_bytes: input.defaultResources.ephemeral_disk_bytes ?? 0 } : {}) },
     fields: {
       cpu_millis: field(reservation.cpu_millis, "derived-components", estimated),
       memory_bytes: field(reservation.memory_bytes, "derived-components", estimated),
       container_slots: field(reservation.container_slots, "derived-components", false),
       build_slots: field(0, "derived-components", false),
       ...(gpuAware ? { gpu_count: field(reservation.gpu_count ?? 0, "derived-components", estimated) } : {}),
+      ...(diskAware ? { ephemeral_disk_bytes: field(reservation.ephemeral_disk_bytes ?? 0, "derived-components", estimated) } : {}),
     },
     components,
     diagnostics: [...new Set(diagnostics)].sort(),
@@ -198,6 +204,7 @@ function component(
       container_slots: replicas,
       build_slots: 0,
       ...(fields.gpu_count ? { gpu_count: fields.gpu_count.value * replicas } : {}),
+      ...(fields.ephemeral_disk_bytes ? { ephemeral_disk_bytes: fields.ephemeral_disk_bytes.value * replicas } : {}),
     },
     fields,
   };
@@ -211,6 +218,7 @@ function sumComponents(components: TaskResourceComponentV1[]): ResourceVectorV1 
     total.container_slots += entry.resources.container_slots;
     total.build_slots += entry.resources.build_slots;
     if (entry.resources.gpu_count !== undefined || total.gpu_count !== undefined) total.gpu_count = (total.gpu_count ?? 0) + (entry.resources.gpu_count ?? 0);
+    if (entry.resources.ephemeral_disk_bytes !== undefined || total.ephemeral_disk_bytes !== undefined) total.ephemeral_disk_bytes = (total.ephemeral_disk_bytes ?? 0) + (entry.resources.ephemeral_disk_bytes ?? 0);
   }
   if (Object.values(total).some((value) => !Number.isSafeInteger(value))) throw resourceError("derived task resources exceed the safe integer range");
   return total;

@@ -356,7 +356,7 @@ function assertWithin(value: ResourceVectorV1, limit: ResourceVectorV1, message:
 }
 
 function resourceFields(): Array<keyof ResourceVectorV1> {
-  return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"];
+  return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count", "ephemeral_disk_bytes"];
 }
 
 function zero(): ResourceVectorV1 {
@@ -371,6 +371,7 @@ function subtract(left: ResourceVectorV1, right: ResourceVectorV1): ResourceVect
     build_slots: left.build_slots - right.build_slots,
   };
   if (left.gpu_count !== undefined || right.gpu_count !== undefined) result.gpu_count = (left.gpu_count ?? 0) - (right.gpu_count ?? 0);
+  if (left.ephemeral_disk_bytes !== undefined || right.ephemeral_disk_bytes !== undefined) result.ephemeral_disk_bytes = (left.ephemeral_disk_bytes ?? 0) - (right.ephemeral_disk_bytes ?? 0);
   return result;
 }
 

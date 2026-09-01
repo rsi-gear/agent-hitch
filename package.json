@@ -61,6 +61,9 @@
     "canary:docker-images": "npm run build && node dist/scripts/canary-docker-image-observation.js",
     "canary:resource-load": "npm run build && node dist/scripts/canary-resource-load.js",
     "canary:harbor-load": "npm run build && node dist/scripts/canary-harbor-load.js",
+    "canary:packaged-harness": "npm run build && node dist/scripts/canary-packaged-harness.js",
+    "canary:collision-domains": "npm run build && node dist/scripts/canary-collision-domains.js",
+    "canary:gpu-hardware": "npm run build && node dist/scripts/canary-gpu-hardware.js",
     "check:architecture": "node dist/scripts/check-architecture.js",
     "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && node --test \"dist/test/*.test.js\"",
     "prepublishOnly": "npm run check"

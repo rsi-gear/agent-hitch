@@ -10,6 +10,7 @@ import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { DEFAULT_REMOTE_WORKER_RECONNECT_TIMEOUT_MS, recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
 import { prepareRemoteWorkInputs } from "./remote-work-inputs.js";
+import { subtractResourceVectors } from "./resources.js";
 
 export interface RemoteWorkCoordinatorOptions {
   root: string;
@@ -270,7 +271,7 @@ function supports(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1, p
     && (capture?.effective_mode !== "proxy" && capture?.effective_mode !== "hybrid" || capture.topology === "in-sandbox" && worker.provider_status.features.model_proxy);
 }
 function compatible(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1): boolean {
-  return worker.worker.status === "ready" && fits(work.reservation, available(worker.worker.capacity.allocatable, worker.worker.capacity.allocated));
+  return worker.worker.status === "ready" && fits(work.reservation, subtractResourceVectors(worker.worker.capacity.allocatable, worker.worker.capacity.allocated));
 }
 
 function remoteBackendResult(worker: RemoteWorkerPublicRecordV1, offered: RemoteWorkOfferV1, terminal: RemoteWorkOfferV1, trial: Record<string, unknown> | null, backendDirectory: string | null) {
@@ -302,17 +303,6 @@ function utilization(allocated: ResourceVectorV1, allocatable: ResourceVectorV1)
     : resourceValue(allocated, field) / resourceValue(allocatable, field)));
 }
 
-function available(total: ResourceVectorV1, used: ResourceVectorV1): ResourceVectorV1 {
-  const result: ResourceVectorV1 = {
-    cpu_millis: total.cpu_millis - used.cpu_millis,
-    memory_bytes: total.memory_bytes - used.memory_bytes,
-    container_slots: total.container_slots - used.container_slots,
-    build_slots: total.build_slots - used.build_slots,
-  };
-  if (total.gpu_count !== undefined || used.gpu_count !== undefined) result.gpu_count = (total.gpu_count ?? 0) - (used.gpu_count ?? 0);
-  return result;
-}
-
 function fits(requested: ResourceVectorV1, capacity: ResourceVectorV1): boolean { return fields().every((field) => resourceValue(requested, field) <= resourceValue(capacity, field)); }
 function acceptedOrLater(offer: RemoteWorkOfferV1): boolean {
   return new Set(["accepted", "cancel-requested", "completed", "release-requested", "released"]).has(offer.state)
@@ -323,7 +313,7 @@ function workerAvailableForOffer(worker: RemoteWorkerPublicRecordV1 | null, offe
   if (offer.state === "offered") return true;
   return worker.active_leases.some((lease) => lease.lease_id === offer.lease.lease_id && lease.epoch === offer.lease.epoch);
 }
-function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"]; }
+function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count", "ephemeral_disk_bytes"]; }
 function resourceValue(resources: ResourceVectorV1, field: keyof ResourceVectorV1): number { return resources[field] ?? 0; }
 function boundedInterval(value: number, label: string): number { if (!Number.isSafeInteger(value) || value < 1 || value > 60_000) throw new TypeError(`${label} is invalid`); return value; }
 function boundedReconnectTimeout(value: number): number { if (!Number.isSafeInteger(value) || value < 1 || value > 5 * 60_000) throw new TypeError("remote worker reconnect timeout is invalid"); return value; }

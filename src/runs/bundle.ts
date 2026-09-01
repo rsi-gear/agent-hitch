@@ -291,12 +291,14 @@ function parseBundleResources(value: unknown): NonNullable<ResultBundleIndexV1["
 function resourceVector(value: unknown): NonNullable<ResultBundleIndexV1["resources"]>["requested"] {
   const record = asRecord(value);
   const fields = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
-  if (Object.keys(record).some((key) => !fields.includes(key as typeof fields[number]) && key !== "gpu_count")
+  if (Object.keys(record).some((key) => !fields.includes(key as typeof fields[number]) && key !== "gpu_count" && key !== "ephemeral_disk_bytes")
     || fields.some((key) => !Number.isSafeInteger(record[key]) || (record[key] as number) < 0)
-    || (record.gpu_count !== undefined && (!Number.isSafeInteger(record.gpu_count) || (record.gpu_count as number) < 0))) throw new TypeError("result bundle requested resources are invalid");
+    || (record.gpu_count !== undefined && (!Number.isSafeInteger(record.gpu_count) || (record.gpu_count as number) < 0))
+    || (record.ephemeral_disk_bytes !== undefined && (!Number.isSafeInteger(record.ephemeral_disk_bytes) || (record.ephemeral_disk_bytes as number) < 0))) throw new TypeError("result bundle requested resources are invalid");
   return {
     ...Object.fromEntries(fields.map((key) => [key, record[key]])),
     ...(record.gpu_count === undefined ? {} : { gpu_count: record.gpu_count }),
+    ...(record.ephemeral_disk_bytes === undefined ? {} : { ephemeral_disk_bytes: record.ephemeral_disk_bytes }),
   } as unknown as NonNullable<ResultBundleIndexV1["resources"]>["requested"];
 }
 

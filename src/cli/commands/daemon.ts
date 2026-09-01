@@ -79,17 +79,22 @@ function parseDaemonResourcePolicy(args: string[], maxConcurrent: number): Daemo
   const buildSlots = parseNonNegative(takeOption(args, "--build-slots"), 1, "--build-slots");
   const capacityGpuOption = takeOption(args, "--capacity-gpus");
   const capacityGpus = parseNonNegative(capacityGpuOption, 0, "--capacity-gpus");
+  const capacityDiskOption = takeOption(args, "--capacity-ephemeral-disk-mib");
+  const capacityDisk = mib(parseNonNegative(capacityDiskOption, 0, "--capacity-ephemeral-disk-mib"), "--capacity-ephemeral-disk-mib");
   const runCpu = parsePositive(takeOption(args, "--run-cpu-millis"), 1_000, "--run-cpu-millis");
   const runMemory = mib(parsePositive(takeOption(args, "--run-memory-mib"), 512, "--run-memory-mib"), "--run-memory-mib");
   const evalCpu = parsePositive(takeOption(args, "--eval-cpu-millis"), 1_000, "--eval-cpu-millis");
   const evalMemory = mib(parsePositive(takeOption(args, "--eval-memory-mib"), 1_024, "--eval-memory-mib"), "--eval-memory-mib");
   const evalGpuOption = takeOption(args, "--eval-gpus");
   const evalGpus = parseNonNegative(evalGpuOption, 0, "--eval-gpus");
+  const evalDiskOption = takeOption(args, "--eval-ephemeral-disk-mib");
+  const evalDisk = mib(parseNonNegative(evalDiskOption, 0, "--eval-ephemeral-disk-mib"), "--eval-ephemeral-disk-mib");
   if (evalGpus > capacityGpus) throw invalidInput("--eval-gpus cannot exceed --capacity-gpus");
+  if (evalDisk > capacityDisk) throw invalidInput("--eval-ephemeral-disk-mib cannot exceed --capacity-ephemeral-disk-mib");
   return {
-    capacity: { cpu_millis: capacityCpu, memory_bytes: capacityMemory, container_slots: containerSlots, build_slots: buildSlots, ...(capacityGpuOption === undefined ? {} : { gpu_count: capacityGpus }) },
+    capacity: { cpu_millis: capacityCpu, memory_bytes: capacityMemory, container_slots: containerSlots, build_slots: buildSlots, ...(capacityGpuOption === undefined ? {} : { gpu_count: capacityGpus }), ...(capacityDiskOption === undefined ? {} : { ephemeral_disk_bytes: capacityDisk }) },
     run: { cpu_millis: runCpu, memory_bytes: runMemory, container_slots: 0, build_slots: 0 },
-    eval_trial: { cpu_millis: evalCpu, memory_bytes: evalMemory, container_slots: 1, build_slots: 0, ...(evalGpuOption === undefined ? {} : { gpu_count: evalGpus }) },
+    eval_trial: { cpu_millis: evalCpu, memory_bytes: evalMemory, container_slots: 1, build_slots: 0, ...(evalGpuOption === undefined ? {} : { gpu_count: evalGpus }), ...(evalDiskOption === undefined ? {} : { ephemeral_disk_bytes: evalDisk }) },
   };
 }
 
@@ -148,7 +153,8 @@ function formatResourceUsage(value: unknown): string {
   const capacity = snapshot.capacity;
   const memory = `${toMib(allocated.memory_bytes)}/${toMib(capacity.memory_bytes)} MiB`;
   const gpu = capacity.gpu_count === undefined ? "" : `, ${Number(allocated.gpu_count ?? 0)}/${Number(capacity.gpu_count)} GPUs`;
-  return `, resources ${allocated.cpu_millis}/${capacity.cpu_millis}m CPU, ${memory}, ${allocated.container_slots}/${capacity.container_slots} containers, ${allocated.build_slots}/${capacity.build_slots} builds${gpu}`;
+  const disk = capacity.ephemeral_disk_bytes === undefined ? "" : `, ${toMib(allocated.ephemeral_disk_bytes)}/${toMib(capacity.ephemeral_disk_bytes)} MiB ephemeral disk`;
+  return `, resources ${allocated.cpu_millis}/${capacity.cpu_millis}m CPU, ${memory}, ${allocated.container_slots}/${capacity.container_slots} containers, ${allocated.build_slots}/${capacity.build_slots} builds${gpu}${disk}`;
 }
 
 function toMib(value: unknown): number {

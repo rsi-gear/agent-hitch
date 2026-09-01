@@ -363,15 +363,18 @@ function validateWorker(worker: ExecutionWorkerIdentity): void {
 function parseResourceVector(value: unknown, label: string): ResourceVectorV1 {
   if (!isRecord(value)) throw new TypeError(`${label} must be an object`);
   const required = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
-  const allowed = [...required, "gpu_count"] as const;
+  const optional = ["gpu_count", "ephemeral_disk_bytes"] as const;
+  const allowed = [...required, ...optional] as const;
   if (Object.keys(value).some((key) => !allowed.includes(key as typeof allowed[number]))) throw new TypeError(`${label} has unknown fields`);
   for (const field of required) {
     if (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0) throw new TypeError(`${label} ${field} is invalid`);
   }
   if (value.gpu_count !== undefined && (!Number.isSafeInteger(value.gpu_count) || (value.gpu_count as number) < 0)) throw new TypeError(`${label} gpu_count is invalid`);
+  if (value.ephemeral_disk_bytes !== undefined && (!Number.isSafeInteger(value.ephemeral_disk_bytes) || (value.ephemeral_disk_bytes as number) < 0)) throw new TypeError(`${label} ephemeral_disk_bytes is invalid`);
   return {
     ...Object.fromEntries(required.map((field) => [field, value[field]])),
     ...(value.gpu_count === undefined ? {} : { gpu_count: value.gpu_count }),
+    ...(value.ephemeral_disk_bytes === undefined ? {} : { ephemeral_disk_bytes: value.ephemeral_disk_bytes }),
   } as unknown as ResourceVectorV1;
 }
 

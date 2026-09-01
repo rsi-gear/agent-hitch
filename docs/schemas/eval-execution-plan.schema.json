@@ -122,7 +122,8 @@
         "memory_bytes": { "type": "integer", "minimum": 0 },
         "container_slots": { "type": "integer", "minimum": 0 },
         "build_slots": { "type": "integer", "minimum": 0 },
-        "gpu_count": { "type": "integer", "minimum": 0 }
+        "gpu_count": { "type": "integer", "minimum": 0 },
+        "ephemeral_disk_bytes": { "type": "integer", "minimum": 0 }
       }
     },
     "resourceField": {
@@ -178,7 +179,8 @@
             "memory_bytes": { "$ref": "#/$defs/resourceField" },
             "container_slots": { "$ref": "#/$defs/resourceField" },
             "build_slots": { "$ref": "#/$defs/resourceField" },
-            "gpu_count": { "$ref": "#/$defs/resourceField" }
+            "gpu_count": { "$ref": "#/$defs/resourceField" },
+            "ephemeral_disk_bytes": { "$ref": "#/$defs/resourceField" }
           }
         },
         "components": {
@@ -200,7 +202,8 @@
                 "properties": {
                   "cpu_millis": { "$ref": "#/$defs/resourceField" },
                   "memory_bytes": { "$ref": "#/$defs/resourceField" },
-                  "gpu_count": { "$ref": "#/$defs/resourceField" }
+                  "gpu_count": { "$ref": "#/$defs/resourceField" },
+                  "ephemeral_disk_bytes": { "$ref": "#/$defs/resourceField" }
                 }
               }
             }

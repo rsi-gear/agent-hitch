@@ -82,6 +82,28 @@ test("resource ledger treats GPU count as an atomic schedulable dimension", () =
   second.release();
 });
 
+test("resource ledger treats ephemeral disk as an atomic admission dimension", () => {
+  const ledger = new ResourceLedger({
+    cpu_millis: 8_000,
+    memory_bytes: 16 * GIB,
+    container_slots: 4,
+    build_slots: 1,
+    ephemeral_disk_bytes: 12 * GIB,
+  });
+  const diskTrial: ResourceVectorV1 = { ...TRIAL, ephemeral_disk_bytes: 5 * GIB };
+  assert.equal(ledger.maximumUnits(diskTrial, 8), 2);
+  const first = ledger.tryAcquire("eval_disk_a", "eval", diskTrial);
+  const second = ledger.tryAcquire("eval_disk_b", "eval", diskTrial);
+  assert.ok(first);
+  assert.ok(second);
+  assert.equal(ledger.tryAcquire("eval_disk_c", "eval", diskTrial), null);
+  assert.equal(ledger.snapshot().allocated.ephemeral_disk_bytes, 10 * GIB);
+  first.release();
+  assert.equal(ledger.snapshot().available.ephemeral_disk_bytes, 7 * GIB);
+  second.release();
+  assert.equal(ledger.snapshot().allocated.ephemeral_disk_bytes, 0);
+});
+
 test("eval control phases and lease/work sets advance monotonically", () => {
   const now = new Date().toISOString();
   const workA = `work_${"a".repeat(32)}`;

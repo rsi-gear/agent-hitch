@@ -88,3 +88,25 @@ test("fixed Compose GPU requests enter task admission without charging non-GPU s
   assert.equal(requirement.components[1]?.resources.gpu_count, 0);
   assert.equal(requirement.fields.gpu_count?.source, "derived-components");
 });
+
+test("ephemeral disk quota is reserved once for the trial main component", () => {
+  const requirement = deriveTaskResourceRequirement({
+    taskId: "disk-task",
+    defaultResources: { ...defaults, ephemeral_disk_bytes: 8 * GIB },
+    defaultSource: "operator-default",
+    declaration: {
+      schema_version: "1",
+      task: {},
+      verifier: { separate: true, environment: {} },
+      compose_services: [{ name: "main", replicas: 1 }, { name: "database", replicas: 2 }],
+      provider_sidecars: { main_egress: true, verifier_egress: true },
+      environment_images: [], environment_image_fallbacks: [], environment_builds: [],
+    },
+  });
+  assert.equal(requirement.reservation.ephemeral_disk_bytes, 8 * GIB);
+  assert.equal(requirement.main_limits.ephemeral_disk_bytes, 8 * GIB);
+  assert.equal(requirement.components[0]?.resources.ephemeral_disk_bytes, 8 * GIB);
+  assert.ok(requirement.components.slice(1).every((entry) => entry.resources.ephemeral_disk_bytes === 0));
+  assert.equal(requirement.fields.ephemeral_disk_bytes?.source, "derived-components");
+  assert.equal(requirement.fields.ephemeral_disk_bytes?.estimated, true);
+});

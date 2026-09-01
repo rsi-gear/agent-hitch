@@ -63,6 +63,8 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /--build-slots <n>/);
   assert.match(help.stdout, /--capacity-gpus <n>/);
   assert.match(help.stdout, /--eval-gpus <n>/);
+  assert.match(help.stdout, /--capacity-ephemeral-disk-mib <n>/);
+  assert.match(help.stdout, /--eval-ephemeral-disk-mib <n>/);
   assert.match(help.stdout, /--eval-memory-mib <n>/);
   assert.match(help.stdout, /hitch worker register --server <url>/);
   assert.match(help.stdout, /hitch worker run --server <url>/);
@@ -139,6 +141,16 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   ], { encoding: "utf8" });
   assert.equal(invalidGpuPolicy.status, 2);
   assert.match(invalidGpuPolicy.stderr, /--eval-gpus cannot exceed --capacity-gpus/);
+
+  const invalidDiskPolicy = spawnSync(process.execPath, [
+    executable,
+    "--root", path.join(tmpdir(), `hitch-invalid-disk-policy-${process.pid}`),
+    "daemon", "start",
+    "--capacity-ephemeral-disk-mib", "1024",
+    "--eval-ephemeral-disk-mib", "2048",
+  ], { encoding: "utf8" });
+  assert.equal(invalidDiskPolicy.status, 2);
+  assert.match(invalidDiskPolicy.stderr, /--eval-ephemeral-disk-mib cannot exceed --capacity-ephemeral-disk-mib/);
 
   const invalidDaemonPort = spawnSync(process.execPath, [
     executable,

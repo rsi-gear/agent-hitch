@@ -5,6 +5,8 @@ export interface ResourceVectorV1 {
   build_slots: number;
   /** Whole GPU devices. Omitted is the V1-compatible representation of zero. */
   gpu_count?: number;
+  /** Admission quota for writable ephemeral storage. Omitted is equivalent to zero. */
+  ephemeral_disk_bytes?: number;
 }
 
 export interface ResourceAllocationV1 {

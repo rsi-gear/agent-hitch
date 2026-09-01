@@ -16,7 +16,8 @@ export interface ResourceLedgerSnapshot {
 }
 
 const REQUIRED_RESOURCE_FIELDS = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
-const RESOURCE_FIELDS = [...REQUIRED_RESOURCE_FIELDS, "gpu_count"] as const;
+const OPTIONAL_RESOURCE_FIELDS = ["gpu_count", "ephemeral_disk_bytes"] as const;
+const RESOURCE_FIELDS = [...REQUIRED_RESOURCE_FIELDS, ...OPTIONAL_RESOURCE_FIELDS] as const;
 
 export class ResourceLedger {
   readonly capacity: ResourceVectorV1;
@@ -87,6 +88,7 @@ export class ResourceLedger {
 
   private allocated(): ResourceVectorV1 {
     const total = zeroResources();
+    for (const field of OPTIONAL_RESOURCE_FIELDS) if (this.capacity[field] !== undefined) total[field] = 0;
     for (const allocation of this.allocations.values()) addInto(total, allocation.resources);
     return total;
   }
@@ -114,10 +116,10 @@ export function scaleResources(resources: ResourceVectorV1, units: number): Reso
     if (!Number.isSafeInteger(value)) throw new TypeError(`scaled resource ${field} exceeds the safe integer range`);
     result[field] = value;
   }
-  if (normalized.gpu_count !== undefined) {
-    const value = normalized.gpu_count * units;
-    if (!Number.isSafeInteger(value)) throw new TypeError("scaled resource gpu_count exceeds the safe integer range");
-    result.gpu_count = value;
+  for (const field of OPTIONAL_RESOURCE_FIELDS) if (normalized[field] !== undefined) {
+    const value = normalized[field] * units;
+    if (!Number.isSafeInteger(value)) throw new TypeError(`scaled resource ${field} exceeds the safe integer range`);
+    result[field] = value;
   }
   return result;
 }
@@ -133,9 +135,9 @@ export function validateResourceVector(resources: ResourceVectorV1, label: strin
     if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${label} ${field} must be a non-negative safe integer`);
     result[field] = value;
   }
-  if (resources.gpu_count !== undefined) {
-    if (!Number.isSafeInteger(resources.gpu_count) || resources.gpu_count < 0) throw new TypeError(`${label} gpu_count must be a non-negative safe integer`);
-    result.gpu_count = resources.gpu_count;
+  for (const field of OPTIONAL_RESOURCE_FIELDS) if (resources[field] !== undefined) {
+    if (!Number.isSafeInteger(resources[field]) || (resources[field] as number) < 0) throw new TypeError(`${label} ${field} must be a non-negative safe integer`);
+    result[field] = resources[field];
   }
   return result;
 }
@@ -146,7 +148,9 @@ function fits(requested: ResourceVectorV1, available: ResourceVectorV1): boolean
 
 function addInto(target: ResourceVectorV1, value: ResourceVectorV1): void {
   for (const field of REQUIRED_RESOURCE_FIELDS) target[field] += value[field];
-  if (value.gpu_count !== undefined || target.gpu_count !== undefined) target.gpu_count = (target.gpu_count ?? 0) + (value.gpu_count ?? 0);
+  for (const field of OPTIONAL_RESOURCE_FIELDS) if (value[field] !== undefined || target[field] !== undefined) {
+    target[field] = (target[field] ?? 0) + (value[field] ?? 0);
+  }
 }
 
 function subtract(left: ResourceVectorV1, right: ResourceVectorV1): ResourceVectorV1 {
@@ -156,7 +160,9 @@ function subtract(left: ResourceVectorV1, right: ResourceVectorV1): ResourceVect
     container_slots: left.container_slots - right.container_slots,
     build_slots: left.build_slots - right.build_slots,
   };
-  if (left.gpu_count !== undefined || right.gpu_count !== undefined) result.gpu_count = (left.gpu_count ?? 0) - (right.gpu_count ?? 0);
+  for (const field of OPTIONAL_RESOURCE_FIELDS) if (left[field] !== undefined || right[field] !== undefined) {
+    result[field] = (left[field] ?? 0) - (right[field] ?? 0);
+  }
   return result;
 }
 
@@ -177,7 +183,9 @@ export function maxResourceVectors(left: ResourceVectorV1, right: ResourceVector
     container_slots: Math.max(left.container_slots, right.container_slots),
     build_slots: Math.max(left.build_slots, right.build_slots),
   };
-  if (left.gpu_count !== undefined || right.gpu_count !== undefined) result.gpu_count = Math.max(left.gpu_count ?? 0, right.gpu_count ?? 0);
+  for (const field of OPTIONAL_RESOURCE_FIELDS) if (left[field] !== undefined || right[field] !== undefined) {
+    result[field] = Math.max(left[field] ?? 0, right[field] ?? 0);
+  }
   return result;
 }
 

@@ -90,9 +90,10 @@ function sidecars(value: unknown): Record<string, { cpu_millis: number; memory_b
 }
 
 function resources(value: unknown, label: string): ResourceVectorV1 {
-  const record = exact(value, RESOURCE_FIELDS, label, ["gpu_count"]);
+  const record = exact(value, RESOURCE_FIELDS, label, ["gpu_count", "ephemeral_disk_bytes"]);
   if (RESOURCE_FIELDS.some((name) => !Number.isSafeInteger(record[name]) || (record[name] as number) < 0)) throw new TypeError(`${label} is invalid`);
   if (record.gpu_count !== undefined && (!Number.isSafeInteger(record.gpu_count) || (record.gpu_count as number) < 0)) throw new TypeError(`${label} is invalid`);
+  if (record.ephemeral_disk_bytes !== undefined && (!Number.isSafeInteger(record.ephemeral_disk_bytes) || (record.ephemeral_disk_bytes as number) < 0)) throw new TypeError(`${label} is invalid`);
   return record as unknown as ResourceVectorV1;
 }
 

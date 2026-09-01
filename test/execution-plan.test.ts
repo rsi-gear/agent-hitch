@@ -64,6 +64,17 @@ test("execution plan scales and round-trips GPU reservations", () => {
   assert.deepEqual(parseEvalExecutionPlan(plan), plan);
 });
 
+test("execution plan scales and round-trips ephemeral disk reservations", () => {
+  const plan = buildEvalExecutionPlan({
+    ...input,
+    tasks: ["one", "two"],
+    trialResources: { ...input.trialResources, ephemeral_disk_bytes: 8_192 },
+  });
+  assert.equal(plan.default_trial_resources.ephemeral_disk_bytes, 8_192);
+  assert.equal(plan.work_items[0]?.reservation.ephemeral_disk_bytes, 16_384);
+  assert.deepEqual(parseEvalExecutionPlan(plan), plan);
+});
+
 test("execution plan seals requested and effective model capture policy", () => {
   const modelCapture = {
     requested_mode: "hybrid" as const,

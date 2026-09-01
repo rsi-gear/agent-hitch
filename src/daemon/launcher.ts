@@ -42,6 +42,8 @@ export async function startDetachedDaemon(options: DetachedDaemonOptions): Promi
     "--eval-memory-mib", String(evalMemoryMib),
     ...(resourcePolicy.capacity.gpu_count === undefined ? [] : ["--capacity-gpus", String(resourcePolicy.capacity.gpu_count)]),
     ...(resourcePolicy.eval_trial.gpu_count === undefined ? [] : ["--eval-gpus", String(resourcePolicy.eval_trial.gpu_count)]),
+    ...(resourcePolicy.capacity.ephemeral_disk_bytes === undefined ? [] : ["--capacity-ephemeral-disk-mib", String(bytesToNonNegativeMib(resourcePolicy.capacity.ephemeral_disk_bytes))]),
+    ...(resourcePolicy.eval_trial.ephemeral_disk_bytes === undefined ? [] : ["--eval-ephemeral-disk-mib", String(bytesToNonNegativeMib(resourcePolicy.eval_trial.ephemeral_disk_bytes))]),
   ], {
     detached: true,
     stdio: ["ignore", stdout, stderr],
@@ -54,5 +56,11 @@ export async function startDetachedDaemon(options: DetachedDaemonOptions): Promi
 function bytesToMib(value: number): number {
   const result = value / (1024 * 1024);
   if (!Number.isSafeInteger(result) || result <= 0) throw new TypeError("detached daemon memory policy must be a positive whole number of MiB");
+  return result;
+}
+
+function bytesToNonNegativeMib(value: number): number {
+  const result = value / (1024 * 1024);
+  if (!Number.isSafeInteger(result) || result < 0) throw new TypeError("detached daemon disk policy must be a non-negative whole number of MiB");
   return result;
 }

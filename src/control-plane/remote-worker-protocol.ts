@@ -474,7 +474,7 @@ function acceptedOrCollecting(state: RemoteWorkOfferV1["state"]): boolean {
   return state === "accepted" || state === "cancel-requested" || state === "completed" || state === "release-requested";
 }
 
-function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count"]; }
+function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count", "ephemeral_disk_bytes"]; }
 function timestamp(value: unknown): boolean { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
 function stringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0 && !/[\0\r\n]/.test(entry)) && new Set(value).size === value.length; }
 function validSequence(value: unknown, allowZero: boolean): number { if (!Number.isSafeInteger(value) || (value as number) < (allowZero ? 0 : 1)) throw protocolError("remote worker event sequence state is invalid"); return value as number; }
