@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
@@ -62,3 +62,22 @@ jobs:
           python3 -c "import json,sys; json.load(open('$PREFIX/doctor.json')); sys.exit(0)"
           [ "$doctor_code" -eq 0 ] || [ "$doctor_code" -eq 3 ] || { echo "eval doctor exited $doctor_code" >&2; exit 1; }
           python3 -c "import pathlib; compile(pathlib.Path('$PREFIX/node_modules/agent-hitch/integrations/harbor/hitch_harbor_agent.py').read_text(), 'x', 'exec'); print('bridge syntax OK')"
+
+  test-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+        shard: [1, 2, 3, 4]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: node --test --test-shard=${{ matrix.shard }}/4 "dist/test/*.test.js"
+      - run: npm pack --dry-run
