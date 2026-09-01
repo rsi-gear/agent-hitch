@@ -170,7 +170,7 @@ async function harborPython(harborExecutable: string, env: NodeJS.ProcessEnv): P
     if (!candidate) continue;
     const resolved = path.isAbsolute(candidate) || candidate.includes("/") || candidate.includes("\\")
       ? await preserveExecutableShim(candidate)
-      : await resolveExecutable(candidate, env.PATH || "");
+      : await resolveExecutable(candidate, env.PATH || "", env.PATHEXT);
     if (resolved) return resolved;
   }
   return null;

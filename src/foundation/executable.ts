@@ -20,6 +20,12 @@ export interface RunCommandOptions {
   signal?: AbortSignal | undefined;
 }
 
+export interface SpawnCommand {
+  executable: string;
+  args: string[];
+  windowsVerbatimArguments: boolean;
+}
+
 export function runCommand(executable: string, args: string[], {
   cwd,
   env = process.env,
@@ -30,12 +36,14 @@ export function runCommand(executable: string, args: string[], {
 }: RunCommandOptions = {}): Promise<CommandResult> {
   throwIfAborted(signal);
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
+    const invocation = prepareSpawnCommand(executable, args);
+    const child = spawn(invocation.executable, invocation.args, {
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32",
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
     let stdout = "";
     let stderr = "";
@@ -85,7 +93,8 @@ export function commandExecutable(command: string, env: NodeJS.ProcessEnv): stri
     bun: "HITCH_BUN_PATH",
     pnpm: "HITCH_PNPM_PATH",
   }[command];
-  return override && env[override]?.trim() ? env[override].trim() : command;
+  if (override && env[override]?.trim()) return env[override].trim();
+  return process.platform === "win32" && new Set(["npm", "pnpm"]).has(command) ? `${command}.cmd` : command;
 }
 
 export async function commandVersion(executable: string, env: NodeJS.ProcessEnv, signal: AbortSignal | undefined): Promise<string> {
@@ -105,10 +114,13 @@ function cancelledError(): HitchError {
   return new HitchError("harness preparation cancelled", { code: "cancelled", exitCode: 9 });
 }
 
-export async function resolveExecutable(command: string, searchPath: string): Promise<string | null> {
-  const candidates = isAbsolute(command) || command.includes("/") || command.includes("\\")
+export async function resolveExecutable(command: string, searchPath: string, pathExt = process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD"): Promise<string | null> {
+  const bases = isAbsolute(command) || command.includes("/") || command.includes("\\")
     ? [resolve(command)]
     : searchPath.split(delimiter).filter(Boolean).map((directory) => join(directory, command));
+  const extensions = process.platform === "win32" ? pathExt.split(";").map((entry) => entry.trim()).filter(Boolean) : [];
+  const knownExtension = extensions.some((extension) => command.toLowerCase().endsWith(extension.toLowerCase()));
+  const candidates = bases.flatMap((base) => knownExtension ? [base] : [base, ...extensions.map((extension) => `${base}${extension}`)]);
   for (const candidate of candidates) {
     try {
       await access(candidate, constants.X_OK);
@@ -124,7 +136,12 @@ export async function resolveExecutable(command: string, searchPath: string): Pr
 
 export async function detectVersion(executable: string, args: string[], timeoutMs = 5_000): Promise<string> {
   return new Promise((resolveVersion) => {
-    const child = spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const invocation = prepareSpawnCommand(executable, args);
+    const child = spawn(invocation.executable, invocation.args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
@@ -139,6 +156,41 @@ export async function detectVersion(executable: string, args: string[], timeoutM
       resolveVersion(selectVersionLine(stdout, stderr));
     });
   });
+}
+
+export function prepareSpawnCommand(
+  executable: string,
+  args: string[],
+  { platform = process.platform, comspec = process.env.ComSpec || process.env.COMSPEC || "cmd.exe" }: { platform?: NodeJS.Platform; comspec?: string } = {},
+): SpawnCommand {
+  if (platform !== "win32" || !/\.(?:cmd|bat)$/i.test(executable)) {
+    return { executable, args: [...args], windowsVerbatimArguments: false };
+  }
+  if ([executable, ...args].some((value) => value.includes("\0") || /[\r\n]/.test(value))) {
+    throw new HitchError("Windows batch command contains an unsupported control character", { code: "invalid_input", exitCode: 2 });
+  }
+  const doubleEscape = /node_modules[\\/]+\.bin[\\/]+[^\\/]+\.cmd$/i.test(executable);
+  const commandLine = [escapeWindowsCommand(executable), ...args.map((argument) => escapeWindowsArgument(argument, doubleEscape))].join(" ");
+  return {
+    executable: comspec,
+    args: ["/d", "/s", "/c", `"${commandLine}"`],
+    windowsVerbatimArguments: true,
+  };
+}
+
+const WINDOWS_CMD_META = /([()\][%!^"`<>&|;,*? ])/g;
+
+function escapeWindowsCommand(value: string): string {
+  return value.replace(WINDOWS_CMD_META, "^$1");
+}
+
+function escapeWindowsArgument(value: string, doubleEscapeMetaCharacters: boolean): string {
+  let escaped = value.replace(/(\\*)"/g, "$1$1\\\"");
+  escaped = escaped.replace(/(\\*)$/, "$1$1");
+  escaped = `"${escaped}"`;
+  escaped = escaped.replace(WINDOWS_CMD_META, "^$1");
+  if (doubleEscapeMetaCharacters) escaped = escaped.replace(WINDOWS_CMD_META, "^$1");
+  return escaped;
 }
 
 export async function fingerprintExecutable(executable: string): Promise<string> {

@@ -13,8 +13,8 @@ export type { EvalEnvironmentImageReferencesV1 } from "./environment-image-refer
 export { consumeLines } from "./line-stream.js";
 export { packageRoot, packageVersion } from "./package-root.js";
 export { delay, terminateProcess } from "./process.js";
-export { commandExecutable, commandVersion, detectVersion, fingerprintExecutable, resolveExecutable, runCommand, selectVersionLine } from "./executable.js";
-export type { CommandResult, RunCommandOptions } from "./executable.js";
+export { commandExecutable, commandVersion, detectVersion, fingerprintExecutable, prepareSpawnCommand, resolveExecutable, runCommand, selectVersionLine } from "./executable.js";
+export type { CommandResult, RunCommandOptions, SpawnCommand } from "./executable.js";
 export { canonicalJSON, digest, sha256Bytes, sha256JSON } from "./hash.js";
 export { CREDENTIAL_REDACTION_MARKER, PROVIDER_ENVIRONMENT_NAMES, createCredentialRedactionTransform, credentialValuesFromEnv, redactCredentialText, safeDiagnosticMessage } from "./credential-redaction.js";
 export type { CredentialRedactionResult } from "./credential-redaction.js";

@@ -1,0 +1,35 @@
+name: NVIDIA GPU hardware canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_image:
+        description: Locally available, digest-pinned CUDA image containing nvidia-smi
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-hardware:
+    runs-on: [self-hosted, linux, x64, gpu, nvidia]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run build
+      - name: Verify scheduler admission and NVIDIA device access
+        env:
+          HITCH_GPU_CANARY_IMAGE: ${{ inputs.cuda_image }}
+        run: node dist/scripts/canary-gpu-hardware.js | tee gpu-hardware-report.json
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-hardware-report
+          path: gpu-hardware-report.json
+          if-no-files-found: error

@@ -2,11 +2,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { getAdapter } from "../adapters/index.js";
 import { EventSink } from "./events.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, consumeLines, credentialValuesFromEnv, ensureDir, readJSON, terminateProcess } from "../foundation/index.js";
-import { parseHarnessReference } from "../revisions/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, consumeLines, credentialValuesFromEnv, ensureDir, prepareSpawnCommand, readJSON, terminateProcess } from "../foundation/index.js";
+import { parseHarnessReference, type VerifiedLocalGitSource } from "../revisions/index.js";
 import { assertPreparedArtifactRevision, prepareHarness, resolveHarness } from "../artifacts/index.js";
 import type { PreparedArtifact, ResolvedRevision } from "../artifacts/index.js";
-import type { VerifiedLocalGitSource } from "../revisions/index.js";
 import {
   abandonPlannedWorkspace,
   finalizeWorkspace,
@@ -20,8 +19,7 @@ import {
   workspaceDigest,
 } from "../workspaces/index.js";
 import type { WorkspacePlan } from "../workspaces/index.js";
-import { TrajectoryProjector, importDeepseekNativeSession } from "../trajectories/index.js";
-import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefPath, trajectoryRefV2 } from "../trajectories/index.js";
+import { TrajectoryProjector, TrajectoryWriter, canonicalTrajectoryFileRef, importDeepseekNativeSession, trajectoryRefPath, trajectoryRefV2 } from "../trajectories/index.js";
 import { ProviderCaptureWriter, redactProviderText } from "../trajectories/index.js";
 import type { ModelIdentityV1, RunId } from "../domain/index.js";
 import { looksImmutableModelId } from "./identity.js";
@@ -199,12 +197,14 @@ export async function executeRun({
         PWD: workspaceLease.execution_workspace,
       };
       delete childEnvironment.OLDPWD;
-      child = spawn(specification.executable, specification.args, {
+      const invocation = prepareSpawnCommand(specification.executable, specification.args);
+      child = spawn(invocation.executable, invocation.args, {
         cwd: workspaceLease.execution_workspace,
         env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       const launched = child;
       launched.stdin?.on("error", () => { /* Process-level error/exit determines the typed result. */ });

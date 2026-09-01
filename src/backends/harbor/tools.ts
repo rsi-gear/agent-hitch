@@ -168,7 +168,7 @@ export async function doctorHarbor({ root, python, harbor, docker, env = process
   const pythonInfo = await findPython({ explicit: python, env });
   const harborInfo = await locateHarbor({ root, explicit: harbor, env });
   const dockerConfigured = docker || env.HITCH_DOCKER_PATH || "docker";
-  const dockerExecutable = await resolveExecutable(dockerConfigured, env.PATH || "");
+  const dockerExecutable = await resolveExecutable(dockerConfigured, env.PATH || "", env.PATHEXT);
 
   let dockerVersion = "";
   let dockerDiagnostic = "";
@@ -222,7 +222,7 @@ export interface LocateHarborOptions {
 export async function locateHarbor({ root, explicit, env = process.env }: LocateHarborOptions = {}): Promise<HarborLocation> {
   const configured = explicit || env.HITCH_HARBOR_PATH;
   if (configured) {
-    const executable = await resolveExecutable(configured, env.PATH || "");
+    const executable = await resolveExecutable(configured, env.PATH || "", env.PATHEXT);
     return {
       executable,
       version: executable ? await installedHarborVersion(executable) : "",
@@ -239,7 +239,7 @@ export async function locateHarbor({ root, explicit, env = process.env }: Locate
       requested: managed,
     };
   }
-  const executable = await resolveExecutable("harbor", env.PATH || "");
+  const executable = await resolveExecutable("harbor", env.PATH || "", env.PATHEXT);
   return {
     executable,
     version: executable ? await installedHarborVersion(executable) : "",
@@ -278,7 +278,7 @@ async function findPython({ explicit, env }: FindPythonOptions): Promise<PythonI
   const candidates = requested ? [requested] : ["python3.13", "python3.12", "python3"];
   let firstFound: PythonInfo | null = null;
   for (const candidate of candidates) {
-    const executable = await resolveExecutable(candidate, env.PATH || "");
+    const executable = await resolveExecutable(candidate, env.PATH || "", env.PATHEXT);
     if (!executable) continue;
     const result = await captureCommand(executable, ["-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"], {
       env,
