@@ -14,7 +14,7 @@ test("Harbor task inspector validates task semantics and extracts Compose hard l
   await writeFile(path.join(directory, "environment", "docker-compose.yaml"), JSON.stringify({
     services: {
       main: {
-        image: "registry.test/main:latest", cpus: "1.5", mem_limit: "256MiB",
+        image: "registry.test/main:latest", platform: "linux/arm64", cpus: "1.5", mem_limit: "256MiB",
         deploy: { resources: { reservations: { devices: [{ capabilities: ["gpu"], count: 2 }] } } },
       },
       database: { image: "registry.test/database:16", deploy: { replicas: 2, resources: { limits: { cpus: "0.5", memory: "64MiB" } } } },
@@ -51,6 +51,7 @@ print(json.dumps(module.inspect_task(root)))
   const result = spawnSync("python3", ["-c", script, directory, source], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const declaration = parseHarborTaskResourceDeclaration(JSON.parse(result.stdout));
+  assert.equal(declaration.runtime_platform, "linux/arm64");
   assert.deepEqual(declaration.task, { cpu_millis: 2_000, memory_bytes: 512 * 1024 * 1024 });
   assert.deepEqual(declaration.verifier, { separate: true, environment: { cpu_millis: 1_000, memory_bytes: 256 * 1024 * 1024 } });
   assert.deepEqual(declaration.compose_services, [

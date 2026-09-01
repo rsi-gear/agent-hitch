@@ -344,7 +344,7 @@ test("CLI runs, lists, and inspects Harbor evals", async (t) => {
   t.after(() => forceRemove(root));
   const harbor = await writeFakeHarbor(root);
   const npm = await writeFakeNpm(root);
-  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  const env = { ...process.env, NODE_ENV: "test", HITCH_TEST_HOST_ARTIFACT_BUILDER: "1", HITCH_NPM_PATH: npm };
   const evalId = "eval_77777777777777777777777777777777";
   const run = spawnSync(process.execPath, [
     executable,

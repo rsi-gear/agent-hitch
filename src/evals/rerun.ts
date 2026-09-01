@@ -5,7 +5,7 @@ import {
 } from "../backends/index.js";
 import type { HarborBackendResult } from "../backends/index.js";
 import { useControllerRuntimeById } from "../controller-runtime/index.js";
-import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ModelCapturePlanV1 } from "../domain/index.js";
+import type { EvalExecutionPlanV1, EvalProgressV1, EvalRequest, EvalTrialRefV1, ModelCapturePlanV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths, withFileLock } from "../foundation/index.js";
 import { readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { validateEvalId, validateEvalRequest } from "./request.js";
@@ -14,7 +14,6 @@ import type { EvalRerunResult, EvalRerunType, RerunEvalOptions } from "./rerun-t
 import {
   attemptDirectoryName,
   formatSlot,
-  groupSlotsByAttempt,
   invalidTrialSlots,
   selectRerunTrialSlots,
   slotKey,
@@ -26,7 +25,7 @@ import type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 import { summarizeTrialRefs } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { collectOnlyEvalRerun } from "./collect-only-rerun.js";
-import { loadRerunLocalTransport, loadRerunPreparedArtifact, loadRerunResolvedRevision } from "./rerun-inputs.js";
+import { loadRerunLocalTransport, loadRerunPreparedArtifacts, loadRerunResolvedRevision } from "./rerun-inputs.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
@@ -37,7 +36,7 @@ interface RerunPlan {
   attempts: number;
   attemptExecution: "legacy-single-attempt-v1" | "harbor-attempt-shards-v1" | "harbor-task-slots-v1";
   candidate: Record<string, unknown>;
-  preparedArtifact: Record<string, unknown>;
+  preparedArtifacts: Record<string, unknown>[];
   controllerRuntime: Record<string, unknown>;
   localSourceTransport?: Record<string, unknown>;
 }
@@ -80,7 +79,13 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   validateProgressPlan(progress, plan, request, options.evalId);
   const previousResult = await readJSON<Record<string, unknown> | null>(path.join(options.evalDirectory, "result.json"), null);
   if (previousResult?.status === "cancelled") throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 2 });
-  const selectedTrials = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector, { allowVerifierFailures: options.rerunType === "collect-only" });
+  const selectedTrials = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector, {
+    // A candidate restart intentionally creates a clean trial and reruns the
+    // Candidate Agent, so verifier-invalid slots are valid selections. Only
+    // rerun modes that promise to preserve the original candidate execution
+    // need the verifier-only guard.
+    allowVerifierFailures: options.rerunType === "candidate-restart" || options.rerunType === "collect-only",
+  });
   const selectedTasks = uniqueTasks(selectedTrials);
   await atomicWriteJSON(path.join(rerunDirectory, "request.json"), {
     schema_version: SCHEMA_VERSION,
@@ -122,7 +127,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
       });
       const activeCaptureRuntime = captureRuntime;
       const resolvedRevision = await loadRerunResolvedRevision(options.evalDirectory, plan);
-      const preparedArtifact = await loadRerunPreparedArtifact(options.root, plan);
+      const preparedArtifacts = await loadRerunPreparedArtifacts(options.root, plan);
       const runtimeId = requiredString(plan.controllerRuntime.runtime_id, "plan controller runtime id");
       const runtime = await useControllerRuntimeById(statePaths(options.root), runtimeId.replace(/^sha256:/, ""));
       if (runtime.runtime_id !== runtimeId
@@ -130,14 +135,15 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
         throw unavailable("controller runtime identity changed");
       }
       const localTransport = await loadRerunLocalTransport(options.evalDirectory, plan, resolvedRevision, options.env, options.signal);
-      const groups = groupSlotsByAttempt(selectedTrials);
-      for (const [logicalAttempt, slots] of groups) {
+      const groups = groupRerunSlotsByArtifact(selectedTrials, executionPlan, [...preparedArtifacts.keys()]);
+      for (const { logicalAttempt, slots, artifactId, splitAttempt } of groups) {
         if (options.signal?.aborted) throw new HitchError("eval rerun was aborted", { code: "eval_rerun_aborted", exitCode: 9 });
         const taskNames = slots.map((slot) => slot.task_id);
         const selectedKeys = new Set(slots.map(slotKey));
-        const backendDirectory = plan.attempts === 1
+        const attemptDirectory = plan.attempts === 1
           ? path.join(rerunDirectory, "harbor")
           : path.join(rerunDirectory, "harbor", attemptDirectoryName(logicalAttempt));
+        const backendDirectory = splitAttempt ? path.join(attemptDirectory, `artifact-${artifactId.slice("sha256:".length, "sha256:".length + 16)}`) : attemptDirectory;
         const harborJobDirectory = path.join(backendDirectory, "job");
         const rerunRefs: EvalTrialRefV1[] = [];
         const publish = async (ref: EvalTrialRefV1): Promise<void> => {
@@ -183,9 +189,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           resolvedRevision,
           runtimeDirectory: runtime.directory,
           runtimeId: runtime.runtime_id,
-          preparedArtifact,
+          preparedArtifact: preparedArtifacts.get(artifactId) ?? (() => { throw unavailable(`rerun artifact is unavailable: ${artifactId}`); })(),
           ...(options.executionResources ? { executionResources: options.executionResources } : {}),
-          ...(localTransport ? { localTransport } : {}),
           ...(activeCaptureRuntime.route ? { modelProxy: activeCaptureRuntime.route } : {}),
           env: options.env ?? process.env,
           ...(options.harborExecutable === undefined ? {} : { harborExecutable: options.harborExecutable }),
@@ -308,6 +313,33 @@ function defaultModelCapturePlan(): ModelCapturePlanV1 {
   return { requested_mode: "native", effective_mode: "native", required: false };
 }
 
+export function groupRerunSlotsByArtifact(
+  selected: readonly EvalTrialSlot[],
+  plan: EvalExecutionPlanV1,
+  persistedArtifactIds: readonly string[],
+): Array<{ logicalAttempt: number; slots: EvalTrialSlot[]; artifactId: string; splitAttempt: boolean }> {
+  const fallbackIds = [...new Set([
+    ...plan.work_items.map((item) => item.artifact_id).filter((value): value is NonNullable<typeof value> => value !== undefined),
+    ...persistedArtifactIds,
+  ])];
+  const groups = new Map<string, { logicalAttempt: number; slots: EvalTrialSlot[]; artifactId: string }>();
+  for (const slot of selected) {
+    const plannedSlot = plan.slots.find((entry) => entry.task_id === slot.task_id && entry.attempt === slot.attempt);
+    const work = plannedSlot ? plan.work_items.find((entry) => entry.slots.includes(plannedSlot.slot_id)) : undefined;
+    const artifactId = work?.artifact_id ?? (fallbackIds.length === 1 ? fallbackIds[0] : undefined);
+    if (!artifactId) throw unavailable(`rerun slot has no artifact assignment: ${slot.task_id}#${slot.attempt}`);
+    const key = `${slot.attempt}\0${artifactId}`;
+    const group = groups.get(key) ?? { logicalAttempt: slot.attempt, slots: [], artifactId };
+    group.slots.push(slot);
+    groups.set(key, group);
+  }
+  const perAttempt = new Map<number, number>();
+  for (const group of groups.values()) perAttempt.set(group.logicalAttempt, (perAttempt.get(group.logicalAttempt) ?? 0) + 1);
+  return [...groups.values()]
+    .map((group) => ({ ...group, slots: sortSlots(group.slots), splitAttempt: (perAttempt.get(group.logicalAttempt) ?? 0) > 1 }))
+    .sort((left, right) => left.logicalAttempt - right.logicalAttempt || Buffer.compare(Buffer.from(left.artifactId), Buffer.from(right.artifactId)));
+}
+
 function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): RerunPlan {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable("eval plan is missing");
   const plan = value as Record<string, unknown>;
@@ -337,8 +369,13 @@ function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): R
   if (!Array.isArray(plan.tasks) || plan.tasks.length === 0 || plan.tasks.some((task) => typeof task !== "string" || task.length === 0)) {
     throw unavailable("eval rerun requires a frozen local task plan");
   }
+  const preparedArtifacts = Array.isArray(plan.prepared_artifacts)
+    ? plan.prepared_artifacts.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+    : plan.prepared_artifact && typeof plan.prepared_artifact === "object" && !Array.isArray(plan.prepared_artifact)
+      ? [plan.prepared_artifact as Record<string, unknown>]
+      : [];
   if (!plan.candidate || typeof plan.candidate !== "object" || Array.isArray(plan.candidate)
-    || !plan.prepared_artifact || typeof plan.prepared_artifact !== "object" || Array.isArray(plan.prepared_artifact)
+    || preparedArtifacts.length === 0 || Array.isArray(plan.prepared_artifacts) && preparedArtifacts.length !== plan.prepared_artifacts.length
     || !plan.controller_runtime || typeof plan.controller_runtime !== "object" || Array.isArray(plan.controller_runtime)) {
     throw unavailable("eval plan is incomplete");
   }
@@ -347,7 +384,7 @@ function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): R
     attempts: plan.attempts as number,
     attemptExecution,
     candidate: plan.candidate as Record<string, unknown>,
-    preparedArtifact: plan.prepared_artifact as Record<string, unknown>,
+    preparedArtifacts,
     controllerRuntime: plan.controller_runtime as Record<string, unknown>,
     ...(plan.local_source_transport && typeof plan.local_source_transport === "object" && !Array.isArray(plan.local_source_transport)
       ? { localSourceTransport: plan.local_source_transport as Record<string, unknown> }

@@ -5,18 +5,21 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
+import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval as runEvalProduction, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { readHarborBridgeError } from "../src/evals/harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure } from "../src/evals/verifier-diagnostics.js";
 import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { harborEnvironmentConfig, lockedHarnessRef } from "../src/backends/harbor/index.js";
+import type { HarborTrialRuntimeContract } from "../src/backends/harbor/index.js";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
 import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/store.js";
-import { forceRemove, writeFakeDeepseekNpm, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
-import type { EvalRequestInput } from "../src/evals/index.js";
+import { forceRemove, prepareHostHarborArtifactForTest, writeFakeDeepseekNpm, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import type { EvalRequestInput, RunEvalOptions } from "../src/evals/index.js";
+
+const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, harborArtifactBuilder: prepareHostHarborArtifactForTest });
 
 const hitchExecutable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
 
@@ -228,7 +231,7 @@ test("eval rerun selects only invalid tasks and replaces no valid reward", () =>
   assert.deepEqual(selectRerunTasks(["task-a", "task-b", "task-c"], repaired, { mode: "invalid" }), ["task-c"]);
 });
 
-test("eval rerun never turns a verifier fault into another candidate execution", () => {
+test("rerun selection keeps verifier-only modes separate from candidate restart", () => {
   const evalId = newEvalId();
   let progress = createEvalProgress({
     evalId,
@@ -249,6 +252,10 @@ test("eval rerun never turns a verifier fault into another candidate execution",
   assert.throws(
     () => selectRerunTrialSlots(["task-a"], 1, progress, { mode: "invalid" }),
     (error: unknown) => (error as { code?: string }).code === "eval_verifier_only_rerun_unavailable",
+  );
+  assert.deepEqual(
+    selectRerunTrialSlots(["task-a"], 1, progress, { mode: "invalid" }, { allowVerifierFailures: true }),
+    [{ task_id: "task-a", attempt: 1 }],
   );
 });
 
@@ -334,6 +341,72 @@ test("local eval datasets expose a deterministic immutable task plan", async (t)
   assert.deepEqual(await resolveLocalDatasetTaskIds(singleTask), ["single-task"]);
 });
 
+test("one eval prepares and pins artifacts per distinct task runtime contract", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-multi-runtime-eval-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  for (const taskId of ["one", "two"]) {
+    await mkdir(path.join(dataset, taskId), { recursive: true });
+    await writeFile(path.join(dataset, taskId, "task.toml"), "", "utf8");
+  }
+  const fakeNpm = await writeFakeNpm(root);
+  const fakeHarbor = await writeFakeHarbor(root);
+  await writeFile(path.join(root, "python"), `#!/usr/bin/env node
+const task = process.argv[process.argv.length - 1];
+const runtime_platform = task.endsWith("/two") ? "linux/arm64" : "linux/amd64";
+process.stdout.write(JSON.stringify({schema_version:"1",runtime_platform,task:{},verifier:{separate:false},compose_services:[{name:"main",replicas:1}],provider_sidecars:{main_egress:false,verifier_egress:false},environment_images:[],environment_image_fallbacks:[],environment_builds:[]}));
+`, { mode: 0o755 });
+  const contracts: HarborTrialRuntimeContract[] = [];
+  const result = await runEvalProduction({
+    root,
+    harborExecutable: fakeHarbor,
+    env: { ...process.env, HITCH_NPM_PATH: fakeNpm },
+    executionStrategy: "local-task-slots-v1",
+    harborArtifactBuilder: async (input) => {
+      contracts.push(input.runtimeContract);
+      const prepared = await prepareHostHarborArtifactForTest(input);
+      const digit = input.runtimeContract.artifactPlatform === "linux-x64" ? "a" : "b";
+      return {
+        ...prepared,
+        artifact: {
+          ...prepared.artifact,
+          artifact_id: `sha256:${digit.repeat(64)}`,
+          platform: input.runtimeContract.artifactPlatform,
+          node_version: input.runtimeContract.nodeVersion,
+        },
+      };
+    },
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      attempts: 1,
+      max_concurrent: 2,
+      timeout_ms: 5_000,
+    },
+  });
+  assert.deepEqual(contracts, [
+    { dockerPlatform: "linux/amd64", artifactPlatform: "linux-x64", nodeVersion: "v22.23.0" },
+    { dockerPlatform: "linux/arm64", artifactPlatform: "linux-arm64", nodeVersion: "v22.23.0" },
+  ]);
+  const evalDirectory = path.join(root, "evals", result.eval_id);
+  const plan = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "plan.json"));
+  assert.equal(plan.prepared_artifact, undefined);
+  assert.deepEqual((plan.prepared_artifacts as Array<Record<string, unknown>>).map((entry) => ({
+    tasks: entry.task_ids,
+    platform: (entry.runtime_contract as Record<string, unknown>).artifact_platform,
+    artifact: entry.artifact_id,
+  })), [
+    { tasks: ["one"], platform: "linux-x64", artifact: `sha256:${"a".repeat(64)}` },
+    { tasks: ["two"], platform: "linux-arm64", artifact: `sha256:${"b".repeat(64)}` },
+  ]);
+  const executionPlan = await readJSON<{ work_items: Array<{ task_ids: string[]; artifact_id: string; runtime_contract: { artifact_platform: string } }> }>(path.join(evalDirectory, "execution-plan.json"));
+  assert.deepEqual(executionPlan.work_items.map((item) => ({ task: item.task_ids[0], artifact: item.artifact_id, platform: item.runtime_contract.artifact_platform })), [
+    { task: "one", artifact: `sha256:${"a".repeat(64)}`, platform: "linux-x64" },
+    { task: "two", artifact: `sha256:${"b".repeat(64)}`, platform: "linux-arm64" },
+  ]);
+});
+
 test("runEval refuses to reuse an explicitly reserved eval id", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-id-conflict-"));
   t.after(() => forceRemove(root));
@@ -370,19 +443,26 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-"));
   t.after(() => forceRemove(root));
   const fakeNpm = await writeFakeNpm(root);
-  const fakeHarbor = await writeFakeHarbor(root, { leakEnvName: "OPENAI_API_KEY" });
+  const pythonPathLog = path.join(root, "harbor-python-path.txt");
+  const fakeHarbor = await writeFakeHarbor(root, { leakEnvName: "OPENAI_API_KEY", pythonPathLog });
   const evalId = newEvalId();
   const env = {
     ...process.env,
     HITCH_NPM_PATH: fakeNpm,
+    HITCH_HARBOR_BUILDER_PLATFORM: "linux/arm64",
     DEEPSEEK_API_KEY: "deepseek-must-not-be-written",
     OPENAI_API_KEY: "must-not-be-written",
   };
-  const result = await runEval({
+  let plannedRuntimeContract: HarborTrialRuntimeContract | undefined;
+  const result = await runEvalProduction({
     evalId,
     root,
     harborExecutable: fakeHarbor,
     env,
+    harborArtifactBuilder: async (input) => {
+      plannedRuntimeContract = input.runtimeContract;
+      return prepareHostHarborArtifactForTest(input);
+    },
     executionResources: { cpu_millis: 2_000, memory_bytes: 4_500 * 1024 * 1024, container_slots: 1, build_slots: 0 },
     request: {
       dataset: "demo@1.0",
@@ -392,6 +472,12 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
       max_concurrent: 2,
       timeout_ms: 5_000,
     },
+  });
+
+  assert.deepEqual(plannedRuntimeContract, {
+    dockerPlatform: "linux/amd64",
+    artifactPlatform: "linux-x64",
+    nodeVersion: "v22.23.0",
   });
 
   assert.equal(result.status, "failed");
@@ -425,8 +511,8 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   assert.equal(agent.import_path, "hitch_harbor_agent:HitchHarborAgent");
   assert.equal(kwargs.harness_ref, "pi@version:1.2.3");
   assert.equal(kwargs.workdir, undefined, "Harbor must preserve the task/image WORKDIR");
-  assert.equal(kwargs.harness_artifact_cache_dir, path.join(root, "store", "harbor-artifacts"));
-  assert.ok((await stat(kwargs.harness_artifact_cache_dir as string)).isDirectory());
+  assert.equal(kwargs.harness_artifact_cache_dir, undefined);
+  assert.equal(kwargs.node_version, "v22.23.0");
   const piArtifact = kwargs.harness_artifact as { harness_id: string; artifact_id: string; node_version: string };
   assert.equal(piArtifact.harness_id, "pi");
   assert.match(piArtifact.artifact_id, /^sha256:[0-9a-f]{64}$/);
@@ -453,6 +539,18 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const runtimeRef = await readJSON<{ storage: string; runtime_id: string }>(path.join(directory, "runtime.ref.json"));
   assert.equal(runtimeRef.storage, "controller-runtime-ref-v1");
   assert.match(runtimeRef.runtime_id, /^sha256:[0-9a-f]{64}$/);
+  const frozenBridgeDirectory = path.join(
+    root,
+    "store",
+    "controller-runtimes",
+    "sha256",
+    runtimeRef.runtime_id.slice("sha256:".length),
+    "payload",
+    "integrations",
+    "harbor",
+  );
+  assert.equal((await readFile(pythonPathLog, "utf8")).split(path.delimiter)[0], frozenBridgeDirectory);
+  assert.ok((await stat(path.join(frozenBridgeDirectory, "hitch_harbor_agent.py"))).isFile());
   await assert.rejects(stat(path.join(directory, "runtime", "bin", "hitch.js")));
 
   const listed = await listEvals({ root });
@@ -475,7 +573,7 @@ async function regularFiles(directory: string): Promise<string[]> {
   return files;
 }
 
-test("every project-installed version harness is host-prepared and handed to Harbor", async (t) => {
+test("every project-installed version harness is prepared once and handed to Harbor", async (t) => {
   const harnesses = [
     { id: "codex", version: "0.92.0", packageName: "@openai/codex", binName: "codex" },
     { id: "claude", version: "2.1.25", packageName: "@anthropic-ai/claude-code", binName: "claude" },
@@ -515,7 +613,7 @@ test("every project-installed version harness is host-prepared and handed to Har
   }
 });
 
-test("DeepSeek eval prepares one host artifact and pins it for every Harbor trial", async (t) => {
+test("DeepSeek eval prepares one immutable artifact and pins it for every Harbor trial", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-dsh-artifact-"));
   t.after(() => forceRemove(root));
   const fakeNpm = await writeFakeDeepseekNpm(root);
@@ -617,11 +715,14 @@ test("Harbor bridge inherits an image WORKDIR=/workspace and rejects missing wor
   const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-smoke-"));
   const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
   const use = await ensureControllerRuntime({ root: state });
+  const fakeNpm = await writeFakeNpm(state);
+  const resolved = await resolveHarness("pi@version:1.2.3", { root: state, env: { ...process.env, HITCH_NPM_PATH: fakeNpm } });
+  const artifact = await prepareHarness(resolved, { root: state, env: { ...process.env, HITCH_NPM_PATH: fakeNpm } });
   t.after(() => forceRemove(state));
   const smoke = path.resolve("test-support", "bridge_smoke.py");
   const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
   const logs = path.join(state, "logs");
-  const result = spawnSync("python3", [smoke, bridge, use.directory, logs], { encoding: "utf8" });
+  const result = spawnSync("python3", [smoke, bridge, use.directory, logs, "--artifact", preparedArtifactDirectory(state, artifact.artifact_id)], { encoding: "utf8" });
   assert.equal(result.status, 0, `bridge smoke failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge smoke OK/);
 });
@@ -630,11 +731,14 @@ test("Harbor bridge classifies persisted-result failures without masking process
   const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-result-matrix-"));
   const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
   const use = await ensureControllerRuntime({ root: state });
+  const fakeNpm = await writeFakeNpm(state);
+  const resolved = await resolveHarness("pi@version:1.2.3", { root: state, env: { ...process.env, HITCH_NPM_PATH: fakeNpm } });
+  const artifact = await prepareHarness(resolved, { root: state, env: { ...process.env, HITCH_NPM_PATH: fakeNpm } });
   t.after(() => forceRemove(state));
   const smoke = path.resolve("test-support", "bridge_smoke.py");
   const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
   const logs = path.join(state, "logs");
-  const result = spawnSync("python3", [smoke, bridge, use.directory, logs, "--result-matrix"], { encoding: "utf8" });
+  const result = spawnSync("python3", [smoke, bridge, use.directory, logs, "--result-matrix", preparedArtifactDirectory(state, artifact.artifact_id)], { encoding: "utf8" });
   assert.equal(result.status, 0, `bridge result matrix failed:\n${result.stderr || result.stdout}`);
   assert.match(result.stdout, /bridge result matrix OK/);
 });
@@ -665,7 +769,7 @@ test("Harbor bridge diagnostic reader promotes OCI stdout when the legacy messag
   assert.match(diagnostic.raw, /\[REDACTED\]/);
 });
 
-test("Harbor bridge uploads compatible artifacts and host-caches one target-platform build across concurrent trials", async (t) => {
+test("Harbor bridge uploads dedicated-builder artifacts and rejects incompatible handoffs without trial preparation", async (t) => {
   const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-artifact-"));
   const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
   const use = await ensureControllerRuntime({ root: state });
@@ -1252,6 +1356,12 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
   const initialTrials = initial.trials as Array<{ task_id: string; run_id: string; reward?: number; observation_status: string }>;
   assert.equal(initialTrials.find((trial) => trial.task_id === "task-a")?.observation_status, "valid");
   assert.equal(initialTrials.find((trial) => trial.task_id === "task-b")?.observation_status, "invalid");
+  const progressPath = path.join(root, "evals", evalId, "progress.json");
+  const verifierInvalidProgress = await readJSON<Record<string, unknown>>(progressPath);
+  verifierInvalidProgress.trials = (verifierInvalidProgress.trials as Array<Record<string, unknown>>).map((trial) => trial.task_id === "task-b"
+    ? { ...trial, invalid_reason: "verifier_infrastructure_failure" }
+    : trial);
+  await atomicWriteJSON(progressPath, verifierInvalidProgress);
 
   const rerun = await rerunEval({
     evalId,

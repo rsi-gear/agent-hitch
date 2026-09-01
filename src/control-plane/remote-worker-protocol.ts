@@ -378,13 +378,22 @@ export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
 
 
 function parseRemoteWorkItem(value: unknown): BackendWorkItemV1 {
-  const record = exact(value, ["schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots", "opaque_membership", "requested_parallelism", "reservation", "provider", "image_refs"], "remote work item");
+  const record = exact(value, ["schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots", "opaque_membership", "requested_parallelism", "reservation", "provider", "image_refs", "artifact_id", "runtime_contract"], "remote work item");
   if (record.schema_version !== "1" || typeof record.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(record.work_id)
     || typeof record.eval_id !== "string" || !/^eval_[a-f0-9]{32}$/.test(record.eval_id) || record.backend !== "harbor"
     || record.logical_attempt !== null && (!Number.isSafeInteger(record.logical_attempt) || (record.logical_attempt as number) < 1)
     || !stringArray(record.task_ids) || !stringArray(record.slots) || typeof record.opaque_membership !== "boolean"
     || !Number.isSafeInteger(record.requested_parallelism) || (record.requested_parallelism as number) < 1
-    || typeof record.provider !== "string" || !record.provider || record.image_refs !== undefined && !Array.isArray(record.image_refs)) throw protocolError("remote work item is invalid");
+    || typeof record.provider !== "string" || !record.provider || record.image_refs !== undefined && !Array.isArray(record.image_refs)
+    || record.artifact_id !== undefined && (typeof record.artifact_id !== "string" || !SHA256.test(record.artifact_id))
+    || (record.artifact_id === undefined) !== (record.runtime_contract === undefined)) throw protocolError("remote work item is invalid");
+  if (record.runtime_contract !== undefined) {
+    const runtime = exact(record.runtime_contract, ["docker_platform", "artifact_platform", "node_version"], "remote work runtime contract");
+    if ((runtime.docker_platform !== "linux/amd64" && runtime.docker_platform !== "linux/arm64")
+      || (runtime.artifact_platform !== "linux-x64" && runtime.artifact_platform !== "linux-arm64")
+      || (runtime.docker_platform === "linux/amd64") !== (runtime.artifact_platform === "linux-x64")
+      || typeof runtime.node_version !== "string" || !/^v\d+\.\d+\.\d+$/.test(runtime.node_version)) throw protocolError("remote work runtime contract is invalid");
+  }
   return { ...record, reservation: validateResourceVector(record.reservation as ResourceVectorV1, "remote work reservation") } as unknown as BackendWorkItemV1;
 }
 

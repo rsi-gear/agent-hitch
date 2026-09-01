@@ -5,8 +5,8 @@ Stubs the Harbor Python API and drives `HitchHarborAgent.setup()` and
 
 - the payload directory (not the bundle root) is uploaded to /opt/hitch;
 - the CLI entrypoint is read from the manifest (no hardcoded dist/ path);
-- compatible artifacts run directly, while an incompatible artifact is built
-  once, persisted on the host, and reused by a concurrent trial; and
+- compatible dedicated-builder artifacts run directly, while an incompatible
+  artifact fails closed without running trial-side preparation; and
 - the controller runtime id is recorded in context metadata.
 
 Run from Node via the test suite:
@@ -259,10 +259,7 @@ def main() -> int:
     if artifact_manifest and incompatible_artifact:
         container_platform = "darwin-arm64" if container_platform != "darwin-arm64" else "linux-x64"
     node_version = artifact_manifest.get("toolchain", {}).get("node", "v22.0.0") if artifact_manifest else "v22.0.0"
-    cache_dir = Path(logs_dir).parent / "host-artifact-cache"
     container_artifact_dir: Path | None = None
-    if artifact_manifest:
-        cache_dir.mkdir(parents=True, exist_ok=True)
     if artifact_manifest and incompatible_artifact:
         container_artifact_dir = Path(logs_dir).parent / "fake-container-artifact"
         shutil.copytree(artifact_dir, container_artifact_dir, symlinks=True)
@@ -303,7 +300,6 @@ def main() -> int:
             candidate_id="candidate-1",
             controller_runtime_id=runtime_id,
             harness_artifact=artifact_handoff,
-            harness_artifact_cache_dir=str(cache_dir) if artifact_manifest else None,
             hitch_timeout_ms=5_000,
             agent_args=[],
             credential_names=["CUSTOM_EVAL_SECRET"],
@@ -316,35 +312,27 @@ def main() -> int:
         )
 
     agent = make_agent(agent_logs_dir)
-    second_env: BaseEnvironment | None = None
-    second_context: AgentContext | None = None
-    second_agent: Any | None = None
-    if artifact_manifest and incompatible_artifact:
-        second_trial_dir = Path(logs_dir) / "regex-log__second"
-        second_agent_logs = second_trial_dir / "agent"
-        second_agent_logs.mkdir(parents=True, exist_ok=True)
-        (second_trial_dir / "lock.json").write_text(
-            json.dumps({"schema_version": 2, "task": {"name": task_id}}),
-            encoding="utf-8",
-        )
-        second_env = BaseEnvironment(
-            revision_identity=revision_identity,
-            platform_identity=container_platform,
-            node_version=node_version,
-            default_workdir="/workspace",
-        )
-        second_context = AgentContext()
-        second_agent = make_agent(second_agent_logs)
+    if incompatible_artifact:
+        try:
+            asyncio.run(agent.setup(env))
+            print("bridge smoke failure: incompatible dedicated-builder artifact unexpectedly passed", file=sys.stderr)
+            return 1
+        except Exception as error:
+            if "hitch-artifact-platform" not in str(error) or "dedicated-builder artifact is incompatible" not in str(error):
+                print(f"bridge smoke failure: incompatible artifact error was unclear: {error}", file=sys.stderr)
+                return 1
+        if env.downloads or any(" prepare " in command for command in env.execs):
+            print("bridge smoke failure: incompatible artifact fell back to trial-side preparation", file=sys.stderr)
+            return 1
+        print("bridge smoke OK")
+        return 0
 
     async def drive_one(active_agent: Any, active_env: BaseEnvironment, active_context: AgentContext) -> None:
         await active_agent.setup(active_env)
         await active_agent.run("do the task", active_env, active_context)
 
     async def drive() -> None:
-        runs = [drive_one(agent, env, context)]
-        if second_agent is not None and second_env is not None and second_context is not None:
-            runs.append(drive_one(second_agent, second_env, second_context))
-        await asyncio.gather(*runs)
+        await drive_one(agent, env, context)
 
     asyncio.run(drive())
 
@@ -360,6 +348,8 @@ def main() -> int:
         revision_identity=revision_identity,
         hitch_runtime_dir=bundle_root,
         controller_runtime_id=runtime_id,
+        harness_artifact=artifact_handoff,
+        node_version=node_version,
         hitch_timeout_ms=5_000,
         workdir="/missing-workspace",
         model_name="openai/test-model",
@@ -379,7 +369,7 @@ def main() -> int:
 
     # 1. The payload directory is uploaded as /opt/hitch, not the bundle root.
     dir_uploads = [u for u in env.uploads if u[0] == "dir"]
-    expected_uploads = 2 if artifact_manifest and not incompatible_artifact else 1
+    expected_uploads = 2 if artifact_manifest else 1
     if len(dir_uploads) != expected_uploads:
         errors.append(f"expected exactly {expected_uploads} dir uploads, got {len(dir_uploads)}")
     runtime_uploads = [u for u in dir_uploads if u[2] == "/opt/hitch"]
@@ -389,19 +379,6 @@ def main() -> int:
         artifact_uploads = [u for u in dir_uploads if u[2] == "/opt/hitch-harness-artifact"]
         if len(artifact_uploads) != 1 or Path(artifact_uploads[0][1]) != artifact_dir:
             errors.append(f"prepared artifact upload was invalid: {artifact_uploads!r}")
-    if artifact_manifest and incompatible_artifact:
-        if len(env.downloads) != 1:
-            errors.append(f"target-platform artifact was not downloaded exactly once: {env.downloads!r}")
-        cached_artifacts = list((cache_dir / "artifacts").glob("*/artifact.json"))
-        if len(cached_artifacts) != 1:
-            errors.append(f"target-platform artifact was not persisted in the host cache: {cached_artifacts!r}")
-        if second_env is None:
-            errors.append("second cache-hit environment was not created")
-        else:
-            second_artifact_uploads = [u for u in second_env.uploads if u[2] == "/opt/hitch-harness-artifact"]
-            if len(second_artifact_uploads) != 1:
-                errors.append(f"second trial did not upload the host-cached artifact: {second_env.uploads!r}")
-
     # 2. The CLI entrypoint comes from the manifest, and the exec commands use
     #    the shell-quoted /opt/hitch/<entrypoint> — never a hardcoded dist path.
     import shlex
@@ -413,20 +390,12 @@ def main() -> int:
             errors.append("container-local prepare ran despite a compatible uploaded artifact")
         if "--internal-prepared-artifact /opt/hitch-harness-artifact" not in " ".join(env.execs):
             errors.append("run did not receive the prepared artifact handoff")
-    elif f"node {quoted_entry} prepare" not in " ".join(env.execs):
-        errors.append(f"prepare must use the manifest entrypoint {quoted_entry}")
     if f"node {quoted_entry} run" not in " ".join(env.execs):
         errors.append(f"run must use the manifest entrypoint {quoted_entry}")
     if "--internal-credential-name CUSTOM_EVAL_SECRET" not in " ".join(env.execs):
         errors.append("run did not receive the credential name handoff")
     if any("/opt/hitch/bin/hitch.js" in command for command in env.execs):
         errors.append("bridge still hardcodes /opt/hitch/bin/hitch.js")
-    if second_env is not None:
-        if f"node {quoted_entry} prepare" in " ".join(second_env.execs):
-            errors.append("second trial prepared again despite the target-platform host cache")
-        if "--internal-prepared-artifact /opt/hitch-harness-artifact" not in " ".join(second_env.execs):
-            errors.append("second trial did not run from the target-platform cached artifact")
-
     # 3. The runtime id is recorded in context metadata and matches the manifest.
     if context.metadata.get("controller_runtime_id") != runtime_id:
         errors.append(f"controller_runtime_id was {context.metadata.get('controller_runtime_id')!r}, expected {runtime_id}")
@@ -446,13 +415,9 @@ def main() -> int:
     if run_cwds != ["/workspace"]:
         errors.append(f"Hitch run cwd was {run_cwds!r}, expected ['/workspace']")
     if artifact_manifest:
-        expected_status = "host_cache_populated" if incompatible_artifact else "uploaded"
+        expected_status = "dedicated_builder_upload"
         if context.metadata.get("harness_artifact_transport", {}).get("status") != expected_status:
             errors.append(f"artifact transport metadata was {context.metadata.get('harness_artifact_transport')!r}")
-        if incompatible_artifact and second_context is not None:
-            if second_context.metadata.get("harness_artifact_transport", {}).get("status") != "host_cache_hit":
-                errors.append(f"second artifact transport metadata was {second_context.metadata.get('harness_artifact_transport')!r}")
-
     if errors:
         for error in errors:
             print(f"bridge smoke failure: {error}", file=sys.stderr)
@@ -506,7 +471,26 @@ def result_matrix_main() -> int:
     bridge = load_bridge(bridge_path)
     manifest = json.loads((Path(bundle_root) / "manifest.json").read_text(encoding="utf-8"))
     runtime_id = manifest["runtime_id"]
-    revision_identity = "sha256:" + "a" * 64
+    artifact_dir = Path(sys.argv[5])
+    artifact_manifest = json.loads((artifact_dir / "artifact.json").read_text(encoding="utf-8"))
+    revision_identity = artifact_manifest["revision_identity"]
+    artifact_revision = artifact_manifest["resolved_revision"]["revision"]
+    selector = artifact_revision["type"]
+    revision_value = artifact_revision["version"] if selector == "version" else artifact_revision["commit"]
+    harness_ref = f'{artifact_manifest["harness_id"]}@{selector}:{revision_value}'
+    artifact_handoff = {
+        "directory": str(artifact_dir),
+        "artifact_id": artifact_manifest["artifact_id"],
+        "artifact_integrity": artifact_manifest["artifact_integrity"],
+        "entrypoint_integrity": artifact_manifest["entrypoint_integrity"],
+        "harness_id": artifact_manifest["harness_id"],
+        "revision_identity": artifact_manifest["revision_identity"],
+        "adapter_version": artifact_manifest["adapter_version"],
+        "recipe_version": artifact_manifest["recipe_version"],
+        "platform": artifact_manifest["platform"],
+        "node_version": artifact_manifest["toolchain"]["node"],
+        "source_type": artifact_manifest["source_type"],
+    }
     cases = {
         "missing": "hitch_result_missing",
         "not-file": "hitch_result_not_file",
@@ -533,15 +517,22 @@ def result_matrix_main() -> int:
             json.dumps({"schema_version": 2, "task": {"name": f"result-{case}"}}),
             encoding="utf-8",
         )
-        env = BaseEnvironment(revision_identity=revision_identity, result_case=case)
+        env = BaseEnvironment(
+            revision_identity=revision_identity,
+            result_case=case,
+            platform_identity=artifact_manifest["platform"],
+            node_version=artifact_manifest["toolchain"]["node"],
+        )
         context = AgentContext()
         agent = bridge.HitchHarborAgent(
             logs_dir=agent_logs_dir,
-            harness_ref="pi@version:1.2.3",
+            harness_ref=harness_ref,
             revision_identity=revision_identity,
             hitch_runtime_dir=bundle_root,
             candidate_id="candidate-1",
             controller_runtime_id=runtime_id,
+            harness_artifact=artifact_handoff,
+            node_version=artifact_manifest["toolchain"]["node"],
             hitch_timeout_ms=5_000,
             agent_args=[],
             model_name="openai/test-model",

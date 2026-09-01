@@ -1,6 +1,11 @@
 import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
+import { artifactPinFields, opaqueWorkId, parseArtifactAssignments, parseRuntimeContract, workItemId } from "./execution-plan-artifacts.js";
+import type { EvalArtifactAssignmentInputV1, ParsedArtifactAssignment } from "./execution-plan-artifacts.js";
+import { imagesForTasks, parseEnvironmentImageFallbacks, parseEnvironmentImageUses } from "./execution-plan-images.js";
 import { parseTaskResourceRequirements, reservationForTasks } from "./execution-plan-resources.js";
+
+export type { EvalArtifactAssignmentInputV1 } from "./execution-plan-artifacts.js";
 
 export const DEFAULT_EVAL_TRIAL_RESOURCES: ResourceVectorV1 = {
   cpu_millis: 1_000,
@@ -15,6 +20,7 @@ export interface BuildEvalExecutionPlanOptions {
   candidate: {
     revisionIdentity: string;
     artifactId: string;
+    artifactAssignments?: readonly EvalArtifactAssignmentInputV1[];
   };
   tasks: readonly string[] | null;
   maxParallelism: number;
@@ -44,12 +50,15 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
     required: false,
   });
   const tasks = options.tasks === null ? null : canonicalTasks(options.tasks);
+  const artifactAssignments = parseArtifactAssignments(options.candidate.artifactAssignments, tasks, options.candidate.artifactId);
   const taskResources = tasks === null ? undefined : parseTaskResourceRequirements(options.taskResources, tasks);
   const environmentImages = tasks === null ? [] : parseEnvironmentImageUses(options.environmentImages ?? [], tasks, "execution plan environment images");
   const imageFallbacks = tasks === null ? [] : parseEnvironmentImageFallbacks(options.environmentImageFallbacks ?? [], tasks);
   const candidateIdentity = sha256JSON({
     harness_revision_identity: options.candidate.revisionIdentity,
-    artifact_id: options.candidate.artifactId,
+    artifact_assignments: artifactAssignments.length > 0
+      ? artifactAssignments.map((entry) => ({ task_ids: entry.taskIds, artifact_id: entry.artifactId, runtime_contract: entry.runtimeContract }))
+      : [{ task_ids: tasks ?? [], artifact_id: options.candidate.artifactId }],
     requested_model: options.request.model,
     agent_args_sha256: sha256JSON(options.request.agent_args),
     protocol: {
@@ -59,10 +68,10 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
   });
   const slots = tasks === null ? [] : buildSlots(options.evalId, tasks, options.request.attempts, candidateIdentity);
   const workItems = tasks === null
-    ? [opaqueWorkItem(options.evalId, options.maxParallelism, resources, provider)]
+    ? [opaqueWorkItem(options.evalId, options.maxParallelism, resources, provider, artifactAssignments[0])]
     : options.workItemMode === "task-slots"
-      ? buildTaskWorkItems(options.evalId, slots, resources, provider, taskResources, environmentImages)
-      : buildAttemptWorkItems(options.evalId, tasks, slots, options.request.attempts, options.maxParallelism, resources, provider, taskResources, environmentImages);
+      ? buildTaskWorkItems(options.evalId, slots, resources, provider, taskResources, environmentImages, artifactAssignments)
+      : buildAttemptWorkItems(options.evalId, tasks, slots, options.request.attempts, options.maxParallelism, resources, provider, taskResources, environmentImages, artifactAssignments);
   return parseEvalExecutionPlan({
     schema_version: "1",
     planner: "hitch-local-v1",
@@ -206,36 +215,48 @@ function buildAttemptWorkItems(
   provider: string,
   taskResources?: readonly TaskResourceRequirementV1[],
   environmentImages: readonly EnvironmentImageUseV1[] = [],
+  artifactAssignments: readonly ParsedArtifactAssignment[] = [],
 ): BackendWorkItemV1[] {
   const items: BackendWorkItemV1[] = [];
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const selected = slots.filter((slot) => slot.attempt === attempt).map((slot) => slot.slot_id);
-    const imageRefs = imagesForTasks(environmentImages, tasks);
-    const requestedParallelism = Math.min(maxParallelism, selected.length);
-    items.push({
-      schema_version: "1",
-      work_id: workItemId(evalId, attempt, selected, imageRefs),
-      eval_id: evalId,
-      backend: "harbor",
-      logical_attempt: attempt,
-      task_ids: [...tasks],
-      slots: selected,
-      opaque_membership: false,
-      requested_parallelism: requestedParallelism,
-      reservation: reservationForTasks(tasks, requestedParallelism, resources, taskResources),
-      provider,
-      ...(imageRefs.length > 0 ? { image_refs: imageRefs } : {}),
-    });
+    const groups = artifactAssignments.length > 0
+      ? artifactAssignments
+      : [{ taskIds: [...tasks] }];
+    for (const group of groups) {
+      const groupTasks = tasks.filter((task) => group.taskIds.includes(task));
+      if (groupTasks.length === 0) continue;
+      const selected = slots.filter((slot) => slot.attempt === attempt && groupTasks.includes(slot.task_id)).map((slot) => slot.slot_id);
+      const imageRefs = imagesForTasks(environmentImages, groupTasks);
+      const requestedParallelism = Math.min(maxParallelism, selected.length);
+      const artifactPin = artifactPinFields(group);
+      items.push({
+        schema_version: "1",
+        work_id: workItemId(evalId, attempt, selected, imageRefs, artifactPin),
+        eval_id: evalId,
+        backend: "harbor",
+        logical_attempt: attempt,
+        task_ids: [...groupTasks],
+        slots: selected,
+        opaque_membership: false,
+        requested_parallelism: requestedParallelism,
+        reservation: reservationForTasks(groupTasks, requestedParallelism, resources, taskResources),
+        provider,
+        ...(imageRefs.length > 0 ? { image_refs: imageRefs } : {}),
+        ...artifactPin,
+      });
+    }
   }
   return items;
 }
 
-function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: ResourceVectorV1, provider: string, taskResources?: readonly TaskResourceRequirementV1[], environmentImages: readonly EnvironmentImageUseV1[] = []): BackendWorkItemV1[] {
+function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: ResourceVectorV1, provider: string, taskResources?: readonly TaskResourceRequirementV1[], environmentImages: readonly EnvironmentImageUseV1[] = [], artifactAssignments: readonly ParsedArtifactAssignment[] = []): BackendWorkItemV1[] {
   return slots.map((slot) => {
     const imageRefs = imagesForTasks(environmentImages, [slot.task_id]);
+    const assignment = artifactAssignments.find((entry) => entry.taskIds.includes(slot.task_id));
+    const artifactPin = artifactPinFields(assignment);
     return {
       schema_version: "1",
-      work_id: workItemId(evalId, slot.attempt, [slot.slot_id], imageRefs),
+      work_id: workItemId(evalId, slot.attempt, [slot.slot_id], imageRefs, artifactPin),
       eval_id: evalId,
       backend: "harbor",
       logical_attempt: slot.attempt,
@@ -246,12 +267,14 @@ function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: Res
       reservation: reservationForTasks([slot.task_id], 1, resources, taskResources),
       provider,
       ...(imageRefs.length > 0 ? { image_refs: imageRefs } : {}),
+      ...artifactPin,
     };
   });
 }
 
-function opaqueWorkItem(evalId: EvalId, maxParallelism: number, resources: ResourceVectorV1, provider: string): BackendWorkItemV1 {
-  const identity = { eval_id: evalId, backend: "harbor", membership: "opaque" };
+function opaqueWorkItem(evalId: EvalId, maxParallelism: number, resources: ResourceVectorV1, provider: string, assignment?: ParsedArtifactAssignment): BackendWorkItemV1 {
+  const artifactPin = artifactPinFields(assignment);
+  const identity = { eval_id: evalId, backend: "harbor", membership: "opaque", ...artifactPin };
   return {
     schema_version: "1",
     work_id: `work_${sha256JSON(identity).slice("sha256:".length, "sha256:".length + 32)}`,
@@ -264,6 +287,7 @@ function opaqueWorkItem(evalId: EvalId, maxParallelism: number, resources: Resou
     requested_parallelism: maxParallelism,
     reservation: scaleResources(resources, maxParallelism),
     provider,
+    ...artifactPin,
   };
 }
 
@@ -292,7 +316,7 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
   assertOnlyKeys(value, [
     "schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots",
     "opaque_membership", "requested_parallelism", "reservation", "provider",
-    "image_refs",
+    "image_refs", "artifact_id", "runtime_contract",
   ], `eval execution plan work item ${index}`);
   if (value.schema_version !== "1" || typeof value.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(value.work_id)
     || value.eval_id !== evalId || value.backend !== "harbor"
@@ -307,10 +331,15 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
     throw new TypeError(`eval execution plan work item ${index} members are duplicated`);
   }
   const imageRefs = parseEnvironmentImageUses(value.image_refs ?? [], value.task_ids as string[], `eval execution plan work item ${index} image refs`);
+  const artifactId = value.artifact_id === undefined ? undefined : isSha256(value.artifact_id) ? value.artifact_id : (() => { throw new TypeError(`eval execution plan work item ${index} artifact id is invalid`); })();
+  const runtimeContract = value.runtime_contract === undefined ? undefined : parseRuntimeContract(value.runtime_contract, `eval execution plan work item ${index}`);
+  if ((artifactId === undefined) !== (runtimeContract === undefined)) throw new TypeError(`eval execution plan work item ${index} artifact contract is incomplete`);
   return {
     ...value,
     reservation: parseResourceVector(value.reservation, `eval execution plan work item ${index} reservation`),
     ...(imageRefs.length > 0 ? { image_refs: imageRefs } : {}),
+    ...(artifactId ? { artifact_id: artifactId } : {}),
+    ...(runtimeContract ? { runtime_contract: runtimeContract } : {}),
   } as BackendWorkItemV1;
 }
 
@@ -321,7 +350,7 @@ function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], w
   if (membership === "opaque") {
     const item = workItems[0];
     if (slots.length !== 0 || workItems.length !== 1 || item?.opaque_membership !== true || item.logical_attempt !== null
-      || item.slots.length !== 0 || item.task_ids.length !== 0 || item.work_id !== opaqueWorkId(item.eval_id)
+      || item.slots.length !== 0 || item.task_ids.length !== 0 || item.work_id !== opaqueWorkId(item.eval_id, artifactPinFields(item.artifact_id && item.runtime_contract ? { taskIds: [], artifactId: item.artifact_id, runtimeContract: item.runtime_contract } : undefined))
       || taskResources !== undefined
       || JSON.stringify(item.reservation) !== JSON.stringify(scaleResources(resources, item.requested_parallelism))) {
       throw new TypeError("opaque execution plan shape is invalid");
@@ -344,7 +373,10 @@ function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], w
       || JSON.stringify(item.reservation) !== JSON.stringify(reservationForTasks(item.task_ids, item.requested_parallelism, resources, taskResources))) {
       throw new TypeError(`eval execution plan work item does not match its slots: ${item.work_id}`);
     }
-    const expected = workItemId(item.eval_id, item.logical_attempt, item.slots, item.image_refs ?? []);
+    const expected = workItemId(item.eval_id, item.logical_attempt, item.slots, item.image_refs ?? [], {
+      ...(item.artifact_id ? { artifact_id: item.artifact_id } : {}),
+      ...(item.runtime_contract ? { runtime_contract: item.runtime_contract } : {}),
+    });
     if (item.work_id !== expected) throw new TypeError(`eval execution plan work item identity does not match: ${item.work_id}`);
   }
 }
@@ -410,69 +442,6 @@ function isSha256(value: unknown): value is Sha256 {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function workItemId(evalId: string, logicalAttempt: number, slots: string[], imageRefs: readonly EnvironmentImageUseV1[] = []): string {
-  const imageIdentity = imageRefs.map(({ cache_hit: _cacheHit, ...entry }) => entry);
-  const identity = { eval_id: evalId, backend: "harbor", logical_attempt: logicalAttempt, slots, ...(imageIdentity.length > 0 ? { image_refs: imageIdentity } : {}) };
-  return `work_${sha256JSON(identity).slice("sha256:".length, "sha256:".length + 32)}`;
-}
-
-function imagesForTasks(images: readonly EnvironmentImageUseV1[], taskIds: readonly string[]): EnvironmentImageUseV1[] {
-  const selected = new Set(taskIds);
-  return images.filter((image) => image.task_ids.some((taskId) => selected.has(taskId)));
-}
-
-function parseEnvironmentImageUses(value: unknown, taskIds: readonly string[], label: string): EnvironmentImageUseV1[] {
-  if (!Array.isArray(value)) throw new TypeError(`${label} must be an array`);
-  const allowedTasks = new Set(taskIds);
-  const uses = value.map((entry, index) => {
-    if (!isRecord(entry)) throw new TypeError(`${label} ${index} is invalid`);
-    assertOnlyKeys(entry, ["task_ids", "image_id", "requested_reference", "reference", "manifest_digest", "platform", "resolution", "cache_hit"], `${label} ${index}`);
-    if (!Array.isArray(entry.task_ids) || entry.task_ids.length === 0 || entry.task_ids.some((task) => typeof task !== "string" || !allowedTasks.has(task))
-      || new Set(entry.task_ids).size !== entry.task_ids.length || !isSha256(entry.image_id) || !isSha256(entry.manifest_digest)
-      || !validImageReference(entry.requested_reference) || !validImageReference(entry.reference)
-      || !(entry.reference as string).endsWith(`@${entry.manifest_digest}`)
-      || imageRepository(entry.requested_reference as string) !== imageRepository(entry.reference as string)
-      || typeof entry.platform !== "string" || !entry.platform
-      || !new Set(["registry", "prebuilt", "backend-build"]).has(entry.resolution as string) || typeof entry.cache_hit !== "boolean") {
-      throw new TypeError(`${label} ${index} is invalid`);
-    }
-    return { ...entry, task_ids: [...entry.task_ids].sort(compareBytes) } as EnvironmentImageUseV1;
-  });
-  const canonical = [...uses].sort((left, right) => compareBytes(`${left.task_ids.join("\0")}\0${left.requested_reference}`, `${right.task_ids.join("\0")}\0${right.requested_reference}`));
-  if (new Set(canonical.map((entry) => `${entry.task_ids.join("\0")}\0${entry.requested_reference}`)).size !== canonical.length) throw new TypeError(`${label} are duplicated`);
-  return canonical;
-}
-
-function parseEnvironmentImageFallbacks(value: unknown, taskIds: readonly string[]): EnvironmentImageFallbackV1[] {
-  if (!Array.isArray(value)) throw new TypeError("execution plan image fallbacks must be an array");
-  const tasks = new Set(taskIds);
-  return value.map((entry, index) => {
-    if (!isRecord(entry)) throw new TypeError(`execution plan image fallback ${index} is invalid`);
-    assertOnlyKeys(entry, ["task_id", "source", "service", "code"], `execution plan image fallback ${index}`);
-    if (typeof entry.task_id !== "string" || !tasks.has(entry.task_id) || !new Set(["task", "verifier", "compose"]).has(entry.source as string)
-      || typeof entry.service !== "string" || !entry.service
-      || !new Set(["backend-build", "dynamic-image", "policy-backend", "resolver-unavailable", "resolution-failed"]).has(entry.code as string)) {
-      throw new TypeError(`execution plan image fallback ${index} is invalid`);
-    }
-    return entry as unknown as EnvironmentImageFallbackV1;
-  });
-}
-
-function validImageReference(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 1_024 && !/[\s\0]/.test(value) && !value.includes("://") && !value.includes("$");
-}
-
-function imageRepository(reference: string): string {
-  const withoutDigest = reference.split("@")[0] as string;
-  const slash = withoutDigest.lastIndexOf("/");
-  const colon = withoutDigest.lastIndexOf(":");
-  return colon > slash ? withoutDigest.slice(0, colon) : withoutDigest;
-}
-
-function opaqueWorkId(evalId: string): string {
-  return `work_${sha256JSON({ eval_id: evalId, backend: "harbor", membership: "opaque" }).slice("sha256:".length, "sha256:".length + 32)}`;
 }
 
 function compareBytes(left: string, right: string): number {

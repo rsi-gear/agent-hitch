@@ -12,7 +12,7 @@ const scheduler = new EvalScheduler({
   executor: (options) => runEval({
     ...options,
     harborExecutable,
-    env: { ...process.env, HITCH_NPM_PATH: npmExecutable },
+    env: { ...process.env, NODE_ENV: "test", HITCH_TEST_HOST_ARTIFACT_BUILDER: "1", HITCH_NPM_PATH: npmExecutable },
     trialBundleGraceMs: 0,
   }),
 });

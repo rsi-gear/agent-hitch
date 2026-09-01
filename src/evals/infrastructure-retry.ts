@@ -176,7 +176,6 @@ export async function runInfrastructureRetries(
         preparedArtifact: options.preparedArtifact,
         ...(options.executionResources ? { executionResources: options.executionResources } : {}),
         ...(options.resolvedImages ? { resolvedImages: options.resolvedImages } : {}),
-        ...(options.localTransport ? { localTransport: options.localTransport } : {}),
         ...(options.interactionCaptureExporter ? { modelProxy: options.interactionCaptureExporter.route } : {}),
         ...lifecycle?.backend,
         env: options.env,

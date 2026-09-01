@@ -8,15 +8,16 @@ import path from "node:path";
 import { EvalScheduler, ResourceLedger, applyEvalPhase, applyEvalWorkItem, scaleResources, settleEvalWorkItems } from "../src/control-plane/index.js";
 import type { BackendWorkItemV1, EvalControlV1, EvalProgressV1, EvalRequest, ResourceVectorV1, Sha256 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
-import { createExecutionLease, parseEvalExecutionPlan, readExecutionLeases, recoverPromotedEvalTrialPublications, runEval, validateEvalRequest } from "../src/evals/index.js";
+import { createExecutionLease, parseEvalExecutionPlan, readExecutionLeases, recoverPromotedEvalTrialPublications, runEval as runEvalProduction, validateEvalRequest } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256Bytes, sha256JSON } from "../src/foundation/index.js";
-import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 import { EnvironmentImageService } from "../src/images/index.js";
 import { writeResultBundleIndex } from "../src/runs/index.js";
 
 const GIB = 1024 * 1024 * 1024;
 const TRIAL: ResourceVectorV1 = { cpu_millis: 2_000, memory_bytes: 4 * GIB, container_slots: 1, build_slots: 0 };
+const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, harborArtifactBuilder: prepareHostHarborArtifactForTest });
 
 function request(maxConcurrent = 4): Record<string, unknown> {
   return {

@@ -35,6 +35,7 @@ export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOffer
   if (runtime.directory !== "controller-runtime" || typeof runtime.runtime_id !== "string" || !/^sha256:[a-f0-9]{64}$/.test(runtime.runtime_id)
     || task.directory !== "task-input" || task.task_id !== work.task_ids[0] || work.task_ids.length !== 1
     || harnessArtifact.directory !== "harness-artifact" || harnessArtifact.harness_id !== resolution.harness_id
+    || work.artifact_id !== undefined && harnessArtifact.artifact_id !== work.artifact_id
     || harnessArtifact.revision_identity !== resolution.identity || request.harness_ref !== resolution.requested_ref
     || request.benchmark_id !== plan.benchmark.id || request.benchmark_revision !== plan.benchmark.revision
     || JSON.stringify(credentialNames) !== JSON.stringify(offer.credential_names ?? [])) {

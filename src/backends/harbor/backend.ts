@@ -1,8 +1,7 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths } from "../../foundation/index.js";
+import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, readJSON, sha256JSON } from "../../foundation/index.js";
 import type { DockerResourceOwnershipV1, EvalRequest, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
-import type { LocalGitTransportUse } from "./local-git-transport.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
@@ -10,8 +9,9 @@ import { invokeHarbor } from "./process.js";
 import { harborEnvironmentConfig } from "./environment-config.js";
 import type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
 import { parseHarborModelProxyRoute } from "./model-proxy-config.js";
+import { HARBOR_NODE_VERSION_WITH_PREFIX } from "./runtime-toolchain.js";
 
-const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
+const BRIDGE_PAYLOAD_DIRECTORY = path.join("integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
 export interface HarborSettledTrialContext {
   bundleWaitExpired: boolean;
@@ -28,8 +28,7 @@ export interface RunHarborBackendOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string;
-  preparedArtifact?: HarborPreparedArtifactUse;
-  localTransport?: LocalGitTransportUse;
+  preparedArtifact: HarborPreparedArtifactUse;
   env?: NodeJS.ProcessEnv;
   harborExecutable?: string;
   signal?: AbortSignal;
@@ -59,6 +58,7 @@ export interface HarborPreparedArtifactUse {
   platform: string;
   node_version: string;
   source_type: string;
+  storage?: "host-artifact-store-v1" | "harbor-artifact-cache-v2";
 }
 
 export interface HarborBackendResult {
@@ -91,7 +91,6 @@ export async function runHarborBackend({
   runtimeDirectory,
   runtimeId,
   preparedArtifact,
-  localTransport,
   env = process.env,
   harborExecutable,
   signal,
@@ -112,7 +111,6 @@ export async function runHarborBackend({
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
   }
-  const harnessArtifactCacheDirectory = await ensureDir(path.join(statePaths(root).store, "harbor-artifacts"));
   const executable = await discoverHarbor(harborExecutable, root, env);
   const version = await detectVersion(executable, ["--version"]);
   const identity = await fingerprintExecutable(executable);
@@ -127,8 +125,6 @@ export async function runHarborBackend({
     runtimeDirectory,
     runtimeId,
     preparedArtifact,
-    harnessArtifactCacheDirectory,
-    localTransport,
     backendDirectory,
     ...(taskNames === undefined ? {} : { taskNames }),
     ...(logicalAttempt === undefined ? {} : { logicalAttempt }),
@@ -159,7 +155,7 @@ export async function runHarborBackend({
   try {
     invocation = await invokeHarbor(executable, ["run", "--config", configPath, "--yes"], {
       cwd: evalDirectory,
-      env: withBridgePythonPath(env),
+      env: withBridgePythonPath(env, runtimeDirectory),
       stdoutPath: path.join(backendDirectory, "stdout.log"),
       stderrPath: path.join(backendDirectory, "stderr.log"),
       ...(signal ? { signal } : {}),
@@ -282,9 +278,7 @@ export interface BuildHarborJobConfigOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string | undefined;
-  preparedArtifact?: HarborPreparedArtifactUse | undefined;
-  harnessArtifactCacheDirectory?: string | undefined;
-  localTransport?: LocalGitTransportUse | undefined;
+  preparedArtifact: HarborPreparedArtifactUse;
   backendDirectory: string;
   taskNames?: readonly string[];
   logicalAttempt?: number;
@@ -305,8 +299,6 @@ export async function buildHarborJobConfig({
   runtimeDirectory,
   runtimeId,
   preparedArtifact,
-  harnessArtifactCacheDirectory,
-  localTransport,
   backendDirectory,
   taskNames,
   logicalAttempt,
@@ -349,38 +341,20 @@ export async function buildHarborJobConfig({
       // (spec §4.2); `runtime_id` records the exact execution payload.
       hitch_runtime_dir: runtimeDirectory,
       ...(runtimeId ? { controller_runtime_id: runtimeId } : {}),
-      ...(harnessArtifactCacheDirectory ? { harness_artifact_cache_dir: harnessArtifactCacheDirectory } : {}),
-      ...(preparedArtifact ? {
-        harness_artifact: {
-          directory: preparedArtifact.directory,
-          artifact_id: preparedArtifact.artifact_id,
-          artifact_integrity: preparedArtifact.artifact_integrity,
-          entrypoint_integrity: preparedArtifact.entrypoint_integrity,
-          harness_id: preparedArtifact.harness_id,
-          revision_identity: preparedArtifact.revision_identity,
-          adapter_version: preparedArtifact.adapter_version,
-          recipe_version: preparedArtifact.recipe_version,
-          platform: preparedArtifact.platform,
-          node_version: preparedArtifact.node_version,
-          source_type: preparedArtifact.source_type,
-        },
-      } : {}),
-      ...(localTransport ? {
-        local_source_transport: {
-          kind: localTransport.manifest.kind,
-          manifest_path: localTransport.manifestPath,
-          payload_path: localTransport.payloadPath,
-          locked_resolution_path: localTransport.resolutionPath,
-          harness_id: localTransport.manifest.harness_id,
-          resolution_identity: localTransport.manifest.resolution_identity,
-          commit: localTransport.manifest.commit,
-          tree: localTransport.manifest.tree,
-          payload_sha256: localTransport.manifest.payload_sha256,
-          payload_bytes: localTransport.manifest.payload_bytes,
-          object_count: localTransport.manifest.object_count,
-          file_count: localTransport.manifest.file_count,
-        },
-      } : {}),
+      node_version: HARBOR_NODE_VERSION_WITH_PREFIX,
+      harness_artifact: {
+        directory: preparedArtifact.directory,
+        artifact_id: preparedArtifact.artifact_id,
+        artifact_integrity: preparedArtifact.artifact_integrity,
+        entrypoint_integrity: preparedArtifact.entrypoint_integrity,
+        harness_id: preparedArtifact.harness_id,
+        revision_identity: preparedArtifact.revision_identity,
+        adapter_version: preparedArtifact.adapter_version,
+        recipe_version: preparedArtifact.recipe_version,
+        platform: preparedArtifact.platform,
+        node_version: preparedArtifact.node_version,
+        source_type: preparedArtifact.source_type,
+      },
       hitch_timeout_ms: request.timeout_ms,
       agent_args: request.agent_args,
       credential_names: credentialNames,
@@ -480,10 +454,11 @@ function credentialEnvironment(names: readonly string[]): Record<string, string>
   return Object.fromEntries(names.map((name) => [name, `\${${name}}`]));
 }
 
-function withBridgePythonPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function withBridgePythonPath(env: NodeJS.ProcessEnv, runtimeDirectory: string): NodeJS.ProcessEnv {
+  const bridgeDirectory = path.join(runtimeDirectory, "payload", BRIDGE_PAYLOAD_DIRECTORY);
   return {
     ...env,
-    PYTHONPATH: [BRIDGE_DIRECTORY, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+    PYTHONPATH: [bridgeDirectory, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
   };
 }
 

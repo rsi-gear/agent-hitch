@@ -93,3 +93,33 @@ test("task Dockerfile planning records an immutable prebuilt image without regis
   assert.equal(result.uses[0]?.reference, `${requested}@${digest}`);
   assert.deepEqual(resolvedImageMapping(result.uses), {});
 });
+
+test("environment planning resolves each task for its declared runtime platform", async () => {
+  const requests: string[] = [];
+  const result = await planEnvironmentImages({
+    tasks: [
+      task({ task_id: "x64", runtime_platform: "linux/amd64" }),
+      task({ task_id: "arm64", runtime_platform: "linux/arm64" }),
+    ],
+    mode: "prebuild-preferred",
+    benchmarkId: "demo",
+    benchmarkRevision: "1",
+    resolver: async (input) => {
+      requests.push(`${input.taskId}:${input.platform}`);
+      const suffix = input.platform === "linux/amd64" ? "c" : "d";
+      const manifest = `sha256:${suffix.repeat(64)}` as `sha256:${string}`;
+      return {
+        image_id: `sha256:${(suffix === "c" ? "e" : "f").repeat(64)}` as `sha256:${string}`,
+        reference: `registry.test/task@${manifest}`,
+        manifest_digest: manifest,
+        platform: input.platform,
+        cache_hit: false,
+      };
+    },
+  });
+  assert.deepEqual(requests, ["arm64:linux/arm64", "x64:linux/amd64"]);
+  assert.deepEqual(result.uses.map((entry) => `${entry.task_ids[0]}:${entry.platform}`), [
+    "arm64:linux/arm64",
+    "x64:linux/amd64",
+  ]);
+});

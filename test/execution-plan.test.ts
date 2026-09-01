@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildEvalExecutionPlan, deriveTaskResourceRequirement, parseEvalExecutionPlan, validateEvalId } from "../src/evals/index.js";
+import { groupRerunSlotsByArtifact } from "../src/evals/rerun.js";
 import type { EvalRequest } from "../src/domain/index.js";
 
 const request: EvalRequest = {
@@ -98,6 +99,51 @@ test("task-slot planning emits one schedulable work item per logical trial", () 
   assert.ok(plan.work_items.every((item) => item.slots.length === 1 && item.requested_parallelism === 1));
   assert.deepEqual(plan.work_items[0]?.reservation, input.trialResources);
   assert.deepEqual(parseEvalExecutionPlan(plan), plan);
+});
+
+test("execution planning binds each task environment to its matching artifact contract", () => {
+  const x64 = `sha256:${"d".repeat(64)}`;
+  const arm64 = `sha256:${"e".repeat(64)}`;
+  const artifactAssignments = [
+    {
+      taskIds: ["one"], artifactId: x64,
+      runtimeContract: { docker_platform: "linux/amd64", artifact_platform: "linux-x64", node_version: "v22.23.0" },
+    },
+    {
+      taskIds: ["two"], artifactId: arm64,
+      runtimeContract: { docker_platform: "linux/arm64", artifact_platform: "linux-arm64", node_version: "v22.23.0" },
+    },
+  ];
+  const taskPlan = buildEvalExecutionPlan({
+    ...input,
+    candidate: { ...input.candidate, artifactAssignments },
+    tasks: ["two", "one"],
+    workItemMode: "task-slots",
+  });
+  assert.deepEqual(taskPlan.work_items.map((item) => ({
+    task: item.task_ids[0], attempt: item.logical_attempt, artifact: item.artifact_id, contract: item.runtime_contract,
+  })), [
+    { task: "one", attempt: 1, artifact: x64, contract: artifactAssignments[0]!.runtimeContract },
+    { task: "one", attempt: 2, artifact: x64, contract: artifactAssignments[0]!.runtimeContract },
+    { task: "two", attempt: 1, artifact: arm64, contract: artifactAssignments[1]!.runtimeContract },
+    { task: "two", attempt: 2, artifact: arm64, contract: artifactAssignments[1]!.runtimeContract },
+  ]);
+  assert.deepEqual(parseEvalExecutionPlan(taskPlan), taskPlan);
+  assert.deepEqual(groupRerunSlotsByArtifact([
+    { task_id: "one", attempt: 1 },
+    { task_id: "two", attempt: 1 },
+  ], taskPlan, [x64, arm64]), [
+    { logicalAttempt: 1, slots: [{ task_id: "one", attempt: 1 }], artifactId: x64, splitAttempt: true },
+    { logicalAttempt: 1, slots: [{ task_id: "two", attempt: 1 }], artifactId: arm64, splitAttempt: true },
+  ]);
+
+  const shardPlan = buildEvalExecutionPlan({
+    ...input,
+    candidate: { ...input.candidate, artifactAssignments },
+    tasks: ["one", "two"],
+  });
+  assert.equal(shardPlan.work_items.length, 4, "attempt shards must split at artifact-contract boundaries");
+  assert.ok(shardPlan.work_items.every((item) => item.task_ids.length === 1));
 });
 
 test("execution plan persists per-task evidence and reserves heterogeneous tasks", () => {

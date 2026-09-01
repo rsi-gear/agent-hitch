@@ -4,10 +4,11 @@ import type { ResolvedRevision } from "../artifacts/index.js";
 import { validateLocalGitTransportManifest, verifyLocalGitTransport } from "../backends/index.js";
 import type { HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import { HitchError, readJSON } from "../foundation/index.js";
+import { loadHarborArtifact } from "./harbor-artifact-builder.js";
 
 interface RerunInputPlan {
   candidate: Record<string, unknown>;
-  preparedArtifact: Record<string, unknown>;
+  preparedArtifacts: Record<string, unknown>[];
   localSourceTransport?: Record<string, unknown>;
 }
 
@@ -20,9 +21,28 @@ export async function loadRerunResolvedRevision(evalDirectory: string, plan: Rer
   return resolution;
 }
 
-export async function loadRerunPreparedArtifact(root: string, plan: RerunInputPlan): Promise<HarborPreparedArtifactUse> {
-  const summary = plan.preparedArtifact;
+export async function loadRerunPreparedArtifacts(root: string, plan: RerunInputPlan): Promise<Map<string, HarborPreparedArtifactUse>> {
+  const artifacts = new Map<string, HarborPreparedArtifactUse>();
+  for (const summary of plan.preparedArtifacts) {
+    const artifact = await loadRerunPreparedArtifactSummary(root, summary);
+    artifacts.set(artifact.artifact_id, artifact);
+  }
+  if (artifacts.size === 0) throw unavailable("eval has no prepared artifact assignments");
+  return artifacts;
+}
+
+async function loadRerunPreparedArtifactSummary(root: string, summary: Record<string, unknown>): Promise<HarborPreparedArtifactUse> {
   const artifactId = requiredString(summary.artifact_id, "prepared artifact id");
+  if (summary.storage === "harbor-artifact-cache-v2") {
+    return loadHarborArtifact(root, {
+      artifact_id: artifactId,
+      artifact_integrity: requiredString(summary.artifact_integrity, "prepared artifact integrity"),
+      entrypoint_integrity: requiredString(summary.entrypoint_integrity, "prepared artifact entrypoint integrity"),
+      harness_id: requiredString(summary.harness_id, "prepared artifact harness id"),
+      revision_identity: requiredString(summary.revision_identity, "prepared artifact revision identity"),
+      platform: requiredString(summary.platform, "prepared artifact platform"),
+    });
+  }
   const artifact = await loadPreparedArtifact(preparedArtifactDirectory(root, artifactId), {
     artifact_id: artifactId,
     artifact_integrity: requiredString(summary.artifact_integrity, "prepared artifact integrity"),

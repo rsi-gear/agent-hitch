@@ -1,6 +1,10 @@
 import { chmod, readdir, rm, writeFile } from "node:fs/promises";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
+import { prepareHostHarborArtifactForTest as prepareHostArtifact } from "../src/evals/prepared-harness.js";
+import type { EvalHarborArtifactBuilder } from "../src/evals/index.js";
+
+export const prepareHostHarborArtifactForTest: EvalHarborArtifactBuilder = prepareHostArtifact;
 
 /**
  * Remove a tree even when it contains read-only controller runtime bundles
@@ -229,11 +233,14 @@ export async function writeFakeHarbor(directory: string, {
   postResultDelayMs = 0,
   activityLog,
   leakEnvName,
+  pythonPathLog,
 }: {
   delayMs?: number;
   candidateStartDelayMs?: number;
   postResultDelayMs?: number;
   activityLog?: string;
+  /** Test-only: persist the inherited PYTHONPATH used to import Harbor plugins. */
+  pythonPathLog?: string;
   /** Test-only: print one inherited value so callers can verify host log redaction. */
   leakEnvName?: string;
 } = {}): Promise<string> {
@@ -252,6 +259,8 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
   process.exit(2);
 }
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const pythonPathLog = ${pythonPathLog === undefined ? "null" : JSON.stringify(pythonPathLog)};
+if (pythonPathLog) fs.writeFileSync(pythonPathLog, process.env.PYTHONPATH || "");
 const leakEnvName = ${leakEnvName === undefined ? "null" : JSON.stringify(leakEnvName)};
 if (leakEnvName) {
   process.stdout.write("inherited=" + (process.env[leakEnvName] || "") + "\\n");

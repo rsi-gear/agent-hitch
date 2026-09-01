@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { BackendWorkItemV1, EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
+import { preparedArtifactForWorkItem } from "./work-item-artifacts.js";
 import { HitchError, sha256JSON } from "../foundation/index.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { retryableInfrastructureTrials } from "./infrastructure-retry.js";
@@ -52,7 +53,7 @@ export async function runRemoteInfrastructureRetries(input: {
     const completed = await executor({
       evalId: input.options.evalId, evalDirectory: input.options.evalDirectory, root: input.options.root,
       request: input.options.request, plan: input.options.plan, workItem: work,
-      resolvedRevision: input.options.resolvedRevision, preparedArtifact: input.options.preparedArtifact,
+      resolvedRevision: input.options.resolvedRevision, preparedArtifact: preparedArtifactForWorkItem(input.options, work),
       runtimeDirectory: input.options.controllerRuntime.directory, runtimeId: input.options.controllerRuntime.runtime_id,
       ...(input.initial.environmentImages ? { environmentImages: input.initial.environmentImages } : {}),
       ...(input.options.plan.model_capture ? { modelCapturePlan: input.options.plan.model_capture } : {}),

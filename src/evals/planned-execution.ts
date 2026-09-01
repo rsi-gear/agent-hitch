@@ -32,6 +32,7 @@ import { FairSemaphore, assertTaskSlotPlan, workOrder } from "./planned-executio
 import type { PlannedBackendRun } from "./planned-execution-support.js";
 export type { PlannedBackendRun } from "./planned-execution-support.js";
 import { harborPhaseTimingEvents } from "./harbor-phase-timings.js";
+import { preparedArtifactForWorkItem } from "./work-item-artifacts.js";
 
 export interface ExecutePlannedHarborOptions {
   evalId: EvalId;
@@ -43,6 +44,7 @@ export interface ExecutePlannedHarborOptions {
   resolvedRevision: ResolvedRevision;
   controllerRuntime: ControllerRuntimeUseResult;
   preparedArtifact: HarborPreparedArtifactUse;
+  preparedArtifacts?: ReadonlyMap<string, HarborPreparedArtifactUse>;
   localTransport?: LocalGitTransportUse;
   env: NodeJS.ProcessEnv;
   harborExecutable?: string;
@@ -178,7 +180,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       root: options.root,
       resolvedRevision: options.resolvedRevision,
       controllerRuntime: options.controllerRuntime,
-      preparedArtifact: options.preparedArtifact,
+      preparedArtifact: preparedArtifactForWorkItem(options, workItem),
       executionResources: resourceRequirementForTask(options.plan, completed.tasks[0] as string)?.main_limits ?? options.plan.default_trial_resources,
       resolvedImages: resolvedImageMapping(options.plan.work_items.find((entry) => entry.work_id === completed.workId)?.image_refs ?? []),
       ...(completed.environmentImages ? { environmentImages: completed.environmentImages } : {}),
@@ -361,14 +363,13 @@ async function executeLeasedWorkItem(
     resolvedRevision: options.resolvedRevision,
     runtimeDirectory: options.controllerRuntime.directory,
     runtimeId: options.controllerRuntime.runtime_id,
-    preparedArtifact: options.preparedArtifact,
+    preparedArtifact: preparedArtifactForWorkItem(options, item),
     ...(options.interactionCaptureExporter ? { modelProxy: options.interactionCaptureExporter.route } : {}),
     executionResources: runtimeResources.mainLimits,
     ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
     dockerOwnership: ownership,
     resolvedImages: resolvedImageMapping(item.image_refs ?? []),
     ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
-    ...(options.localTransport ? { localTransport: options.localTransport } : {}),
     env: options.env,
     ...(options.harborExecutable !== undefined ? { harborExecutable: options.harborExecutable } : {}),
     ...(options.signal ? { signal: options.signal } : {}),

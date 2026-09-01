@@ -7,4 +7,6 @@ export { readHarborProcessExitStatus } from "./harbor/index.js";
 export { DEFAULT_LOCAL_GIT_TRANSPORT_LIMITS, LOCAL_GIT_TRANSPORT_MANIFEST, LOCAL_GIT_TRANSPORT_PAYLOAD, LOCAL_GIT_TRANSPORT_SCHEMA_VERSION, buildLocalGitTransport, localGitTransportLimitsFromEnv, validateLocalGitTransportManifest, verifyLocalGitTransport, verifyMaterializedLocalGitSource } from "./harbor/index.js";
 export type { LocalGitTransportLimits, LocalGitTransportManifest, LocalGitTransportUse, VerifiedLocalGitSource } from "./harbor/index.js";
 export { DEFAULT_HARBOR_VERSION, HARBOR_CREDENTIAL_ENV, doctorHarbor, locateHarbor, managedHarborExecutable, setupHarbor } from "./harbor/index.js";
+export { DEFAULT_HARBOR_TRIAL_DOCKER_PLATFORM, HARBOR_NODE_VERSION, HARBOR_NODE_VERSION_WITH_PREFIX, HARBOR_PNPM_VERSION, harborTrialRuntimeContract } from "./harbor/index.js";
+export type { HarborTrialRuntimeContract } from "./harbor/index.js";
 export type { DoctorCheck, DoctorHarborOptions, DoctorResult, HarborLocation, LocateHarborOptions, HarborSetupResult, SetupHarborOptions } from "./harbor/index.js";

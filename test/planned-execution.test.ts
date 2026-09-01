@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { ResourceLedger, WorkItemDispatcher } from "../src/control-plane/index.js";
 import { localEnvironmentImageBuild } from "../src/control-plane/eval-image-resolution.js";
-import { parseEvalExecutionPlan, readExecutionLeases, runEval } from "../src/evals/index.js";
+import { parseEvalExecutionPlan, readExecutionLeases, runEval as runEvalProduction } from "../src/evals/index.js";
+import type { RunEvalOptions } from "../src/evals/index.js";
 import { hitchRootId, readEvalEnvironmentImageReferences, readJSON } from "../src/foundation/index.js";
 import { loadEnvironmentImageManifest } from "../src/images/index.js";
 import type { EnvironmentImageBuilder } from "../src/images/index.js";
-import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+
+const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, harborArtifactBuilder: prepareHostHarborArtifactForTest });
 
 test("planned local execution overlaps different tasks and serializes attempts of the same task", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-execution-"));

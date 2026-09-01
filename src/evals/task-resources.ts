@@ -21,6 +21,7 @@ export const HARBOR_EGRESS_SIDECAR_RESOURCES: ResourceVectorV1 = {
 
 export interface LocalTaskPlanningInputV1 {
   task_id: string;
+  runtime_platform?: string;
   resources: TaskResourceRequirementV1;
   environment_images: HarborTaskResourceDeclarationV1["environment_images"];
   environment_image_fallbacks: HarborTaskResourceDeclarationV1["environment_image_fallbacks"];
@@ -34,6 +35,7 @@ export async function resolveLocalTaskResourceRequirements(input: {
   defaultResources: ResourceVectorV1;
   defaultSource: "submission-default" | "operator-default";
   harborExecutable?: string;
+  inspectorPath?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }): Promise<TaskResourceRequirementV1[]> {
@@ -47,6 +49,7 @@ export async function resolveLocalTaskPlanningInputs(input: {
   defaultResources: ResourceVectorV1;
   defaultSource: "submission-default" | "operator-default";
   harborExecutable?: string;
+  inspectorPath?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }): Promise<LocalTaskPlanningInputV1[]> {
@@ -60,6 +63,7 @@ export async function resolveLocalTaskPlanningInputs(input: {
         root: input.root,
         taskDirectory,
         ...(input.harborExecutable ? { harborExecutable: input.harborExecutable } : {}),
+        ...(input.inspectorPath ? { inspectorPath: input.inspectorPath } : {}),
         ...(input.env ? { env: input.env } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
       });
@@ -75,6 +79,7 @@ export async function resolveLocalTaskPlanningInputs(input: {
     });
     return {
       task_id: taskId,
+      ...(declaration.runtime_platform ? { runtime_platform: declaration.runtime_platform } : {}),
       resources,
       environment_images: declaration.environment_images,
       environment_image_fallbacks: declaration.environment_image_fallbacks,

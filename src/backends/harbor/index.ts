@@ -1,4 +1,6 @@
 export { buildHarborJobConfig, lockedHarnessRef, normalizeHarborResult, readHarborRawResult, runHarborBackend } from "./backend.js";
+export { DEFAULT_HARBOR_TRIAL_DOCKER_PLATFORM, HARBOR_NODE_VERSION, HARBOR_NODE_VERSION_WITH_PREFIX, HARBOR_PNPM_VERSION, harborTrialRuntimeContract } from "./runtime-toolchain.js";
+export type { HarborTrialRuntimeContract } from "./runtime-toolchain.js";
 export type { BuildHarborJobConfigOptions, HarborBackendResult, HarborPreparedArtifactUse, RunHarborBackendOptions } from "./backend.js";
 export { harborEnvironmentConfig } from "./environment-config.js";
 export type { HarborDockerServiceLimitsV1 } from "./environment-config.js";

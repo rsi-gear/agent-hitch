@@ -29,6 +29,14 @@ export interface TrialSlotV1 {
   invalid_reason?: string;
 }
 
+/** Runtime ABI selected by the planner for the task environment that will
+ * consume a prepared harness artifact. */
+export interface TrialRuntimeContractV1 {
+  docker_platform: string;
+  artifact_platform: string;
+  node_version: string;
+}
+
 export interface BackendWorkItemV1 {
   schema_version: "1";
   work_id: string;
@@ -42,6 +50,10 @@ export interface BackendWorkItemV1 {
   reservation: ResourceVectorV1;
   provider: string;
   image_refs?: EnvironmentImageUseV1[];
+  /** New plans pin the exact artifact and ABI per schedulable work item.
+   * Optional only so pre-contract persisted plans remain readable. */
+  artifact_id?: Sha256;
+  runtime_contract?: TrialRuntimeContractV1;
 }
 
 export type ResourceRequirementSourceV1 =

@@ -64,6 +64,8 @@ export function preparedArtifactSummary(artifact: HarborPreparedArtifactUse): Re
     harness_id: artifact.harness_id,
     revision_identity: artifact.revision_identity,
     platform: artifact.platform,
+    node_version: artifact.node_version,
     source_type: artifact.source_type,
+    storage: artifact.storage ?? "host-artifact-store-v1",
   };
 }

@@ -8,6 +8,8 @@ export interface PlannedEnvironmentImagesV1 {
   fallbacks: EnvironmentImageFallbackV1[];
 }
 
+export const DEFAULT_ENVIRONMENT_IMAGE_PLATFORM = "linux/amd64";
+
 export async function planEnvironmentImages(input: {
   tasks: readonly LocalTaskPlanningInputV1[];
   mode: "backend" | "prebuild-preferred" | "prebuild-required";
@@ -18,7 +20,7 @@ export async function planEnvironmentImages(input: {
   builder?: EvalEnvironmentImageBuilder;
   signal?: AbortSignal;
 }): Promise<PlannedEnvironmentImagesV1> {
-  const platform = input.platform ?? "linux/amd64";
+  const platform = input.platform ?? DEFAULT_ENVIRONMENT_IMAGE_PLATFORM;
   const uses: EnvironmentImageUseV1[] = [];
   const fallbacks: EnvironmentImageFallbackV1[] = input.tasks.flatMap((task) => task.environment_image_fallbacks.map((entry) => ({
     task_id: task.task_id,
@@ -26,8 +28,8 @@ export async function planEnvironmentImages(input: {
     service: entry.service,
     code: entry.code,
   })));
-  const requests = canonicalRequests(input.tasks);
-  const builds = canonicalBuilds(input.tasks);
+  const requests = canonicalRequests(input.tasks, platform);
+  const builds = canonicalBuilds(input.tasks, platform);
   if (input.mode === "backend") {
     fallbacks.push(...requests.flatMap((entry) => fallbacksFor(entry, "policy-backend")));
     fallbacks.push(...builds.flatMap((entry) => fallbacksFor(entry, "policy-backend")));
@@ -40,10 +42,10 @@ export async function planEnvironmentImages(input: {
           benchmarkRevision: input.benchmarkRevision,
           taskId: entry.taskId,
           reference: entry.reference,
-          platform,
+          platform: entry.platform,
           ...(input.signal ? { signal: input.signal } : {}),
         });
-        if (!validResolvedImage(entry.reference, platform, resolved)) throw new TypeError("environment image resolver output is invalid");
+        if (!validResolvedImage(entry.reference, entry.platform, resolved)) throw new TypeError("environment image resolver output is invalid");
         uses.push({
           task_ids: [entry.taskId],
           image_id: resolved.image_id,
@@ -68,10 +70,10 @@ export async function planEnvironmentImages(input: {
           taskId: entry.taskId,
           contextDirectory: entry.contextDirectory,
           dockerfile: entry.dockerfile,
-          platform,
+          platform: entry.platform,
           ...(input.signal ? { signal: input.signal } : {}),
         });
-        if (!validBuiltImage(platform, built)) throw new TypeError("environment image builder output is invalid");
+        if (!validBuiltImage(entry.platform, built)) throw new TypeError("environment image builder output is invalid");
         uses.push({
           task_ids: [entry.taskId],
           image_id: built.image_id,
@@ -98,14 +100,16 @@ export async function planEnvironmentImages(input: {
   return result;
 }
 
-function canonicalBuilds(tasks: readonly LocalTaskPlanningInputV1[]): Array<{
+function canonicalBuilds(tasks: readonly LocalTaskPlanningInputV1[], defaultPlatform: string): Array<{
   taskId: string;
+  platform: string;
   contextDirectory: string;
   dockerfile: string;
   bindings: Array<{ source: "task"; service: "main" }>;
 }> {
   return tasks.flatMap((task) => task.environment_builds.map((entry) => ({
     taskId: task.task_id,
+    platform: task.runtime_platform ?? defaultPlatform,
     contextDirectory: entry.context_directory,
     dockerfile: entry.dockerfile,
     bindings: [{ source: entry.source, service: entry.service }],
@@ -123,15 +127,16 @@ export function resolvedImageMapping(images: readonly EnvironmentImageUseV1[]): 
   return Object.fromEntries(Object.entries(result).sort(([left], [right]) => compare(left, right)));
 }
 
-function canonicalRequests(tasks: readonly LocalTaskPlanningInputV1[]): Array<{
+function canonicalRequests(tasks: readonly LocalTaskPlanningInputV1[], defaultPlatform: string): Array<{
   taskId: string;
+  platform: string;
   reference: string;
   bindings: Array<{ source: "task" | "verifier" | "compose"; service: string }>;
 }> {
-  const grouped = new Map<string, { taskId: string; reference: string; bindings: Array<{ source: "task" | "verifier" | "compose"; service: string }> }>();
+  const grouped = new Map<string, { taskId: string; platform: string; reference: string; bindings: Array<{ source: "task" | "verifier" | "compose"; service: string }> }>();
   for (const task of tasks) for (const entry of task.environment_images) {
     const key = `${task.task_id}\0${entry.reference}`;
-    const request = grouped.get(key) ?? { taskId: task.task_id, reference: entry.reference, bindings: [] };
+    const request = grouped.get(key) ?? { taskId: task.task_id, platform: task.runtime_platform ?? defaultPlatform, reference: entry.reference, bindings: [] };
     request.bindings.push({ source: entry.source, service: entry.service });
     grouped.set(key, request);
   }

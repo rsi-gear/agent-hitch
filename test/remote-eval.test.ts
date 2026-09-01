@@ -5,16 +5,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { EvalScheduler, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger, encodeRemoteResultEnvelope, parseRemoteTreeEnvelope } from "../src/control-plane/index.js";
 import type { RemoteWorkOfferV1, ResourceVectorV1 } from "../src/domain/index.js";
-import { readExecutionLeases, runEval } from "../src/evals/index.js";
+import { readExecutionLeases, runEval as runEvalProduction } from "../src/evals/index.js";
+import type { RunEvalOptions } from "../src/evals/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256Bytes, sha256JSON } from "../src/foundation/index.js";
 import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
 import { TrajectoryProjector, TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/index.js";
-import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 
 const GIB = 1024 ** 3;
 const DEFAULT_TRIAL: ResourceVectorV1 = { cpu_millis: 2_000, memory_bytes: 4 * GIB, container_slots: 1, build_slots: 0 };
 const WORK_CAPACITY: ResourceVectorV1 = { cpu_millis: 2_250, memory_bytes: 4 * GIB + 128 * 1024 ** 2, container_slots: 2, build_slots: 0 };
 const ZERO: ResourceVectorV1 = { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 };
+const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, harborArtifactBuilder: prepareHostHarborArtifactForTest });
 
 test("one eval dispatches different tasks to two remote workers and atomically imports their bundles", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-eval-"));
@@ -188,9 +190,10 @@ async function remoteWorkerOnce(root: string, registry: RemoteWorkerRegistry, pr
   const taskBlob = await protocol.resolveInput(workerId, offer.lease.lease_id, offer.generation, taskInput.digest);
   assert.ok(parseRemoteTreeEnvelope(JSON.parse(await readFile(taskBlob.path, "utf8"))).files.some((file) => file.path === "task.toml"));
   const specBlob = await protocol.resolveInput(workerId, offer.lease.lease_id, offer.generation, workSpec.digest);
-  const stagedSpec = JSON.parse(await readFile(specBlob.path, "utf8")) as { request: { dataset: string }; work: { work_id: string } };
+  const stagedSpec = JSON.parse(await readFile(specBlob.path, "utf8")) as { request: { dataset: string }; work: { work_id: string }; harness_artifact: Record<string, unknown> };
   assert.equal(stagedSpec.request.dataset, "task-input");
   assert.equal(stagedSpec.work.work_id, offer.work.work_id);
+  assert.equal(stagedSpec.harness_artifact.storage, undefined);
   await protocol.acceptOffer(workerId, {
     schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce, generation: offer.generation,
     accepted: true, sent_at: new Date().toISOString(),

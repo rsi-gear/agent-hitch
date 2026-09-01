@@ -85,10 +85,11 @@ export async function prepareRemoteWorkInputs(input: {
   const taskId = input.work.task_ids[0];
   if (!taskId || input.work.task_ids.length !== 1) throw inputError("remote work input requires exactly one task");
   const taskDirectory = await resolveTaskDirectory(input.request.dataset, taskId);
+  const { storage: _hostStorage, ...portableArtifact } = input.preparedArtifact;
   const spec = Buffer.from(`${JSON.stringify({
     schema_version: "1", request: { ...input.request, dataset: "task-input" }, plan: input.plan,
     work: input.work, resolution: input.resolvedRevision,
-    harness_artifact: { ...input.preparedArtifact, directory: "harness-artifact" },
+    harness_artifact: { ...portableArtifact, directory: "harness-artifact" },
     controller_runtime: { runtime_id: input.runtimeId, directory: "controller-runtime" },
     task: { task_id: taskId, directory: "task-input" },
     credential_names: [...(input.credentialNames ?? [])].sort(),

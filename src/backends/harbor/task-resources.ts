@@ -8,6 +8,7 @@ const INSPECTOR = path.join(packageRoot(), "integrations", "harbor", "hitch_harb
 
 export interface HarborTaskResourceDeclarationV1 {
   schema_version: "1";
+  runtime_platform?: string;
   task: { cpu_millis?: number; memory_bytes?: number; gpu_count?: number };
   verifier: { separate: boolean; environment?: { cpu_millis?: number; memory_bytes?: number; gpu_count?: number } };
   compose_services: Array<{ name: string; replicas: number; cpu_millis?: number; memory_bytes?: number; gpu_count?: number }>;
@@ -40,6 +41,7 @@ export async function inspectHarborTaskResources(input: {
   root: string;
   taskDirectory: string;
   harborExecutable?: string;
+  inspectorPath?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }): Promise<HarborTaskResourceDeclarationV1> {
@@ -50,7 +52,7 @@ export async function inspectHarborTaskResources(input: {
   if (!python) throw unavailable("could not locate Harbor's Python interpreter");
   let output: string;
   try {
-    output = (await runCommand(python, [INSPECTOR, input.taskDirectory], {
+    output = (await runCommand(python, [input.inspectorPath ?? INSPECTOR, input.taskDirectory], {
       env,
       ...(input.signal ? { signal: input.signal } : {}),
       timeoutMs: 10_000,
@@ -77,8 +79,9 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
     "schema_version", "task", "verifier", "compose_services", "provider_sidecars",
     "environment_images", "environment_image_fallbacks",
     "environment_builds",
-  ], "task resource declaration");
+  ], "task resource declaration", ["runtime_platform"]);
   if (root.schema_version !== "1") throw new TypeError("task resource declaration schema is invalid");
+  const runtimePlatform = root.runtime_platform === undefined ? undefined : normalizeRuntimePlatform(root.runtime_platform);
   const task = resourcePair(root.task, "task resources");
   const verifierRecord = exactRecord(root.verifier, ["separate"], "verifier resources", ["environment"]);
   if (typeof verifierRecord.separate !== "boolean") throw new TypeError("verifier resource mode is invalid");
@@ -102,6 +105,7 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
   const environmentBuilds = imageBuilds(root.environment_builds);
   return {
     schema_version: "1",
+    ...(runtimePlatform ? { runtime_platform: runtimePlatform } : {}),
     task,
     verifier,
     compose_services: composeServices,
@@ -110,6 +114,17 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
     environment_image_fallbacks: environmentImageFallbacks,
     environment_builds: environmentBuilds,
   };
+}
+
+function normalizeRuntimePlatform(value: unknown): string {
+  if (typeof value !== "string") throw new TypeError("task runtime platform is invalid");
+  const normalized = value.trim().toLowerCase()
+    .replace(/^linux\/x86_64$/, "linux/amd64")
+    .replace(/^linux\/aarch64$/, "linux/arm64");
+  if (normalized !== "linux/amd64" && normalized !== "linux/arm64") {
+    throw new TypeError("task runtime platform is unsupported");
+  }
+  return normalized;
 }
 
 function imageBuilds(value: unknown): HarborEnvironmentBuildDeclarationV1[] {

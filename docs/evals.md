@@ -171,16 +171,16 @@ discovery.
 ```text
 Hitch eval engine
   -> resolve immutable harness revision
-  -> prepare/verify one host artifact for the selected harness
   -> for local Git, build and verify an exact-commit object pack
+  -> lock/look up the target-platform artifact in the host cache
+  -> on a miss, prepare it in a dedicated builder container with pinned Node/pnpm
   -> generate Harbor JobConfig
   -> harbor run --config ... --yes
        -> create one Docker task environment per trial
        -> load HitchHarborAgent in the Harbor process
        -> upload the minimal Hitch runtime into the task container
-       -> when platform-compatible, upload and re-verify the prepared harness artifact
-       -> otherwise lock/look up the target-platform artifact in the host cache
-       -> on a miss, one trial prepares and downloads it; other trials then upload it
+       -> install/select the exact pinned Node runtime
+       -> upload and re-verify the dedicated-builder harness artifact
        -> Hitch run in the task environment's effective WORKDIR (shared workspace)
        -> selected native harness edits the task filesystem
        -> export the complete run bundle before container teardown
@@ -203,32 +203,59 @@ instruction is passed through unchanged. Explicit `--agent-arg` values are
 preserved, and an explicitly supplied bypass flag is not duplicated.
 
 The outer Harbor agent timeout is the Hitch timeout plus a 30-second cleanup
-window. Harbor's agent setup timeout is configured separately because it may
-need to install Node.js 22 and prepare the selected harness revision.
+window. Harbor's agent setup timeout is configured separately because a task
+image may need the exact pinned Node.js runtime installed before artifact use.
 
-Every eval prepares the selected immutable harness once in Hitch's host-side
-content-addressed artifact store. The Harbor job pins its artifact ID,
-revision identity, entrypoint/content digests, source type, and platform; each
-compatible trial receives the same verified directory and runs it directly
-instead of contacting a package registry or rebuilding the source. The
-container recomputes the uploaded artifact integrity before execution.
+Every eval prepares the selected immutable harness outside benchmark task
+containers. Hitch uses a dedicated Docker builder based on exact Node.js
+`22.23.0`, installs exact pnpm `10.17.1`, and stores the result in the host-side
+content-addressed cache. The Harbor job pins its artifact ID, revision identity,
+entrypoint/content digests, source type, platform, and Node version; every trial
+receives the verified directory and runs it without contacting a package
+registry or invoking a package manager. The task container recomputes the
+uploaded artifact integrity before execution.
+
+The builder platform comes from each task environment's planner-owned
+trial-runtime contract, never from the controller host. The task inspector
+records an explicit Compose `services.main.platform`; otherwise the planner's
+default target is `linux/amd64`. Contracts are grouped by Docker platform,
+artifact platform, and exact Node version. Hitch prepares one artifact per
+distinct contract before dispatch, writes the complete `prepared_artifacts`
+mapping into the eval plan, and pins `artifact_id` plus `runtime_contract` on
+every work item. Different task images share an artifact only when they expose
+the same runtime ABI. `linux/amd64` maps to `linux-x64`, while `linux/arm64`
+maps to `linux-arm64`; both currently use Node `v22.23.0`.
 
 Prepared artifacts are not assumed to be cross-platform `node_modules`
-trees. The bridge probes the trial's Node platform, architecture, and exact
-Node.js version before upload. If the host-prepared artifact is incompatible,
-the bridge looks in `<HITCH_ROOT>/store/harbor-artifacts` for a verified artifact
-with the same revision, recipe, target platform, and Node.js version. A host
-file lock elects one trial as the builder on a cache miss. That trial prepares
-inside its target container, downloads the completed content-addressed artifact
-to an atomic host cache entry, and keeps running from its container-local copy.
-Concurrent and later trials wait for the entry and upload it directly instead
-of running the package manager again.
+trees. The cache key covers the locked harness revision, controller runtime
+(and therefore the adapter/recipe), builder image identity, target platform,
+exact Node.js version, and exact pnpm version. A host file lock elects one
+dedicated builder on a miss; concurrent and later jobs wait for and reuse the
+atomic entry under `<HITCH_ROOT>/store/harbor-artifacts`. A trial that observes
+an incompatible artifact fails closed with `hitch-artifact-platform`; there is
+no trial-side `hitch prepare` fallback.
+
+Clone, package-manager install, and compilation run on the builder container's
+native Linux filesystem. Only after preparation succeeds does Hitch export the
+completed content-addressed artifact with `docker cp`, verify it on the host,
+and promote it atomically. This avoids changing package-manager filesystem
+semantics through a Docker Desktop host bind mount and prevents partial builds
+from entering the host artifact store.
 
 The target-platform cache is explicit host state, so Harbor may still use
 `environment.delete: true`; deleting a trial container does not delete the
-cached artifact. Hitch does not expose the cache as a shared writable container
-mount. This avoids cross-container mutation and relies on Harbor's upload and
-download boundary plus Hitch's entrypoint/content digest verification.
+cached artifact. Hitch does not expose the cache as a shared writable trial
+mount. `HITCH_HARBOR_BUILDER_BASE_IMAGE` may select an approved equivalent base
+image; it cannot override the planner-selected platform. Platform, Node, pnpm,
+builder image, controller runtime, and harness revision remain part of the
+verified cache contract.
+
+Harbor's Python agent/environment/verifier bridge modules are part of the same
+controller-runtime allowlist as the compiled Hitch CLI. Their bytes therefore
+participate in `runtime_id`, and Harbor imports them from the eval-pinned
+read-only runtime directory. Editing `integrations/harbor` in the working tree
+after an eval starts cannot change bridge code used by work items that have not
+started yet.
 
 ## Inputs and portability
 
@@ -252,10 +279,10 @@ with abbreviated commit IDs.
 Hitch packs only the selected commit object and the trees/blobs needed to check
 out that commit. Uncommitted files, unrelated refs and history, `.git/config`,
 hooks, credentials, and host paths are not included. The payload is size-limited
-and SHA-256 verified on the host before handoff and again inside every trial.
-The container prepares from a private shallow Git source while retaining the
-host resolver's canonical revision identity; it never fetches the candidate
-from the original local path or registered remote.
+and SHA-256 verified on the host and again inside the dedicated builder. The builder prepares
+from a private shallow Git source while retaining the host resolver's canonical
+revision identity; trials receive only the completed artifact and never fetch
+the candidate from the original local path or registered remote.
 
 Deployment policy may lower the defaults with
 `HITCH_LOCAL_GIT_MAX_BYTES`, `HITCH_LOCAL_GIT_MAX_OBJECTS`,
@@ -459,6 +486,12 @@ artifact/revision identities, integrity digests, source type, and platform;
 the machine-local artifact directory appears only in Harbor's `job.json`.
 The untouched Harbor `result.json` remains authoritative for backend-specific
 detail.
+
+`candidate-restart` selects every invalid logical slot, including
+`verifier_infrastructure_failure` and `verifier_result_missing`, because its
+declared semantics intentionally execute the Candidate Agent again in a clean
+sandbox. The verifier-only guard remains for rerun modes that promise not to
+rerun the candidate.
 
 Use `hitch eval list [--json]` to list records and
 `hitch eval inspect <eval-id> [--json]` to inspect the complete Hitch envelope.

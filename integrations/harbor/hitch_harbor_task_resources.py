@@ -21,6 +21,9 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
     with task_file.open("rb") as handle:
         config = TaskConfig.model_validate(tomllib.load(handle))
     services = _compose_services(task_dir / "environment" / "docker-compose.yaml")
+    runtime_platform = _compose_runtime_platform(
+        task_dir / "environment" / "docker-compose.yaml"
+    )
     if "main" not in {service["name"] for service in services}:
         services.append({"name": "main", "replicas": 1})
     services.sort(key=lambda service: service["name"].encode("utf-8"))
@@ -66,6 +69,7 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
     fallbacks.extend(compose_fallbacks)
     return {
         "schema_version": "1",
+        **({"runtime_platform": runtime_platform} if runtime_platform is not None else {}),
         "task": _environment_resources(config.environment),
         "verifier": {
             "separate": separate,
@@ -86,6 +90,28 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
             builds, key=lambda entry: (entry["source"], entry["service"])
         ),
     }
+
+
+def _compose_runtime_platform(compose_file: Path) -> str | None:
+    if not compose_file.exists():
+        return None
+    document = yaml.safe_load(compose_file.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        return None
+    services = document.get("services")
+    main = services.get("main") if isinstance(services, dict) else None
+    raw = main.get("platform") if isinstance(main, dict) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("Compose main platform must be a string")
+    normalized = {
+        "linux/x86_64": "linux/amd64",
+        "linux/aarch64": "linux/arm64",
+    }.get(raw.strip().lower(), raw.strip().lower())
+    if normalized not in {"linux/amd64", "linux/arm64"}:
+        raise ValueError(f"Compose main platform is unsupported: {raw}")
+    return normalized
 
 
 def _environment_resources(environment: Any) -> dict[str, Any]:

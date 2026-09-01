@@ -1,5 +1,5 @@
 import path from "node:path";
-import { prepareHarness, resolveHarness } from "../artifacts/index.js";
+import { resolveHarness } from "../artifacts/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, credentialValuesFromEnv, ensureDir, invalidInput, safeDiagnosticMessage, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
@@ -16,17 +16,19 @@ import { prepareEvalDirectory } from "./directory.js";
 import { buildEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
 import { planLocalEvalInputs } from "./local-eval-planning.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
-import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, preparedArtifactSummary, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
+import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
 import { modelCaptureDegradationEvent, resolveEvalModelCapturePlan } from "./model-capture-plan.js";
 import { finalizeEvalResult } from "./eval-finalization.js";
-import { harborPreparedArtifact, preparedHarnessEvent } from "./prepared-harness.js";
+import { prepareHostHarborArtifactForTest } from "./prepared-harness.js";
+import { prepareHarborArtifact } from "./harbor-artifact-builder.js";
+import { prepareEvalArtifactAssignments, preparedArtifactPlanFields } from "./eval-artifact-planning.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import { recoverPromotedEvalTrialPublications } from "./trial-publication-recovery.js";
 import { emitEvalPlanLifecycle } from "./eval-lifecycle-events.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -74,24 +76,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         status: "verified",
       });
     }
-    const selector = requestedReference.selector;
-    const verifiedLocalGitSource = localTransport && selector.type === "commit" && selector.source?.explicit
-      ? {
-          directory: selector.source.local_path,
-          commit: localTransport.manifest.commit,
-          tree: localTransport.manifest.tree,
-          resolutionIdentity: localTransport.manifest.resolution_identity,
-          payloadSha256: localTransport.manifest.payload_sha256,
-        }
-      : undefined;
-    const artifact = await prepareHarness(resolvedRevision, {
-      root,
-      env,
-      ...(signal ? { signal } : {}),
-      ...(verifiedLocalGitSource ? { verifiedLocalGitSource } : {}),
-    });
-    const preparedArtifact = harborPreparedArtifact(root, artifact);
-    sink.emit(preparedHarnessEvent(artifact));
     const controllerRuntime: ControllerRuntimeUseResult = await ensureControllerRuntime({ root });
     const runtimeRefFile = await writeRuntimeReference(evalDirectory, controllerRuntime);
     sink.emit({
@@ -103,8 +87,14 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
     const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
     await withEnvironmentImageReferenceLock(root, () => beginEvalEnvironmentImagePlanning(evalDirectory, evalId));
-    const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
+    const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, harborTaskResourceInspector: path.join(controllerRuntime.directory, "payload", "integrations", "harbor", "hitch_harbor_task_resources.py"), ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
     await withEnvironmentImageReferenceLock(root, () => writeEvalEnvironmentImageReferences(evalDirectory, evalId, localPlanning.environmentImages));
+    const selectedArtifactBuilder = harborArtifactBuilder ?? (env.NODE_ENV === "test" && env.HITCH_TEST_HOST_ARTIFACT_BUILDER === "1" ? prepareHostHarborArtifactForTest : prepareHarborArtifact);
+    const prepared = await prepareEvalArtifactAssignments({ builder: selectedArtifactBuilder, root, resolvedRevision, requestedReference, controllerRuntime, ...(localTransport ? { localTransport } : {}), taskRuntimeContracts: localPlanning.taskRuntimeContracts, sink, env, ...(signal ? { signal } : {}) });
+    const preparedAssignments = prepared.assignments;
+    const preparedArtifact = prepared.primary;
+    const preparedArtifacts = prepared.artifactsById;
+    const multipleRuntimeContracts = preparedAssignments.length > 1;
     const taskResources = localPlanning.taskResources;
     const plannedTasks = localTaskIds?.length ?? null;
     const plannedTrials = plannedTasks === null ? null : plannedTasks * normalized.attempts;
@@ -130,7 +120,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
       attempts: normalized.attempts,
-      attempt_execution: executionStrategy === "local-task-slots-v1" && localTaskIds !== null
+      attempt_execution: (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null
         ? "harbor-task-slots-v1"
         : "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
@@ -142,7 +132,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtime_id: controllerRuntime.runtime_id,
         manifest_digest: controllerRuntime.manifest_digest,
       },
-      prepared_artifact: preparedArtifactSummary(preparedArtifact),
+      ...preparedArtifactPlanFields(preparedAssignments),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       created_at: typeof resume?.plan.created_at === "string" ? resume.plan.created_at : new Date().toISOString(),
     };
@@ -151,7 +141,16 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       request: normalized,
       candidate: {
         revisionIdentity: resolvedRevision.identity,
-        artifactId: artifact.artifact_id,
+        artifactId: preparedArtifact.artifact_id,
+        artifactAssignments: preparedAssignments.map((entry) => ({
+          taskIds: entry.taskIds,
+          artifactId: entry.artifact.artifact_id,
+          runtimeContract: {
+            docker_platform: entry.runtimeContract.dockerPlatform,
+            artifact_platform: entry.runtimeContract.artifactPlatform,
+            node_version: entry.runtimeContract.nodeVersion,
+          },
+        })),
       },
       tasks: localTaskIds,
       maxParallelism: normalized.max_concurrent,
@@ -161,7 +160,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(localPlanning.environmentImageFallbacks.length > 0 ? { environmentImageFallbacks: localPlanning.environmentImageFallbacks } : {}),
       ...(executionWorker ? { provider: executionWorker.provider } : {}),
       modelCapture: capture.persist ? capture.plan : null,
-      ...(executionStrategy === "local-task-slots-v1" && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
+      ...((executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
       createdAt: plan.created_at,
     });
     if (resume) assertEvalResumeState({ state: resume, expectedPlan: plan, expectedExecutionPlan, expectedResolutionIdentity: resolvedRevision.identity, plannedTasks, plannedTrials });
@@ -207,7 +206,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     }
     const backendRuns: Array<{ attempt: number; run: HarborBackendResult; workId?: string; tasks?: string[]; leaseId?: string }> = [];
     const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
-    const plannedTaskExecution = executionStrategy === "local-task-slots-v1" && localTaskIds !== null;
+    const plannedTaskExecution = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null;
     if (plannedTaskExecution) {
       const execution = await executePlannedHarborTasks({
         evalId,
@@ -219,6 +218,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         resolvedRevision,
         controllerRuntime,
         preparedArtifact,
+        preparedArtifacts,
         ...(localTransport ? { localTransport } : {}),
         env,
         ...(harborExecutable !== undefined ? { harborExecutable } : {}),
@@ -295,7 +295,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(activeCaptureRuntime.exporter ? { modelProxy: activeCaptureRuntime.exporter.route } : {}),
         resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
         ...(executionResources ? { executionResources } : {}),
-        ...(localTransport ? { localTransport } : {}),
         env,
         ...(harborExecutable !== undefined ? { harborExecutable } : {}),
         ...(signal ? { signal } : {}),
@@ -448,7 +447,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       generation: progress.generation,
       trials: trialRefs,
       summary: summarizeTrialRefs(trialRefs),
-      prepared_artifact: preparedArtifactSummary(preparedArtifact),
+      ...preparedArtifactPlanFields(preparedAssignments),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       ...(succeeded ? {} : {
         error: {

@@ -25,6 +25,14 @@ export const RUNTIME_NODE_RANGE = ">=22";
  */
 export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src"] as const;
 
+/** Python modules imported by Harbor while it is constructing trial agents. */
+export const RUNTIME_HARBOR_BRIDGE_FILES = [
+  "integrations/harbor/hitch_harbor_agent.py",
+  "integrations/harbor/hitch_harbor_environment.py",
+  "integrations/harbor/hitch_harbor_task_resources.py",
+  "integrations/harbor/hitch_harbor_verifier.py",
+] as const;
+
 /**
  * The declared CLI entrypoint, relative to the upload root (`/opt/hitch`).
  * The bridge reads this from the manifest instead of hardcoding the TypeScript
@@ -45,6 +53,7 @@ export interface RuntimePayloadRule {
 export const RUNTIME_PAYLOAD_RULES: RuntimePayloadRule[] = [
   { path: "package.json" },
   ...RUNTIME_PAYLOAD_DIRECTORIES.map((directory) => ({ directory })),
+  ...RUNTIME_HARBOR_BRIDGE_FILES.map((bridge) => ({ path: bridge })),
 ];
 
 export interface DeclaredFile {

@@ -7,15 +7,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { RemoteWorkerHttpClient, RemoteWorkerRunner } from "../src/control-plane/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
-import { runEval } from "../src/evals/index.js";
+import { runEval as runEvalProduction } from "../src/evals/index.js";
+import type { RunEvalOptions } from "../src/evals/index.js";
 import { atomicWriteJSON, sha256JSON, statePaths } from "../src/foundation/index.js";
 import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
 import { TrajectoryProjector, TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/index.js";
 import { releaseRemoteHarborOffer, remoteHarborWorker } from "../src/workers/index.js";
-import { forceRemove, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 
 const ZERO = { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 };
 const TRIAL = { cpu_millis: 1_000, memory_bytes: 1024 ** 3, container_slots: 1, build_slots: 0 };
+const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, harborArtifactBuilder: prepareHostHarborArtifactForTest });
 
 test("packaged worker executes a staged remote eval through Harbor and returns a verifiable result bundle", async (t) => {
   const controllerRoot = await mkdtemp(path.join(tmpdir(), "hitch-remote-controller-"));

@@ -3,6 +3,7 @@ import type { HarborBackendResult, HarborPreparedArtifactUse } from "../backends
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
 import type { EvalRequestInput } from "./request.js";
+import type { EvalHarborArtifactBuilder } from "./harbor-artifact-builder.js";
 
 export type EvalDockerResourceReaper = (input: {
   root: string;
@@ -37,6 +38,7 @@ export interface RunEvalOptions {
   environmentImageResolver?: EvalEnvironmentImageResolver;
   environmentImageBuilder?: EvalEnvironmentImageBuilder;
   environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
+  harborArtifactBuilder?: EvalHarborArtifactBuilder;
   remoteWorkExecutor?: EvalRemoteWorkExecutor;
 }
 

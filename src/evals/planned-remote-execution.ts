@@ -1,5 +1,6 @@
 import type { BackendWorkItemV1, EvalTrialRefV1 } from "../domain/index.js";
 import type { ExecutePlannedHarborOptions, PlannedBackendRun } from "./planned-execution.js";
+import { preparedArtifactForWorkItem } from "./work-item-artifacts.js";
 import { loadTrialEnvironmentImages } from "./trial-environment-evidence.js";
 
 export async function executeRemotePlannedWorkItem(input: {
@@ -22,7 +23,7 @@ export async function executeRemotePlannedWorkItem(input: {
     plan: options.plan,
     workItem: item,
     resolvedRevision: options.resolvedRevision,
-    preparedArtifact: options.preparedArtifact,
+    preparedArtifact: preparedArtifactForWorkItem(options, item),
     runtimeDirectory: options.controllerRuntime.directory,
     runtimeId: options.controllerRuntime.runtime_id,
     ...(environmentImages ? { environmentImages } : {}),
