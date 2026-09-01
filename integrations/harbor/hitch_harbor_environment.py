@@ -28,6 +28,7 @@ _REQUIRED_LABELS = {
     _LABEL_EPOCH,
 }
 _ALLOWED_LABELS = _REQUIRED_LABELS | {_LABEL_TASK}
+_COMPOSE_RESET_MARKER = "__HITCH_COMPOSE_RESET_NULL__"
 
 
 class HitchHarborDockerEnvironment(DockerEnvironment):
@@ -96,6 +97,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         volumes: set[str] = set()
         external_networks: set[str] = set()
         external_volumes: set[str] = set()
+        build_services: set[str] = set()
         image_overlays: dict[str, str] = {}
         sources = [self._environment_docker_compose_path, *self.extra_docker_compose_paths]
         for source in sources:
@@ -109,6 +111,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             services.update(_mapping_names(document.get("services"), "services", source))
             for name, config in (document.get("services") or {}).items():
                 if isinstance(config, dict):
+                    if "build" in config and config.get("build") is not None:
+                        build_services.add(name)
                     reference = config.get("image")
                     resolved = self._hitch_resolved_images.get(reference)
                     if resolved is not None:
@@ -129,6 +133,16 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 resolved_image = self._hitch_prebuilt_task_image
             if resolved_image is not None:
                 config["image"] = resolved_image
+            if (
+                name == MAIN_SERVICE_NAME
+                and self._hitch_prebuilt_task_image
+                and name in build_services
+            ):
+                # Compose's normal merge semantics retain an earlier build stanza
+                # when an overlay only supplies image (or even build: null).  The
+                # !reset tag is the supported way to make a successful Hitch
+                # prebuild authoritative and prevent a second mutable-context build.
+                config["build"] = _COMPOSE_RESET_MARKER
             if name == MAIN_SERVICE_NAME and self._hitch_model_proxy_host_gateway:
                 config["extra_hosts"] = ["host.docker.internal:host-gateway"]
             if name != MAIN_SERVICE_NAME and self._hitch_service_resource_limits:
@@ -156,8 +170,13 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         self._hitch_ownership_temp_dir = tempfile.TemporaryDirectory(
             prefix="hitch-harbor-ownership-"
         )
-        target = Path(self._hitch_ownership_temp_dir.name) / "docker-compose-hitch-ownership.json"
-        target.write_text(json.dumps(overlay, indent=2, sort_keys=True), encoding="utf-8")
+        target = Path(self._hitch_ownership_temp_dir.name) / "docker-compose-hitch-ownership.yaml"
+        contents = json.dumps(overlay, indent=2, sort_keys=True)
+        contents = contents.replace(
+            f'"build": "{_COMPOSE_RESET_MARKER}"',
+            '"build": !reset null',
+        )
+        target.write_text(contents, encoding="utf-8")
         return target
 
 

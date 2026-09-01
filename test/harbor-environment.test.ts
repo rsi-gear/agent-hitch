@@ -9,7 +9,7 @@ test("Harbor ownership environment labels every controlled Compose resource and 
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-harbor-environment-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(path.join(directory, "docker-compose.yaml"), JSON.stringify({
-    services: { main: {}, database: { image: "registry.test/database:16" } },
+    services: { main: { build: "." }, database: { image: "registry.test/database:16" } },
     networks: { private: {}, shared: { external: true } },
     volumes: { data: {}, shared_data: { external: true } },
   }));
@@ -63,9 +63,13 @@ assert "cpus" not in overlay["services"]["main"]
 assert env._docker_compose_paths[-1] == env._hitch_ownership_compose_path
 prebuilt = "sha256:" + "c" * 64
 prebuilt_env = module.HitchHarborDockerEnvironment(environment_dir=root, task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt)
-prebuilt_overlay = json.loads(prebuilt_env._hitch_ownership_compose_path.read_text())
+prebuilt_overlay_text = prebuilt_env._hitch_ownership_compose_path.read_text()
+prebuilt_overlay = json.loads(prebuilt_overlay_text.replace("!reset null", "null"))
 assert prebuilt_env.task_env_config.docker_image == prebuilt
 assert prebuilt_overlay["services"]["main"]["image"] == prebuilt
+assert prebuilt_overlay["services"]["main"]["build"] is None
+assert '"build": !reset null' in prebuilt_overlay_text
+(root / "docker-compose-hitch-prebuilt.yaml").write_text(prebuilt_overlay_text)
 gateway_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_model_proxy_host_gateway=True)
 gateway_overlay = json.loads(gateway_env._hitch_ownership_compose_path.read_text())
 assert gateway_overlay["services"]["main"] == {"extra_hosts": ["host.docker.internal:host-gateway"]}
@@ -85,4 +89,20 @@ else: raise AssertionError("mutable prebuilt task image accepted")
 `;
   const result = spawnSync("python3", ["-c", script, directory, source], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const compose = spawnSync("docker", ["compose", "version"], { encoding: "utf8" });
+  if (compose.status !== 0) {
+    t.diagnostic("docker compose is unavailable; skipping the real merge canary");
+    return;
+  }
+  const merged = spawnSync("docker", [
+    "compose",
+    "-f", path.join(directory, "docker-compose.yaml"),
+    "-f", path.join(directory, "docker-compose-hitch-prebuilt.yaml"),
+    "config", "--format", "json",
+  ], { encoding: "utf8" });
+  assert.equal(merged.status, 0, merged.stderr || merged.stdout);
+  const config = JSON.parse(merged.stdout) as { services: { main: Record<string, unknown> } };
+  assert.equal(config.services.main.image, `sha256:${"c".repeat(64)}`);
+  assert.equal("build" in config.services.main, false, "prebuilt Compose merge retained a build stanza");
 });

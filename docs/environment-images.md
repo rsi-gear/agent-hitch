@@ -4,8 +4,9 @@ Hitch's environment image service turns an explicit Docker build context into
 an immutable, verified manifest before backend execution. Fixed task,
 Verifier, and Compose registry references can be resolved before backend
 execution and injected into Harbor as immutable digest references. Build
-contexts keep their compatibility backend-build path until a safe build-stanza
-replacement and version canary are available.
+contexts are prebuilt when every Dockerfile base is digest-pinned. The Harbor
+overlay injects the resulting immutable local config digest and uses Compose's
+`!reset` merge tag to remove the original main-service build stanza.
 
 The service hashes every regular context file (path, content digest, executable
 bit), the Dockerfile, non-secret build arguments, platform, target, immutable
@@ -30,6 +31,13 @@ the output manifest/config digests, and `docker image inspect` for platform and
 cache-hit verification. Optional registry cache references are derived from
 the service cache key under an operator-controlled prefix; user input cannot
 select an arbitrary cache tag.
+
+`npm run canary:buildkit-secrets` performs a real, offline-capable Docker
+canary against a locally available base image. It rotates a BuildKit secret,
+requires the second build to reuse cache without changing the config digest,
+and scans the saved image plus exported local or inline cache evidence for both
+secret values. `HITCH_DOCKER_CANARY_BASE` and
+`HITCH_DOCKER_CANARY_PLATFORM` select a different preloaded base/platform.
 
 `DockerRegistryResolver` resolves both mutable tags and explicit digest
 references through a platform-specific pull and local OCI identity probe. The
@@ -57,10 +65,6 @@ was actually observed during the trial.
 
 Remaining work:
 
-- Dockerfile base-image resolution and BuildKit planning for discovered build
-  contexts;
-- version-canary-backed removal of a Harbor/Compose build stanza after a
-  successful prebuild;
 - a real-Docker, version-specific canary for post-start image/config digest
   verification across task, sidecar, and separate-Verifier containers;
 - image reference GC.
