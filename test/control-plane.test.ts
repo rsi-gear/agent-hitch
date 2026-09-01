@@ -128,12 +128,12 @@ test("eval control phases and lease/work sets advance monotonically", () => {
 
 test("eval scheduler caps Harbor concurrency, persists requested policy, and releases capacity on cancel", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-control-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const observed: number[] = [];
   const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 2, build_slots: 1 });
   const scheduler = new EvalScheduler({ root, resources: ledger, trialResources: TRIAL, executor: fakeEvalExecutor(200, observed) });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => rm(root, { recursive: true, force: true }));
 
   const first = await scheduler.submit(request(8));
   const second = await scheduler.submit(request(8));
@@ -157,7 +157,6 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
 
 test("eval submission execution policy is pinned and drives admission", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-execution-policy-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 4, build_slots: 1 });
   let observed: RunEvalOptions | undefined;
   const scheduler = new EvalScheduler({
@@ -171,6 +170,7 @@ test("eval submission execution policy is pinned and drives admission", async (t
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => rm(root, { recursive: true, force: true }));
   const custom = { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 };
   const execution = {
     provider: "local-docker",
@@ -206,7 +206,6 @@ test("eval submission execution policy is pinned and drives admission", async (t
 
 test("eval admission distinguishes optional model-capture degradation from required failure", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-capture-policy-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   let observed: RunEvalOptions | undefined;
   const scheduler = new EvalScheduler({
     root,
@@ -216,6 +215,7 @@ test("eval admission distinguishes optional model-capture degradation from requi
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => rm(root, { recursive: true, force: true }));
   const baseExecution = {
     provider: "local-docker",
     max_parallelism: 1,
@@ -255,7 +255,6 @@ test("eval admission distinguishes optional model-capture degradation from requi
 
 test("queued eval recovery preserves its pinned execution policy", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-policy-recovery-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const evalId = "eval_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
   const directory = path.join(root, "evals", evalId);
   await mkdir(directory, { recursive: true });
@@ -287,6 +286,7 @@ test("queued eval recovery preserves its pinned execution policy", async (t) => 
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => rm(root, { recursive: true, force: true }));
   await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null));
   assert.equal(observed?.maxConcurrentOverride, 1);
   assert.deepEqual(observed?.executionResources, execution.resources.default_trial);
@@ -295,7 +295,6 @@ test("queued eval recovery preserves its pinned execution policy", async (t) => 
 
 test("startup repairs an idempotency index missing after durable eval submission", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-idempotency-recovery-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const evalId = "eval_11111111111111111111111111111111";
   const directory = path.join(root, "evals", evalId);
   await mkdir(directory, { recursive: true });
@@ -331,6 +330,7 @@ test("startup repairs an idempotency index missing after durable eval submission
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => rm(root, { recursive: true, force: true }));
 
   const retried = await scheduler.submit({ request: request(1), execution, idempotency_key: idempotencyKey });
   assert.equal(retried, evalId);
@@ -382,7 +382,6 @@ test("startup rejects an idempotency index rebound to another eval", async (t) =
 
 test("local evals dispatch work items fairly across evals without exceeding the shared vector ledger", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-work-dispatch-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const dataset = path.join(root, "dataset");
   for (const taskId of ["a", "b", "c", "d"]) {
     await mkdir(path.join(dataset, taskId), { recursive: true });
@@ -427,6 +426,7 @@ test("local evals dispatch work items fairly across evals without exceeding the 
   const scheduler = new EvalScheduler({ root, resources: ledger, trialResources: TRIAL, executor });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => rm(root, { recursive: true, force: true }));
 
   const large = await scheduler.submit({ ...request(2), dataset, model: "large" });
   await ready;
@@ -441,7 +441,6 @@ test("local evals dispatch work items fairly across evals without exceeding the 
 
 test("eval scheduler fails an ambiguous interrupted execution without replaying it", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-recovery-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const evalId = "eval_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const directory = path.join(root, "evals", evalId);
   await mkdir(directory, { recursive: true });
@@ -512,6 +511,7 @@ test("eval scheduler fails an ambiguous interrupted execution without replaying 
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => rm(root, { recursive: true, force: true }));
   const status = await scheduler.status(evalId);
   assert.equal(executions, 0);
   assert.equal(status?.control.state, "failed");
@@ -522,7 +522,6 @@ test("eval scheduler fails an ambiguous interrupted execution without replaying 
 test("eval scheduler reattaches Harbor before Candidate start and executes the Candidate once", async (t) => {
   if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-live-recovery-"));
-  t.after(() => forceRemove(root));
   const dataset = path.join(root, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
@@ -560,6 +559,7 @@ test("eval scheduler reattaches Harbor before Candidate start and executes the C
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => forceRemove(root));
   await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null), 10_000);
   const status = await scheduler.status(evalId);
   assert.ok(status?.result);
@@ -583,7 +583,6 @@ test("eval scheduler reattaches Harbor before Candidate start and executes the C
 test("eval recovery restores the exact host model proxy route before reattaching Harbor", async (t) => {
   if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-proxy-recovery-"));
-  t.after(() => forceRemove(root));
   const dataset = path.join(root, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
@@ -623,6 +622,7 @@ test("eval recovery restores the exact host model proxy route before reattaching
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => forceRemove(root));
   await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null), 10_000);
   const status = await scheduler.status(evalId);
   assert.notEqual((status?.result?.error as { code?: string } | undefined)?.code, "execution_state_ambiguous", JSON.stringify(status?.result));
@@ -643,7 +643,6 @@ test("eval recovery restores the exact host model proxy route before reattaching
 test("eval recovery collects a verifier-complete local execution without rerunning the Candidate", async (t) => {
   if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-terminal-collection-recovery-"));
-  t.after(() => forceRemove(root));
   const dataset = path.join(root, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
@@ -678,6 +677,7 @@ test("eval recovery collects a verifier-complete local execution without rerunni
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
+  t.after(() => forceRemove(root));
   await waitFor(() => scheduler.status(evalId).then((status) => status?.result !== null), 10_000);
   const status = await scheduler.status(evalId);
   assert.equal((status?.result?.trials as unknown[] | undefined)?.length, 1);
@@ -693,7 +693,6 @@ test("eval recovery collects a verifier-complete local execution without rerunni
 test("eval recovery finalizes persisted progress without starting another Candidate", async (t) => {
   if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-finalizing-recovery-"));
-  t.after(() => forceRemove(root));
   const dataset = path.join(root, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
@@ -742,6 +741,7 @@ test("eval recovery finalizes persisted progress without starting another Candid
   const recovered = createScheduler();
   await recovered.initialize();
   t.after(() => recovered.shutdown());
+  t.after(() => forceRemove(root));
   await waitFor(() => recovered.status(evalId).then((status) => status?.result !== null), 10_000);
   const status = await recovered.status(evalId);
   assert.equal(status?.result?.status, resultBeforeCrash.status, JSON.stringify(status?.result));
@@ -757,7 +757,6 @@ test("eval recovery finalizes persisted progress without starting another Candid
 test("eval recovery reconciles a promoted bundle before progress and does not rerun the Candidate", async (t) => {
   if (process.platform === "win32") return;
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-promoted-bundle-recovery-"));
-  t.after(() => forceRemove(root));
   const dataset = path.join(root, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
@@ -818,6 +817,7 @@ test("eval recovery reconciles a promoted bundle before progress and does not re
   const recovered = createScheduler();
   await recovered.initialize();
   t.after(() => recovered.shutdown());
+  t.after(() => forceRemove(root));
   await waitFor(() => recovered.status(evalId).then((status) => status?.result !== null), 10_000);
   const status = await recovered.status(evalId);
   assert.deepEqual(status?.result?.trials, [originalTrial]);
