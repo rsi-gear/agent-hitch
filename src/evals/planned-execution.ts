@@ -12,6 +12,7 @@ import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLoc
 import { dockerResourceOwnership } from "./docker-ownership.js";
 import { runInfrastructureRetries } from "./infrastructure-retry.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
+import { runRemoteInfrastructureRetries } from "./remote-infrastructure-retry.js";
 import { beginPlannedInfrastructureRetry } from "./planned-retry-lifecycle.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { assertBackendTrialSet, localSourceBackendFailure } from "./result-helpers.js";
@@ -142,6 +143,12 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
     if (options.signal?.aborted || completed.run.backend.process_exit_code !== 0 || completed.run.rawResult === null) break;
     if (options.localTransport && localSourceBackendFailure(completed.run.rawResult)) break;
     const workItem = options.plan.work_items.find((entry) => entry.work_id === completed.workId) as BackendWorkItemV1;
+    if (options.remoteWorkExecutor) {
+      const retries = await runRemoteInfrastructureRetries({ options, item: workItem, initial: completed, progress });
+      progress = retries.progress;
+      infrastructureRetryRuns.push(...retries.runs);
+      continue;
+    }
     const retries = await runInfrastructureRetries({
       evalId: options.evalId,
       evalDirectory: options.evalDirectory,

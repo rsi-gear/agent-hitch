@@ -28,6 +28,7 @@ export { LocalDockerExecutionProvider, adoptLocalDockerLeaseEpoch, parseExecutio
 export type { LocalDockerExecutionProviderOptions, LocalProviderExecutionRecordV1 } from "./local-docker-provider.js";
 export type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 export { loadTrialEnvironmentImages } from "./trial-environment-evidence.js";
+export { runRemoteInfrastructureRetries } from "./remote-infrastructure-retry.js";
 export { loadEvalResumeState } from "./resume-state.js";
 export { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, dockerResourceOwnership, validateDockerResourceOwnership } from "./docker-ownership.js";
 export { reapOwnedDockerResources } from "./docker-reaper.js";
