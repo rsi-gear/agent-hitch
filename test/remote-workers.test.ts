@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { RemoteWorkerProtocol, RemoteWorkerRegistry } from "../src/control-plane/index.js";
+import { RemoteWorkerProtocol, RemoteWorkerRegistry, recoverRemoteWorkerEvalLeases } from "../src/control-plane/index.js";
+import { createExecutionLease, readExecutionLeases } from "../src/evals/index.js";
 import { sha256Bytes, statePaths } from "../src/foundation/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
+import type { EvalId } from "../src/domain/index.js";
 
 const ZERO = { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 };
 const TOTAL = { cpu_millis: 8_000, memory_bytes: 16 * 1024 ** 3, container_slots: 4, build_slots: 2 };
@@ -185,6 +187,31 @@ test("remote work protocol fences offers, events, terminal receipts, and release
   assert.equal(released.state, "released");
   assert.deepEqual(await protocol.releaseOffer("worker_remote_a", release), released);
   assert.deepEqual(await protocol.listOffers("worker_remote_a", 1), []);
+});
+
+test("remote recovery withdraws an unaccepted offer before it can be safely requeued", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-not-started-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const registry = new RemoteWorkerRegistry({ root });
+  const protocol = new RemoteWorkerProtocol({ root, registry });
+  await Promise.all([registry.initialize(), protocol.initialize()]);
+  await registry.register(registration());
+  const { work } = remoteWork();
+  const evalDirectory = path.join(root, "evals", work.eval_id);
+  await mkdir(evalDirectory, { recursive: true });
+  const lease = await createExecutionLease({
+    evalDirectory, evalId: work.eval_id, workId: work.work_id,
+    worker: { workerId: "worker_remote_a", provider: "remote-docker", collisionDomainId: "docker-engine:remote-a" },
+    reservation: work.reservation, ttlMs: 60_000, initialState: "offered",
+  });
+  const offer = await protocol.createOffer("worker_remote_a", lease.current(), work);
+  const recovered = await recoverRemoteWorkerEvalLeases({
+    root, evalId: work.eval_id as EvalId, evalDirectory, leases: [lease.current()], registry, protocol,
+    pollIntervalMs: 5, releaseTimeoutMs: 10,
+  });
+  assert.equal(recovered.status, "resumable", JSON.stringify(recovered));
+  assert.equal((await protocol.getOffer("worker_remote_a", offer.offer_id))?.state, "expired");
+  assert.equal((await readExecutionLeases(evalDirectory))[0]?.state, "released");
 });
 
 test("daemon remote-worker API separates admin registration from worker heartbeat credentials", async (t) => {

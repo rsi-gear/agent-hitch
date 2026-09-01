@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EvalScheduler, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger, encodeRemoteResultEnvelope } from "../src/control-plane/index.js";
@@ -74,7 +74,55 @@ test("one eval dispatches different tasks to two remote workers and atomically i
     assert.match(execution.lease_id, /^lease_[a-f0-9]{32}$/);
     assert.ok(await readFile(path.join(root, "runs", trial.run_id, "bundle.index.json"), "utf8"));
   }
+
+  const originalTrials = status?.result?.trials as Array<{ run_id: string }>;
+  await scheduler.shutdown();
+  await simulateCrashAfterRemoteCompletion(root, evalId, acceptedLeases, originalTrials);
+  const recoveredScheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
+    trialResources: DEFAULT_TRIAL,
+    remoteWorkers: registry,
+    remoteWorkerProtocol: protocol,
+    dockerResourceReaper: async () => ({ schema_version: "1", root_id: "test", scanned: 0, deleted: [], retained: [], issues: [] }),
+    executor: (options) => runEval({ ...options, harborExecutable: harbor, env: { ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector } }),
+  });
+  await recoveredScheduler.initialize();
+  t.after(() => recoveredScheduler.shutdown());
+  await waitFor(() => recoveredScheduler.status(evalId).then((entry) => entry?.result !== null), 10_000);
+  const recovered = await recoveredScheduler.status(evalId);
+  assert.equal(recovered?.result?.status, "succeeded", JSON.stringify(recovered?.result));
+  assert.deepEqual(new Set((recovered?.result?.trials as Array<{ run_id: string }>).map((trial) => trial.run_id)), new Set(originalTrials.map((trial) => trial.run_id)));
+  assert.equal((await readExecutionLeases(path.join(root, "evals", evalId))).filter((lease) => lease.accepted_at !== undefined).length, 2);
 });
+
+async function simulateCrashAfterRemoteCompletion(
+  root: string,
+  evalId: string,
+  leases: Awaited<ReturnType<typeof readExecutionLeases>>,
+  trials: Array<{ run_id: string }>,
+): Promise<void> {
+  const directory = path.join(root, "evals", evalId);
+  for (const trial of trials) await rm(path.join(root, "runs", trial.run_id), { recursive: true, force: true });
+  await rm(path.join(directory, "result.json"), { force: true });
+  const progress = await readJSON<Record<string, unknown>>(path.join(directory, "progress.json"));
+  await atomicWriteJSON(path.join(directory, "progress.json"), {
+    ...progress, status: "running", generation: Number(progress.generation) + 1,
+    trials: [], summary: { settled_trials: 0, valid_trials: 0, invalid_trials: 0 }, updated_at: new Date().toISOString(),
+  });
+  const control = await readJSON<Record<string, unknown>>(path.join(directory, "control.json"));
+  await atomicWriteJSON(path.join(directory, "control.json"), {
+    ...control, state: "running", generation: Number(control.generation) + 1,
+    admitted_parallelism: 0, active_leases: leases.map((lease) => lease.lease_id),
+    queued_work_items: [], terminal_work_items: [], updated_at: new Date().toISOString(),
+  });
+  for (const lease of leases) {
+    const { terminal_at: _terminalAt, ...active } = lease;
+    await atomicWriteJSON(path.join(directory, "leases", `${lease.lease_id}.json`), {
+      ...active, state: "running", heartbeat_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+  }
+}
 
 function registration(workerId: string) {
   return {

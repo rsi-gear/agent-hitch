@@ -121,6 +121,35 @@ export async function heartbeatExecutionLease(input: {
   });
 }
 
+export async function acceptExecutionLease(input: {
+  evalDirectory: string;
+  leaseId: string;
+  expectedEpoch: number;
+  ttlMs?: number;
+}): Promise<ExecutionLeaseV1> {
+  const { file, ttlMs } = leaseMutationInput(input);
+  return mutateLease(file, input.leaseId, input.expectedEpoch, async (lease) => {
+    if (lease.state === "accepted" || lease.state === "running") return lease;
+    if (lease.state !== "offered") throw new HitchError(`execution lease cannot be accepted from ${lease.state}`, { code: "lease_not_active", exitCode: 12 });
+    const now = new Date().toISOString();
+    return writeLease(file, renewedLease({ ...lease, state: "accepted", accepted_at: now, heartbeat_at: now }, ttlMs));
+  });
+}
+
+export async function markExecutionLeaseRunning(input: {
+  evalDirectory: string;
+  leaseId: string;
+  expectedEpoch: number;
+  ttlMs?: number;
+}): Promise<ExecutionLeaseV1> {
+  const { file, ttlMs } = leaseMutationInput(input);
+  return mutateLease(file, input.leaseId, input.expectedEpoch, async (lease) => {
+    if (lease.state === "running") return lease;
+    if (lease.state !== "accepted") throw new HitchError(`execution lease cannot start from ${lease.state}`, { code: "lease_not_active", exitCode: 12 });
+    return writeLease(file, renewedLease({ ...lease, state: "running" }, ttlMs));
+  });
+}
+
 export async function releaseExecutionLease(input: {
   evalDirectory: string;
   leaseId: string;

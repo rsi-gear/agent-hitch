@@ -450,7 +450,11 @@ export class EvalScheduler {
   }
 
   private async recoverInterruptedEvals(): Promise<void> {
-    const recovered = await recoverPersistedEvals({ root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent });
+    const remoteWork = this.remoteWork;
+    const recovered = await recoverPersistedEvals({
+      root: this.root, evalsRoot: this.evalsRoot, onEvent: this.onEvent,
+      ...(remoteWork ? { recoverProviderLeases: (input: Parameters<RemoteWorkCoordinator["recoverEvalLeases"]>[0]) => remoteWork.recoverEvalLeases(input) } : {}),
+    });
     for (const entry of recovered) {
       const execution = entry.execution || defaultEvalExecutionPolicy(entry.request, { provider: this.provider, trialResources: this.trialResources, buildMode: "backend" });
       assertExecutionPolicySupported(execution, execution.provider === this.provider ? this.provider : execution.provider);

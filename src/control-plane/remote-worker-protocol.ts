@@ -165,6 +165,13 @@ export class RemoteWorkerProtocol {
     });
   }
 
+  async withdrawUnacceptedOffer(workerId: string, offerId: string): Promise<RemoteWorkOfferV1> {
+    return this.updateOffer(workerId, offerId, async (offer) => {
+      if (offer.state !== "offered") return offer;
+      return { ...offer, state: "expired", completed_at: new Date().toISOString() };
+    });
+  }
+
   async requestRelease(workerId: string, offerId: string): Promise<RemoteWorkOfferV1> {
     return this.updateOffer(workerId, offerId, async (offer) => {
       if (offer.state === "release-requested" || offer.state === "released") return offer;
@@ -202,6 +209,32 @@ export class RemoteWorkerProtocol {
     validateOfferIdentity(workerId, offerId);
     const value = await readJSON<unknown | null>(this.offerPath(workerId, offerId), null);
     return value === null ? null : parseRemoteWorkOffer(value);
+  }
+
+  async getOfferForLease(leaseId: string): Promise<RemoteWorkOfferV1 | null> {
+    if (!LEASE_ID.test(leaseId)) throw protocolError("remote work lease id is invalid");
+    try { return await this.offerForLease(leaseId); }
+    catch (error) {
+      if ((error as { code?: string }).code === "worker_offer_not_found") return null;
+      throw error;
+    }
+  }
+
+  async findOfferForLease(workerId: string, leaseId: string): Promise<RemoteWorkOfferV1 | null> {
+    if (!/^worker_[a-z0-9][a-z0-9_-]{0,62}$/.test(workerId) || !LEASE_ID.test(leaseId)) throw protocolError("remote work lease identity is invalid");
+    const directory = this.offersDirectory(workerId);
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    const matches: RemoteWorkOfferV1[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^offer_[a-f0-9]{32}\.json$/.test(entry.name)) continue;
+      const offer = parseRemoteWorkOffer(await readJSON(path.join(directory, entry.name)));
+      if (offer.lease.lease_id === leaseId) matches.push(offer);
+    }
+    if (matches.length > 1) throw protocolError(`remote worker lease has multiple offers: ${leaseId}`);
+    return matches[0] ?? null;
   }
 
   async uploadArtifact(input: {

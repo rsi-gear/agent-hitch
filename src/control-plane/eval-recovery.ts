@@ -1,8 +1,9 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest } from "../domain/index.js";
+import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ExecutionLeaseV1 } from "../domain/index.js";
 import { SCHEMA_VERSION, atomicWriteJSON, readJSON } from "../foundation/index.js";
 import { EvalEventSink, parseEvalExecutionPlan, readExecutionLeases, recoverLocalDockerEvalLeases } from "../evals/index.js";
+import type { EvalLeaseRecoveryResult } from "../evals/index.js";
 import { isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState } from "./eval-records.js";
 
 export interface RecoveredEvalEntry {
@@ -17,6 +18,13 @@ export async function recoverPersistedEvals(input: {
   root: string;
   evalsRoot: string;
   onEvent?: (event: Record<string, unknown>) => void;
+  recoverProviderLeases?: (input: {
+    evalId: EvalId;
+    evalDirectory: string;
+    leases: ExecutionLeaseV1[];
+    cancelRequested: boolean;
+    emit: (event: Record<string, unknown>) => void;
+  }) => Promise<EvalLeaseRecoveryResult>;
 }): Promise<RecoveredEvalEntry[]> {
   const queue: RecoveredEvalEntry[] = [];
   const entries = await readdir(input.evalsRoot, { withFileTypes: true });
@@ -42,14 +50,23 @@ export async function recoverPersistedEvals(input: {
     const sink = new EvalEventSink(directory, evalId, input.onEvent);
     await sink.open();
     const leases = await readExecutionLeases(directory);
-    const recovery = await recoverLocalDockerEvalLeases({
+    const localLeases = leases.filter((lease) => lease.provider === "local-docker");
+    const providerLeases = leases.filter((lease) => lease.provider !== "local-docker");
+    const recoveries: EvalLeaseRecoveryResult[] = [await recoverLocalDockerEvalLeases({
       root: input.root,
       evalId,
       evalDirectory: directory,
-      leases,
+      leases: localLeases,
       cancelRequested: control.state === "cancelling",
       emit: (event) => sink.emit(event),
-    });
+    })];
+    if (providerLeases.length > 0) recoveries.push(input.recoverProviderLeases
+      ? await input.recoverProviderLeases({
+        evalId, evalDirectory: directory, leases: providerLeases,
+        cancelRequested: control.state === "cancelling", emit: (event) => sink.emit(event),
+      })
+      : { status: "ambiguous", recovered_lease_ids: [], code: "execution_state_ambiguous", message: "no recovery provider is available for active remote leases" });
+    const recovery = combinedRecovery(recoveries);
     if (control.state === "cancelling") {
       const now = new Date().toISOString();
       await writeSyntheticResult(directory, evalId, submission.request, control, "cancelled", "cancelled", "eval cancellation was recovered after daemon restart", now);
@@ -82,6 +99,14 @@ export async function recoverPersistedEvals(input: {
     await sink.close();
   }
   return queue;
+}
+
+function combinedRecovery(results: EvalLeaseRecoveryResult[]): EvalLeaseRecoveryResult {
+  const failure = results.find((result) => result.status === "ambiguous");
+  const recovered = results.flatMap((result) => result.recovered_lease_ids);
+  return failure
+    ? { status: "ambiguous", recovered_lease_ids: recovered, ...(failure.code ? { code: failure.code } : {}), ...(failure.message ? { message: failure.message } : {}) }
+    : { status: "resumable", recovered_lease_ids: recovered };
 }
 
 async function resumableFiles(directory: string): Promise<"absent" | "complete" | "inconsistent"> {

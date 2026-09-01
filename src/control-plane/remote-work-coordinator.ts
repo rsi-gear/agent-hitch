@@ -8,6 +8,7 @@ import { evalTaskCollisionKey } from "./eval-records.js";
 import { importRemoteResultEnvelope } from "./remote-result-transport.js";
 import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
+import { recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
 
 export interface RemoteWorkCoordinatorOptions {
   root: string;
@@ -50,6 +51,13 @@ export class RemoteWorkCoordinator {
 
   async canEverFit(provider: string, reservation: ResourceVectorV1): Promise<boolean> {
     return (await this.providerWorkers(provider)).some((worker) => fits(reservation, worker.worker.capacity.allocatable));
+  }
+
+  recoverEvalLeases(input: Omit<Parameters<typeof recoverRemoteWorkerEvalLeases>[0], "root" | "registry" | "protocol" | "pollIntervalMs" | "releaseTimeoutMs">) {
+    return recoverRemoteWorkerEvalLeases({
+      ...input, root: this.root, registry: this.registry, protocol: this.protocol,
+      pollIntervalMs: this.pollIntervalMs, releaseTimeoutMs: this.releaseTimeoutMs,
+    });
   }
 
   private async providerWorkers(provider: string): Promise<RemoteWorkerPublicRecordV1[]> {
