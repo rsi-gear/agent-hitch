@@ -1923,6 +1923,7 @@ node dist/scripts/check-syntax.js
 node --test "dist/test/*.test.js"
 npm run canary:buildkit-secrets
 npm run canary:docker-images
+npm run canary:resource-load
 ```
 
 Docker/Harbor canary 至少包含：

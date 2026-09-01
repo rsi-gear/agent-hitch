@@ -22,6 +22,16 @@ ledger; the daemon lowers each eval's effective Harbor parallelism to the
 currently available CPU, memory, and container capacity instead of allowing
 independent `--max-concurrent` values to oversubscribe the host.
 
+`npm run canary:resource-load` is the fixed-machine admission check. By
+default it requires a 10-CPU, nominal 8-GiB Docker VM and launches 20 real
+containers with 2-CPU/4-GiB hard limits through a requested parallelism of
+eight. The command fails unless admitted and actually running concurrency both
+peak at two, no container is OOM-killed, the ledger returns to zero, and the
+lease-fenced reaper removes every owned container and network. Override its
+machine/trial inputs with `HITCH_LOAD_CANARY_EXPECT_CPUS`,
+`HITCH_LOAD_CANARY_EXPECT_MEMORY_MIB`, `HITCH_LOAD_CANARY_TRIALS`,
+`HITCH_DOCKER_CANARY_BASE`, and `HITCH_DOCKER_PATH`.
+
 ```bash
 hitch daemon start \
   --max-concurrent 8 \
