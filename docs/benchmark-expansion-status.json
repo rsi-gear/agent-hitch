@@ -438,6 +438,34 @@
             "started_at": "2026-09-02T19:36:47.513830005Z"
           },
           "limitation": "Only synthetic Docker environments were used; no model, guest VM, official task or score. The trusted caller must hold the lease, revoke the old binding, finish/export the old run, invoke replacement, then reinstall runtime and bind the new run before starting its model. This does not implement or prove those supervisor preconditions, native phase coverage or group scoring."
+        },
+        "phase_invocation_and_export": {
+          "implemented": true,
+          "synthetic_only": true,
+          "api": [
+            "HitchHarborAgent.prepare_phase(...)",
+            "HitchHarborAgent.run_phase(prepared, environment, context)",
+            "copySealedPhaseRunBundle(...)"
+          ],
+          "run_id_assigned_before_tool_binding": true,
+          "one_shot_handle_and_identity_drift_checks": true,
+          "one_frozen_task_digest_across_phases": true,
+          "binding_and_upload_time_consumes_remaining_task_budget": true,
+          "phase_runs_sealed_without_standalone_observation": true,
+          "original_bundle_file_set_and_index_bytes_preserved": true,
+          "unexpected_emitted_run_id_cannot_redirect_export": true,
+          "completion_marker_outside_sealed_bundle": true,
+          "failed_process_evidence_preserved": true,
+          "overwrite_and_identity_mismatch_rejected": true,
+          "native_boundary_cancellation_complete": false,
+          "dynamic_supervisor_wiring_complete": false,
+          "group_assessment_import_complete": false,
+          "real_scored_tasks": 0,
+          "tests": [
+            "python3 test-support/harbor_phase_invocation_smoke.py",
+            "node --test dist/test/benchmark-phase-runs.test.js"
+          ],
+          "limitation": "The bridge invocation test uses stub Harbor I/O. Bundle transfer uses actual Hitch executions with synthetic native harness processes and verifies every file and original index. No model, guest VM or official task is run. The APIs are not selected by the default standard-package entrypoint; native-boundary cancellation, controller supervision, recycled-container setup/binding and whole-task assessment/import remain incomplete."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -469,12 +497,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 352,
-    "passed": 349,
+    "total": 353,
+    "passed": 350,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/candidate-recycle-check.log",
-    "additional_verification": "The Harbor candidate recycler passed failure/replay/mount/ownership tests and a real Docker canary with two replacements, archived logs, a fresh writable layer, a terminated background writer, unchanged sidecar identities and zero remaining canary containers. This is component evidence only; no new real benchmark acceptance is claimed."
+    "evidence": ".hitch/benchmark-expansion/phase-invocation-check.log",
+    "additional_verification": "Phase preparation/execution passed stub Harbor I/O checks for preassigned run IDs, one-shot handles, frozen identities, budget expiration during uploads and failure evidence. Actual Hitch synthetic process bundles were copied with every indexed file and original index byte preserved; no-overwrite and context mismatch gates passed. No new real benchmark acceptance is claimed."
   },
-  "updated_at": "2026-09-02T19:38:36.097556+00:00"
+  "updated_at": "2026-09-02T19:53:24.303561+00:00"
 }

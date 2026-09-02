@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { validateRunContext } from "../src/domain/index.js";
 import { ensureDir, readJSON } from "../src/foundation/index.js";
 import {
-  compareRuns, deriveTrainingDataCandidate, executeRun, inspectBenchmarkPhaseGroup, loadRunRecord, newRunId,
+  compareRuns, copySealedPhaseRunBundle, deriveTrainingDataCandidate, executeRun, inspectBenchmarkPhaseGroup, loadRunRecord, newRunId,
   projectRunRecord, queryRuns, readBenchmarkPhaseGroup, sealBenchmarkPhaseGroup, verifyResultBundleIndex,
 } from "../src/runs/index.js";
 import { forceRemove } from "../test-support/helpers.js";
@@ -69,6 +69,20 @@ process.stdin.on('end', () => {
     return runId;
   }
   const ids = [await phase(1), await phase(2)];
+  const sourceDirectory = path.join(root, "runs", ids[0]!);
+  const destinationDirectory = path.join(directory, "exported-phase");
+  const expected = { run_id: ids[0]!, context, parent };
+  const originalIndexBytes = await readFile(path.join(sourceDirectory, "bundle.index.json"));
+  const exported = await copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory, expected });
+  assert.deepEqual(exported, await verifyResultBundleIndex(sourceDirectory));
+  assert.deepEqual(await readFile(path.join(destinationDirectory, "bundle.index.json")), originalIndexBytes);
+  for (const file of exported.files) {
+    assert.deepEqual(await readFile(path.join(destinationDirectory, file.path)), await readFile(path.join(sourceDirectory, file.path)));
+  }
+  assert.equal((await loadRunRecord(destinationDirectory)).record_status, "valid");
+  await assert.rejects(copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory, expected }), /EEXIST/);
+  await assert.rejects(copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory: path.join(directory, "wrong-phase"), expected: { ...expected, context: { ...context, phase_index: 2 } } }), /prepared identity/);
+  await assert.rejects(copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory: path.join(sourceDirectory, "nested"), expected }), /disjoint/);
   const group = await inspectBenchmarkPhaseGroup({ root, runIds: ids });
   assert.equal(group.scope, "candidate-evidence-only");
   assert.deepEqual(group.phases.map(p => p.phase_index), [1, 2]);

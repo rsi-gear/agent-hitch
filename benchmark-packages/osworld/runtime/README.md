@@ -250,3 +250,42 @@ gates. With the pinned Harbor 0.21.0 Python and a local
 replacements. It verifies old container removal, old log/writable-layer
 invisibility, a stopped background writer, preserved sidecar state, and scoped
 cleanup. It uses no model, VM or official OSWorld tasks.
+
+## Preparing and executing one candidate phase
+
+`HitchHarborAgent.prepare_phase(instruction=..., run_group_id=..., phase_index=...,
+task_digest=..., remaining_timeout_ms=...)` reserves a fresh run ID without
+starting a model. Call it after setup, then use `prepared.run_id` for the private
+controller bind and upload that binding before calling
+`await agent.run_phase(prepared, environment, phase_context)`. The handle is
+immutable and can be consumed once by the creating agent. This API is separate
+from the default single-run `run()` path; no standard package selects it yet.
+
+The supervisor supplies the same frozen whole-task digest for each phase, even
+when native instructions change. Preparation rejects reused/skipped phase
+indices and task/candidate identity drift. Its monotonic deadline starts during
+preparation, so private binding, uploads and proxy preflight consume the supplied
+remaining whole-task budget. It never grants a fresh task budget per phase.
+The CLI receives the reserved run ID and `benchmark_phase` context, with normal
+sealing and no deferred benchmark observation. Unexpected emitted run IDs cannot
+redirect the export to a different run. Process failures retain their diagnostics
+and any successfully exported sealed bundle; they do not become task scores.
+
+`copySealedPhaseRunBundle()` verifies the expected run/context/parent and original
+index, copies every indexed file plus the original index, and verifies both
+source and destination again. It preserves original bytes and digests, including
+workspace, interaction and runtime evidence outside the old bridge's short file
+list. A failed/partial destination is retained for diagnosis and never replaced
+implicitly. The bridge stages this copy and publishes an external
+`hitch-phase.complete.json` marker; inserting a marker into the sealed directory
+would invalidate its index. Old phase files must be archived by the recycler
+before another phase uses `/logs/agent`.
+
+Validation: `test-support/harbor_phase_invocation_smoke.py` exercises the bridge
+with stub Harbor I/O, including budget expiration during uploads, handle replay,
+identity mismatch and export/process failures. `test/benchmark-phase-runs.test.ts`
+executes actual Hitch runs with synthetic native harness processes, copies their
+sealed phase bundles and verifies all file/index bytes plus identity/no-overwrite
+gates. These tests do not run a model or OSWorld. Native-boundary cancellation,
+controller/agent supervision, fresh environment setup/binding orchestration and
+whole-task assessment/import remain required.
