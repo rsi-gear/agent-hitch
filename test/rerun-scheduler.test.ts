@@ -271,3 +271,104 @@ async function waitFor(predicate: () => Promise<boolean>, attempts = 200): Promi
   }
   throw new Error("timed out waiting for rerun state");
 }
+
+test("rerun cancellation stops the independent executor and waits for resource cleanup", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-cancel-"));
+  let started = false;
+  let aborted = false;
+  let stopped = false;
+  let releaseCleanup!: () => void;
+  const cleanup = new Promise<void>(resolve => { releaseCleanup = resolve; });
+  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {},
+    evalRerunExecutor: async options => {
+      started = true;
+      await new Promise<void>(resolve => {
+        options.signal!.addEventListener("abort", () => { aborted = true; resolve(); }, { once: true });
+      });
+      await cleanup;
+      stopped = true;
+      throw new Error("executor stopped");
+    },
+  });
+  await server.start();
+  t.after(async () => { releaseCleanup(); await server.close(); await rm(root, { recursive: true, force: true }); });
+  await persistTerminalEval(root, EVAL_ID);
+  const client = await daemonClient(root);
+  const rerunId = `rerun_${"d".repeat(32)}`;
+  await client.request(`/v1/evals/${EVAL_ID}/reruns`, { method: "POST", body: JSON.stringify({ rerun_id: rerunId, selector: { mode: "invalid" } }) });
+  await waitFor(async () => started);
+  // This is the exact regression: cancelling the terminal source does nothing.
+  await client.request(`/v1/evals/${EVAL_ID}/cancel`, { method: "POST" });
+  assert.equal(aborted, false);
+  let acknowledged = false;
+  const cancellation = client.request(`/v1/evals/${EVAL_ID}/reruns/${rerunId}/cancel`, { method: "POST" }).then(value => { acknowledged = true; return value; });
+  await waitFor(async () => aborted);
+  assert.equal(acknowledged, false);
+  releaseCleanup();
+  const response = await cancellation;
+  assert.equal(response.rerun_id, rerunId);
+  assert.equal(stopped, true);
+  const health = await client.request("/health");
+  assert.equal((health.eval_rerun_scheduler as { running: number }).running, 0);
+  assert.equal((await readJSON<EvalControlV1>(path.join(root, "evals", EVAL_ID, "control.json"))).state, "failed");
+});
+
+test("queued and not-yet-submitted rerun identities stay cancelled after restart", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-fence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID);
+  const ledger = new ResourceLedger(TRIAL);
+  const blocker = ledger.tryAcquire("blocker", "eval", TRIAL)!;
+  let executions = 0;
+  const options = { root, resources: ledger, trialResources: TRIAL, executor: async (options: RerunEvalOptions) => { executions++; return completedResult(options); } };
+  const scheduler = new EvalRerunScheduler(options);
+  await scheduler.initialize();
+  const queuedId = `rerun_${"e".repeat(32)}`;
+  const lateId = `rerun_${"f".repeat(32)}`;
+  const input = { rerun_id: queuedId, selector: { mode: "invalid" } };
+  await scheduler.submit(EVAL_ID, input);
+  assert.equal(await scheduler.cancel(EVAL_ID, queuedId), "cancelled");
+  assert.equal(await scheduler.cancel(EVAL_ID, lateId), "cancelled");
+  await scheduler.shutdown();
+  blocker.release();
+  const recovered = new EvalRerunScheduler(options);
+  await recovered.initialize();
+  t.after(() => recovered.shutdown());
+  for (const rerun_id of [queuedId, lateId]) {
+    await assert.rejects(recovered.submit(EVAL_ID, { ...input, rerun_id }), { code: "eval_rerun_cancelled" });
+    assert.equal(await recovered.cancel(EVAL_ID, rerun_id), "cancelled");
+  }
+  assert.equal(executions, 0);
+  assert.equal((await recovered.status(EVAL_ID, queuedId))?.state.status, "cancelled");
+});
+
+test("concurrent rerun submission replays one durable identity and rejects changed selectors", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-replay-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID);
+  let executions = 0;
+  const scheduler = new EvalRerunScheduler({ root, resources: new ResourceLedger(TRIAL), trialResources: TRIAL,
+    executor: async options => { executions++; return completedResult(options); },
+  });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  const input = { rerun_id: `rerun_${"1".repeat(32)}`, selector: { mode: "invalid" } };
+  const results = await Promise.all([scheduler.submit(EVAL_ID, input), scheduler.submit(EVAL_ID, input)]);
+  assert.deepEqual(results[0], results[1]);
+  await waitFor(async () => (await scheduler.status(EVAL_ID, input.rerun_id))?.state.status === "completed");
+  await scheduler.submit(EVAL_ID, input);
+  assert.equal(executions, 1);
+  await assert.rejects(scheduler.submit(EVAL_ID, { ...input, selector: { mode: "tasks", task_names: ["other"] } }), { code: "idempotency_conflict" });
+});
+
+test("cancellation refuses to claim ambiguous execution stopped after daemon restart", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-ambiguous-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID);
+  const rerunId = `rerun_${"2".repeat(32)}`;
+  await persistRerunOperation(root, rerunId, "running");
+  const scheduler = new EvalRerunScheduler({ root, resources: new ResourceLedger(TRIAL), trialResources: TRIAL });
+  await scheduler.initialize();
+  t.after(() => scheduler.shutdown());
+  await assert.rejects(scheduler.cancel(EVAL_ID, rerunId), { code: "execution_state_ambiguous" });
+});

@@ -281,12 +281,17 @@ export class DaemonServer {
         links: {
           self: `/v1/evals/${accepted?.evalId}/reruns/${accepted?.rerunId}`,
           events: `/v1/evals/${accepted?.evalId}/reruns/${accepted?.rerunId}/events`,
+          cancel: `/v1/evals/${accepted?.evalId}/reruns/${accepted?.rerunId}/cancel`,
         },
       });
     }
-    const rerunMatch = url.pathname.match(/^\/v1\/evals\/(eval_[a-f0-9]+)\/reruns\/(rerun_[a-f0-9]+)(?:\/(events))?$/);
+    const rerunMatch = url.pathname.match(/^\/v1\/evals\/(eval_[a-f0-9]+)\/reruns\/(rerun_[a-f0-9]+)(?:\/(events|cancel))?$/);
     if (rerunMatch) {
       const [, evalId, rerunId, action] = rerunMatch;
+      if (request.method === "POST" && action === "cancel") {
+        const status = await this.evalRerunScheduler?.cancel(evalId as EvalId, rerunId as string);
+        return json(response, 200, { schema_version: SCHEMA_VERSION, eval_id: evalId, rerun_id: rerunId, status });
+      }
       if (request.method === "GET" && !action) {
         const status = await this.evalRerunScheduler?.status(evalId as EvalId, rerunId as string);
         return status

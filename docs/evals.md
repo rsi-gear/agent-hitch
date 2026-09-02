@@ -498,3 +498,33 @@ Use `hitch eval list [--json]` to list records and
 Run records can be queried with `hitch runs list`, and strict model or harness
 comparisons are available through `hitch compare model|harness` with benchmark,
 task, model, harness, eval, status, and time filters.
+
+### Durable daemon rerun ownership and cancellation
+
+A controller can allocate and persist a `rerun_<32 lowercase hex digits>` identity
+before any submission, then pass it to the daemon CLI:
+
+```sh
+hitch eval rerun <eval-id> --invalid --daemon --rerun-id <rerun-id> --output json
+hitch eval rerun-cancel <eval-id> <rerun-id>
+```
+
+The HTTP submission body accepts the same optional `rerun_id`. Repeating the ID
+with the same source eval, type and selector returns the existing operation;
+changing its type or selector returns `idempotency_conflict`. Replay checks
+persisted ownership before revalidating source execution or capacity.
+
+`eval cancel <eval-id>` cancels the source evaluation only. Use `rerun-cancel`
+for a rerun: it removes queued work or aborts the active executor, and responds
+only after the executor and its publication/cleanup tail have settled and the
+resource/collision leases have been released. The response includes `eval_id`,
+`rerun_id`, and a terminal `status` (`cancelled`, `completed`, or `failed`).
+A timed-out or disconnected caller can safely retry cancellation of that ID.
+
+Cancellation persists `cancellation.json` under the operation directory, including
+for a not-yet-submitted ID. Later submissions of a cancelled identity are rejected
+with `eval_rerun_cancelled`; an in-flight request cannot launch after a successful
+cancellation response. Use a fresh ID for a new repair. This fence survives daemon
+restart. If the daemon itself crashed during execution and cannot prove that the
+backend stopped, cancellation returns `execution_state_ambiguous` instead of
+claiming success; the controller must retain ownership for reconciliation.

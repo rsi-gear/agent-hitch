@@ -205,6 +205,7 @@ Run requests are validated against the contract represented by
 | `POST` | `/v1/evals/{id}/reruns` | Persist and enqueue a typed rerun operation |
 | `GET` | `/v1/evals/{id}/reruns/{rerun-id}` | Read rerun submission, state, and result |
 | `GET` | `/v1/evals/{id}/reruns/{rerun-id}/events?offset={byte}` | Incrementally read rerun NDJSON events |
+| `POST` | `/v1/evals/{id}/reruns/{rerun-id}/cancel` | Fence the identity and wait for rerun execution and resource cleanup to stop |
 | `POST` | `/shutdown` | Gracefully stop the daemon |
 
 `POST /v1/evals` accepts an optional `Idempotency-Key` header. The key is
@@ -322,3 +323,8 @@ New work should attach to one of four boundaries:
 
 This boundary is the main value of the port: future features do not need to
 inherit Multica's server protocol or duplicate process-supervision logic.
+
+Daemon rerun submissions may include a client-persisted `rerun_id`. The operation's
+`cancel` link targets its own scheduler; the source eval's cancel link does not
+stop reruns. Cancellation fences delayed submissions and waits for execution and
+lease release. See [durable rerun ownership](evals.md#durable-daemon-rerun-ownership-and-cancellation).
