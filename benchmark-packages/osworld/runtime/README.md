@@ -1,9 +1,10 @@
 # OSWorld runtime components — integration in progress
 
 These are OSWorld package components, not a standalone runnable benchmark.
-The authorized-task producer, Harbor lifecycle wiring, website provisioning,
-fresh Hitch conversation supervisor and two real OSWorld
-evaluations are still incomplete. The components below are separately tested;
+The authorized-task producer, controller image/Compose assembly, website
+provisioning, release-specific metric mapping and two real OSWorld evaluations
+are still incomplete. Harbor hooks and the fresh Hitch conversation supervisor
+have component tests. The components below are separately tested;
 they do not yet constitute an executable standard package.
 
 `vm_owner.py` is PID 1 in a dedicated Harbor Compose VM service. It launches the
@@ -19,7 +20,7 @@ upstream SDK. During construction it substitutes the SDK's provider factory
 under a lock and always restores it. An explicit VM path prevents the SDK from
 allocating another VM. This requires one dedicated controller process per trial.
 
-The future prepare hook calls `create_private_session('/control', hook_request)`
+The lifecycle prepare implementation calls `create_private_session('/control', hook_request)`
 to atomically publish a fresh secret bound to `lease_id`, `epoch` and
 `logical_trial_id`. The `/control` named volume is shared only by controller and
 VM, read-only on the VM side. Candidate and guest filesystems must not mount it.
@@ -95,7 +96,7 @@ The intended integration has two interfaces:
 
 Each native reset revokes the previous token and requires a different run ID.
 The ID check is a fence, **not proof that a new model conversation was created**.
-The pending supervisor must actually start a fresh Hitch run, retire the previous
+The supervisor must actually start a fresh Hitch run, retire the previous
 candidate, bind the new run and record their relationship to the benchmark trial.
 It must not forward prior-phase conversation history into the new run. The
 transport below supplies HTTP authentication and private lease/epoch checks;
@@ -542,3 +543,101 @@ last candidate with an unbound native tail, and reject altered deadline evidence
 These tests use synthetic environments, harness output and graders. Official VM,
 authorized task/assets, website lifecycle and real two-task validation remain
 outstanding.
+
+## Controller process and Harbor lifecycle
+
+`controller_lifecycle.py --config /config/controller.json` must be PID 1 in the
+dedicated controller service, with a fresh private directory. It owns one
+`native_worker.py` subprocess and its descendants. The service entrypoint must
+invoke Python directly, without a shell wrapper or `init: true`. The worker
+loads the task through the pinned SDK task loader, uses `create_desktop_env`,
+and calls `run_native`. Candidate tools stay in that child; lifecycle requests
+use a separate mode-0600 Unix socket and never become public tools.
+
+The producer must generate a frozen `osworld-controller@1` JSON configuration
+with exactly these fields. All paths are absolute container paths. The identity
+and budget values below must be derived from the frozen package/profile; there
+are no guessed defaults for an official leaderboard setting.
+
+| Fields | Required value / constraint |
+| --- | --- |
+| `protocol` | `osworld-controller@1` |
+| `task_id`, `source_task_id` | Package task ID; native filename ID such as `task_031` (not an assumed SDK task object's internal ID) |
+| `profile_digest`, `task_sha256` | Exact `sha256:` identities from the frozen producer output |
+| `sdk_root`, `sdk_commit` | Read-only SDK root; `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` |
+| `task_path` | Verified authorized file ending in `<source_task_id>.py` |
+| `private_root` | Fresh private directory, e.g. `/private/runtime`, mode 0700 |
+| `session_directory` | Controller/VM-only volume, e.g. `/control`; candidate and guest must not mount it |
+| `evidence_directory`, `cache_directory` | Separate fresh writable roots, e.g. `/evidence` and `/cache` |
+| `max_steps` | Native prediction-step budget, integer 1–100000; not an action count |
+| `max_actions_per_turn`, `max_text_bytes` | Declared channel limits, 1–256 and 1–1048576 |
+| `max_artifact_bytes` | Exact package submission limit, 1–107374182400 |
+| `prepare_timeout_sec`, `shutdown_timeout_sec` | Explicit component limits, 1–3600 and 1–600 |
+| `sleep_after_execution` | Declared native action delay, 0–60 seconds |
+| `native_deadline` | Boolean; true only with the declared native-control v2 profile |
+| `public_endpoint` | Explicit private service URL, e.g. `http://controller:8765/` |
+| `website_host_suffix` | Explicit namespace of the separately provisioned private websites; set before importing the SDK |
+| `client_password_file` | Null to use the SDK's public evaluation default, or a private mounted file outside writable roots |
+
+The loader hashes the exact config bytes and verifies the task file plus four
+pinned SDK core files. Action definitions and the native runner have their
+existing independent checks. Writable roots cannot overlap each other, source
+paths, the config or password file. These checks do **not** establish membership
+in the gated release manifest or validate the full SDK/dependency tree: the
+authorized producer still has to verify release membership, assets, full source
+and runtime image digests. Use a read-only image/source mount at execution time.
+
+Each `task.hitch.json.lifecycle` phase targets `service:controller` and invokes:
+
+```text
+python /opt/osworld/lifecycle_client.py --socket /private/runtime/lifecycle.sock --timeout-sec <phase-client-limit>
+```
+
+The ordinary Harbor hook envelope arrives on stdin. The client returns exactly
+`{schema_version, request_id, status, output}`. Task/profile, lease, epoch and
+logical trial must match. Successful and failed calls retain their request
+digest and response; replay never starts another SDK. Conflicting identities,
+concurrent duplicates, phase reordering and adoption of an old private directory
+fail. Cleanup can interrupt prepare; a late observation cannot reopen the owner.
+
+| Phase | Behavior and successful output |
+| --- | --- |
+| `prepare` | Publish the private session, create fresh evidence/cache, start SDK; wait for generation 1's actual pending observation and matching config digest. Return `ready`, `native_phases_ready`, `native_deadline_ready`; no candidate binding. |
+| `quiesce` | Require native completion and persisted worker metadata. Stop/reap SDK and adopted helpers before returning `quiesced: true`. Missing grading/completion or a crash cannot be turned into success. |
+| `snapshot` | Require quiescence; hash regular files only, reject symlinks/hardlinks/special files, enforce byte/file limits, write `snapshot.json`, and return the exact submission path and total bytes including the manifest. |
+| `cleanup` | Revoke active tools, stop/reap SDK, call the lease-bound VM close endpoint. Return `cleaned: true` only after both stops are confirmed. Persist failure types even if VM closure throws; never persist exception messages or credentials. |
+
+Lifecycle receipts and SDK stdout/stderr remain private. Evidence contains
+`channel/channel.jsonl`, original screenshots, `native/` raw SDK results,
+`native-execution.json` and `snapshot.json`. The snapshot lists pre-manifest files
+with size/hash and binds config/task/trial identity; Harbor independently
+collects and hashes the final directory. A manifest alone is not a valid score.
+
+Configure native-phase private argv separately:
+
+```text
+python /opt/osworld/controller_client.py --socket /private/runtime/phase.sock --session /control/session.json
+```
+
+Set its `audit_path` to `/evidence/channel/channel.jsonl`; declare controller
+artifact source `/evidence` in the Harbor task and the same path in the package
+submission. The original whole-task candidate deadline remains in the profile.
+For component shutdown limit S, allow at least `3*S + 18` seconds plus transport
+margin for worst-case cleanup (private cancellation, TERM/KILL, helper reaping
+and VM close), and prepare limit plus that margin for failed-prepare cleanup.
+Collection must cover native completion waiting, child shutdown, and hashing all
+allowed artifacts. Set hook client and Harbor/profile timeouts consistently;
+exhaustion fails the trial and Harbor service teardown is the final fallback.
+Website namespace provisioning/reset must also fit the profile; this component
+does not provision websites merely by setting their suffix.
+
+Validation: `python3 test-support/osworld_lifecycle_smoke.py` runs 10 cases using
+real owned processes, Unix/HTTP transports, the hook CLI and `BenchmarkSession`.
+It checks observation readiness, late worker writes included only after exit,
+snapshot bytes/digests, receipt replay, stale leases, config mismatch, failures,
+cleanup during prepare, forced kill, linked evidence and private credentials.
+`test-support/osworld_lifecycle_pid1_canary.py` additionally runs as PID 1 in a
+disposable Linux container, verifies adoption and reaping of a daemonized helper,
+and confirms snapshot follows child shutdown. The SDK task/VM/grader are
+synthetic in these tests. No official guest boot, website reset or authorized
+OSWorld task has been validated by them.

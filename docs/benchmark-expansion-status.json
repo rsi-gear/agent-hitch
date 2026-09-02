@@ -168,7 +168,7 @@
         "candidate_process_name": "codex"
       },
       "latest_session_check": {
-        "observed_at": "2026-09-02T22:00:39.005292+00:00",
+        "observed_at": "2026-09-02T22:25:19.144157+00:00",
         "exec_session_id": 26799,
         "candidate_process_alive": true,
         "candidate_process_name": "codex",
@@ -635,6 +635,38 @@
             "node --test dist/test/native-phase-assessment.test.js"
           ],
           "limitation": "The deadline adapter changes control flow around the pinned SDK loops and is explicitly identified; it is not an upstream-native wall-clock feature. Tests use synthetic environments, harnesses and evaluators. Official VM/task execution, task-specific strict metric mapping and full website lifecycle remain outstanding."
+        },
+        "controller_lifecycle": {
+          "implemented": true,
+          "synthetic_only": true,
+          "real_scored_tasks": 0,
+          "config_protocol": "osworld-controller@1",
+          "lifecycle_protocol": "osworld-lifecycle@1",
+          "snapshot_protocol": "osworld-controller-snapshot@1",
+          "sdk_execution": "Owned child process; production entrypoint requires a dedicated controller PID 1",
+          "actual_harbor_hook_client_and_session_test_passed": true,
+          "local_synthetic_cases": 10,
+          "prepare_waits_for_native_observation_and_config_identity": true,
+          "quiesce_reaps_before_snapshot": true,
+          "linux_pid1_daemon_helper_reaped": true,
+          "linux_pid1_canary_image": "sha256:d38d65aece7be17f39b369bd50d49f52c96f9409cb30a86cd1ce02d03e4afb8f",
+          "linux_pid1_canary_platform": "linux/amd64",
+          "linux_pid1_canary_network": "none",
+          "failed_prepare_cleans_and_cannot_restart": true,
+          "cleanup_can_interrupt_prepare": true,
+          "request_replay_and_lease_fencing": true,
+          "vm_close_failure_has_private_receipt": true,
+          "snapshot_file_digests_and_exact_bytes": true,
+          "secrets_excluded_from_journal_and_artifacts": true,
+          "pinned_sdk_core_files_verified": 4,
+          "full_authorized_producer_and_compose_assembly_complete": false,
+          "official_sdk_vm_and_task_execution_verified": false,
+          "tests": [
+            "python3 test-support/osworld_lifecycle_smoke.py",
+            "test-support/osworld_lifecycle_pid1_canary.py as PID 1 in a disposable Linux container",
+            "node --test dist/test/benchmark-protocol.test.js"
+          ],
+          "limitation": "Real processes, Unix/HTTP transport, hook CLI and BenchmarkSession with a synthetic SDK worker and fake VM closure. Production native_worker entrypoint is wired but has not booted the official SDK/VM/task. Four core hashes and a task digest do not establish authorized release membership or full dependency/runtime identity. Controller image/Compose, websites, strict metric mapping and two official tasks remain incomplete."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -666,12 +698,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 360,
-    "passed": 357,
+    "total": 361,
+    "passed": 358,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/native-deadline-check.log",
-    "additional_verification": "Native control v2 runs the pinned SDK deadline adaptation through the actual Hitch CLI and private RPC, preserving a real timed_out bundle and testing expiry during replacement and evaluator failure. Separate importer cases validate normal, active-budget and unbound-tail groups, preserve zero and immutable evidence, reject altered receipts and recover publication. These are synthetic environments/harnesses/graders; no new official task acceptance."
+    "evidence": ".hitch/benchmark-expansion/controller-lifecycle-check.log",
+    "additional_verification": "10 synthetic OSWorld lifecycle cases exercise real owned processes, Unix/HTTP, the hook CLI and standard BenchmarkSession; a separate Linux PID1 canary reaps a daemonized helper before snapshot. Prior deadline, immutable assessment and native-phase tests remain in the passing suite. No additional official task acceptance."
   },
-  "updated_at": "2026-09-02T22:00:39.005292+00:00"
+  "updated_at": "2026-09-02T22:25:19.144157+00:00"
 }

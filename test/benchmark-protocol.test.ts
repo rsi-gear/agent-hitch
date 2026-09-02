@@ -51,3 +51,9 @@ test("OSWorld controller separates candidate HTTP tools from lease-fenced Unix m
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /phase fencing transport passed/);
 });
+
+test("OSWorld lifecycle owns the SDK child and freezes evidence through standard Harbor hooks", () => {
+  const result = spawnSync("python3", ["test-support/osworld_lifecycle_smoke.py"], { encoding: "utf8", timeout: 45_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /immutable snapshot and failure receipts passed/);
+});
