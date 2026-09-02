@@ -30,7 +30,7 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
   await writeFile(path.join(root, "dist", "scripts", "check.js"), "export const check = () => {};\n");
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_candidate_recycle.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
     await writeFile(path.join(root, "integrations", "harbor", name), `# ${name}\n`);
   }
   return {
@@ -44,7 +44,7 @@ async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): P
   await cp(path.join(sourceRoot, "integrations", "model-call"), path.join(destinationRoot, "integrations", "model-call"), { recursive: true });
   const relative = path.join("integrations", "harbor");
   await mkdir(path.join(destinationRoot, relative), { recursive: true });
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_candidate_recycle.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
     await writeFile(
       path.join(destinationRoot, relative, name),
       await readFile(path.join(sourceRoot, relative, name)),
@@ -58,7 +58,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 12);
+  assert.equal(first.fileCount, 13);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -425,7 +425,7 @@ test("runtime allowlist is the execution closure, excluding dev artifacts and re
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
-  assert.equal(result.fileCount, 12);
+  assert.equal(result.fileCount, 13);
   await fixture.cleanup();
 });
 

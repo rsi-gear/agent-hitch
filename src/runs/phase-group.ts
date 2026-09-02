@@ -25,7 +25,7 @@ export async function inspectBenchmarkPhaseGroup(input: { root: string; runIds: 
     const identity = {
       schema_version: "1" as const, kind: "benchmark-phase-group" as const, scope: "candidate-evidence-only" as const,
       run_group_id: context.run_group_id, eval_id: record.parent.eval_id, trial_id: record.parent.trial_id, attempt: record.parent.attempt,
-      benchmark_id: context.benchmark_id, benchmark_revision: context.benchmark_revision, task_id: context.task_id,
+      benchmark_id: context.benchmark_id, benchmark_revision: context.benchmark_revision, task_id: context.task_id, task_digest: context.task_digest,
       verifier_identity: context.verifier_identity, harness: record.harness, model: record.model,
     };
     if (!group) group = { ...identity, phases: [] };

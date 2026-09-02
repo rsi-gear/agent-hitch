@@ -166,6 +166,16 @@
         "terminal_failure_observed": false,
         "original_session_preserved": true,
         "candidate_process_name": "codex"
+      },
+      "latest_session_check": {
+        "observed_at": "2026-09-02T20:49:39.792973+00:00",
+        "exec_session_id": 26799,
+        "candidate_process_alive": true,
+        "candidate_process_name": "codex",
+        "candidate_pid_in_container": 6642,
+        "new_session_output": false,
+        "terminal_failure_observed": false,
+        "original_session_preserved": true
       }
     },
     {
@@ -386,7 +396,7 @@
           "harbor_lifecycle_and_sdk_thread_wiring_complete": false,
           "real_scored_tasks": 0,
           "test": "python3 test-support/osworld_controller_smoke.py",
-          "limitation": "Two synthetic phases use actual HTTP/Unix sockets and the existing Node tool client. No model, official VM or official OSWorld task is executed. Dynamic candidate run binding and full package assembly remain incomplete."
+          "limitation": "Two synthetic phases use actual HTTP/Unix sockets and the Node tool client. NativePhaseSupervisor now connects dynamic candidate binding through a separate callable API; full standard-package assembly and official VM/task/model execution remain incomplete."
         },
         "phase_run_evidence": {
           "implemented": true,
@@ -404,7 +414,8 @@
           "phase_group_scored_trial_import_complete": false,
           "real_scored_tasks": 0,
           "test": "node --test dist/test/benchmark-phase-runs.test.js",
-          "limitation": "The group has candidate-evidence-only scope. Synthetic harness processes verify separate copy workspaces and independent native session identifiers; no real model/VM/task runs. Native phase coverage, dynamic candidate supervision, group import and final assessment remain incomplete. The separate container recycler is component-tested but not wired into that supervisor."
+          "limitation": "The group is candidate-evidence-only. Synthetic harness processes verify isolated workspaces, distinct native sessions and an unchanged task digest. The generic supervisor API is implemented separately; standard-package assembly, native coverage validation at import and final assessment remain incomplete.",
+          "same_frozen_task_digest_required": true
         },
         "candidate_container_recycle": {
           "implemented": true,
@@ -437,7 +448,7 @@
             "image": "sha256:6623b5adf2d6b5b4b75b03ce24669474d9ef0216869b6738a071bf74733b24ed",
             "started_at": "2026-09-02T19:36:47.513830005Z"
           },
-          "limitation": "Only synthetic Docker environments were used; no model, guest VM, official task or score. The trusted caller must hold the lease, revoke the old binding, finish/export the old run, invoke replacement, then reinstall runtime and bind the new run before starting its model. This does not implement or prove those supervisor preconditions, native phase coverage or group scoring."
+          "limitation": "Independent synthetic Docker canary only; no guest VM, model, official task or score. NativePhaseSupervisor now calls the recycler after native revocation and candidate export, then verifies the host archive and reinstalls/binds the next candidate. Its joined orchestration test uses a local directory adapter, not Docker; full package/VM integration and group scoring remain incomplete."
         },
         "phase_invocation_and_export": {
           "implemented": true,
@@ -465,8 +476,10 @@
             "python3 test-support/harbor_phase_invocation_smoke.py",
             "node --test dist/test/benchmark-phase-runs.test.js"
           ],
-          "limitation": "The bridge invocation test uses stub Harbor I/O. Bundle transfer uses actual Hitch executions with synthetic native harness processes. The cancellation API is available, but native controller events, fresh-container setup/binding orchestration and whole-task assessment/import remain unwired. No model, guest VM or official task is run.",
-          "cancellation_request_api_complete": true
+          "limitation": "Bridge invocation uses stub Harbor I/O. Separate orchestration tests connect real Hitch CLI and native RPC through a synthetic local environment adapter. The default standard-package entrypoint and group assessment importer remain incomplete; no model, guest VM or official task runs.",
+          "cancellation_request_api_complete": true,
+          "native_boundary_cancellation_api_complete": true,
+          "generic_supervisor_api_available": true
         },
         "phase_cancellation": {
           "implemented": true,
@@ -499,7 +512,50 @@
             "node --test dist/test/phase-cancellation.test.js",
             "python3 test-support/harbor_phase_invocation_smoke.py"
           ],
-          "limitation": "This is cancellation transport plus evidence preservation. A nonce fences requests but does not stop a root candidate from cancelling itself. The independent native controller must prove boundaries and scores. A delivered request does not prove process exit; the future supervisor must await and verify the sealed run, enforce a bounded shutdown/collection allowance, and clean up failed trials. No real model, OSWorld VM or official task was used."
+          "limitation": "The request receipt alone does not prove native completion. The generic NativePhaseSupervisor now checks independent private native boundaries, awaits export, retires the old environment and verifies sealed evidence, with failed-trial cleanup. Standard package integration and whole-task grading remain incomplete; no official VM/task/model validation.",
+          "generic_supervisor_api_available": true
+        },
+        "native_phase_supervisor": {
+          "implemented": true,
+          "synthetic_only": true,
+          "api": "NativePhaseSupervisor(agent, environment, controller=..., binding=..., task_digest=..., timeout_ms=...).run()",
+          "scope": "candidate-evidence-only",
+          "private_native_state_bind_cancel_connected": true,
+          "prepare_run_cancel_export_recycle_setup_connected": true,
+          "locked_tools_and_private_phase_tokens": true,
+          "native_instruction_and_task_date_preserved": true,
+          "same_frozen_task_digest_across_phase_group": true,
+          "whole_task_budget_not_reset": true,
+          "native_boundary_required_to_advance": true,
+          "early_candidate_exit_does_not_restart_phase": true,
+          "host_bundle_inspection_after_container_retirement": true,
+          "expected_harness_revision_verified_in_sealed_manifest": true,
+          "distinct_native_sessions_and_nonoverlapping_runs_required": true,
+          "final_main_stop_and_snapshot_without_unused_replacement": true,
+          "failed_trial_cleanup_recorded": true,
+          "journal": "<trial>/hitch-native-phases/supervision.json",
+          "actual_hitch_cli_and_private_rpc_test_passed": true,
+          "synthetic_native_phase_cases": [
+            "two_phases",
+            "gate_termination",
+            "early_candidate_exit",
+            "invalid_binding",
+            "invalid_state",
+            "task_budget_expiry",
+            "replacement_failure",
+            "native_session_reuse",
+            "uncertain_cancellation_delivery"
+          ],
+          "container_and_setup_test_adapter": "local_directories",
+          "full_docker_vm_orchestration_test_passed": false,
+          "standard_package_entrypoint_complete": false,
+          "group_assessment_import_complete": false,
+          "real_scored_tasks": 0,
+          "tests": [
+            "python3 test-support/harbor_phase_supervisor_smoke.py",
+            "node --test dist/test/benchmark-phase-runs.test.js"
+          ],
+          "limitation": "Pinned native phase functions, real HTTP/Unix RPC and real Hitch CLI use a synthetic harness. Candidate containers/setup are represented by a local directory adapter; the separate Docker recycler canary is not a full VM test. Standard package lifecycle selection, native final-state grading on wall-clock expiry and whole-task assessment/import remain incomplete. No official OSWorld task or real model is used."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -531,12 +587,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 355,
-    "passed": 352,
+    "total": 356,
+    "passed": 353,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/phase-cancellation-check.log",
-    "additional_verification": "An actual Hitch CLI with a synthetic native harness accepted only its matching cancellation request, sealed a cancelled run with valid trajectory, and exported the original bundle without nonce leakage. Prelaunch and launch-listener race cancellation passed. The bridge fixture verified private host journaling before delivery, active-request replay, reason mismatch and uncertain-delivery rejection. No new real benchmark acceptance is claimed."
+    "evidence": ".hitch/benchmark-expansion/native-phase-supervisor-check.log",
+    "additional_verification": "Actual Hitch CLI, pinned native phase functions and private RPC passed two-phase/gate/error/cleanup orchestration cases with a synthetic harness and local directory environment adapter. Host inspection checks revision/trajectory/bundle/session/interval, and phase groups reject task-digest changes. No new real benchmark acceptance."
   },
-  "updated_at": "2026-09-02T20:18:06.299402+00:00"
+  "updated_at": "2026-09-02T20:49:39.793049+00:00"
 }

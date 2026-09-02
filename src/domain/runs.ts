@@ -92,6 +92,7 @@ export interface BenchmarkPhaseGroupV1 {
   benchmark_id: string;
   benchmark_revision: string;
   task_id: string;
+  task_digest: Sha256;
   verifier_identity: Sha256;
   harness: HarnessIdentityV1;
   model: ModelIdentityV1;

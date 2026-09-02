@@ -51,11 +51,11 @@ process.stdin.on('end', () => {
   process.env.HITCH_CODEX_PATH = executable;
   t.after(() => { if (previous === undefined) delete process.env.HITCH_CODEX_PATH; else process.env.HITCH_CODEX_PATH = previous; });
   const parent = { kind: "eval", eval_id: evalId, trial_id: "synthetic-trial", attempt: 1 };
-  async function phase(index: number, group = groupId, agentArgs: string[] = []) {
+  async function phase(index: number, group = groupId, agentArgs: string[] = [], taskDigest = digest) {
     const runId = newRunId();
     const result = await executeRun({ runId, root, runsRoot: path.join(root, "runs"), request: {
       agent: "codex", model: "synthetic-model", cwd: project, workspace_mode: "copy", prompt: `phase ${index}`,
-      timeout_ms: 5000, agent_args: agentArgs, context: { ...context, run_group_id: group, phase_index: index }, parent,
+      timeout_ms: 5000, agent_args: agentArgs, context: { ...context, task_digest: taskDigest, run_group_id: group, phase_index: index }, parent,
     } });
     assert.equal(result.status, "succeeded");
     assert.deepEqual(JSON.parse(String(result.output)), { prompt: `phase ${index}`, seenPrevious: false });
@@ -71,7 +71,7 @@ process.stdin.on('end', () => {
   const ids = [await phase(1), await phase(2)];
   const sourceDirectory = path.join(root, "runs", ids[0]!);
   const destinationDirectory = path.join(directory, "exported-phase");
-  const expected = { run_id: ids[0]!, context, parent };
+  const expected = { run_id: ids[0]!, context, parent, revision_identity: (await loadRunRecord(sourceDirectory)).record.harness.revision_identity };
   const originalIndexBytes = await readFile(path.join(sourceDirectory, "bundle.index.json"));
   const exported = await copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory, expected });
   assert.deepEqual(exported, await verifyResultBundleIndex(sourceDirectory));
@@ -85,6 +85,7 @@ process.stdin.on('end', () => {
   await assert.rejects(copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory: path.join(sourceDirectory, "nested"), expected }), /disjoint/);
   const group = await inspectBenchmarkPhaseGroup({ root, runIds: ids });
   assert.equal(group.scope, "candidate-evidence-only");
+  assert.equal(group.task_digest, digest);
   assert.deepEqual(group.phases.map(p => p.phase_index), [1, 2]);
   assert.notEqual(group.phases[0]!.provider_session_id, group.phases[1]!.provider_session_id);
   assert.ok(!("observation" in group) && !("reward" in group));
@@ -105,6 +106,9 @@ process.stdin.on('end', () => {
   assert.throws(() => projectRunRecord({ ...manifest, parent: undefined }), /eval parent/);
   const reused = [await phase(1, `run_group_${"3".repeat(32)}`, ["--synthetic-session", "reused"]), await phase(2, `run_group_${"3".repeat(32)}`, ["--synthetic-session", "reused"])];
   await assert.rejects(inspectBenchmarkPhaseGroup({ root, runIds: reused }), /session identity is missing or reused/);
+  const changedTask = [await phase(1, `run_group_${"4".repeat(32)}`), await phase(2, `run_group_${"4".repeat(32)}`, [], `sha256:${"b".repeat(64)}` as typeof digest)];
+  await assert.rejects(inspectBenchmarkPhaseGroup({ root, runIds: changedTask }), /identity changed/);
+  await assert.rejects(copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory: path.join(directory, "wrong-revision"), expected: { ...expected, revision_identity: digest } }), /prepared identity/);
   const source = path.join(root, "runs", ids[1]!, "result.json");
   await writeFile(source, (await readFile(source, "utf8")) + " ");
   await assert.rejects(readBenchmarkPhaseGroup({ root, evalId, reference }), /integrity/);

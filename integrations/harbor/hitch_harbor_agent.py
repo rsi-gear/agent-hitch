@@ -126,6 +126,7 @@ class HitchHarborAgent(BaseAgent):
         self._artifact_transport_status: str | None = None
         self._setup_complete = False
         self._phase_export_available = False
+        self._phase_supervision_available = False
         self._prepared_phase: PreparedPhase | None = None
         self._prepared_phase_keys: set[tuple[str, int]] = set()
         self._phase_group_contracts: dict[str, tuple[str, str, int]] = {}
@@ -176,6 +177,7 @@ class HitchHarborAgent(BaseAgent):
         self._verify_manifest_identity(manifest)
         self._verify_payload(manifest)
         self._phase_export_available = {PHASE_EXPORT_MODULE, PHASE_CONTROL_MODULE}.issubset({file.get("path") for file in manifest["files"]})
+        self._phase_supervision_available = self._phase_export_available and "integrations/harbor/hitch_phase_supervisor.py" in {file.get("path") for file in manifest["files"]}
         if self.harness_artifact is None:
             raise RuntimeError("hitch-artifact-materialize: Harbor requires a dedicated-builder artifact")
         try:
@@ -704,7 +706,7 @@ class HitchHarborAgent(BaseAgent):
         *,
         prepared_phase: PreparedPhase | None = None,
     ) -> None:
-        if getattr(environment, "_hitch_benchmark", None):
+        if prepared_phase is None and getattr(environment, "_hitch_benchmark", None):
             from hitch_benchmark import candidate_instruction
             instruction, task_timeout = candidate_instruction(instruction, environment)
             if prepared_phase is None and self.hitch_timeout_ms == 0 and task_timeout is not None:
@@ -883,7 +885,8 @@ mv "$stage_dir" "$target_dir"
             bundle_export = await environment.exec(legacy_export)
         else:
             export_input = {"sourceDirectory": f"/tmp/hitch-state/runs/{run_id}", "destinationDirectory": bundle_stage,
-                            "expected": {"run_id": run_id, "context": context_payload, "parent": parent_payload}}
+                            "expected": {"run_id": run_id, "context": context_payload, "parent": parent_payload,
+                                         "revision_identity": self.revision_identity}}
             # Completion is outside the bundle: adding even a marker inside a
             # sealed bundle changes its indexed file set and invalidates it.
             script = (

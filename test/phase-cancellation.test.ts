@@ -116,7 +116,7 @@ process.stdin.resume();setInterval(()=>{},1000);
     const index = await verifyResultBundleIndex(sourceDirectory);
     assert.equal(output.includes(token), false);
     for (const file of index.files) assert.equal((await readFile(path.join(sourceDirectory, file.path))).includes(Buffer.from(token)), false, file.path);
-    await copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory: path.join(directory, "exported"), expected: { run_id: runId, context, parent } });
+    await copySealedPhaseRunBundle({ sourceDirectory, destinationDirectory: path.join(directory, "exported"), expected: { run_id: runId, context, parent, revision_identity: (await loadRunRecord(sourceDirectory)).record.harness.revision_identity } });
     // Exercise the executor race where cancellation is delivered by onProcess
     // before its abort listener is installed.
     const old = process.env.HITCH_CODEX_PATH;

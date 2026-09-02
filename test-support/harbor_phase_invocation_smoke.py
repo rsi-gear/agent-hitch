@@ -55,6 +55,10 @@ class Environment(BaseEnvironment):
                 result.update(status="failed", exit_code=1)
             if self.case in {"cancel-request", "cancel-upload-failed"}:
                 result.update(status="cancelled", exit_code=9)
+                # Real executor failure results carry identity in the sealed
+                # manifest, not in result.json. Keep this fixture realistic.
+                result.pop("revision_identity", None)
+                result.pop("artifact_id", None)
             return ExecResult(stdout=json.dumps(result))
         if "copySealedPhaseRunBundle" in command:
             self.phase_export = command

@@ -271,7 +271,7 @@ sealing and no deferred benchmark observation. Unexpected emitted run IDs cannot
 redirect the export to a different run. Process failures retain their diagnostics
 and any successfully exported sealed bundle; they do not become task scores.
 
-`copySealedPhaseRunBundle()` verifies the expected run/context/parent and original
+`copySealedPhaseRunBundle()` verifies the expected run/context/parent, harness revision and original
 index, copies every indexed file plus the original index, and verifies both
 source and destination again. It preserves original bytes and digests, including
 workspace, interaction and runtime evidence outside the old bridge's short file
@@ -286,9 +286,8 @@ with stub Harbor I/O, including budget expiration during uploads, handle replay,
 identity mismatch and export/process failures. `test/benchmark-phase-runs.test.ts`
 executes actual Hitch runs with synthetic native harness processes, copies their
 sealed phase bundles and verifies all file/index bytes plus identity/no-overwrite
-gates. These tests do not run a model or OSWorld. Connecting native boundaries
-to candidate cancellation, controller/agent supervision, fresh environment setup/binding orchestration and
-whole-task assessment/import remain required.
+gates. These tests do not run a model or OSWorld. The supervisor below connects
+these APIs; standard-package selection and whole-task assessment/import remain required.
 
 ## Cancelling a phase while retaining its evidence
 
@@ -332,5 +331,75 @@ native harness, checks stale requests, cancellation, valid native trajectory,
 byte-preserving export and absence of the nonce from all bundle files. It also
 tests cancellation during the launch-listener race and before launch. The bridge
 I/O fixture checks host journaling, same-request replay, reason mismatch and
-inactive-phase rejection. These are component tests, not real OSWorld validation;
-native controller events are not yet wired to this API.
+inactive-phase rejection. These are component tests, not real OSWorld validation.
+
+## Native phase supervisor API
+
+`integrations/harbor/hitch_phase_supervisor.py` now connects the private controller,
+candidate phase API and environment recycler. Its trusted host entry point is:
+
+```python
+from hitch_phase_supervisor import NativePhaseSupervisor
+
+# After the initial environment/controller prepare and agent.setup(). These
+# values come from a locked package/profile, not candidate tool output.
+evidence = await NativePhaseSupervisor(
+    agent, environment,
+    controller={"service": "controller", "argv": [
+        "python", "/opt/osworld/controller_client.py",
+        "--socket", "/private/control.sock", "--session", "/private/session.json",
+    ]},
+    binding={"endpoint": "http://controller:8765/", "tools": locked_tools},
+    task_digest=frozen_task_digest,
+    timeout_ms=remaining_whole_task_ms,
+    shutdown_timeout_ms=30_000,
+).run()
+```
+
+The default Harbor `run()` path does **not** invoke this API. Standard-package
+driver/lifecycle assembly and phase-group assessment import are still missing.
+This example describes the callable integration seam, not a runnable OSWorld
+package. A compatible frozen controller runtime and a lease are required.
+
+The controller command accepts `{request_id, operation, parameters}` on stdin and
+prints just its JSON output; `controller_client.py` authenticates privately.
+`state` returns `{state, generation, sequence, run_id, prediction,
+task_current_date}`. Generations must advance consecutively and sequences cannot
+regress. A new `context_required` prediction has no binding. Its instruction,
+including an empty string, and date are preserved in the candidate prompt.
+`bind` must return exactly the locked endpoint/schema and a new phase token.
+Only the token's private file is uploaded to the candidate; replies are never
+copied into the host supervision journal.
+
+Each authoritative reset/completion cancels the active candidate through Hitch
+and awaits its exported sealed run. A cancellation receipt or quiet model alone
+cannot advance the phase. A model that exits while another prediction still
+needs an answer fails the trial; no extra conversation is invented within a phase.
+`sdk_executing` allows native action evaluation to finish after normal model exit.
+Native budget expiry aborts and records failure; it does not synthesize a DONE
+action, final grade, or successful completion.
+
+At intermediate boundaries the old container is retired and its log directories
+archived before host-side `inspectSealedPhaseRunBundle` checks every indexed file,
+context, parent, harness revision, trajectory, native session and execution
+interval. Then runtime setup and a fresh binding precede the next model. At the
+last boundary, `stop_service("main")` also triggers the normal final snapshot;
+it does not create an unused replacement container. Evidence requires consistent
+harness/model identity, distinct native session IDs and non-overlapping runs.
+
+`<trial>/hitch-native-phases/supervision.json` is private host evidence with
+`candidate-evidence-only` scope. It records all observed boundaries and bundle
+references, never scores or tool credentials. Failed delivery, exit, replacement,
+inspection or native state initiates private cancellation and whole-trial cleanup.
+The journal records whether cleanup is still required. A supervisor is single-use
+and refuses to adopt an existing evidence directory. Lease-owner cleanup remains
+necessary if teardown itself fails. Native controller audit and final grading
+files must still be checked independently when implementing the trial importer.
+
+Validation: `test-support/harbor_phase_supervisor_smoke.py` combines the pinned
+native phase functions, actual private Unix/HTTP RPC, actual Hitch CLI cancellation
+and byte-preserved sealed bundles. The harness is synthetic; candidate containers
+and setup are represented by a local directory adapter. Cases cover two phases,
+gate termination, early model exit, schema/state errors, task budget exhaustion,
+recycle failure, uncertain cancellation delivery and reused native sessions. This does not prove a full Docker/VM
+deployment, and adds no official OSWorld task acceptance.
