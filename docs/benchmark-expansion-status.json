@@ -19,7 +19,7 @@
         "cumulative-layout-shift"
       ],
       "package": ".hitch/benchmark-expansion/packages/terminal-v2",
-      "status": "first_canary_invalid_repairs_pending",
+      "status": "repair_canary_running_one_task_cpu_blocked",
       "eval_id": "eval_2ec2393893824d2eb0377adad917969c",
       "validation": {
         "eval_id": "eval_2ec2393893824d2eb0377adad917969c",
@@ -30,7 +30,8 @@
           "live-database-cutover": "Docker refused required 16 CPU limit on a 10 CPU host; no candidate run. Requires suitable worker."
         }
       },
-      "repair_package": ".hitch/benchmark-expansion/packages/terminal-layout-repair"
+      "repair_package": ".hitch/benchmark-expansion/packages/terminal-layout-repair",
+      "repair_eval_id": "eval_f0c989f0f6c84aa5ad0a70c221fbcd9f"
     },
     {
       "id": "terminal-bench-science",
@@ -56,7 +57,7 @@
         "1b1ade2d-f9f6-4a04-baa5-aa15012b53be"
       ],
       "package": ".hitch/benchmark-expansion/packages/gdpval-v2",
-      "status": "canary_running",
+      "status": "validated_two_real_tasks",
       "eval_id": "eval_05f887d2c1a24f2899ae3368e9608261",
       "comparison": "Local public-rubric score, not GDPval-AA v2 private panel/Elo",
       "previous_invalid_evals": [
@@ -69,11 +70,59 @@
         {
           "task_id": "1b1ade2d-f9f6-4a04-baa5-aa15012b53be",
           "run_id": "run_0773df49c3a343d9ab3e39f11a97eb40",
+          "trial_id": "1b1ade2d-f9f6-4a04-baa5-aa15012b__DTt5yZj",
           "observation_status": "valid",
           "rubric_score": 0.8260869565217391,
-          "strict_success": 0
+          "strict_success": 0,
+          "submission_files": 2,
+          "rendered_pages": 4,
+          "criteria_count": 51,
+          "judge_model": "gpt-5.4",
+          "judge_protocol": "gdpval-public-weighted-rubric@1",
+          "reward_evidence_path": ".hitch/benchmark-expansion/state/evals/eval_05f887d2c1a24f2899ae3368e9608261/harbor/work-items/work_a4f392c969f3f4961ab77532210c6296/epoch-000001/job/1b1ade2d-f9f6-4a04-baa5-aa15012b__DTt5yZj/verifier/benchmark-rewards.json",
+          "reward_evidence_sha256": "0dfc5f6b964398a92e12d26da24f36338b87fdc0a4e2da4d1ed851b5eddeb165"
+        },
+        {
+          "task_id": "e14e32ba-d310-4d45-9b8a-6d73d0ece1ae",
+          "run_id": "run_e9c02412da874c9781f8939f06eb5aa5",
+          "trial_id": "e14e32ba-d310-4d45-9b8a-6d73d0ec__iJSM8U5",
+          "observation_status": "valid",
+          "rubric_score": 0.9655172413793104,
+          "strict_success": 0,
+          "submission_files": 7,
+          "rendered_pages": 5,
+          "criteria_count": 15,
+          "judge_model": "gpt-5.4",
+          "judge_protocol": "gdpval-public-weighted-rubric@1",
+          "reward_evidence_path": ".hitch/benchmark-expansion/state/evals/eval_05f887d2c1a24f2899ae3368e9608261/harbor/work-items/work_7f65e92d28809304e98dcf56cf99e281/epoch-000001/job/e14e32ba-d310-4d45-9b8a-6d73d0ec__iJSM8U5/verifier/benchmark-rewards.json",
+          "reward_evidence_sha256": "6af166c7d112b9b4fd5e0727df543f9bc0721dc66dd32efacc527bd5aedb9134"
         }
-      ]
+      ],
+      "summary": {
+        "n_trials": 2,
+        "n_completed": 2,
+        "n_invalid": 0,
+        "primary_reward": 0.8958020989505248,
+        "rewards": {
+          "reward": {
+            "count": 2,
+            "mean": 0.8958020989505248,
+            "min": 0.8260869565217391,
+            "max": 0.9655172413793104
+          }
+        }
+      },
+      "benchmark_revision": "sha256:df17abf7e2ab05725f56dab305ef2cc6874c355ed1a893b68309ab4d4e709cff",
+      "candidate": {
+        "id": "candidate-1",
+        "requested_harness_ref": "codex@version:0.145.0",
+        "harness_ref": "codex@version:0.145.0",
+        "harness_id": "codex",
+        "revision_identity": "sha256:658505489c37214c866c214b330f05dd572ebdaf0d4b7c936dbfe4694fd52c30",
+        "model": "gpt-5.4"
+      },
+      "runtime_id": "sha256:38cb4e38673efab6c0f0f98bfdf4823258623f2bedd5c810387e6cf868afb400",
+      "completed_at": "2026-09-02T16:46:41.781Z"
     },
     {
       "id": "hle",
