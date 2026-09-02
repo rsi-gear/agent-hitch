@@ -39,8 +39,11 @@ evaluator evidence can satisfy the real two-task validation requirement.
 The [managed VM components](runtime/README.md) now provide process ownership,
 private lease-bound control, writable-state reset and an upstream DesktopEnv
 provider. Synthetic process tests pass both locally and as PID 1 in a Linux
-container. Official guest boot, the complete task/controller/web assembly and
-the two selected task evaluations remain unverified or incomplete.
+container. The SDK agent channel now preserves native phase resets, gates and
+prediction-step accounting in a synthetic parity test. Official guest boot,
+the fresh Hitch conversation supervisor, authenticated tool server, complete
+task/controller/web assembly and the two selected task evaluations remain
+unverified or incomplete.
 
 ## Native screenshot transport
 
@@ -70,8 +73,9 @@ and a 16 MiB wire response limit. Unsupported or malformed images fail the tool
 call. HTTP redirects fail instead of forwarding a session token.
 
 These temporary files are candidate observations, not trusted final scoring
-evidence. The future OSWorld controller must retain the original screenshots
-and action sequence in its own sealed artifacts. Tests currently prove transport
+evidence. `runtime/agent_channel.py` retains original screenshots and the action
+sequence on private controller storage; assembly must seal these artifacts.
+Tests currently prove transport
 and byte preservation against a synthetic HTTP server; they do **not** prove an
 OSWorld VM run or candidate screenshot understanding. The separate
 `writeDesktopBenchmarkFixture()` helper in `test-support/desktop-benchmark-fixture.ts`
@@ -105,8 +109,10 @@ requirements for the remaining executor:
   Do not invent a strict-success field from a rounded partial score.
 - Detect `get_phases()` before running a task. The upstream multi-phase runner
   performs sequential setup, action budgets, phase evaluation and early gates
-  on the same environment. A one-shot reset/evaluate wrapper must reject a
-  multi-phase task until this behavior is implemented and compared.
+  on the same environment. `native_runner.py` now delegates to that pinned
+  runner, and the channel parity test covers its multi-phase behavior. The
+  remaining supervisor must create a genuinely fresh candidate conversation on
+  each native reset; different run IDs alone do not establish this.
 - The stock Docker provider launches its own container and allocates host ports.
   Calling it unchanged would bypass Hitch's resource ownership. The managed
   provider must own the VM and website namespace under the trial lease, fence

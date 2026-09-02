@@ -650,13 +650,17 @@ Phase 1 使用 public rubric 的可解释本地评分并命名 `gdpval-public-ru
 
 一个 trial 的边界包含 guest VM、浏览器 profile、用户文件与模拟网站/应用状态。VM 基础镜像、task Python、assets、mocked websites 必须来自同一个 release；任务代码/评分器只在 worker 管理侧可见。Candidate 可在独立 harness container 中运行，通过受限 CUA bridge 获得观察和发送动作。
 
-CUA bridge 合同：`observe → image/artifact refs + seq`；`act(seq, action) → observation + done`；允许动作与上游 action space 一一对应，记录 step counter、分辨率、坐标转换和 action trace。只有 controller 能 reset/evaluate。截图模式下不能偷偷增加 DOM、guest shell 或辅助模型规划；这些能力必须成为另一个 profile。支持截图输入的 harness 才能运行。
+CUA bridge 合同：`observe → image/artifact refs + seq`；`submit(seq, request_id, response, actions) → receipt`；原生 runner 执行动作后才提供下一次 observation。每次 `predict()` 消耗一个上游 step，同批多个动作不能误计成多个模型 step。允许动作与声明的上游 action space 对应，记录 step counter、分辨率和 action trace。只有 controller 能 reset/evaluate。截图模式下不能偷偷增加 DOM、guest shell API 或辅助模型规划；这些能力必须成为另一个 profile。支持截图输入的 harness 才能运行。
 
 达到 step/time budget 后，停止动作，调用官方 final evaluator，导出 partial、strict、checkpoint 明细。映射由固定 task release 的 evaluator schema 决定；没有独立 strict 字段时只能按该 release 明确的严格成功规则计算，不能把四舍五入后的 partial==1 当作 strict。
 
 Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服务 namespace capacity；QEMU 需要的 KVM、内存与磁盘在 preflight 检查。CPU/memory 仍进入现有 ledger；VM 和远端网站账户也需要 lease/mutex。仅重置 VM 而不重置网站数据不算环境复原。
 
 实施更新：官方现已发布 `osworld-v2-2026.08.08`，直接以该 release 为目标。必须拿到其可授权 task/assets，并按官方 release manifest 锁定代码、任务、assets、网站与 VM 镜像；全部组件一致才运行。拿不到时该目标明确是 `blocked_on_dataset`，不能换成 6 月任务。参见[官方版本清单](https://github.com/xlang-ai/OSWorld-V2/blob/main/benchmark_releases/osworld-v2-2026.08.08.json)。
+
+当前组件：`benchmark-packages/osworld/runtime/` 已包含受管 VM owner/provider、原生 `Agent.reset/predict` channel、动作校验和固定 SHA256 的 runner wrapper。多阶段流程委托给 `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` 的原始 `lib_run_single.run_single_example`，保留同一 VM 的 phase setup、gate 和评分文件；synthetic 对照已覆盖这些语义。每次 reset 撤销旧 token，并要求 supervisor 绑定新的 Hitch run。**真正的新候选会话启动/退出仍未接入**；run ID 检查只能防止复用标识，不能替代清空模型会话的证据。
+
+当前动作 profile 是 screenshot + graphical `computer_13`，按固定 SDK 定义校验，排除 `EXECUTE` 与裸 Python，不做 OCR/缩放/坐标变换。部署需锁定 1920×1080 截图、单批动作数和文本大小；这不是 Anthropic 原始工具配置的精确复现声明。HTTP tool/admin 隔离、lease 检查、fresh-run supervisor、授权任务 producer、网站 reset、partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
 ### 9.6 CursorBench 与其他私有集
 

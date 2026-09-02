@@ -39,3 +39,9 @@ test("OSWorld VM component fences leases and owns child processes without a host
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /failed-boot receipts passed/);
 });
+
+test("OSWorld channel preserves native phase resets, gates and per-prediction budgets", () => {
+  const result = spawnSync("python3", ["test-support/osworld_channel_smoke.py"], { encoding: "utf8", timeout: 20_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /batch-budget channel parity passed/);
+});
