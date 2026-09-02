@@ -867,3 +867,15 @@ P0/P1 的验收以第 12.1 节为准，包含最小合同与换包验证；上�
 - CursorBench：任务/代码/评分协议授权包。未取得前不属于可执行benchmark清单。
 
 本次 MVP 的成功标准是：Hitch 通过统一协议加载标准包，AutomationBench 两个真实 task 完成执行与官方评分，并用本地 fixture 证明新增同能力 benchmark 无需修改核心。后续完整目标是让包作者按同一合同提供任务、环境与评分规则，Hitch 用固定输入、真实候选执行和可重评证据给出可信结果；每个公开分数均能追溯到任务、环境、模型/harness、预算、grader 与聚合口径。
+
+## 14. 已实现的 artifact-only 重评分（2026-09-03）
+
+`hitch eval rerun <eval_id> --invalid --type verifier-only` 已接入 Harbor 0.21.0 的 `RegradeTrial`，只运行独立 verifier。当前支持冻结的标准 benchmark 包、local Docker、单阶段任务；原候选必须成功且 bundle/trajectory 完整，原评分无效。共享环境 grader、多阶段任务、未收齐的 artifact 和缺失的 lifecycle 记录均不能据此恢复评分。
+
+实现入口为 `src/evals/verifier-only-rerun.ts`，后端为 `src/backends/harbor/regrade.ts`。执行时验证原 lock、源包字节、compiled task digest、候选 bundle 和 controller runtime；沿用原 agent provenance、任务、verifier、镜像引用及全部预算。Harbor 默认只复制 `agent/` 与 `artifacts/`，Hitch 额外逐字复制原 `benchmark-lifecycle.json`，不生成新的 prepare/snapshot 成功记录。
+
+每次物理重评分在 `evals/<eval_id>/assessments/<assessment_id>/` 保存独立 assessment。`evidence/` 包含原 artifact 快照、Harbor config/result、verifier 输出、资源观测与清理报告；manifest 记录 source run/trial/work、原 bundle index digest、source/task/artifact digest、capture 时间及 evidence digest。旧 Harbor artifact manifest 没有内容 hash，因此这个 capture 时间表示重评分前的冻结时间，不倒签为候选完成时间。结构见 `docs/schemas/verifier-assessment.schema.json`。
+
+只有有效 assessment 才替换原 eval 的无效逻辑 slot，保留原 `run_id`、`trial_id`，附加 `assessment: {id, digest}`。原 run 的失败评分保持封存，新的评分不会伪装成新候选执行，也不改变原 run 的训练数据资格。读取 eval 时校验 assessment 和原 bundle；真实 0 分有效，评分基础设施错误仍无效。存在 assessment 时，`verifier_result_ref` 相对 assessment 目录解析。
+
+资源使用独立 ownership lease，daemon 串行准入并保守预留原 work item 资源上界。中断后的自动接续、远端 regrade 调度、修改 grader 的重评分以及共享 VM checkpoint 恢复仍属于后续范围。每个 benchmark 的真实验证覆盖率以 `docs/benchmark-expansion-status.json` 为准，不能用 synthetic canary 代替实际两题验证。

@@ -6,7 +6,7 @@ import path from "node:path";
 import { EvalRerunScheduler, ResourceLedger } from "../src/control-plane/index.js";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalRerunResult, RerunEvalOptions } from "../src/evals/index.js";
-import { evalRerunSemantics, validateEvalRequest } from "../src/evals/index.js";
+import { buildEvalExecutionPlan, evalRerunSemantics, validateEvalRequest } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, readJSON, sha256JSON } from "../src/foundation/index.js";
 
@@ -105,6 +105,31 @@ test("candidate rerun inherits the source execution policy", async (t) => {
   await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
   assert.equal(observed?.maxConcurrentOverride, 2);
   assert.deepEqual(observed?.executionResources, sourceTrial);
+});
+
+test("verifier-only admission reserves the original work limits and runs serially", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-regrade-admission-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID);
+  const request = await validateEvalRequest({ dataset: "demo@1.0", harness_ref: "pi@version:1.2.3", max_concurrent: 4 });
+  const heavy = { ...TRIAL, cpu_millis: 4000, memory_bytes: 4096, container_slots: 2 };
+  const plan = buildEvalExecutionPlan({ evalId: EVAL_ID, request, candidate: { revisionIdentity: `sha256:${"a".repeat(64)}`, artifactId: `sha256:${"b".repeat(64)}` }, tasks: ["task-a"], maxParallelism: 1, trialResources: heavy, workItemMode: "task-slots" });
+  await atomicWriteJSON(path.join(root, "evals", EVAL_ID, "execution-plan.json"), plan);
+  const small = new EvalRerunScheduler({ root, resources: new ResourceLedger(TRIAL), trialResources: TRIAL });
+  await small.initialize();
+  await assert.rejects(small.submit(EVAL_ID, { rerun_type: "verifier-only", selector: { mode: "invalid" } }), /exceeds the daemon resource capacity/);
+  await small.shutdown();
+  const ledger = new ResourceLedger(heavy), blocker = ledger.tryAcquire("another", "eval", TRIAL)!;
+  const observed: RerunEvalOptions[] = [];
+  const scheduler = new EvalRerunScheduler({ root, resources: ledger, trialResources: TRIAL, executor: async options => { observed.push(options); return completedResult(options); } });
+  await scheduler.initialize(); t.after(() => scheduler.shutdown());
+  const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "verifier-only", selector: { mode: "invalid" } });
+  assert.equal((await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status, "queued");
+  assert.equal(observed.length, 0);
+  blocker.release();
+  await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
+  assert.deepEqual(observed[0]?.executionResources, heavy);
+  assert.equal(observed[0]?.maxConcurrentOverride, 1);
 });
 
 test("daemon rerun API preserves requested semantics and rejects unavailable resume", async (t) => {

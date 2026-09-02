@@ -15,7 +15,7 @@ export type EvalRerunType = typeof EVAL_RERUN_TYPES[number];
 export interface EvalRerunSemanticsV1 {
   candidate_action: "restart" | "resume" | "replay" | "none";
   conversation_source: "original-instruction" | "native-session" | "canonical-trajectory" | "none";
-  sandbox_source: "clean" | "checkpoint" | "retained" | "none";
+  sandbox_source: "clean" | "checkpoint" | "retained" | "recorded-artifacts" | "none";
   candidate_executes: boolean;
 }
 
@@ -74,15 +74,15 @@ export function evalRerunSemantics(type: EvalRerunType): EvalRerunSemanticsV1 {
     case "trajectory-replay":
       return { candidate_action: "replay", conversation_source: "canonical-trajectory", sandbox_source: "checkpoint", candidate_executes: true };
     case "verifier-only":
-      return { candidate_action: "none", conversation_source: "none", sandbox_source: "retained", candidate_executes: false };
+      return { candidate_action: "none", conversation_source: "none", sandbox_source: "recorded-artifacts", candidate_executes: false };
     case "collect-only":
       return { candidate_action: "none", conversation_source: "none", sandbox_source: "none", candidate_executes: false };
   }
 }
 
 export function assertEvalRerunTypeSupported(type: EvalRerunType): void {
-  if (type === "candidate-restart" || type === "collect-only") return;
-  const unavailable: Record<Exclude<EvalRerunType, "candidate-restart" | "collect-only">, { code: string; message: string }> = {
+  if (type === "candidate-restart" || type === "collect-only" || type === "verifier-only") return;
+  const unavailable: Record<Exclude<EvalRerunType, "candidate-restart" | "collect-only" | "verifier-only">, { code: string; message: string }> = {
     "candidate-resume": {
       code: "eval_candidate_resume_unavailable",
       message: "candidate-resume requires both a restorable sandbox checkpoint and adapter-native session resume; the current Harbor execution does not retain both",
@@ -90,10 +90,6 @@ export function assertEvalRerunTypeSupported(type: EvalRerunType): void {
     "trajectory-replay": {
       code: "eval_trajectory_replay_unavailable",
       message: "trajectory-replay requires a verified trajectory, a restorable sandbox checkpoint, and explicit adapter replay support; trajectory evidence alone cannot restore tool or process state",
-    },
-    "verifier-only": {
-      code: "eval_verifier_only_rerun_unavailable",
-      message: "verifier-only requires the original retained sandbox; current verifier retries run only while that sandbox is live",
     },
   };
   const failure = unavailable[type];

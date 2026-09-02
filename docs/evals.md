@@ -431,8 +431,32 @@ backward compatibility. Rerun/recovery operations have distinct semantics:
 | `candidate-restart` | Executes again from the original instruction | New conversation | Clean environment | Supported |
 | `candidate-resume` | Continues an interrupted candidate | Provider-native session | Restored checkpoint | Reserved; rejected until both checkpoint and adapter resume exist |
 | `trajectory-replay` | Starts a new physical execution with prior context | Verified canonical trajectory | Restored checkpoint | Reserved; rejected until replay and checkpoint support exist |
-| `verifier-only` | Does not execute | None | Original retained environment | Automatic only while the original trial is live |
-| `collect-only` | Does not execute | None | None | Reserved for terminal-but-uncollected recovery |
+| `verifier-only` | Does not execute | None | Fresh verifier, recorded artifacts | Harbor 0.21.0, frozen standard package, local Docker, original single-step separate verifier |
+| `collect-only` | Does not execute | None | None | Imports a complete late result from an isolated work item |
+
+For a verifier timeout or missing result after a successful candidate, use
+`hitch eval rerun EVAL_ID --invalid --type verifier-only`. The original run,
+trajectory, task, verifier, image references and budgets are preserved. This
+mode rejects incomplete artifacts, shared-environment graders, multi-step tasks,
+and candidate failures. It never selects an alternative task or calls the model.
+
+Each regrade writes an immutable assessment under
+`evals/EVAL_ID/assessments/assessment_ID/`. Its manifest links the original
+candidate bundle, artifact snapshot, task digest, Harbor result, verifier logs,
+resource lease and cleanup evidence, including the original lifecycle receipt
+that Harbor's built-in regrade does not copy. The original run's invalid observation stays
+sealed. A valid assessment replaces the invalid eval slot with the same run/trial
+identity and an `assessment: {id, digest}` reference. In that case,
+`verifier_result_ref` is relative to the assessment directory; otherwise it is
+relative to the run directory. A real zero counts as valid. Another infrastructure
+failure stays invalid and leaves the original slot intact. Artifact digests are
+captured at regrade preparation; older Harbor manifests did not record them at
+candidate completion, so the capture timestamp is explicit.
+
+The daemon admits regrades serially using a conservative maximum of the original
+work-item reservations. Regrade bookkeeping does not create a new candidate run
+or alter the original run's training-data eligibility. Remote dispatch and
+recovering a partially collected artifact set are not supported by this mode.
 
 A canonical trajectory is evidence, not a process checkpoint. Feeding it back
 to an LLM can reconstruct conversational context, but it cannot restore the

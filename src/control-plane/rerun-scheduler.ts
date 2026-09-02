@@ -7,6 +7,7 @@ import {
   evalRerunSemantics,
   rerunEval,
   validateEvalId,
+  parseEvalExecutionPlan,
 } from "../evals/index.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions, RerunSelector } from "../evals/index.js";
 import { EvalEventSink } from "../evals/index.js";
@@ -126,7 +127,7 @@ export class EvalRerunScheduler {
   }
 
   private async submitNew(evalId: EvalId, rerunId: string, input: ParsedRerunInput): Promise<{ evalId: EvalId; rerunId: string; rerunType: EvalRerunType }> {
-    const source = await this.loadSource(evalId);
+    const source = await this.loadSource(evalId, input.rerun_type);
     if (!this.resources.canEverFit(rerunResourceUnit(input.rerun_type, source.execution.resources.default_trial))) {
       throw new HitchError("one rerun trial exceeds the daemon resource capacity", { code: "resource_request_unsatisfiable", exitCode: 10 });
     }
@@ -360,7 +361,7 @@ export class EvalRerunScheduler {
     await atomicWriteJSON(file, next);
   }
 
-  private async loadSource(evalId: EvalId): Promise<{ request: EvalRequest; execution: EvalExecutionPolicyV1 }> {
+  private async loadSource(evalId: EvalId, rerunType: EvalRerunType): Promise<{ request: EvalRequest; execution: EvalExecutionPolicyV1 }> {
     const directory = path.join(this.rerunsRoot, evalId);
     const submissionValue = await readJSON<unknown | null>(path.join(directory, "submission.json"), null);
     const controlValue = await readJSON<unknown | null>(path.join(directory, "control.json"), null);
@@ -375,10 +376,15 @@ export class EvalRerunScheduler {
     if (control.state === "cancelled" || result.status === "cancelled") {
       throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 12 });
     }
-    return {
-      request: submission.request,
-      execution: submission.execution || defaultEvalExecutionPolicy(submission.request, { provider: "local-docker", trialResources: this.trialResources, buildMode: "backend" }),
-    };
+    let execution = submission.execution || defaultEvalExecutionPolicy(submission.request, { provider: "local-docker", trialResources: this.trialResources, buildMode: "backend" });
+    if (rerunType === "verifier-only") {
+      const plan = parseEvalExecutionPlan(await readJSON(path.join(directory, "execution-plan.json")));
+      const upper = { ...execution.resources.default_trial };
+      for (const item of plan.work_items) for (const key of Object.keys(item.reservation) as Array<keyof ResourceVectorV1>) upper[key] = Math.max(upper[key] ?? 0, item.reservation[key] ?? 0);
+      // Artifact regrades run serially and preserve the source resource limits.
+      execution = { ...execution, max_parallelism: 1, resources: { ...execution.resources, default_trial: upper } };
+    }
+    return { request: submission.request, execution };
   }
 
   private async queuedEntry(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, selector: RerunSelector, request: EvalRequest, execution: EvalExecutionPolicyV1, directory: string): Promise<QueuedRerun> {
@@ -415,7 +421,7 @@ export class EvalRerunScheduler {
           await atomicWriteJSON(path.join(directory, "state.json"), { ...state, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() });
           continue;
         }
-        const source = await this.loadSource(evalEntry.name as EvalId);
+        const source = await this.loadSource(evalEntry.name as EvalId, parsed.rerun_type);
         const queued = await this.queuedEntry(evalEntry.name as EvalId, entry.name, parsed.rerun_type, parsed.selector, source.request, source.execution, directory);
         if (state.status === "queued") this.queue.push(queued);
         else await this.fail(queued, "execution_state_ambiguous", "daemon restarted while rerun execution state was ambiguous");

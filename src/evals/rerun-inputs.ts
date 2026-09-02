@@ -1,10 +1,13 @@
 import path from "node:path";
+import type { EvalRequest } from "../domain/index.js";
 import { loadPreparedArtifact, preparedArtifactDirectory } from "../artifacts/index.js";
 import type { ResolvedRevision } from "../artifacts/index.js";
 import { validateLocalGitTransportManifest, verifyLocalGitTransport } from "../backends/index.js";
 import type { HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
 import { HitchError, readJSON } from "../foundation/index.js";
 import { loadHarborArtifact } from "./harbor-artifact-builder.js";
+import { validateEvalRequest } from "./request.js";
+import { frozenRerunBenchmark } from "./verifier-only-rerun.js";
 
 interface RerunInputPlan {
   candidate: Record<string, unknown>;
@@ -102,4 +105,20 @@ function requiredString(value: unknown, label: string): string {
 
 function unavailable(message: string): HitchError {
   return new HitchError(message, { code: "eval_rerun_unavailable", exitCode: 2 });
+}
+
+export async function loadPersistedRerunRequest(value: unknown, evalDirectory: string): Promise<EvalRequest> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable("eval request is invalid");
+  const persisted = value as Record<string, unknown>;
+  const input = Object.fromEntries(Object.entries(persisted).filter(([key]) => key !== "benchmark_id" && key !== "benchmark_revision"));
+  let request = await validateEvalRequest(input);
+  const benchmark = await frozenRerunBenchmark(evalDirectory);
+  if (benchmark) {
+    if (request.dataset !== benchmark.tasks) throw unavailable("compiled dataset path changed");
+    request = { ...request, benchmark_id: benchmark.id, benchmark_revision: benchmark.revision };
+  }
+  if (persisted.benchmark_id !== request.benchmark_id || persisted.benchmark_revision !== request.benchmark_revision) {
+    throw unavailable("eval dataset identity changed since the original run");
+  }
+  return request;
 }

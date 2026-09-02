@@ -24,6 +24,7 @@ import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./intera
 import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-import-identity.js";
 import { writeEvalTrialPublication } from "./trial-publication.js";
 import type { EvalTrialPublicationMode } from "./trial-publication.js";
+import { readRegradeObservation } from "./regrade-evidence.js";
 export interface ImportEvalRunsOptions {
   root: string;
   evalId: string;
@@ -123,14 +124,12 @@ export async function importEvalTrialRun(
     }
   }
 }
-
 export class TrialBundlePendingError extends Error {
   constructor(readonly trialId: string) {
     super(`Harbor trial bundle is not ready: ${trialId}`);
     this.name = "TrialBundlePendingError";
   }
 }
-
 export class TrialIdentityConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -492,9 +491,10 @@ export async function validateEvalTrialReferences(
       throw new Error(`eval trial ${trial.trial_id} parent mismatch`);
     }
     if (record.context.task_id !== trial.task_id) throw new Error(`eval trial ${trial.trial_id} task mismatch`);
-    if (record.observation?.status !== trial.observation_status) throw new Error(`eval trial ${trial.trial_id} observation status mismatch`);
-    if (record.observation?.reward !== trial.reward) throw new Error(`eval trial ${trial.trial_id} reward mismatch`);
-    if (record.observation?.verifier_result_ref !== trial.verifier_result_ref) throw new Error(`eval trial ${trial.trial_id} verifier ref mismatch`);
-    if (record.observation?.invalid_reason !== trial.invalid_reason) throw new Error(`eval trial ${trial.trial_id} invalid reason mismatch`);
+    const observation = trial.assessment ? await readRegradeObservation(root, evalId, trial) : record.observation;
+    if (observation?.status !== trial.observation_status) throw new Error(`eval trial ${trial.trial_id} observation status mismatch`);
+    if (observation?.reward !== trial.reward) throw new Error(`eval trial ${trial.trial_id} reward mismatch`);
+    if (observation?.verifier_result_ref !== trial.verifier_result_ref) throw new Error(`eval trial ${trial.trial_id} verifier ref mismatch`);
+    if (observation?.invalid_reason !== trial.invalid_reason) throw new Error(`eval trial ${trial.trial_id} invalid reason mismatch`);
   }
 }

@@ -189,6 +189,9 @@ export function parseEvalTrialRef(value: unknown, label = "eval trial"): EvalTri
   if (trial.verifier_result_ref !== undefined && (typeof trial.verifier_result_ref !== "string" || !trial.verifier_result_ref)) {
     throw new TypeError(`${label} verifier ref is invalid`);
   }
+  const assessment = trial.assessment as { id?: unknown; digest?: unknown } | undefined;
+  if (assessment !== undefined && (!assessment || typeof assessment.id !== "string" || !/^assessment_[a-f0-9]{32}$/.test(assessment.id)
+    || typeof assessment.digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(assessment.digest))) throw new TypeError(`${label} assessment is invalid`);
   return {
     trial_id: trial.trial_id,
     run_id: trial.run_id,
@@ -198,5 +201,6 @@ export function parseEvalTrialRef(value: unknown, label = "eval trial"): EvalTri
     ...(trial.reward === undefined ? {} : { reward: trial.reward as number }),
     ...(trial.verifier_result_ref === undefined ? {} : { verifier_result_ref: trial.verifier_result_ref as string }),
     ...(trial.invalid_reason === undefined ? {} : { invalid_reason: trial.invalid_reason as string }),
+    ...(assessment ? { assessment: { id: assessment.id as string, digest: assessment.digest as string } } : {}),
   };
 }

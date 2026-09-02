@@ -88,7 +88,8 @@
           "observation_status": { "enum": ["valid", "invalid"] },
           "reward": { "type": "number" },
           "verifier_result_ref": { "type": "string", "minLength": 1 },
-          "invalid_reason": { "type": "string", "minLength": 1 }
+          "invalid_reason": { "type": "string", "minLength": 1 },
+          "assessment": { "$ref": "regrade-assessment-reference.schema.json" }
         }
       }
     },

@@ -25,7 +25,7 @@
       "properties": {
         "candidate_action": { "enum": ["restart", "resume", "replay", "none"] },
         "conversation_source": { "enum": ["original-instruction", "native-session", "canonical-trajectory", "none"] },
-        "sandbox_source": { "enum": ["clean", "checkpoint", "retained", "none"] },
+        "sandbox_source": { "enum": ["clean", "checkpoint", "retained", "recorded-artifacts", "none"] },
         "candidate_executes": { "type": "boolean" }
       }
     },

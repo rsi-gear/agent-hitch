@@ -7,6 +7,8 @@ export interface EvalTrialRefV1 {
   reward?: number;
   verifier_result_ref?: string;
   invalid_reason?: string;
+  /** Separate immutable verifier evidence; run_id still names the original candidate. */
+  assessment?: { id: string; digest: string };
 }
 
 export interface EvalResultV1 {

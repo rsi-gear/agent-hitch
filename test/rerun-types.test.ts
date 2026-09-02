@@ -30,7 +30,7 @@ test("eval rerun types have explicit candidate, conversation, and sandbox semant
   assert.deepEqual(evalRerunSemantics("verifier-only"), {
     candidate_action: "none",
     conversation_source: "none",
-    sandbox_source: "retained",
+    sandbox_source: "recorded-artifacts",
     candidate_executes: false,
   });
 });
@@ -38,10 +38,10 @@ test("eval rerun types have explicit candidate, conversation, and sandbox semant
 test("restart and collection are executable while resume prerequisites remain explicit", () => {
   assert.doesNotThrow(() => assertEvalRerunTypeSupported("candidate-restart"));
   assert.doesNotThrow(() => assertEvalRerunTypeSupported("collect-only"));
+  assert.doesNotThrow(() => assertEvalRerunTypeSupported("verifier-only"));
   const expected = new Map([
     ["candidate-resume", "eval_candidate_resume_unavailable"],
     ["trajectory-replay", "eval_trajectory_replay_unavailable"],
-    ["verifier-only", "eval_verifier_only_rerun_unavailable"],
   ]);
   for (const [type, code] of expected) {
     assert.throws(

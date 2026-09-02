@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hitch immutable verifier-only assessment reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "digest"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^assessment_[a-f0-9]{32}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}
