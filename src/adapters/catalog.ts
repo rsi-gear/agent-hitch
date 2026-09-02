@@ -29,6 +29,7 @@ export function publicDefinition(definition: AdapterDefinition): PublicAdapterDe
     command: definition.command,
     path_env: definition.path_env,
     capabilities: definition.capabilities,
+    requirements: definition.requirements,
     revision_selectors: ["installed", ...Object.keys(revisionSources)],
     revision_sources: Object.fromEntries(Object.entries(revisionSources).map(([selector, source]) => [
       selector,

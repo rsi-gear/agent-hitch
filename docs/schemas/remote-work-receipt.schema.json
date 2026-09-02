@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-work-receipt.schema.json",
+  "title": "Hitch remote work receipt V1",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "offer_id", "nonce", "generation", "accepted", "sent_at"],
+      "properties": {
+        "schema_version": { "const": "1" }, "offer_id": { "$ref": "#/$defs/offerId" }, "nonce": { "$ref": "#/$defs/nonce" },
+        "generation": { "type": "integer", "minimum": 1 }, "accepted": { "type": "boolean" },
+        "rejection_code": { "type": "string", "minLength": 1 }, "sent_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "offer_id", "nonce", "generation", "lease_id", "epoch", "status", "artifacts", "sent_at"],
+      "properties": {
+        "schema_version": { "const": "1" }, "offer_id": { "$ref": "#/$defs/offerId" }, "nonce": { "$ref": "#/$defs/nonce" },
+        "generation": { "type": "integer", "minimum": 1 }, "lease_id": { "$ref": "#/$defs/leaseId" }, "epoch": { "type": "integer", "minimum": 1 },
+        "status": { "enum": ["succeeded", "failed", "cancelled"] },
+        "artifacts": {
+          "type": "array", "items": {
+            "type": "object", "additionalProperties": false, "required": ["kind", "digest", "size"],
+            "properties": {
+              "kind": { "enum": ["result-bundle", "diagnostic"] }, "digest": { "$ref": "#/$defs/sha256" },
+              "size": { "type": "integer", "minimum": 0, "maximum": 536870912 }
+            }
+          }
+        },
+        "sent_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "offer_id", "nonce", "generation", "lease_id", "epoch", "sent_at"],
+      "properties": {
+        "schema_version": { "const": "1" }, "offer_id": { "$ref": "#/$defs/offerId" }, "nonce": { "$ref": "#/$defs/nonce" },
+        "generation": { "type": "integer", "minimum": 1 }, "lease_id": { "$ref": "#/$defs/leaseId" },
+        "epoch": { "type": "integer", "minimum": 1 }, "sent_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  ],
+  "$defs": {
+    "offerId": { "type": "string", "pattern": "^offer_[a-f0-9]{32}$" },
+    "leaseId": { "type": "string", "pattern": "^lease_[a-f0-9]{32}$" },
+    "nonce": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

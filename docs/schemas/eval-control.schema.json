@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/eval-control.schema.json",
+  "title": "Hitch control-plane eval state V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "eval_id", "generation", "state", "requested_parallelism", "admitted_parallelism", "active_leases", "queued_work_items", "terminal_work_items", "created_at", "updated_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+    "generation": { "type": "integer", "minimum": 0 },
+    "state": { "enum": ["queued", "planning", "preparing", "running", "finalizing", "cancelling", "succeeded", "failed", "cancelled"] },
+    "requested_parallelism": { "type": "integer", "minimum": 1 },
+    "admitted_parallelism": { "type": "integer", "minimum": 0 },
+    "active_leases": { "$ref": "#/$defs/leases" },
+    "queued_work_items": { "$ref": "#/$defs/workItems" },
+    "terminal_work_items": { "$ref": "#/$defs/workItems" },
+    "allocation_id": { "type": "string", "pattern": "^allocation_[a-f0-9]{32}$" },
+    "cancel_requested_at": { "type": "string", "format": "date-time" },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "message": { "type": "string", "maxLength": 4096 }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "leases": { "type": "array", "items": { "type": "string", "pattern": "^lease_[a-f0-9]{32}$" }, "uniqueItems": true },
+    "workItems": { "type": "array", "items": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" }, "uniqueItems": true }
+  }
+}

@@ -1,66 +1,58 @@
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
-import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../artifacts/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths } from "../foundation/index.js";
+import { resolveHarness } from "../artifacts/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, credentialValuesFromEnv, ensureDir, invalidInput, safeDiagnosticMessage, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
-import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse } from "../backends/index.js";
-import { ensureControllerRuntime, writeRuntimeReference } from "../controller-runtime/index.js";
-import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { EvalId, EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
+import type { HarborBackendResult, LocalGitTransportUse } from "../backends/index.js";
+import { ensureControllerRuntime, writeRuntimeReference, type ControllerRuntimeUseResult } from "../controller-runtime/index.js";
+import type { EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { EvalEventSink } from "./events.js";
 import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
-import { infrastructureFailureTrials, runInfrastructureRetries } from "./infrastructure-retry.js";
-import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
+import { infrastructureFailureTrials, runInfrastructureRetries, type InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 import { invalidTrialSlots } from "./rerun-slots.js";
-import type { EvalRequestInput } from "./request.js";
-export interface RunEvalOptions {
-  evalId?: EvalId;
-  request: EvalRequestInput;
-  root: string;
-  env?: NodeJS.ProcessEnv;
-  harborExecutable?: string;
-  signal?: AbortSignal;
-  onEvent?: (event: Record<string, unknown>) => void;
-  trialBundleGraceMs?: number;
-}
-
-export interface EvalResult extends Record<string, unknown> {
-  schema_version: string;
-  eval_id: EvalId;
-  status: string;
-  exit_code: number;
-  error?: { code: string; message: string };
-  started_at: string;
-  completed_at: string;
-}
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs }: RunEvalOptions): Promise<EvalResult> {
+import { prepareEvalDirectory } from "./directory.js";
+import { buildEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
+import { planLocalEvalInputs } from "./local-eval-planning.js";
+import { resolvedImageMapping } from "./environment-image-planning.js";
+import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
+import { executePlannedHarborTasks } from "./planned-execution.js";
+import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
+import type { EvalResult, RunEvalOptions } from "./service-types.js";
+import { modelCaptureDegradationEvent, resolveEvalModelCapturePlan } from "./model-capture-plan.js";
+import { finalizeEvalResult } from "./eval-finalization.js";
+import { prepareHostHarborArtifactForTest } from "./prepared-harness.js";
+import { prepareHarborArtifact } from "./harbor-artifact-builder.js";
+import { prepareEvalArtifactAssignments, preparedArtifactPlanFields } from "./eval-artifact-planning.js";
+import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
+import { recoverPromotedEvalTrialPublications } from "./trial-publication-recovery.js";
+import { emitEvalPlanLifecycle } from "./eval-lifecycle-events.js";
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
-  const normalized = await validateEvalRequest(request);
-  const evalsDirectory = await ensureDir(statePaths(root).evals);
-  const evalDirectory = path.join(evalsDirectory, evalId);
-  try {
-    await mkdir(evalDirectory, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new HitchError(`eval ID already exists: ${evalId}`, { code: "eval_id_conflict", exitCode: 2 });
-    }
-    throw error;
+  const persistedRequest = normalizedRequest || await validateEvalRequest(request);
+  if (maxConcurrentOverride !== undefined && (!Number.isSafeInteger(maxConcurrentOverride) || maxConcurrentOverride < 1 || maxConcurrentOverride > persistedRequest.max_concurrent)) {
+    throw invalidInput("control-plane max concurrency override is invalid");
   }
-  const startedAt = new Date();
+  const normalized = maxConcurrentOverride === undefined ? persistedRequest : { ...persistedRequest, max_concurrent: maxConcurrentOverride };
+  const evalsDirectory = await ensureDir(statePaths(root).evals);
+  const evalDirectory = await prepareEvalDirectory({ evalsDirectory, evalId, request: persistedRequest, precreated });
+  let startedAt = new Date();
   const sink = new EvalEventSink(evalDirectory, evalId, onEvent);
   await sink.open();
-  await atomicWriteJSON(path.join(evalDirectory, "request.json"), normalized);
   let result: EvalResult;
   let trialRefs: import("../domain/index.js").EvalTrialRefV1[] = [];
   let progress: EvalProgressV1 | null = null;
+  let captureRuntime: Awaited<ReturnType<typeof startEvalModelCaptureRuntime>> | undefined;
   try {
+    const planningStartedAt = Date.now();
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
+    sink.emit({ type: "eval.planning.started" });
+    await onControlPhase?.("planning");
     const requestedReference = parseHarnessReference(normalized.harness_ref);
     const resolvedRevision = await resolveHarness(normalized.harness_ref, { root, env });
+    await onControlPhase?.("preparing");
     let localTransport: LocalGitTransportUse | undefined;
     if (resolvedRevision.source.type === "git" && resolvedRevision.source.registered !== true) {
       const selector = requestedReference.selector;
@@ -84,50 +76,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         status: "verified",
       });
     }
-    const selector = requestedReference.selector;
-    const verifiedLocalGitSource = localTransport && selector.type === "commit" && selector.source?.explicit
-      ? {
-          directory: selector.source.local_path,
-          commit: localTransport.manifest.commit,
-          tree: localTransport.manifest.tree,
-          resolutionIdentity: localTransport.manifest.resolution_identity,
-          payloadSha256: localTransport.manifest.payload_sha256,
-        }
-      : undefined;
-    const artifact = await prepareHarness(resolvedRevision, {
-      root,
-      env,
-      ...(signal ? { signal } : {}),
-      ...(verifiedLocalGitSource ? { verifiedLocalGitSource } : {}),
-    });
-    if (!artifact.artifact_integrity || !artifact.entrypoint_integrity) {
-      throw new HitchError("host-prepared harness artifact has no complete integrity metadata", {
-        code: "artifact_integrity_mismatch",
-        exitCode: 5,
-      });
-    }
-    const preparedArtifact: HarborPreparedArtifactUse = {
-      directory: preparedArtifactDirectory(root, artifact.artifact_id),
-      artifact_id: artifact.artifact_id,
-      artifact_integrity: artifact.artifact_integrity,
-      entrypoint_integrity: artifact.entrypoint_integrity,
-      harness_id: artifact.harness_id,
-      revision_identity: artifact.revision_identity,
-      adapter_version: artifact.adapter_version,
-      recipe_version: artifact.recipe_version,
-      platform: artifact.platform,
-      node_version: artifact.toolchain.node || process.version,
-      source_type: artifact.source_type,
-    };
-    sink.emit({
-      type: "eval.harness-artifact.prepared",
-      harness: artifact.harness_id,
-      artifact_id: artifact.artifact_id,
-      platform: artifact.platform,
-      cache_hit: artifact.cache_hit,
-    });
-    // Phase 2: the shared, read-only, SHA-256-addressed controller runtime
-    // cache replaces the per-eval Hitch runtime copy (spec §4).
     const controllerRuntime: ControllerRuntimeUseResult = await ensureControllerRuntime({ root });
     const runtimeRefFile = await writeRuntimeReference(evalDirectory, controllerRuntime);
     sink.emit({
@@ -137,9 +85,25 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       reference: runtimeRefFile,
     });
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
+    const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
+    await withEnvironmentImageReferenceLock(root, () => beginEvalEnvironmentImagePlanning(evalDirectory, evalId));
+    const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, harborTaskResourceInspector: path.join(controllerRuntime.directory, "payload", "integrations", "harbor", "hitch_harbor_task_resources.py"), ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
+    await withEnvironmentImageReferenceLock(root, () => writeEvalEnvironmentImageReferences(evalDirectory, evalId, localPlanning.environmentImages));
+    const selectedArtifactBuilder = harborArtifactBuilder ?? (env.NODE_ENV === "test" && env.HITCH_TEST_HOST_ARTIFACT_BUILDER === "1" ? prepareHostHarborArtifactForTest : prepareHarborArtifact);
+    const prepared = await prepareEvalArtifactAssignments({ builder: selectedArtifactBuilder, root, resolvedRevision, requestedReference, controllerRuntime, ...(localTransport ? { localTransport } : {}), taskRuntimeContracts: localPlanning.taskRuntimeContracts, sink, env, ...(signal ? { signal } : {}) });
+    const preparedAssignments = prepared.assignments;
+    const preparedArtifact = prepared.primary;
+    const preparedArtifacts = prepared.artifactsById;
+    const multipleRuntimeContracts = preparedAssignments.length > 1;
+    const taskResources = localPlanning.taskResources;
     const plannedTasks = localTaskIds?.length ?? null;
     const plannedTrials = plannedTasks === null ? null : plannedTasks * normalized.attempts;
     if (plannedTrials !== null && !Number.isSafeInteger(plannedTrials)) throw invalidInput("planned trial count exceeds the safe integer range");
+    if (resume) startedAt = new Date(resume.progress.started_at);
+    const capture = resolveEvalModelCapturePlan({ requested: modelCapturePlan, resumed: resume?.executionPlan.model_capture, resuming: Boolean(resume) });
+    const activeCaptureRuntime = await startEvalModelCaptureRuntime({ plan: capture.plan, evalId, evalDirectory, env });
+    captureRuntime = activeCaptureRuntime;
+    capture.plan = activeCaptureRuntime.plan;
     const plan = {
       schema_version: SCHEMA_VERSION,
       eval_id: evalId,
@@ -156,8 +120,11 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
       attempts: normalized.attempts,
-      attempt_execution: "harbor-attempt-shards-v1",
+      attempt_execution: (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null
+        ? "harbor-task-slots-v1"
+        : "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
+      ...(capture.persist ? { model_capture: capture.plan } : {}),
       infrastructure_retries: normalized.infrastructure_retries,
       infrastructure_retry_backoff_ms: normalized.infrastructure_retry_backoff_ms,
       ...(localTaskIds === null ? {} : { tasks: localTaskIds }),
@@ -165,13 +132,46 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtime_id: controllerRuntime.runtime_id,
         manifest_digest: controllerRuntime.manifest_digest,
       },
-      prepared_artifact: preparedArtifactSummary(preparedArtifact),
+      ...preparedArtifactPlanFields(preparedAssignments),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
-      created_at: new Date().toISOString(),
+      created_at: typeof resume?.plan.created_at === "string" ? resume.plan.created_at : new Date().toISOString(),
     };
-    await atomicWriteJSON(path.join(evalDirectory, "resolution.json"), resolvedRevision);
-    await atomicWriteJSON(path.join(evalDirectory, "plan.json"), plan);
-    progress = createEvalProgress({
+    const expectedExecutionPlan = buildEvalExecutionPlan({
+      evalId,
+      request: normalized,
+      candidate: {
+        revisionIdentity: resolvedRevision.identity,
+        artifactId: preparedArtifact.artifact_id,
+        artifactAssignments: preparedAssignments.map((entry) => ({
+          taskIds: entry.taskIds,
+          artifactId: entry.artifact.artifact_id,
+          runtimeContract: {
+            docker_platform: entry.runtimeContract.dockerPlatform,
+            artifact_platform: entry.runtimeContract.artifactPlatform,
+            node_version: entry.runtimeContract.nodeVersion,
+          },
+        })),
+      },
+      tasks: localTaskIds,
+      maxParallelism: normalized.max_concurrent,
+      ...(executionResources ? { trialResources: executionResources } : {}),
+      ...(taskResources ? { taskResources } : {}),
+      ...(localPlanning.environmentImages.length > 0 ? { environmentImages: localPlanning.environmentImages } : {}),
+      ...(localPlanning.environmentImageFallbacks.length > 0 ? { environmentImageFallbacks: localPlanning.environmentImageFallbacks } : {}),
+      ...(executionWorker ? { provider: executionWorker.provider } : {}),
+      modelCapture: capture.persist ? capture.plan : null,
+      ...((executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
+      createdAt: plan.created_at,
+    });
+    if (resume) assertEvalResumeState({ state: resume, expectedPlan: plan, expectedExecutionPlan, expectedResolutionIdentity: resolvedRevision.identity, plannedTasks, plannedTrials });
+    else await Promise.all([
+      atomicWriteJSON(path.join(evalDirectory, "resolution.json"), resolvedRevision),
+      atomicWriteJSON(path.join(evalDirectory, "plan.json"), plan),
+      atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), expectedExecutionPlan),
+    ]);
+    const executionPlan = resume?.executionPlan ?? expectedExecutionPlan;
+    const captureDegradation = modelCaptureDegradationEvent(executionPlan.model_capture); if (captureDegradation) sink.emit(captureDegradation);
+    progress = resume?.progress ?? createEvalProgress({
       evalId,
       benchmarkId: normalized.benchmark_id,
       benchmarkRevision: normalized.benchmark_revision,
@@ -179,7 +179,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       plannedTrials,
       startedAt: startedAt.toISOString(),
     });
-    await writeEvalProgress(evalDirectory, progress);
+    if (!resume) await writeEvalProgress(evalDirectory, progress);
+    else progress = (await recoverPromotedEvalTrialPublications({ root, evalDirectory, plan: executionPlan, progress, sink })).progress;
     sink.emit({
       type: "eval.planned",
       harness: resolvedRevision.harness_id,
@@ -187,7 +188,11 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       attempts: normalized.attempts,
       planned_tasks: plannedTasks,
       planned_trials: plannedTrials,
+      work_items: executionPlan.work_items.length,
+      membership: executionPlan.membership,
     });
+    emitEvalPlanLifecycle(sink, executionPlan, planningStartedAt);
+    await onControlPhase?.("running", executionPlanWorkState(executionPlan, progress));
     if (localTransport) {
       await verifyLocalGitTransport(localTransport, {
         expected: {
@@ -199,9 +204,49 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(signal ? { signal } : {}),
       });
     }
-    const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
+    const backendRuns: Array<{ attempt: number; run: HarborBackendResult; workId?: string; tasks?: string[]; leaseId?: string }> = [];
     const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
-    for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
+    const plannedTaskExecution = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null;
+    if (plannedTaskExecution) {
+      const execution = await executePlannedHarborTasks({
+        evalId,
+        evalDirectory,
+        plan: executionPlan,
+        progress,
+        request: normalized,
+        root,
+        resolvedRevision,
+        controllerRuntime,
+        preparedArtifact,
+        preparedArtifacts,
+        ...(localTransport ? { localTransport } : {}),
+        env,
+        ...(harborExecutable !== undefined ? { harborExecutable } : {}),
+        ...(signal ? { signal } : {}),
+        ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
+        sink,
+        worker: executionWorker || {
+          workerId: `worker_process_${process.pid}`,
+          provider: "local-docker",
+          collisionDomainId: `local-process:${process.pid}`,
+        },
+        ...(workItemAdmission ? { admission: workItemAdmission } : {}),
+        ...(onWorkItemState ? { onWorkItemState } : {}),
+        ...(dockerResourceReaper ? { dockerResourceReaper } : {}),
+        ...(environmentImageManifestLoader ? { environmentImageManifestLoader } : {}),
+        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
+        ...(remoteWorkExecutor ? { remoteWorkExecutor } : {}),
+      });
+      progress = execution.progress;
+      backendRuns.push(...execution.backendRuns.map((entry) => ({
+        attempt: entry.attempt,
+        run: entry.run,
+        workId: entry.workId,
+        tasks: entry.tasks,
+        leaseId: entry.leaseId,
+      })));
+      infrastructureRetryRuns.push(...execution.infrastructureRetryRuns);
+    } else for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
       if (signal?.aborted) break;
       const backendDirectory = normalized.attempts === 1
         ? path.join(evalDirectory, "harbor")
@@ -247,7 +292,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtimeDirectory: controllerRuntime.directory,
         runtimeId: controllerRuntime.runtime_id,
         preparedArtifact,
-        ...(localTransport ? { localTransport } : {}),
+        ...(activeCaptureRuntime.exporter ? { modelProxy: activeCaptureRuntime.exporter.route } : {}),
+        resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
+        ...(executionResources ? { executionResources } : {}),
         env,
         ...(harborExecutable !== undefined ? { harborExecutable } : {}),
         ...(signal ? { signal } : {}),
@@ -266,6 +313,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
               benchmarkId: normalized.benchmark_id,
               benchmarkRevision: normalized.benchmark_revision,
               runtimeId: controllerRuntime.runtime_id,
+              env,
+              modelCapturePlan: activeCaptureRuntime.plan,
+              ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
               requireCompleteMarker: true,
               allowMissingBundleDiagnostic: context.bundleWaitExpired,
             }, trial, shardRefs.length, shardRefs);
@@ -289,6 +339,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         benchmarkId: normalized.benchmark_id,
         benchmarkRevision: normalized.benchmark_revision,
         runtimeId: controllerRuntime.runtime_id,
+        env,
+        modelCapturePlan: activeCaptureRuntime.plan,
+        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
         rawResult: backendRun.rawResult,
       }, shardRefs);
       for (const ref of terminalRefs) await publish(ref);
@@ -311,6 +364,10 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         resolvedRevision,
         controllerRuntime,
         preparedArtifact,
+        resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
+        ...(executionResources ? { executionResources } : {}),
+        modelCapturePlan: activeCaptureRuntime.plan,
+        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
         ...(localTransport ? { localTransport } : {}),
         env,
         ...(harborExecutable !== undefined ? { harborExecutable } : {}),
@@ -323,14 +380,16 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       infrastructureRetryRuns.push(...retries.runs);
     }
     if (progress === null) throw new Error("eval progress was not initialized");
+    await onControlPhase?.("finalizing");
     trialRefs = progress.trials;
     const cancelled = signal?.aborted === true;
     const localSourceFailure = localTransport
       ? backendRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
         || infrastructureRetryRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
       : false;
-    const backendsSucceeded = backendRuns.length === normalized.attempts
-      && backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null);
+    const expectedBackendRuns = plannedTaskExecution ? executionPlan.work_items.length : normalized.attempts;
+    const backendsSucceeded = backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null)
+      && (plannedTaskExecution ? progress.trials.length === plannedTrials : backendRuns.length === expectedBackendRuns);
     const invalidTrials = localTaskIds === null
       ? trialRefs.filter((trial) => trial.observation_status !== "valid").map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }))
       : invalidTrialSlots(localTaskIds, normalized.attempts, progress);
@@ -348,7 +407,16 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       status: cancelled ? "cancelled" : succeeded ? "succeeded" : "failed",
       exit_code: cancelled ? 9 : succeeded ? 0 : 13,
       ...(singleBackend ? { backend: singleBackend.backend, backend_summary: singleBackend.summary } : {}),
-      ...(normalized.attempts > 1 ? {
+      ...(plannedTaskExecution ? {
+        backend_work_items: backendRuns.map(({ attempt, workId, tasks, leaseId, run }) => ({
+          work_id: workId,
+          lease_id: leaseId,
+          attempt,
+          tasks,
+          backend: run.backend,
+          backend_summary: run.summary,
+        })),
+      } : normalized.attempts > 1 ? {
         backend_runs: backendRuns.map(({ attempt, run }) => ({
           attempt,
           backend: run.backend,
@@ -362,8 +430,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         candidate_rerun_on_verifier_failure: false,
       },
       ...(infrastructureRetryRuns.length > 0 ? {
-        infrastructure_retry_runs: infrastructureRetryRuns.map(({ attempt, retry, tasks, triggers, refs, run }) => ({
-          attempt,
+        infrastructure_retry_runs: infrastructureRetryRuns.map(({ attempt, retry, tasks, triggers, refs, run, leaseId, workId }) => ({
+          execution_kind: "physical-infrastructure-retry", ...(leaseId ? { lease_id: leaseId } : {}), ...(workId ? { work_id: workId } : {}), attempt,
           retry,
           tasks,
           trigger_trials: triggers,
@@ -379,7 +447,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       generation: progress.generation,
       trials: trialRefs,
       summary: summarizeTrialRefs(trialRefs),
-      prepared_artifact: preparedArtifactSummary(preparedArtifact),
+      ...preparedArtifactPlanFields(preparedAssignments),
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       ...(succeeded ? {} : {
         error: {
@@ -397,7 +465,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
             : localSourceFailure
               ? "Harbor rejected the transported local Git source before candidate execution"
               : !backendsSucceeded
-                ? `Harbor attempt shards completed ${backendRuns.length}/${normalized.attempts}`
+                ? `Harbor work items completed ${backendRuns.length}/${expectedBackendRuns}`
                 : infrastructureFailures.length > 0
                   ? `${infrastructureErrorCode === "eval_infrastructure_retries_exhausted" ? "infrastructure retries exhausted" : "verifier infrastructure failure"}: ${infrastructureFailureSlots.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`
                 : `eval has invalid or missing trials: ${invalidTrials.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`,
@@ -416,7 +484,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       exit_code: signal?.aborted ? 9 : typed ? error.exitCode : 12,
       error: {
         code: signal?.aborted ? "cancelled" : typed ? error.code : "internal_error",
-        message: (error as Error)?.message || String(error),
+        message: safeDiagnosticMessage(error, credentialValuesFromEnv(normalized.pass_env, env)),
       },
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
@@ -426,75 +494,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       completed_at: new Date().toISOString(),
     };
   }
-  await atomicWriteJSON(path.join(evalDirectory, "result.json"), result);
-  sink.emit({ type: result.status === "succeeded" ? "eval.completed" : "eval.failed", status: result.status, exit_code: result.exit_code, error: result.error });
-  await sink.close();
-  return result;
-}
-
-function assertBackendTrialSet(rawResult: Record<string, unknown> | null, refs: readonly EvalTrialRefV1[]): void {
-  const trials = Array.isArray(rawResult?.trial_results) ? rawResult.trial_results as Record<string, unknown>[] : [];
-  const backendIds = new Set(trials.map((trial) => typeof trial.trial_name === "string" ? trial.trial_name : null).filter((value): value is string => value !== null));
-  const refIds = new Set(refs.map((ref) => ref.trial_id));
-  if (backendIds.size !== trials.length || backendIds.size !== refIds.size || [...backendIds].some((id) => !refIds.has(id))) {
-    throw new Error("Harbor terminal trial set does not match published eval progress");
-  }
-}
-
-function attemptDirectoryName(attempt: number): string {
-  return `attempt-${String(attempt).padStart(4, "0")}`;
-}
-
-export function summarizeTrialRefs(trials: import("../domain/index.js").EvalTrialRefV1[]): Record<string, unknown> {
-  const valid = trials.filter((trial) => trial.observation_status === "valid" && typeof trial.reward === "number");
-  const rewards = valid.map((trial) => trial.reward as number);
-  const aggregate = rewards.length
-    ? {
-        count: rewards.length,
-        mean: rewards.reduce((sum, reward) => sum + reward, 0) / rewards.length,
-        min: Math.min(...rewards),
-        max: Math.max(...rewards),
-      }
-    : null;
-  return {
-    n_trials: trials.length,
-    n_completed: valid.length,
-    n_invalid: trials.length - valid.length,
-    primary_reward: aggregate?.mean ?? null,
-    rewards: aggregate ? { reward: aggregate } : {},
-  };
-}
-
-function localSourceBackendFailure(rawResult: Record<string, unknown> | null): boolean {
-  if (!rawResult) return false;
-  // The bridge uses this fixed, non-secret marker when setup cannot verify or
-  // materialize the uploaded source. Do not surface provider exception text in
-  // the durable Hitch error, because it may contain backend diagnostics.
-  return JSON.stringify(rawResult).includes("hitch-local-source-materialize:");
-}
-
-function transportSummary(transport: LocalGitTransportUse): Record<string, unknown> {
-  const manifest = transport.manifest;
-  return {
-    kind: manifest.kind,
-    resolution_identity: manifest.resolution_identity,
-    commit: manifest.commit,
-    tree: manifest.tree,
-    payload_sha256: manifest.payload_sha256,
-    payload_bytes: manifest.payload_bytes,
-    object_count: manifest.object_count,
-    file_count: manifest.file_count,
-  };
-}
-
-function preparedArtifactSummary(artifact: HarborPreparedArtifactUse): Record<string, unknown> {
-  return {
-    artifact_id: artifact.artifact_id,
-    artifact_integrity: artifact.artifact_integrity,
-    entrypoint_integrity: artifact.entrypoint_integrity,
-    harness_id: artifact.harness_id,
-    revision_identity: artifact.revision_identity,
-    platform: artifact.platform,
-    source_type: artifact.source_type,
-  };
+  if (captureRuntime) await captureRuntime.close().catch((error) => sink.emit({ type: "interaction.capture.close-failed", code: (error as { code?: string }).code || "model_capture_close_failed" }));
+  return finalizeEvalResult(evalDirectory, sink, result);
 }

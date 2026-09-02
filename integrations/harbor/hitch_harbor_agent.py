@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-import errno
 import hashlib
 import json
-import os
 import re
 import shlex
-import shutil
 import stat as stat_module
 import tempfile
+import time
 import uuid
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -22,12 +20,7 @@ from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.agent.context import AgentContext
 
 CONTROLLER_RUNTIME_MANIFEST_VERSION = "2"
-LOCAL_GIT_TRANSPORT_MANIFEST_VERSION = "1"
-HARNESS_ARTIFACT_MANIFEST_VERSION = "1"
-LOCAL_GIT_TRANSPORT_MAX_BYTES = 512 * 1024 * 1024
-LOCAL_GIT_REMOTE_ROOT = "/opt/hitch-local-source"
 HARNESS_ARTIFACT_REMOTE_ROOT = "/opt/hitch-harness-artifact"
-HITCH_CONTAINER_STATE_ROOT = "/tmp/hitch-state"
 HITCH_BRIDGE_ERROR_LOG = "/logs/agent/hitch-bridge-error.json"
 HITCH_DIAGNOSTIC_MAX_BYTES = 8 * 1024
 HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024
@@ -56,16 +49,22 @@ class HitchHarborAgent(BaseAgent):
         candidate_id: str = "candidate-1",
         controller_runtime_id: str | None = None,
         harness_artifact: dict[str, Any] | None = None,
+        node_version: str = "v22.23.0",
+        # Legacy parameters are accepted only so old persisted jobs fail at
+        # the explicit artifact handoff boundary instead of leaking unknown
+        # kwargs into Harbor's BaseAgent. New jobs pass neither value.
         harness_artifact_cache_dir: str | None = None,
         local_source_transport: dict[str, Any] | None = None,
         hitch_timeout_ms: int = 900_000,
         agent_args: list[str] | None = None,
+        credential_names: list[str] | None = None,
         workdir: str | None = None,
         eval_id: str | None = None,
         benchmark_id: str | None = None,
         benchmark_revision: str | None = None,
         verifier_identity: str | None = None,
         logical_attempt: int | None = None,
+        model_capture: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, **kwargs)
@@ -74,11 +73,23 @@ class HitchHarborAgent(BaseAgent):
         self.hitch_runtime_dir = Path(hitch_runtime_dir)
         self.controller_runtime_id = controller_runtime_id
         self.harness_artifact = dict(harness_artifact) if harness_artifact else None
-        self.harness_artifact_cache_dir = Path(harness_artifact_cache_dir) if harness_artifact_cache_dir else None
-        self.local_source_transport = dict(local_source_transport) if local_source_transport else None
+        if harness_artifact_cache_dir is not None:
+            raise ValueError("trial-side harness artifact caches are no longer supported")
+        if not isinstance(node_version, str) or re.fullmatch(r"v\d+\.\d+\.\d+", node_version) is None:
+            raise ValueError("node_version must be an exact stable Node.js version")
+        self.required_node_version = node_version
+        if local_source_transport is not None:
+            raise ValueError("trial-side local source transports are no longer supported")
         self.candidate_id = candidate_id
         self.hitch_timeout_ms = int(hitch_timeout_ms)
         self.agent_args = list(agent_args or [])
+        raw_credential_names = list(credential_names or [])
+        if (
+            any(not isinstance(name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None for name in raw_credential_names)
+            or len(set(raw_credential_names)) != len(raw_credential_names)
+        ):
+            raise ValueError("credential_names must contain unique environment variable names")
+        self.credential_names = sorted(raw_credential_names)
         if workdir is not None and (not isinstance(workdir, str) or not workdir.strip()):
             raise ValueError("workdir must be a non-empty string when provided")
         self.workdir = workdir.strip() if isinstance(workdir, str) else None
@@ -90,13 +101,13 @@ class HitchHarborAgent(BaseAgent):
         if logical_attempt is not None and (isinstance(logical_attempt, bool) or not isinstance(logical_attempt, int) or logical_attempt < 1):
             raise ValueError("logical_attempt must be a positive integer")
         self.logical_attempt = logical_attempt
+        self.model_capture = _validate_model_capture(model_capture)
         self._hitch_version: str | None = None
         self._entrypoint: str | None = None
         self._artifact_manifest: dict[str, Any] | None = None
         self._artifact_host_directory: Path | None = None
         self._artifact_uploaded = False
         self._artifact_transport_status: str | None = None
-        self._local_manifest: dict[str, Any] | None = None
 
     @staticmethod
     def name() -> str:
@@ -106,6 +117,13 @@ class HitchHarborAgent(BaseAgent):
         return self._hitch_version
 
     async def setup(self, environment: BaseEnvironment) -> None:
+        started_ns = time.monotonic_ns()
+        try:
+            await self._setup(environment)
+        finally:
+            self._write_phase_timing("setup", started_ns)
+
+    async def _setup(self, environment: BaseEnvironment) -> None:
         if not self.hitch_runtime_dir.is_dir():
             raise RuntimeError(f"Hitch runtime directory does not exist: {self.hitch_runtime_dir}")
         # The manifest declares the CLI entrypoint (relative to the upload
@@ -129,22 +147,13 @@ class HitchHarborAgent(BaseAgent):
         # and the actual container upload, spec §4.6).
         self._verify_manifest_identity(manifest)
         self._verify_payload(manifest)
-        if self.harness_artifact is not None:
-            try:
-                self._artifact_manifest = self._verify_harness_artifact_host()
-                self._artifact_host_directory = Path(str(self.harness_artifact["directory"]))
-            except Exception as error:
-                raise RuntimeError(f"hitch-artifact-materialize: {error}") from error
-        if self.harness_artifact_cache_dir is not None:
-            try:
-                self._verify_harness_artifact_cache_host()
-            except Exception as error:
-                raise RuntimeError(f"hitch-artifact-cache: {error}") from error
-        if self.local_source_transport is not None:
-            try:
-                self._local_manifest = self._verify_local_source_host()
-            except Exception as error:
-                raise RuntimeError(f"hitch-local-source-materialize: {error}") from error
+        if self.harness_artifact is None:
+            raise RuntimeError("hitch-artifact-materialize: Harbor requires a dedicated-builder artifact")
+        try:
+            self._artifact_manifest = self._verify_harness_artifact_host()
+            self._artifact_host_directory = Path(str(self.harness_artifact["directory"]))
+        except Exception as error:
+            raise RuntimeError(f"hitch-artifact-materialize: {error}") from error
         payload_dir = self.hitch_runtime_dir / "payload"
         if not payload_dir.is_dir():
             raise RuntimeError(f"Hitch runtime bundle has no payload directory: {self.hitch_runtime_dir}")
@@ -156,46 +165,18 @@ class HitchHarborAgent(BaseAgent):
         await self._ensure_node(environment)
         platform = await self._container_platform(environment)
         node_version = await self._container_node_version(environment)
-        cache_lock = None
-        try:
-            if self._artifact_manifest is not None and self._artifact_compatible(
-                self._artifact_manifest, platform, node_version
-            ):
-                await self._upload_harness_artifact(environment, self._artifact_host_directory)
-                self._artifact_transport_status = "uploaded"
-            elif self.harness_artifact_cache_dir is not None:
-                cache_lock = await self._acquire_artifact_cache_lock(platform, node_version)
-                cached = self._find_cached_harness_artifact(platform, node_version)
-                if cached is not None:
-                    self._artifact_manifest, self._artifact_host_directory = cached
-                    await self._release_artifact_cache_lock(cache_lock)
-                    cache_lock = None
-                    await self._upload_harness_artifact(environment, self._artifact_host_directory)
-                    self._artifact_transport_status = "host_cache_hit"
-
-            if self._local_manifest is not None and not self._artifact_uploaded:
-                try:
-                    await self._upload_and_materialize_local_source(environment, self._local_manifest)
-                except Exception as error:
-                    raise RuntimeError(f"hitch-local-source-materialize: {error}") from error
-            entry = self._remote_entry(entrypoint)
-            version = await self._exec(environment, f"{self._node_prefix()} node {entry} --version")
-            self._hitch_version = (version.stdout or "").strip() or None
-            if not self._artifact_uploaded:
-                prepared = await self._prepare_harness_in_container(environment, entry)
-                if cache_lock is not None:
-                    try:
-                        self._artifact_manifest, self._artifact_host_directory = await self._cache_container_artifact(
-                            environment, prepared, platform, node_version
-                        )
-                        self._artifact_transport_status = "host_cache_populated"
-                    except Exception:
-                        self._artifact_transport_status = "host_cache_write_failed"
-                else:
-                    self._artifact_transport_status = "container_prepare"
-        finally:
-            if cache_lock is not None:
-                await self._release_artifact_cache_lock(cache_lock)
+        if self._artifact_manifest is None or not self._artifact_compatible(
+            self._artifact_manifest, platform, node_version
+        ):
+            raise RuntimeError(
+                "hitch-artifact-platform: dedicated-builder artifact is incompatible with "
+                f"trial runtime {platform}/{node_version}"
+            )
+        await self._upload_harness_artifact(environment, self._artifact_host_directory)
+        self._artifact_transport_status = "dedicated_builder_upload"
+        entry = self._remote_entry(entrypoint)
+        version = await self._exec(environment, f"{self._node_prefix()} node {entry} --version")
+        self._hitch_version = (version.stdout or "").strip() or None
 
     async def _resolve_workdir(self, environment: BaseEnvironment) -> str:
         """Resolve Harbor's effective task directory and prove it is usable.
@@ -302,6 +283,26 @@ class HitchHarborAgent(BaseAgent):
             raise RuntimeError("Hitch agent setup() must resolve the Harbor task working directory before run()")
         return self.workdir
 
+    def _write_phase_timing(self, phase: str, started_ns: int) -> None:
+        if phase not in {"setup", "agent"}:
+            raise ValueError("invalid Harbor agent phase timing")
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        target = self.logs_dir / "hitch-phase-timings.json"
+        value: dict[str, Any] = {"schema_version": "1", "phases": {}}
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else None
+            if isinstance(existing, dict) and existing.get("schema_version") == "1" and isinstance(existing.get("phases"), dict):
+                value = existing
+        except (OSError, json.JSONDecodeError):
+            pass
+        value["phases"][phase] = {
+            "duration_ms": max(0, (time.monotonic_ns() - started_ns) // 1_000_000),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(target)
+
     def _verify_harness_artifact_host(self) -> dict[str, Any]:
         """Pin host artifact metadata before Harbor copies the directory."""
         transport = self.harness_artifact or {}
@@ -356,6 +357,18 @@ class HitchHarborAgent(BaseAgent):
             raise RuntimeError("prepared artifact Node.js version is invalid")
         return manifest
 
+    @staticmethod
+    def _assert_regular_host_file(path: Path, label: str, maximum: int) -> Any:
+        try:
+            info = path.lstat()
+        except OSError as error:
+            raise RuntimeError(f"{label} is missing or unreadable") from error
+        if not stat_module.S_ISREG(info.st_mode):
+            raise RuntimeError(f"{label} must be a regular file")
+        if info.st_size > maximum:
+            raise RuntimeError(f"{label} exceeds the size limit ({maximum} bytes)")
+        return info
+
     async def _container_platform(self, environment: BaseEnvironment) -> str:
         result = await self._exec(
             environment,
@@ -389,448 +402,6 @@ class HitchHarborAgent(BaseAgent):
             raise RuntimeError("prepared artifact host directory is unavailable")
         await environment.upload_dir(directory, HARNESS_ARTIFACT_REMOTE_ROOT)
         self._artifact_uploaded = True
-
-    async def _prepare_harness_in_container(
-        self,
-        environment: BaseEnvironment,
-        entry: str,
-    ) -> ExecResult:
-        prepare = " ".join(
-            [
-                self._node_prefix(),
-                f"HITCH_ROOT={HITCH_CONTAINER_STATE_ROOT}",
-                *(["HITCH_HARBOR_INTERNAL=1"] if self._local_manifest is not None else []),
-                f"node {entry} prepare",
-                shlex.quote(self.harness_ref),
-                *self._local_source_cli_args(),
-                "--json",
-            ]
-        )
-        return await self._exec(environment, prepare)
-
-    def _verify_harness_artifact_cache_host(self) -> None:
-        cache = self.harness_artifact_cache_dir
-        if cache is None or not cache.is_absolute():
-            raise RuntimeError("prepared artifact cache path must be absolute")
-        try:
-            info = cache.lstat()
-        except OSError as error:
-            raise RuntimeError("prepared artifact cache is missing or unreadable") from error
-        if not stat_module.S_ISDIR(info.st_mode) or cache.is_symlink():
-            raise RuntimeError("prepared artifact cache must be a regular directory")
-        for name in ("artifacts", "locks", "tmp", "invalid"):
-            child = cache / name
-            child.mkdir(mode=0o700, exist_ok=True)
-            child_info = child.lstat()
-            if not stat_module.S_ISDIR(child_info.st_mode) or child.is_symlink():
-                raise RuntimeError(f"prepared artifact cache {name} path must be a regular directory")
-
-    def _artifact_cache_key(self, platform: str, node_version: str) -> str:
-        payload = json.dumps(
-            [
-                self.revision_identity,
-                self.harness_artifact.get("adapter_version") if self.harness_artifact else None,
-                self.harness_artifact.get("recipe_version") if self.harness_artifact else None,
-                platform,
-                node_version,
-            ],
-            separators=(",", ":"),
-        ).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
-
-    async def _acquire_artifact_cache_lock(self, platform: str, node_version: str) -> Any:
-        cache = self.harness_artifact_cache_dir
-        if cache is None:
-            raise RuntimeError("prepared artifact cache is unavailable")
-        handle = (cache / "locks" / f"{self._artifact_cache_key(platform, node_version)}.lock").open("a+b")
-        try:
-            while True:
-                try:
-                    self._try_lock_file(handle)
-                    return handle
-                except OSError as error:
-                    if error.errno not in (errno.EACCES, errno.EAGAIN):
-                        raise
-                    await asyncio.sleep(0.1)
-        except BaseException:
-            handle.close()
-            raise
-
-    @staticmethod
-    def _try_lock_file(handle: Any) -> None:
-        if os.name == "nt":
-            import msvcrt
-            handle.seek(0)
-            if not handle.read(1):
-                handle.write(b"\0")
-                handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            return
-        import fcntl
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-    @staticmethod
-    async def _release_artifact_cache_lock(handle: Any) -> None:
-        try:
-            if os.name == "nt":
-                import msvcrt
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
-
-    def _find_cached_harness_artifact(
-        self,
-        platform: str,
-        node_version: str,
-    ) -> tuple[dict[str, Any], Path] | None:
-        cache = self.harness_artifact_cache_dir
-        if cache is None:
-            return None
-        requested = self.harness_artifact or {}
-        for directory in sorted((cache / "artifacts").iterdir(), key=lambda item: item.name):
-            if not re.fullmatch(r"[0-9a-f]{64}", directory.name):
-                continue
-            try:
-                manifest = json.loads((directory / "artifact.json").read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                continue
-            if not isinstance(manifest, dict) or (
-                manifest.get("revision_identity") != self.revision_identity
-                or manifest.get("adapter_version") != requested.get("adapter_version")
-                or manifest.get("recipe_version") != requested.get("recipe_version")
-                or not self._artifact_compatible(manifest, platform, node_version)
-            ):
-                continue
-            try:
-                return self._verify_cached_harness_artifact(directory, platform, node_version), directory
-            except Exception:
-                self._quarantine_cached_artifact(directory)
-        return None
-
-    async def _cache_container_artifact(
-        self,
-        environment: BaseEnvironment,
-        prepared: ExecResult,
-        platform: str,
-        node_version: str,
-    ) -> tuple[dict[str, Any], Path]:
-        try:
-            payload = json.loads(prepared.stdout or "")
-            artifact = payload["artifact"]
-        except (KeyError, TypeError, json.JSONDecodeError) as error:
-            raise RuntimeError("container prepare returned invalid artifact metadata") from error
-        artifact_id = artifact.get("artifact_id") if isinstance(artifact, dict) else None
-        if not isinstance(artifact_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_id):
-            raise RuntimeError("container prepare returned an invalid artifact ID")
-        if (
-            artifact.get("revision_identity") != self.revision_identity
-            or not self._artifact_compatible(artifact, platform, node_version)
-        ):
-            raise RuntimeError("container prepare returned an incompatible artifact")
-        cache = self.harness_artifact_cache_dir
-        if cache is None:
-            raise RuntimeError("prepared artifact cache is unavailable")
-        staging = cache / "tmp" / f"artifact-{uuid.uuid4().hex}"
-        staging.mkdir(mode=0o700)
-        try:
-            remote = f'{HITCH_CONTAINER_STATE_ROOT}/store/artifacts/{artifact_id.removeprefix("sha256:")}'
-            await environment.download_dir(remote, staging)
-            manifest = self._verify_cached_harness_artifact(staging, platform, node_version)
-            if manifest.get("artifact_id") != artifact_id:
-                raise RuntimeError("downloaded artifact ID differs from container prepare output")
-            destination = cache / "artifacts" / artifact_id.removeprefix("sha256:")
-            if destination.exists():
-                existing = self._verify_cached_harness_artifact(destination, platform, node_version)
-                shutil.rmtree(staging)
-                return existing, destination
-            staging.rename(destination)
-            return manifest, destination
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-
-    def _verify_cached_harness_artifact(
-        self,
-        directory: Path,
-        platform: str,
-        node_version: str,
-    ) -> dict[str, Any]:
-        info = directory.lstat()
-        if not stat_module.S_ISDIR(info.st_mode) or directory.is_symlink():
-            raise RuntimeError("cached harness artifact is not a regular directory")
-        artifact_file = directory / "artifact.json"
-        self._assert_regular_host_file(artifact_file, "cached harness artifact manifest", 1024 * 1024)
-        manifest = json.loads(artifact_file.read_text(encoding="utf-8"))
-        if not isinstance(manifest, dict) or manifest.get("schema_version") != HARNESS_ARTIFACT_MANIFEST_VERSION:
-            raise RuntimeError("cached harness artifact manifest schema is invalid")
-        for field in ("artifact_id", "artifact_integrity", "entrypoint_integrity", "revision_identity"):
-            if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get(field, ""))):
-                raise RuntimeError(f"cached harness artifact {field} is invalid")
-        if (
-            manifest.get("artifact_id") != f"sha256:{directory.name}" and directory.parent.name == "artifacts"
-        ):
-            raise RuntimeError("cached harness artifact directory does not match its ID")
-        if (
-            manifest.get("revision_identity") != self.revision_identity
-            or manifest.get("resolved_revision", {}).get("identity") != self.revision_identity
-            or manifest.get("harness_id") != self.harness_ref.split("@", 1)[0]
-            or manifest.get("adapter_version") != (self.harness_artifact or {}).get("adapter_version")
-            or manifest.get("recipe_version") != (self.harness_artifact or {}).get("recipe_version")
-            or not self._artifact_compatible(manifest, platform, node_version)
-            or manifest.get("source_type") == "installed"
-        ):
-            raise RuntimeError("cached harness artifact identity is incompatible")
-        entrypoint = manifest.get("entrypoint")
-        if not isinstance(entrypoint, str) or not entrypoint or PurePosixPath(entrypoint).is_absolute():
-            raise RuntimeError("cached harness artifact entrypoint is invalid")
-        parts = PurePosixPath(entrypoint).parts
-        if any(part in ("", ".", "..") for part in parts):
-            raise RuntimeError("cached harness artifact entrypoint escapes its directory")
-        executable = directory.joinpath(*parts)
-        if not executable.is_file():
-            raise RuntimeError("cached harness artifact entrypoint is missing")
-        if self._sha256_file(executable) != manifest["entrypoint_integrity"]:
-            raise RuntimeError("cached harness artifact entrypoint integrity mismatch")
-        if self._artifact_directory_integrity(directory) != manifest["artifact_integrity"]:
-            raise RuntimeError("cached harness artifact content integrity mismatch")
-        return manifest
-
-    @classmethod
-    def _artifact_directory_integrity(cls, root: Path) -> str:
-        digest = hashlib.sha256()
-        resolved_root = root.resolve()
-
-        def walk(directory: Path, relative: PurePosixPath, top_level: bool) -> None:
-            for entry in sorted(os.scandir(directory), key=lambda item: item.name):
-                if top_level and entry.name == "artifact.json":
-                    continue
-                child_relative = relative / entry.name
-                child = Path(entry.path)
-                info = child.lstat()
-                mode = info.st_mode & 0o7777
-                encoded_relative = child_relative.as_posix()
-                if stat_module.S_ISDIR(info.st_mode):
-                    digest.update(f"d\0{encoded_relative}\0{mode}\0".encode("utf-8"))
-                    walk(child, child_relative, False)
-                elif stat_module.S_ISREG(info.st_mode):
-                    digest.update(f"f\0{encoded_relative}\0{mode}\0{info.st_size}\0".encode("utf-8"))
-                    with child.open("rb") as handle:
-                        while chunk := handle.read(1024 * 1024):
-                            digest.update(chunk)
-                    digest.update(b"\0")
-                elif stat_module.S_ISLNK(info.st_mode):
-                    target = os.readlink(child)
-                    resolved_target = (child.parent / target).resolve()
-                    if resolved_target != resolved_root and resolved_root not in resolved_target.parents:
-                        raise RuntimeError("cached harness artifact symlink escapes its directory")
-                    digest.update(f"l\0{encoded_relative}\0{target}\0".encode("utf-8"))
-                else:
-                    raise RuntimeError("cached harness artifact contains a special file")
-
-        walk(root, PurePosixPath(), True)
-        return "sha256:" + digest.hexdigest()
-
-    def _quarantine_cached_artifact(self, directory: Path) -> None:
-        cache = self.harness_artifact_cache_dir
-        if cache is None or not directory.exists():
-            return
-        target = cache / "invalid" / f"{directory.name}-{uuid.uuid4().hex}"
-        try:
-            directory.rename(target)
-        except OSError:
-            pass
-
-    def _verify_local_source_host(self) -> dict[str, Any]:
-        """Validate the independent local-source handoff immediately before upload."""
-        transport = self.local_source_transport or {}
-        required = {
-            "kind", "manifest_path", "payload_path", "locked_resolution_path", "harness_id",
-            "resolution_identity", "commit", "tree", "payload_sha256", "payload_bytes",
-            "object_count", "file_count",
-        }
-        if set(transport) != required:
-            raise RuntimeError("local source transport metadata fields are invalid")
-        manifest_path = Path(str(transport["manifest_path"]))
-        payload_path = Path(str(transport["payload_path"]))
-        resolution_path = Path(str(transport["locked_resolution_path"]))
-        if not all(candidate.is_absolute() for candidate in (manifest_path, payload_path, resolution_path)):
-            raise RuntimeError("local source transport host paths must be absolute")
-        self._assert_regular_host_file(manifest_path, "local source manifest", 64 * 1024)
-        payload_stat = self._assert_regular_host_file(payload_path, "local source payload", LOCAL_GIT_TRANSPORT_MAX_BYTES)
-        self._assert_regular_host_file(resolution_path, "local source locked resolution", 1024 * 1024)
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            resolution = json.loads(resolution_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"local source metadata is unreadable: {error}") from error
-        self._validate_local_manifest(manifest)
-        pinned = {
-            "kind": manifest["kind"],
-            "harness_id": manifest["harness_id"],
-            "resolution_identity": manifest["resolution_identity"],
-            "commit": manifest["commit"],
-            "tree": manifest["tree"],
-            "payload_sha256": manifest["payload_sha256"],
-            "payload_bytes": manifest["payload_bytes"],
-            "object_count": manifest["object_count"],
-            "file_count": manifest["file_count"],
-        }
-        if any(transport.get(key) != value for key, value in pinned.items()):
-            raise RuntimeError("local source transport metadata does not match its manifest")
-        if manifest["resolution_identity"] != self.revision_identity:
-            raise RuntimeError("local source resolution identity does not match the job-pinned identity")
-        if self.harness_ref != f'{manifest["harness_id"]}@commit:{manifest["commit"]}':
-            raise RuntimeError("local source commit does not match the job-pinned harness ref")
-        if payload_stat.st_size != manifest["payload_bytes"]:
-            raise RuntimeError("local source payload size does not match its manifest")
-        actual_digest = self._sha256_file(payload_path)
-        if actual_digest != manifest["payload_sha256"]:
-            raise RuntimeError("local source payload digest does not match its manifest")
-        if not isinstance(resolution, dict) or (
-            resolution.get("harness_id") != manifest["harness_id"]
-            or resolution.get("identity") != manifest["resolution_identity"]
-            or resolution.get("revision", {}).get("commit") != manifest["commit"]
-            or resolution.get("source", {}).get("type") != "git"
-            or resolution.get("source", {}).get("registered") is not False
-        ):
-            raise RuntimeError("local source locked resolution does not match its manifest")
-        return manifest
-
-    @staticmethod
-    def _assert_regular_host_file(path: Path, label: str, maximum: int) -> Any:
-        try:
-            info = path.lstat()
-        except OSError as error:
-            raise RuntimeError(f"{label} is missing or unreadable") from error
-        if not stat_module.S_ISREG(info.st_mode):
-            raise RuntimeError(f"{label} must be a regular file")
-        if info.st_size > maximum:
-            raise RuntimeError(f"{label} exceeds the size limit ({maximum} bytes)")
-        return info
-
-    @staticmethod
-    def _sha256_file(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                digest.update(chunk)
-        return "sha256:" + digest.hexdigest()
-
-    @staticmethod
-    def _validate_local_manifest(manifest: Any) -> None:
-        allowed = {
-            "schema_version", "kind", "harness_id", "resolution_identity", "commit", "tree",
-            "payload_sha256", "payload_bytes", "object_count", "file_count", "created_at",
-        }
-        if not isinstance(manifest, dict) or set(manifest) != allowed:
-            raise RuntimeError("local source manifest fields are invalid")
-        if manifest.get("schema_version") != LOCAL_GIT_TRANSPORT_MANIFEST_VERSION:
-            raise RuntimeError("unsupported local source transport manifest schema")
-        if manifest.get("kind") != "local-git-commit":
-            raise RuntimeError("unsupported local source transport kind")
-        if not isinstance(manifest.get("harness_id"), str) or not re.fullmatch(r"[a-z][a-z0-9-]*", manifest["harness_id"]):
-            raise RuntimeError("local source manifest harness id is invalid")
-        if not isinstance(manifest.get("resolution_identity"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest["resolution_identity"]):
-            raise RuntimeError("local source manifest resolution identity is invalid")
-        commit = manifest.get("commit")
-        if not isinstance(commit, str) or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
-            raise RuntimeError("local source manifest commit is not a full lowercase OID")
-        tree = manifest.get("tree")
-        if not isinstance(tree, str) or not re.fullmatch(rf"[0-9a-f]{{{len(commit)}}}", tree):
-            raise RuntimeError("local source manifest tree is invalid")
-        if not isinstance(manifest.get("payload_sha256"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest["payload_sha256"]):
-            raise RuntimeError("local source manifest payload digest is invalid")
-        for key, maximum in (
-            ("payload_bytes", LOCAL_GIT_TRANSPORT_MAX_BYTES),
-            ("object_count", 100_000),
-            ("file_count", 50_000),
-        ):
-            value = manifest.get(key)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > maximum:
-                raise RuntimeError(f"local source manifest {key} is invalid")
-        if not isinstance(manifest.get("created_at"), str) or not manifest["created_at"]:
-            raise RuntimeError("local source manifest created_at is invalid")
-        try:
-            datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
-        except ValueError as error:
-            raise RuntimeError("local source manifest created_at is invalid") from error
-
-    async def _upload_and_materialize_local_source(
-        self,
-        environment: BaseEnvironment,
-        manifest: dict[str, Any],
-    ) -> None:
-        transport = self.local_source_transport or {}
-        await self._exec(environment, f"mkdir -p {LOCAL_GIT_REMOTE_ROOT} && chmod 700 {LOCAL_GIT_REMOTE_ROOT}")
-        await environment.upload_file(Path(str(transport["manifest_path"])), f"{LOCAL_GIT_REMOTE_ROOT}/manifest.json")
-        await environment.upload_file(Path(str(transport["payload_path"])), f"{LOCAL_GIT_REMOTE_ROOT}/payload.pack")
-        await environment.upload_file(Path(str(transport["locked_resolution_path"])), f"{LOCAL_GIT_REMOTE_ROOT}/resolution.json")
-        await self._exec(environment, f"chmod 600 {LOCAL_GIT_REMOTE_ROOT}/manifest.json {LOCAL_GIT_REMOTE_ROOT}/payload.pack {LOCAL_GIT_REMOTE_ROOT}/resolution.json")
-        # Verify both the uploaded manifest fields and payload bytes inside the
-        # trial before importing any Git object. All interpolated values passed
-        # to the shell have already been restricted to digest/OID grammars.
-        verifier = """
-const fs = require('node:fs');
-const crypto = require('node:crypto');
-const expected = JSON.parse(process.argv[1]);
-const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (JSON.stringify(Object.keys(manifest).sort()) !== JSON.stringify(Object.keys(expected).sort())) throw new Error('manifest fields mismatch');
-for (const key of Object.keys(expected)) if (manifest[key] !== expected[key]) throw new Error(`manifest mismatch: ${key}`);
-if (fs.statSync(process.argv[3]).size !== expected.payload_bytes) throw new Error('payload size mismatch');
-(async () => {
-  const hash = crypto.createHash('sha256');
-  for await (const chunk of fs.createReadStream(process.argv[3])) hash.update(chunk);
-  const digest = 'sha256:' + hash.digest('hex');
-  if (digest !== expected.payload_sha256) throw new Error('payload digest mismatch');
-})().catch((error) => { console.error(error.message); process.exit(1); });
-""".strip()
-        expected = {
-            "schema_version": manifest["schema_version"],
-            "kind": manifest["kind"],
-            "harness_id": manifest["harness_id"],
-            "resolution_identity": manifest["resolution_identity"],
-            "commit": manifest["commit"],
-            "tree": manifest["tree"],
-            "payload_sha256": manifest["payload_sha256"],
-            "payload_bytes": manifest["payload_bytes"],
-            "object_count": manifest["object_count"],
-            "file_count": manifest["file_count"],
-            "created_at": manifest["created_at"],
-        }
-        verify_command = " ".join([
-            self._node_prefix(),
-            "node", "-e", shlex.quote(verifier),
-            shlex.quote(json.dumps(expected, separators=(",", ":"))),
-            f"{LOCAL_GIT_REMOTE_ROOT}/manifest.json",
-            f"{LOCAL_GIT_REMOTE_ROOT}/payload.pack",
-        ])
-        await self._exec(environment, verify_command)
-        commit = manifest["commit"]
-        tree = manifest["tree"]
-        materialize = f"""
-set -eu
-git init --bare {LOCAL_GIT_REMOTE_ROOT}/repo.git >/dev/null
-git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git index-pack --stdin < {LOCAL_GIT_REMOTE_ROOT}/payload.pack >/dev/null
-test "$(git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git rev-parse {commit}^{{commit}})" = "{commit}"
-test "$(git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git rev-parse {commit}^{{tree}})" = "{tree}"
-printf '%s\n' {commit} > {LOCAL_GIT_REMOTE_ROOT}/repo.git/shallow
-git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commit}
-"""
-        await self._exec(environment, materialize)
-
-    def _local_source_cli_args(self) -> list[str]:
-        if self._local_manifest is None or self._artifact_uploaded:
-            return []
-        return [
-            "--internal-locked-resolution", f"{LOCAL_GIT_REMOTE_ROOT}/resolution.json",
-            "--internal-local-git-manifest", f"{LOCAL_GIT_REMOTE_ROOT}/manifest.json",
-            "--internal-local-git-source", f"{LOCAL_GIT_REMOTE_ROOT}/repo.git",
-        ]
 
     def _artifact_cli_args(self) -> list[str]:
         if not self._artifact_uploaded or self._artifact_manifest is None:
@@ -942,6 +513,18 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
+        started_ns = time.monotonic_ns()
+        try:
+            await self._run(instruction, environment, context)
+        finally:
+            self._write_phase_timing("agent", started_ns)
+
+    async def _run(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+    ) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         workdir = self._require_workdir()
         assigned_run_id = "run_" + uuid.uuid4().hex
@@ -1006,17 +589,18 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             if parent_temporary is not None:
                 parent_temporary.unlink(missing_ok=True)
 
+        proxy_environment, proxy_health = await self._model_proxy_environment(environment, run_id)
         if self._entrypoint is None:
             raise RuntimeError("Hitch agent setup() must run before run() to resolve the runtime entrypoint")
         entry = self._remote_entry(self._entrypoint)
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
-            *(["HITCH_HARBOR_INTERNAL=1"] if self._local_manifest is not None or self._artifact_uploaded or parent_payload is not None else []),
+            *proxy_environment,
+            *(["HITCH_HARBOR_INTERNAL=1"] if self._artifact_uploaded or parent_payload is not None else []),
             f"node {entry} run",
             "--harness",
             shlex.quote(self.harness_ref),
-            *self._local_source_cli_args(),
             *self._artifact_cli_args(),
             "--cwd",
             shlex.quote(workdir),
@@ -1041,6 +625,8 @@ git -C {LOCAL_GIT_REMOTE_ROOT}/repo.git update-ref refs/heads/hitch-local {commi
             arguments.extend(["--model", shlex.quote(self.model_name)])
         for value in self.agent_args:
             arguments.extend(["--agent-arg", shlex.quote(value)])
+        for name in self.credential_names:
+            arguments.extend(["--internal-credential-name", shlex.quote(name)])
         command = (
             "set -o pipefail; "
             + " ".join(arguments)
@@ -1138,26 +724,17 @@ mv "$stage_dir" "$target_dir"
             "trial_id": trial_id,
             "task_id": task_id,
             "attempt": attempt,
+            "model_capture_health": proxy_health,
             "hitch_status": hitch_result.get("status") if hitch_result else None,
             "hitch_artifact_id": hitch_result.get("artifact_id") if hitch_result else None,
         }
-        if self._local_manifest is not None:
-            context.metadata["local_source_transport"] = {
-                "kind": self._local_manifest["kind"],
-                "commit": self._local_manifest["commit"],
-                "tree": self._local_manifest["tree"],
-                "resolution_identity": self._local_manifest["resolution_identity"],
-                "payload_sha256": self._local_manifest["payload_sha256"],
-                "payload_bytes": self._local_manifest["payload_bytes"],
-                "status": "verified",
-            }
         if self._artifact_manifest is not None:
             context.metadata["harness_artifact_transport"] = {
                 "artifact_id": self._artifact_manifest["artifact_id"],
                 "artifact_integrity": self._artifact_manifest["artifact_integrity"],
                 "platform": self._artifact_manifest["platform"],
                 "node_version": self._artifact_manifest.get("toolchain", {}).get("node"),
-                "status": self._artifact_transport_status or "container_prepare",
+                "status": self._artifact_transport_status or "dedicated_builder_upload",
             }
         if primary_code is not None:
             context.metadata["hitch_bridge_error_code"] = primary_code
@@ -1180,6 +757,32 @@ mv "$stage_dir" "$target_dir"
             )
             await self._write_bridge_error(environment, evidence)
             raise HitchBridgeError(primary_code, primary_message or primary_code, evidence)
+
+    async def _model_proxy_environment(
+        self,
+        environment: BaseEnvironment,
+        run_id: str,
+    ) -> tuple[list[str], str]:
+        if self.model_capture is None:
+            return [], "not-configured"
+        health = self.model_capture["health_url_template"].replace("{run_id}", run_id)
+        script = (
+            "fetch(process.argv[1],{signal:AbortSignal.timeout(5000)})"
+            ".then(r=>{if(!r.ok)throw new Error('status '+r.status)})"
+            ".catch(()=>{console.error('model proxy health check failed');process.exit(1)})"
+        )
+        probe = await environment.exec(
+            f"{self._node_prefix()} node -e {shlex.quote(script)} {shlex.quote(health)}"
+        )
+        if probe.return_code != 0:
+            if self.model_capture["required"]:
+                raise RuntimeError("hitch-model-proxy-health: required model proxy is unreachable")
+            return [], "degraded-unreachable"
+        base = self.model_capture["base_url_template"].replace("{run_id}", run_id)
+        return [
+            f"OPENAI_BASE_URL={shlex.quote(base.replace('{provider}', 'openai'))}",
+            f"ANTHROPIC_BASE_URL={shlex.quote(base.replace('{provider}', 'anthropic'))}",
+        ], "healthy"
 
     @staticmethod
     def _parse_hitch_result(
@@ -1422,40 +1025,36 @@ process.stdout.write('sha256:' + hash.digest('hex'));
 
     async def _ensure_node(self, environment: BaseEnvironment) -> None:
         probe = await environment.exec(
-            "node -e 'process.exit(Number(process.versions.node.split(\".\")[0]) >= 22 ? 0 : 1)'"
+            f"node -e 'process.exit(process.version === \"{self.required_node_version}\" ? 0 : 1)'"
         )
-        needs_git = "@commit:" in self.harness_ref
-        git_probe = await environment.exec("command -v git >/dev/null 2>&1")
-        if probe.return_code == 0 and (not needs_git or git_probe.return_code == 0):
+        if probe.return_code == 0:
             return
         prerequisites = """
 set -eu
-if command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then exit 0; fi
+if command -v curl >/dev/null 2>&1; then exit 0; fi
 if command -v apt-get >/dev/null 2>&1; then
-  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates git
+  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates
 elif command -v apk >/dev/null 2>&1; then
-  apk add --no-cache curl ca-certificates git bash
+  apk add --no-cache curl ca-certificates bash
 elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y curl ca-certificates git
+  dnf install -y curl ca-certificates
 elif command -v yum >/dev/null 2>&1; then
-  yum install -y curl ca-certificates git
+  yum install -y curl ca-certificates
 else
-  echo 'Hitch requires Node.js 22+ and could not install curl in this task image' >&2
+  echo 'Hitch could not install the pinned Node.js runtime in this task image' >&2
   exit 1
 fi
 """
         await self._exec(environment, prerequisites, user=0)
-        if probe.return_code == 0:
-            return
-        install = """
+        install = f"""
 set -eu
 export NVM_DIR=/opt/hitch-node
 mkdir -p "$NVM_DIR"
 curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 . "$NVM_DIR/nvm.sh"
-nvm install 22
-nvm alias default 22
-node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'
+nvm install {self.required_node_version.removeprefix("v")}
+nvm alias default {self.required_node_version.removeprefix("v")}
+node -e 'process.exit(process.version === "{self.required_node_version}" ? 0 : 1)'
 """
         await self._exec(environment, install, user=0)
 
@@ -1493,6 +1092,39 @@ node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)
             if value and value.strip():
                 return value.strip()
         return "no diagnostic output"
+
+
+def _validate_model_capture(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "mode", "required", "topology", "base_url_template", "health_url_template"
+    }:
+        raise ValueError("model_capture fields are invalid")
+    if (
+        value.get("schema_version") != "1"
+        or value.get("mode") not in {"proxy", "hybrid"}
+        or not isinstance(value.get("required"), bool)
+        or value.get("topology") != "host-side"
+    ):
+        raise ValueError("model_capture identity is invalid")
+    for field, provider_count in (("base_url_template", 1), ("health_url_template", 0)):
+        template = value.get(field)
+        if (
+            not isinstance(template, str)
+            or not template
+            or len(template) > 2048
+            or any(character in template for character in ("\x00", "\r", "\n"))
+            or template.count("{run_id}") != 1
+            or template.count("{provider}") != provider_count
+        ):
+            raise ValueError(f"model_capture {field} is invalid")
+        parsed = urlparse(
+            template.replace("{run_id}", "run_" + "a" * 32).replace("{provider}", "openai")
+        )
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError(f"model_capture {field} URL is invalid")
+    return dict(value)
 
 
 def canonical_manifest_json(manifest: dict[str, Any]) -> str:

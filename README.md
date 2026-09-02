@@ -152,9 +152,22 @@ portability rules.
 Start a queue when you need long-lived execution:
 
 ```bash
-hitch daemon start --max-concurrent 4
+hitch daemon start \
+  --max-concurrent 4 \
+  --capacity-cpu-millis 4000 \
+  --capacity-memory-mib 8192 \
+  --container-slots 4 \
+  --capacity-gpus 1 \
+  --eval-gpus 1
 hitch run --daemon --harness codex@version:0.92.0 --prompt-file task.md
 ```
+
+Windows is covered on Node 22 and 24, including npm/agent `.cmd` shims and the
+packaged-harness cache/integrity path. GPU-backed Harbor trials require a
+Docker host with GPU container support and explicit `--capacity-gpus` plus
+`--eval-gpus`; Hitch never guesses GPU capacity. A repository maintainer can
+run the real NVIDIA gate through the manually dispatched
+`NVIDIA GPU hardware canary` workflow on a compatible self-hosted runner.
 
 ## Documentation
 

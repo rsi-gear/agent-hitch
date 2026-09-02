@@ -42,7 +42,7 @@ export async function writeEvalProgress(evalDirectory: string, progress: EvalPro
 }
 
 export function mergeEvalProgressTrial(progress: EvalProgressV1, trial: EvalTrialRefV1, now = new Date().toISOString()): EvalProgressV1 {
-  const parsed = parseTrial(trial, "eval progress trial");
+  const parsed = parseEvalTrialRef(trial, "eval progress trial");
   const byTrial = progress.trials.find((item) => item.trial_id === parsed.trial_id);
   if (byTrial !== undefined) {
     if (JSON.stringify(byTrial) !== JSON.stringify(parsed)) throw new TypeError(`eval progress trial identity conflict: ${parsed.trial_id}`);
@@ -81,7 +81,7 @@ export function replaceInvalidEvalProgressTrial(
   trial: EvalTrialRefV1,
   now = new Date().toISOString(),
 ): EvalProgressV1 {
-  const parsed = parseTrial(trial, "eval rerun trial");
+  const parsed = parseEvalTrialRef(trial, "eval rerun trial");
   if (parsed.observation_status !== "valid") throw new TypeError("eval rerun replacement must be valid");
   const key = evalTrialKey(parsed);
   const existing = progress.trials.find((item) => evalTrialKey(item) === key);
@@ -127,7 +127,7 @@ export function parseEvalProgress(value: unknown): EvalProgressV1 {
     if (planned !== null && (!Number.isSafeInteger(planned) || (planned as number) < 0)) throw new TypeError(`eval progress ${name} is invalid`);
   }
   if (!Array.isArray(record.trials)) throw new TypeError("eval progress trials are invalid");
-  const trials = record.trials.map((trial, index) => parseTrial(trial, `eval progress trial ${index}`));
+  const trials = record.trials.map((trial, index) => parseEvalTrialRef(trial, `eval progress trial ${index}`));
   if (new Set(trials.map((trial) => trial.trial_id)).size !== trials.length
     || new Set(trials.map((trial) => trial.run_id)).size !== trials.length) throw new TypeError("eval progress trial identities are duplicated");
   const sorted = [...trials].sort((left, right) => left.task_id.localeCompare(right.task_id)
@@ -170,7 +170,7 @@ export function parseEvalProgress(value: unknown): EvalProgressV1 {
   };
 }
 
-function parseTrial(value: unknown, label: string): EvalTrialRefV1 {
+export function parseEvalTrialRef(value: unknown, label = "eval trial"): EvalTrialRefV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
   const trial = value as Record<string, unknown>;
   if (typeof trial.trial_id !== "string" || !trial.trial_id

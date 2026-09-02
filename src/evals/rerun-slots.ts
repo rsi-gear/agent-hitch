@@ -25,6 +25,7 @@ export function selectRerunTrialSlots(
   attempts: number,
   progress: EvalProgressV1,
   selector: RerunSelector,
+  options: { allowVerifierFailures?: boolean } = {},
 ): EvalTrialSlot[] {
   const planned = new Set(tasks);
   if (planned.size !== tasks.length || tasks.some((task) => typeof task !== "string" || task.length === 0)) {
@@ -32,7 +33,7 @@ export function selectRerunTrialSlots(
   }
   if (!Number.isSafeInteger(attempts) || attempts < 1) throw unavailable("eval attempts plan is invalid");
   const invalid = invalidTrialSlots(tasks, attempts, progress);
-  if (selector.mode === "invalid") return rejectVerifierOnlyReruns(progress, invalid);
+  if (selector.mode === "invalid") return options.allowVerifierFailures ? invalid : rejectVerifierOnlyReruns(progress, invalid);
   const requested = [...new Set(selector.taskNames)].sort();
   if (requested.length === 0) throw invalidInput("eval rerun requires at least one --task");
   for (const task of requested) {
@@ -42,7 +43,8 @@ export function selectRerunTrialSlots(
     }
   }
   const requestedSet = new Set(requested);
-  return rejectVerifierOnlyReruns(progress, invalid.filter((slot) => requestedSet.has(slot.task_id)));
+  const selected = invalid.filter((slot) => requestedSet.has(slot.task_id));
+  return options.allowVerifierFailures ? selected : rejectVerifierOnlyReruns(progress, selected);
 }
 
 function rejectVerifierOnlyReruns(progress: EvalProgressV1, slots: EvalTrialSlot[]): EvalTrialSlot[] {

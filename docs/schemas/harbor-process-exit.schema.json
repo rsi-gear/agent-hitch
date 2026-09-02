@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/harbor-process-exit.schema.json",
+  "title": "Hitch supervised Harbor process exit V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "process_exit_code", "signal", "completed_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "process_exit_code": { "type": ["integer", "null"] },
+    "signal": { "type": ["string", "null"] },
+    "completed_at": { "type": "string", "format": "date-time" }
+  }
+}

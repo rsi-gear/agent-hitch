@@ -287,31 +287,41 @@ function manifestDigest(manifest: ControllerRuntimeManifest): string {
  */
 export async function useControllerRuntimeById(paths: StatePaths, runtimeId: string): Promise<ControllerRuntimeUseResult> {
   const directory = path.join(paths.controllerRuntimes, runtimeId);
+  return useControllerRuntimeDirectory(directory, `sha256:${runtimeId}`);
+}
+
+/** Verify a materialized controller runtime without rebinding it into the local CAS. */
+export async function useControllerRuntimeDirectory(directory: string, expectedRuntimeId: string): Promise<ControllerRuntimeUseResult> {
+  if (!directory || !/^sha256:[a-f0-9]{64}$/.test(expectedRuntimeId)) {
+    throw new HitchError("controller runtime integrity mismatch: invalid expected runtime identity", {
+      code: "controller_runtime_integrity_mismatch",
+      exitCode: 5,
+    });
+  }
   const manifest = await loadManifest(directory).catch(() => {
-    throw new HitchError(`controller runtime integrity mismatch for ${runtimeId}`, {
+    throw new HitchError(`controller runtime integrity mismatch for ${expectedRuntimeId}`, {
       code: "controller_runtime_integrity_mismatch",
       exitCode: 5,
     });
   });
-  const expectedId = `sha256:${runtimeId}`;
   const recomputedDigest = manifestDigest(manifest);
-  if (manifest.runtime_id !== expectedId || recomputedDigest !== expectedId || recomputedDigest !== manifest.runtime_id) {
+  if (manifest.runtime_id !== expectedRuntimeId || recomputedDigest !== expectedRuntimeId || recomputedDigest !== manifest.runtime_id) {
     throw new HitchError(
-      `controller runtime integrity mismatch for ${runtimeId}: manifest runtime_id ${manifest.runtime_id} does not match the recomputed identity ${recomputedDigest}`,
+      `controller runtime integrity mismatch for ${expectedRuntimeId}: manifest runtime_id ${manifest.runtime_id} does not match the recomputed identity ${recomputedDigest}`,
       { code: "controller_runtime_integrity_mismatch", exitCode: 5 },
     );
   }
   try {
     await verifyRuntimePayload(path.join(directory, "payload"), manifest);
   } catch (error) {
-    throw new HitchError(`controller runtime integrity mismatch for ${runtimeId}: ${(error as Error).message}`, {
+    throw new HitchError(`controller runtime integrity mismatch for ${expectedRuntimeId}: ${(error as Error).message}`, {
       code: "controller_runtime_integrity_mismatch",
       exitCode: 5,
       cause: error,
     });
   }
   return {
-    runtime_id: `sha256:${runtimeId}`,
+    runtime_id: expectedRuntimeId,
     directory,
     manifest,
     cache_hit: true,

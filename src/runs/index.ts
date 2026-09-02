@@ -1,4 +1,4 @@
-export { EventSink } from "./events.js";
+export { EventSink, MAX_RUN_EVENT_BYTES } from "./events.js";
 export type { HitchEvent } from "./events.js";
 export { validateRunRequest } from "./request.js";
 export type { RunRequestInput, ValidatedRunRequest } from "./request.js";
@@ -6,7 +6,8 @@ export { buildManifest, newRunId, safeAgentArgsForPersistence } from "./manifest
 export type { RunManifest } from "./manifest.js";
 export { sealTerminalManifest } from "./finalizer.js";
 export { executeRun } from "./executor.js";
-export type { ExecuteRunOptions, NormalizedEvent } from "./executor.js";
+export type { ExecuteRunOptions } from "./executor.js";
+export type { NormalizedEvent } from "../adapters/index.js";
 export { createQueuedRun } from "./queued.js";
 export type { QueuedRun } from "./queued.js";
 export { canonicalJSON, isTerminal, loadRunRecord, projectRunRecord, sha256Bytes, sha256JSON, trajectoryRefV2 } from "./records.js";
@@ -16,3 +17,6 @@ export { queryRuns, rebuildRunIndexes } from "./query.js";
 export type { RebuiltRunIndex, RunQuery } from "./query.js";
 export { compareRunRecords, compareRuns } from "./compare.js";
 export type { ComparisonDimension, ComparisonExclusion, ComparisonGroup, StrictComparisonResult } from "./compare.js";
+export { parseResultBundleIndex, verifyResultBundleIndex, writeResultBundleIndex } from "./bundle.js";
+export { deriveTrainingDataCandidate, parseTrainingDataCandidate } from "./training-candidate.js";
+export type { TrainingDataCandidatePolicyV1 } from "./training-candidate.js";

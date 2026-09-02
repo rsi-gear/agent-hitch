@@ -1,5 +1,6 @@
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
+import { redactCredentialText } from "../foundation/index.js";
 
 const HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024;
 const HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES = 2048;
@@ -25,7 +26,7 @@ export interface HarborBridgeErrorDiagnostic {
 }
 
 /** Read a Harbor bridge diagnostic as untrusted, bounded evidence. */
-export async function readHarborBridgeError(trialDirectory: string): Promise<HarborBridgeErrorDiagnostic | null> {
+export async function readHarborBridgeError(trialDirectory: string, credentialValues: readonly string[] = []): Promise<HarborBridgeErrorDiagnostic | null> {
   const source = path.join(trialDirectory, "agent", "hitch-bridge-error.json");
   try {
     const info = await lstat(source);
@@ -33,15 +34,28 @@ export async function readHarborBridgeError(trialDirectory: string): Promise<Har
     const raw = await readFile(source, "utf8");
     const value = JSON.parse(raw) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const diagnostic = value as Record<string, unknown>;
+    const diagnostic = sanitizeEvidence(value, credentialValues) as Record<string, unknown>;
     if (diagnostic.schema_version !== "1") return null;
     if (typeof diagnostic.code !== "string" || !HITCH_BRIDGE_ERROR_CODES.has(diagnostic.code)) return null;
     if (typeof diagnostic.message !== "string" || !diagnostic.message.trim()) return null;
     if (Buffer.byteLength(diagnostic.message, "utf8") > HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES) return null;
-    return { code: diagnostic.code, message: bridgeErrorMessage(diagnostic), raw };
+    return { code: diagnostic.code, message: bridgeErrorMessage(diagnostic), raw: `${JSON.stringify(diagnostic)}\n` };
   } catch {
     return null;
   }
+}
+
+function sanitizeEvidence(value: unknown, credentialValues: readonly string[], key = ""): unknown {
+  if (typeof value === "string") {
+    if (/(?:authorization|cookie|api[-_]?key|token|secret|password|credential)/i.test(key)) return "[REDACTED]";
+    return redactCredentialText(value, credentialValues).text;
+  }
+  if (Array.isArray(value)) return value.map((entry) => sanitizeEvidence(entry, credentialValues));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .map(([name, entry]) => [name, sanitizeEvidence(entry, credentialValues, name)]));
+  }
+  return value;
 }
 
 function bridgeErrorMessage(diagnostic: Record<string, unknown>): string {

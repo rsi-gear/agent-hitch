@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { executeRun, newRunId } from "../src/runs/index.js";
 import type { RunRequestInput } from "../src/runs/index.js";
-import { readJSON } from "../src/foundation/index.js";
+import { readJSON, sha256JSON } from "../src/foundation/index.js";
 import { writeFakeCodex, writeFakeDeepseek, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
 import { loadTrajectoryRef, readTrajectory } from "../src/trajectories/store.js";
 
@@ -53,6 +53,58 @@ test("run engine records normalized events and a reproducible result", async (t)
   const manifest = await readJSON<Record<string, unknown>>(path.join(root, "runs", runId, "manifest.json"));
   assert.equal(manifest.status, "succeeded");
   assert.equal(manifest.agent_version, "codex-cli 9.9.9");
+});
+
+test("run engine redacts declared credential values from every persisted evidence file", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-engine-credential-redaction-"));
+  const executable = path.join(root, "credential-codex");
+  await writeFile(executable, `#!/usr/bin/env node
+if (process.argv.includes("--version")) { process.stdout.write("codex-cli 9.9.9\\n"); process.exit(0); }
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({type:"thread.started",thread_id:"thread_secret"}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"item.completed",item:{id:"item_1",type:"agent_message",text:"answer:" + process.env.EVAL_SECRET}}) + "\\n");
+  process.stderr.write("debug=" + process.env.EVAL_SECRET + "\\n");
+  process.stdout.write(JSON.stringify({type:"turn.completed",usage:{input_tokens:1,output_tokens:2}}) + "\\n");
+});
+`, { mode: 0o755 });
+  await chmod(executable, 0o755);
+  const previousExecutable = process.env.HITCH_CODEX_PATH;
+  const previousSecret = process.env.EVAL_SECRET;
+  const secret = "custom-secret-value-without-provider-prefix";
+  process.env.HITCH_CODEX_PATH = executable;
+  process.env.EVAL_SECRET = secret;
+  t.after(() => {
+    restoreEnv("HITCH_CODEX_PATH", previousExecutable);
+    restoreEnv("EVAL_SECRET", previousSecret);
+  });
+  const runId = newRunId();
+  const events: Record<string, unknown>[] = [];
+  const result = await executeRun({
+    runId,
+    request: request({
+      agent: "codex",
+      cwd: root,
+      prompt: "do work",
+      agent_args: ["--label", secret],
+      credential_names: ["EVAL_SECRET"],
+    }),
+    runsRoot: path.join(root, "runs"),
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.output, "answer:[REDACTED]");
+  assert.equal(JSON.stringify(events).includes(secret), false);
+  const runDirectory = path.join(root, "runs", runId);
+  for (const file of await regularFiles(runDirectory)) {
+    assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `credential leaked into ${path.relative(runDirectory, file)}`);
+  }
+  const manifest = await readJSON<{ agent_args_sha256: string }>(path.join(runDirectory, "manifest.json"));
+  assert.equal(manifest.agent_args_sha256, sha256JSON(["--label", "[REDACTED]"]));
+  const trajectory = await readJSON<{ redactions: Array<{ rule_id: string; count: number }> }>(path.join(runDirectory, "trajectory.ref.json"));
+  assert.ok(trajectory.redactions.some((entry) => entry.rule_id === "known-credential-value-v1" && entry.count >= 1));
 });
 
 test("run engine records a canonical trajectory with a trajectory ref", async (t) => {
@@ -409,8 +461,9 @@ test("timed-out runs preserve a valid trajectory with a terminal boundary", asyn
 
 test("an interrupted run with an open tool call records a readable trajectory", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-open-tool-"));
+  const controller = new AbortController();
   // Fake codex emits a tool start (command_execution) and then stalls; the
-  // engine timeout must interrupt it with an open tool call in the step.
+  // engine must interrupt it after observing the open tool call in the step.
   const executable = path.join(root, "open-tool-codex");
   await writeFile(executable, `#!/usr/bin/env node
 if (process.argv.includes("--version")) { process.stdout.write("codex-cli 9.9.9\\n"); process.exit(0); }
@@ -431,10 +484,12 @@ process.stdin.on("end", () => {
 
   const result = await executeRun({
     runId,
-    request: request({ agent: "codex", cwd: root, prompt: "open tool", timeout_ms: 100, agent_args: [] }),
+    request: request({ agent: "codex", cwd: root, prompt: "open tool", timeout_ms: 5_000, agent_args: [] }),
     runsRoot: path.join(root, "runs"),
+    signal: controller.signal,
+    onEvent: (event) => { if (event.type === "tool.started") controller.abort(); },
   });
-  assert.equal(result.status, "timed_out");
+  assert.equal(result.status, "cancelled");
 
   // The trajectory must be structurally valid (open tool call paired with an
   // unknown-outcome result before step/end) and readable by consumers.
@@ -579,3 +634,13 @@ test("run engine launches the harness in the isolated execution workspace", asyn
   assert.equal(result.status, "succeeded");
   assert.equal(result.output, "reply:hello");
 });
+
+async function regularFiles(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const candidate = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await regularFiles(candidate));
+    else if (entry.isFile()) files.push(candidate);
+  }
+  return files.sort();
+}

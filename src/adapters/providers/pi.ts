@@ -33,6 +33,12 @@ export const piAdapter: AdapterDefinition = {
       model_selection: true,
       graceful_cancel: true,
     },
+    requirements: {
+      network: "required",
+      credential_names: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+      endpoint_override: "unknown",
+      capture: { native_events: true, native_session: true, model_proxy_compatible: false },
+    },
     process(request, executable) {
       const args = ["--mode", "json", "--no-session"];
       if (request.model) args.push("--model", request.model);

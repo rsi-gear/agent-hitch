@@ -1,10 +1,9 @@
 import { cp, lstat, mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { atomicWriteJSON, ensureDir, readJSON, statePaths, writePrivateFile } from "../foundation/index.js";
+import { atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage, statePaths, writePrivateFile } from "../foundation/index.js";
 import type { ResolvedRevision } from "../artifacts/index.js";
-import type { EvalRequest } from "../domain/index.js";
-import type { EvalTrialRefV1, RunObservationV1, Sha256 } from "../domain/index.js";
 import { validateRunContext } from "../domain/index.js";
+import type { EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, RunObservationV1, Sha256 } from "../domain/index.js";
 import { newRunId, safeAgentArgsForPersistence } from "../runs/index.js";
 import {
   benchmarkTaskDigest,
@@ -13,10 +12,18 @@ import {
   loadRunRecord,
   projectRunRecord,
   sha256JSON,
+  writeResultBundleIndex,
 } from "../runs/index.js";
 import { readHarborBridgeError } from "./harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
-
+import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
+import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
+import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
+import type { EvalInteractionCaptureExporter } from "./service-types.js";
+import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./interaction-capture-import.js";
+import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-import-identity.js";
+import { writeEvalTrialPublication } from "./trial-publication.js";
+import type { EvalTrialPublicationMode } from "./trial-publication.js";
 export interface ImportEvalRunsOptions {
   root: string;
   evalId: string;
@@ -29,14 +36,18 @@ export interface ImportEvalRunsOptions {
   harborJobDirectory?: string;
   expectedAttempt?: number;
   rawResult: Record<string, unknown> | null;
+  executionEvidence?: ExecutionEvidenceV1;
+  environmentImages?: TrialEnvironmentImagesV1;
+  modelCapturePlan?: ModelCapturePlanV1;
+  interactionCaptureExporter?: EvalInteractionCaptureExporter;
+  publicationMode?: EvalTrialPublicationMode;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
   requireCompleteMarker?: boolean;
   allowMissingBundleDiagnostic?: boolean;
 }
-
-/** Import every Harbor trial into the authoritative runs/ store. */
 export async function importEvalTrialRuns(
   options: ImportEvalRunsOptions,
   existingRefs: readonly EvalTrialRefV1[] = [],
@@ -52,22 +63,18 @@ export async function importEvalTrialRuns(
   return refs;
 }
 
-/** Import one settled Harbor trial, reusing an already-published ref idempotently. */
 export async function importEvalTrialRun(
   options: ImportEvalRunOptions,
   trial: Record<string, unknown>,
   index = 0,
   existingRefs: readonly EvalTrialRefV1[] = [],
 ): Promise<EvalTrialRefV1> {
-  // Harbor's result task_name may be display-qualified (for example,
-  // terminal-bench/regex-log), while the persisted trial lock contains the
-  // canonical task id used by the in-container bridge and exported run.
-  const fallbackTaskId = nonEmpty(trial.task_name) || `trial-${index + 1}`;
-  const trialId = nonEmpty(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
-  const attempt = options.expectedAttempt ?? trialAttempt(trialId);
+  const fallbackTaskId = nonEmptyString(trial.task_name) || `trial-${index + 1}`;
+  const trialId = nonEmptyString(trial.trial_name) || `${fallbackTaskId}__${index + 1}`;
+  const attempt = options.expectedAttempt ?? trialAttemptFromId(trialId);
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new TypeError("expected eval attempt must be a positive safe integer");
   const trialDirectory = path.join(options.harborJobDirectory ?? path.join(options.evalDirectory, "harbor", "job"), trialId);
-  const taskId = await lockedTaskId(trialDirectory) || fallbackTaskId;
+  const taskId = await lockedHarborTaskId(trialDirectory) || fallbackTaskId;
   const existing = existingRefs.find((ref) => ref.trial_id === trialId);
   if (existing !== undefined) {
     if (existing.task_id !== taskId || existing.attempt !== attempt) throw new TrialIdentityConflictError(`existing eval trial identity changed: ${trialId}`);
@@ -88,12 +95,13 @@ export async function importEvalTrialRun(
     return ref;
   } catch (error) {
     if (error instanceof TrialBundlePendingError || error instanceof TrialIdentityConflictError) throw error;
+    const safeMessage = safeDiagnosticMessage(error, credentialValuesFromEnv(options.request.pass_env ?? [], options.env ?? process.env));
     if (bundle) {
       await atomicWriteJSON(path.join(path.dirname(bundle), "hitch-run-import-error.json"), {
         schema_version: "1",
         trial_id: trialId,
         code: "run_bundle_import_failed",
-        message: (error as Error).message,
+        message: safeMessage,
         recorded_at: new Date().toISOString(),
       }).catch(() => {});
     }
@@ -102,7 +110,7 @@ export async function importEvalTrialRun(
       trial: {
         ...trial,
         exception_info: "hitch-run-bundle-import-failed",
-        hitch_import_error: (error as Error).message,
+        hitch_import_error: safeMessage,
       },
       taskId,
       trialId,
@@ -128,27 +136,6 @@ export class TrialIdentityConflictError extends Error {
     super(message);
     this.name = "TrialIdentityConflictError";
   }
-}
-
-async function lockedTaskId(trialDirectory: string): Promise<string | null> {
-  const lockPath = path.join(trialDirectory, "lock.json");
-  let lock: unknown;
-  try {
-    lock = await readJSON(lockPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw new Error(`Harbor trial lock is unreadable: ${lockPath}`, { cause: error });
-  }
-  if (!lock || typeof lock !== "object" || Array.isArray(lock)) {
-    throw new Error(`Harbor trial lock is invalid: ${lockPath}`);
-  }
-  const task = (lock as Record<string, unknown>).task;
-  if (!task || typeof task !== "object" || Array.isArray(task)) {
-    throw new Error(`Harbor trial lock has no task.name: ${lockPath}`);
-  }
-  const taskId = nonEmpty((task as Record<string, unknown>).name);
-  if (!taskId) throw new Error(`Harbor trial lock has no task.name: ${lockPath}`);
-  return taskId;
 }
 
 interface TrialInput extends ImportEvalRunOptions {
@@ -210,8 +197,10 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
   try {
     await cp(input.bundle, staging, { recursive: true, errorOnExist: true, force: false });
     await rm(path.join(staging, "bundle.complete.json"), { force: true });
+    await rm(path.join(staging, "bundle.index.json"), { force: true });
     await readJSON(path.join(staging, "resolution.json"));
     await validateJSONLines(path.join(staging, "events.jsonl"));
+    await importTrialInteractionCapture(input, record.run_id, staging);
     const verifier = verifierResult(input.trial);
     const verifierRef = verifier ? "verifier/result.json" : undefined;
     if (verifier) await atomicWriteJSON(path.join(staging, verifierRef as string), verifier);
@@ -239,6 +228,8 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     await atomicWriteJSON(path.join(staging, "request.json"), { ...request, cwd: "." });
     const result = await readJSON<Record<string, unknown>>(path.join(staging, "result.json"));
     await atomicWriteJSON(path.join(staging, "result.json"), withoutKeys(result, ["workspace"]));
+    await writeTrialExecutionEvidence(staging, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
+    await writeTrialEnvironmentImageEvidence(staging, input.taskId, input.environmentImages);
     await atomicWriteJSON(path.join(staging, "manifest.json"), {
       ...portableManifest,
       observation,
@@ -246,6 +237,9 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       ...(manifest.trajectory_ref ? {} : { trajectory_ref: "trajectory.ref.json" }),
       sealed: true,
     });
+    const ref = evalTrialRef(input, record.run_id, observation);
+    await writeEvalTrialPublication(staging, input.evalId, input.publicationMode ?? "settle", ref);
+    await writeResultBundleIndex(staging);
     const verified = await loadRunRecord(staging, { verifyTrajectory: true });
     if (verified.record.observation?.status !== observation.status) throw new Error(`failed to seal observation for ${record.run_id}`);
     await ensureDir(path.dirname(destination));
@@ -256,7 +250,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     await rename(staging, destination);
-    return evalTrialRef(input, record.run_id, observation);
+    return ref;
   } finally {
     await rm(stagingParent, { recursive: true, force: true });
   }
@@ -264,110 +258,133 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
 
 async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   const runId = newRunId();
-  const runDirectory = await ensureDir(path.join(statePaths(input.root).runs, runId));
+  const destination = path.join(statePaths(input.root).runs, runId);
+  const stagingParent = await mkdtemp(path.join(await ensureDir(statePaths(input.root).temporary), "eval-run-diagnostic-"));
+  const runDirectory = await ensureDir(path.join(stagingParent, runId));
   const now = new Date().toISOString();
-  const verifier = verifierResult(input.trial);
-  const verifierRef = verifier ? "verifier/result.json" : undefined;
-  if (verifier) await atomicWriteJSON(path.join(runDirectory, verifierRef as string), verifier);
-  const verifierInfrastructure = await detectVerifierInfrastructureFailure(
-    input.trialDirectory,
-    primaryVerifierReward(input.trial),
-  );
-  if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-  await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
-  const bridgeError = input.trial.exception_info
-    ? await readHarborBridgeError(input.trialDirectory)
-    : null;
-  const bridgeErrorRef = bridgeError ? "diagnostics/harbor-bridge-error.json" : undefined;
-  if (bridgeError && bridgeErrorRef) {
-    await ensureDir(path.dirname(path.join(runDirectory, bridgeErrorRef)));
-    await writePrivateFile(
-      path.join(runDirectory, bridgeErrorRef),
-      bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
+  try {
+    const verifier = verifierResult(input.trial);
+    const verifierRef = verifier ? "verifier/result.json" : undefined;
+    if (verifier) await atomicWriteJSON(path.join(runDirectory, verifierRef as string), verifier);
+    const verifierInfrastructure = await detectVerifierInfrastructureFailure(
+      input.trialDirectory,
+      primaryVerifierReward(input.trial),
     );
+    if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
+    await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
+    const bridgeError = input.trial.exception_info
+      ? await readHarborBridgeError(
+        input.trialDirectory,
+        credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env),
+      )
+      : null;
+    const bridgeErrorRef = bridgeError ? "diagnostics/harbor-bridge-error.json" : undefined;
+    if (bridgeError && bridgeErrorRef) {
+      await ensureDir(path.dirname(path.join(runDirectory, bridgeErrorRef)));
+      await writePrivateFile(
+        path.join(runDirectory, bridgeErrorRef),
+        bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
+      );
+    }
+    const reason = verifierInfrastructure
+      ? "verifier_infrastructure_failure"
+      : input.trial.exception_info
+      ? "infrastructure_failure"
+      : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
+    const observation: RunObservationV1 = {
+      status: "invalid",
+      invalid_reason: reason,
+      ...(verifierRef ? { verifier_result_ref: verifierRef } : {}),
+    };
+    const context = {
+      kind: "benchmark_task" as const,
+      benchmark_id: input.benchmarkId,
+      benchmark_revision: input.benchmarkRevision,
+      task_id: input.taskId,
+      task_digest: benchmarkTaskDigest(input.benchmarkId, input.benchmarkRevision, input.taskId),
+      verifier_identity: benchmarkVerifierIdentity(input.benchmarkId, input.benchmarkRevision),
+    };
+    const safeAgentArgs = safeAgentArgsForPersistence(input.request.agent_args);
+    const argsDigest = safeAgentArgs.length ? sha256JSON(safeAgentArgs) : undefined;
+    const artifactId = typeof (input.trial.agent_result as Record<string, unknown> | undefined)?.metadata === "object"
+      ? ((input.trial.agent_result as { metadata?: { hitch_artifact_id?: unknown } }).metadata?.hitch_artifact_id as string | undefined)
+      : undefined;
+    await atomicWriteJSON(path.join(runDirectory, "request.json"), {
+      schema_version: "1",
+      context,
+      parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
+      task_id: input.taskId,
+      prompt: null,
+      diagnostic: "trial bundle was not exported",
+    });
+    await atomicWriteJSON(path.join(runDirectory, "resolution.json"), input.resolvedRevision);
+    await writeTrialExecutionEvidence(runDirectory, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
+    await writeTrialEnvironmentImageEvidence(runDirectory, input.taskId, input.environmentImages);
+    await writeTrialCapturePolicy(runDirectory, input.modelCapturePlan);
+    await writePrivateFile(path.join(runDirectory, "events.jsonl"), `${JSON.stringify({
+      schema_version: "1",
+      sequence: 1,
+      timestamp: now,
+      run_id: runId,
+      type: "eval.trial.import_failed",
+      reason,
+      ...(bridgeError ? { bridge_error_code: bridgeError.code } : {}),
+    })}\n`);
+    await atomicWriteJSON(path.join(runDirectory, "result.json"), {
+      schema_version: "1",
+      run_id: runId,
+      status: "failed",
+      exit_code: 12,
+      error: bridgeError
+        ? { code: bridgeError.code, message: bridgeError.message }
+        : { code: reason, message: "Harbor trial completed without an importable Hitch run bundle" },
+      completed_at: now,
+    });
+    await atomicWriteJSON(path.join(runDirectory, "manifest.json"), {
+      schema_version: "1",
+      run_id: runId,
+      context,
+      parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
+      status: "failed",
+      harness: {
+        harness_id: input.resolvedRevision.harness_id,
+        requested_ref: input.request.harness_ref,
+        revision_identity: input.resolvedRevision.identity,
+        ...(artifactId && /^sha256:[0-9a-f]{64}$/.test(artifactId) ? { artifact_id: artifactId } : {}),
+        ...(argsDigest ? { agent_args_sha256: argsDigest } : {}),
+      },
+      model: defaultModelIdentity(input.request.model, input.resolvedRevision.harness_id),
+      protocol: {
+        timeout_ms: input.request.timeout_ms,
+        workspace_mode: "shared",
+        ...(input.runtimeId && /^sha256:[0-9a-f]{64}$/.test(input.runtimeId)
+          ? { environment_identity: input.runtimeId as Sha256 }
+          : {}),
+      },
+      observation,
+      request_ref: "request.json",
+      resolution_ref: "resolution.json",
+      result_ref: "result.json",
+      created_at: now,
+      completed_at: now,
+      sealed: true,
+      ...(bridgeErrorRef ? { diagnostics: { harbor_bridge_error_ref: bridgeErrorRef } } : {}),
+    });
+    const ref = evalTrialRef(input, runId, observation);
+    await writeEvalTrialPublication(runDirectory, input.evalId, input.publicationMode ?? "settle", ref);
+    await writeResultBundleIndex(runDirectory);
+    await ensureDir(path.dirname(destination));
+    try {
+      await stat(destination);
+      throw new TrialIdentityConflictError(`run destination already exists: ${runId}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await rename(runDirectory, destination);
+    return ref;
+  } finally {
+    await rm(stagingParent, { recursive: true, force: true });
   }
-  const reason = verifierInfrastructure
-    ? "verifier_infrastructure_failure"
-    : input.trial.exception_info
-    ? "infrastructure_failure"
-    : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
-  const observation: RunObservationV1 = {
-    status: "invalid",
-    invalid_reason: reason,
-    ...(verifierRef ? { verifier_result_ref: verifierRef } : {}),
-  };
-  const context = {
-    kind: "benchmark_task" as const,
-    benchmark_id: input.benchmarkId,
-    benchmark_revision: input.benchmarkRevision,
-    task_id: input.taskId,
-    task_digest: benchmarkTaskDigest(input.benchmarkId, input.benchmarkRevision, input.taskId),
-    verifier_identity: benchmarkVerifierIdentity(input.benchmarkId, input.benchmarkRevision),
-  };
-  const safeAgentArgs = safeAgentArgsForPersistence(input.request.agent_args);
-  const argsDigest = safeAgentArgs.length ? sha256JSON(safeAgentArgs) : undefined;
-  const artifactId = typeof (input.trial.agent_result as Record<string, unknown> | undefined)?.metadata === "object"
-    ? ((input.trial.agent_result as { metadata?: { hitch_artifact_id?: unknown } }).metadata?.hitch_artifact_id as string | undefined)
-    : undefined;
-  await atomicWriteJSON(path.join(runDirectory, "request.json"), {
-    schema_version: "1",
-    context,
-    parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
-    task_id: input.taskId,
-    prompt: null,
-    diagnostic: "trial bundle was not exported",
-  });
-  await atomicWriteJSON(path.join(runDirectory, "resolution.json"), input.resolvedRevision);
-  await writePrivateFile(path.join(runDirectory, "events.jsonl"), `${JSON.stringify({
-    schema_version: "1",
-    sequence: 1,
-    timestamp: now,
-    run_id: runId,
-    type: "eval.trial.import_failed",
-    reason,
-    ...(bridgeError ? { bridge_error_code: bridgeError.code } : {}),
-  })}\n`);
-  await atomicWriteJSON(path.join(runDirectory, "result.json"), {
-    schema_version: "1",
-    run_id: runId,
-    status: "failed",
-    exit_code: 12,
-    error: bridgeError
-      ? { code: bridgeError.code, message: bridgeError.message }
-      : { code: reason, message: "Harbor trial completed without an importable Hitch run bundle" },
-    completed_at: now,
-  });
-  await atomicWriteJSON(path.join(runDirectory, "manifest.json"), {
-    schema_version: "1",
-    run_id: runId,
-    context,
-    parent: { kind: "eval", eval_id: input.evalId, trial_id: input.trialId, attempt: input.attempt },
-    status: "failed",
-    harness: {
-      harness_id: input.resolvedRevision.harness_id,
-      requested_ref: input.request.harness_ref,
-      revision_identity: input.resolvedRevision.identity,
-      ...(artifactId && /^sha256:[0-9a-f]{64}$/.test(artifactId) ? { artifact_id: artifactId } : {}),
-      ...(argsDigest ? { agent_args_sha256: argsDigest } : {}),
-    },
-    model: defaultModelIdentity(input.request.model, input.resolvedRevision.harness_id),
-    protocol: {
-      timeout_ms: input.request.timeout_ms,
-      workspace_mode: "shared",
-      ...(input.runtimeId && /^sha256:[0-9a-f]{64}$/.test(input.runtimeId)
-        ? { environment_identity: input.runtimeId as Sha256 }
-        : {}),
-    },
-    observation,
-    request_ref: "request.json",
-    resolution_ref: "resolution.json",
-    result_ref: "result.json",
-    created_at: now,
-    completed_at: now,
-    sealed: true,
-    ...(bridgeErrorRef ? { diagnostics: { harbor_bridge_error_ref: bridgeErrorRef } } : {}),
-  });
-  return evalTrialRef(input, runId, observation);
 }
 
 function evalTrialRef(input: TrialInput, runId: string, observation: RunObservationV1): EvalTrialRefV1 {
@@ -423,18 +440,6 @@ async function validateBundleTree(root: string): Promise<void> {
     }
   };
   await walk(root);
-}
-
-function trialAttempt(trialId: string): number {
-  const match = trialId.match(/__(\d+)$/);
-  const value = Number(match?.[1]);
-  // Modern Harbor trial ids carry a random suffix. Each such id identifies a
-  // distinct trial, whose execution attempt starts at one.
-  return Number.isInteger(value) && value > 0 ? value : 1;
-}
-
-function nonEmpty(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function isWithin(root: string, candidate: string): boolean {

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/eval-rerun-submission.schema.json",
+  "title": "Hitch eval rerun submission V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "rerun_id", "eval_id", "rerun_type", "semantics", "selector", "submitted_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "rerun_id": { "type": "string", "pattern": "^rerun_[a-f0-9]{32}$" },
+    "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+    "rerun_type": { "$ref": "#/$defs/rerunType" },
+    "semantics": { "$ref": "#/$defs/semantics" },
+    "selector": { "$ref": "#/$defs/selector" },
+    "submitted_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "rerunType": {
+      "enum": ["candidate-restart", "candidate-resume", "trajectory-replay", "verifier-only", "collect-only"]
+    },
+    "semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_action", "conversation_source", "sandbox_source", "candidate_executes"],
+      "properties": {
+        "candidate_action": { "enum": ["restart", "resume", "replay", "none"] },
+        "conversation_source": { "enum": ["original-instruction", "native-session", "canonical-trajectory", "none"] },
+        "sandbox_source": { "enum": ["clean", "checkpoint", "retained", "none"] },
+        "candidate_executes": { "type": "boolean" }
+      }
+    },
+    "selector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": { "mode": { "const": "invalid" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "task_names"],
+          "properties": {
+            "mode": { "const": "tasks" },
+            "task_names": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10000,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

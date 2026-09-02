@@ -4,7 +4,7 @@ import path from "node:path";
 const SRC_ROOT = path.resolve("src");
 const MODULES = new Set([
   "domain", "foundation", "adapters", "revisions", "artifacts", "controller-runtime",
-  "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "daemon", "cli",
+  "images", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
 ]);
 const ALLOWED = new Map<string, Set<string>>([
   ["domain", new Set()],
@@ -13,13 +13,17 @@ const ALLOWED = new Map<string, Set<string>>([
   ["revisions", new Set(["domain", "foundation", "adapters"])],
   ["artifacts", new Set(["domain", "foundation", "adapters", "revisions"])],
   ["controller-runtime", new Set(["domain", "foundation"])],
+  ["images", new Set(["domain", "foundation"])],
+  ["model-access", new Set(["domain", "foundation"])],
   ["trajectories", new Set(["domain", "foundation", "adapters"])],
   ["feedback", new Set(["domain", "foundation", "trajectories"])],
   ["workspaces", new Set(["domain", "foundation"])],
-  ["runs", new Set(["domain", "foundation", "adapters", "revisions", "artifacts", "workspaces", "trajectories"])],
+  ["runs", new Set(["domain", "foundation", "adapters", "revisions", "artifacts", "workspaces", "trajectories", "model-access"])],
   ["backends", new Set(["domain", "foundation"])],
-  ["evals", new Set(["domain", "foundation", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories"])],
-  ["daemon", new Set(["domain", "foundation", "runs", "workspaces"])],
+  ["evals", new Set(["domain", "foundation", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
+  ["control-plane", new Set(["domain", "foundation", "adapters", "model-access", "evals", "images"])],
+  ["workers", new Set(["domain", "foundation", "artifacts", "backends", "controller-runtime", "evals", "control-plane"])],
+  ["daemon", new Set(["domain", "foundation", "runs", "workspaces", "control-plane"])],
   ["cli", new Set([...MODULES].filter((name) => name !== "cli"))],
 ]);
 

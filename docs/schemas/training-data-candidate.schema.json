@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/training-data-candidate.schema.json",
+  "title": "Hitch training-data candidate V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "candidate_id", "source_bundle_digest", "run_id", "eligibility", "reasons",
+    "context_ref", "trajectory_ref", "verifier_ref", "metadata", "provenance_digest"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "candidate_id": { "$ref": "#/$defs/sha256" },
+    "source_bundle_digest": { "$ref": "#/$defs/sha256" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "eligibility": { "enum": ["eligible", "ineligible", "review-required"] },
+    "reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9-]+$" }
+    },
+    "context_ref": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "trajectory_ref": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "verifier_ref": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "benchmark_id", "benchmark_revision", "harness_revision", "model_identity_resolved",
+        "capture_completeness", "redaction_policy"
+      ],
+      "properties": {
+        "benchmark_id": { "type": "string", "minLength": 1 },
+        "benchmark_revision": { "type": "string", "minLength": 1 },
+        "harness_revision": { "$ref": "#/$defs/sha256" },
+        "model_identity_resolved": { "type": "boolean" },
+        "capture_completeness": { "enum": ["complete", "partial", "none"] },
+        "redaction_policy": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "provenance_digest": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
