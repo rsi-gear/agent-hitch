@@ -2,15 +2,18 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { createQueuedRun, executeRun, sealTerminalManifest } from "../runs/index.js";
 import type { QueuedRun, RunRequestInput } from "../runs/index.js";
-import { SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON } from "../foundation/index.js";
+import { SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage } from "../foundation/index.js";
 import { cancelPlannedWorkspace, recoverInterruptedWorkspace } from "../workspaces/index.js";
 import type { WorkspacePlan } from "../workspaces/index.js";
 import type { ResolvedRevision, RunId } from "../domain/index.js";
+import type { ResourceVectorV1 } from "../domain/index.js";
+import { ResourceLedger, zeroResources } from "../control-plane/index.js";
+import type { ResourceLease } from "../control-plane/index.js";
 
 interface QueuedEntry {
   runId: RunId;
   directory: string;
-  request: RunRequestInput;
+  request: QueuedRun["request"];
   resolvedRevision: ResolvedRevision;
   workspacePlan: WorkspacePlan;
 }
@@ -18,6 +21,7 @@ interface QueuedEntry {
 interface ActiveRun {
   child?: import("node:child_process").ChildProcess;
   cancel?: () => Promise<void>;
+  resources?: ResourceLease;
 }
 
 export interface SchedulerOptions {
@@ -25,6 +29,9 @@ export interface SchedulerOptions {
   root?: string;
   maxConcurrent?: number;
   onEvent?: (event: Record<string, unknown>) => void;
+  resources?: ResourceLedger;
+  runResources?: ResourceVectorV1;
+  credentialEnv?: NodeJS.ProcessEnv;
 }
 
 export class Scheduler {
@@ -32,16 +39,24 @@ export class Scheduler {
   readonly root: string;
   readonly maxConcurrent: number;
   readonly onEvent: (event: Record<string, unknown>) => void;
+  readonly resources: ResourceLedger | undefined;
+  readonly runResources: ResourceVectorV1;
+  readonly credentialEnv: NodeJS.ProcessEnv;
   private queue: QueuedEntry[] = [];
   private active = new Map<RunId, ActiveRun>();
   private completions = new Map<RunId, Promise<unknown>>();
   private accepting = true;
+  private readonly unsubscribe: (() => void) | undefined;
 
-  constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {} }: SchedulerOptions) {
+  constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {}, resources, runResources = zeroResources(), credentialEnv = process.env }: SchedulerOptions) {
     this.runsRoot = runsRoot;
     this.root = root;
     this.maxConcurrent = maxConcurrent;
     this.onEvent = onEvent;
+    this.resources = resources;
+    this.runResources = runResources;
+    this.credentialEnv = credentialEnv;
+    this.unsubscribe = resources?.subscribe(() => this.drain());
   }
 
   async initialize(): Promise<void> {
@@ -51,6 +66,7 @@ export class Scheduler {
 
   async submit(request: RunRequestInput): Promise<RunId> {
     if (!this.accepting) throw new Error("daemon is shutting down");
+    if (this.resources && !this.resources.canEverFit(this.runResources)) throw new Error("run resource request exceeds daemon capacity");
     const queued = await createQueuedRun({ request, runsRoot: this.runsRoot, root: this.root });
     this.queue.push(queued);
     this.onEvent({ type: "run.queued", run_id: queued.runId });
@@ -107,13 +123,17 @@ export class Scheduler {
     for (const entry of [...this.queue]) await this.cancel(entry.runId);
     await Promise.all([...this.active.values()].map((run) => run.cancel?.()));
     await Promise.all([...this.completions.values()]);
+    this.unsubscribe?.();
   }
 
   drain(): void {
     while (this.accepting && this.active.size < this.maxConcurrent && this.queue.length > 0) {
+      const candidate = this.queue[0] as QueuedEntry;
+      const resources = this.resources ? this.resources.tryAcquire(candidate.runId, "run", this.runResources) : null;
+      if (this.resources && !resources) break;
       const entry = this.queue.shift() as QueuedEntry;
       const controller = new AbortController();
-      this.active.set(entry.runId, { cancel: async () => controller.abort() });
+      this.active.set(entry.runId, { ...(resources ? { resources } : {}), cancel: async () => controller.abort() });
       const completion = executeRun({
         runId: entry.runId,
         request: entry.request,
@@ -126,15 +146,17 @@ export class Scheduler {
         onProcess: (processControl) => {
           if (processControl) this.active.set(entry.runId, {
             ...processControl,
+            ...(resources ? { resources } : {}),
             cancel: async () => controller.abort(),
           });
         },
       }).catch(async (error) => {
         await this.recordUnexpectedFailure(entry, error);
-        this.onEvent({ type: "scheduler.error", run_id: entry.runId, error: (error as Error).message });
+        this.onEvent({ type: "scheduler.error", run_id: entry.runId, code: "scheduler_error" });
       }).finally(() => {
         this.active.delete(entry.runId);
         this.completions.delete(entry.runId);
+        resources?.release();
         this.drain();
       });
       this.completions.set(entry.runId, completion);
@@ -150,7 +172,10 @@ export class Scheduler {
       run_id: entry.runId,
       status: "failed",
       exit_code: 12,
-      error: { code: "scheduler_error", message: (error as Error)?.message || String(error) },
+      error: {
+        code: "scheduler_error",
+        message: safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.credential_names, this.credentialEnv)),
+      },
       completed_at: now,
     };
     await atomicWriteJSON(resultPath, result);

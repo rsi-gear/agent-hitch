@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/execution-lease.schema.json",
+  "title": "Hitch execution lease V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "lease_id", "work_id", "eval_id", "worker_id", "provider", "collision_domain_id",
+    "reservation", "state", "epoch", "issued_at", "expires_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "lease_id": { "type": "string", "pattern": "^lease_[a-f0-9]{32}$" },
+    "work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
+    "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+    "worker_id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "collision_domain_id": { "type": "string", "minLength": 1 },
+    "parent_allocation_id": { "type": "string", "pattern": "^allocation_[a-f0-9]{32}$" },
+    "reservation": { "$ref": "#/$defs/resources" },
+    "state": { "enum": ["offered", "accepted", "running", "releasing", "released", "expired", "lost"] },
+    "epoch": { "type": "integer", "minimum": 1 },
+    "resource_epochs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1 }
+    },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "accepted_at": { "type": "string", "format": "date-time" },
+    "heartbeat_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "terminal_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 },
+        "memory_bytes": { "type": "integer", "minimum": 0 },
+        "container_slots": { "type": "integer", "minimum": 0 },
+        "build_slots": { "type": "integer", "minimum": 0 },
+        "gpu_count": { "type": "integer", "minimum": 0 },
+        "ephemeral_disk_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

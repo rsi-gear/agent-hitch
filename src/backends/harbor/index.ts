@@ -1,7 +1,14 @@
-export { buildHarborJobConfig, lockedHarnessRef, normalizeHarborResult, runHarborBackend } from "./backend.js";
+export { buildHarborJobConfig, lockedHarnessRef, normalizeHarborResult, readHarborRawResult, runHarborBackend } from "./backend.js";
+export { DEFAULT_HARBOR_TRIAL_DOCKER_PLATFORM, HARBOR_NODE_VERSION, HARBOR_NODE_VERSION_WITH_PREFIX, HARBOR_PNPM_VERSION, harborTrialRuntimeContract } from "./runtime-toolchain.js";
+export type { HarborTrialRuntimeContract } from "./runtime-toolchain.js";
 export type { BuildHarborJobConfigOptions, HarborBackendResult, HarborPreparedArtifactUse, RunHarborBackendOptions } from "./backend.js";
+export { harborEnvironmentConfig } from "./environment-config.js";
+export type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
+export { readHarborProcessExitStatus } from "./process.js";
 export { DEFAULT_LOCAL_GIT_TRANSPORT_LIMITS, LOCAL_GIT_TRANSPORT_MANIFEST, LOCAL_GIT_TRANSPORT_PAYLOAD, LOCAL_GIT_TRANSPORT_SCHEMA_VERSION, buildLocalGitTransport, localGitTransportLimitsFromEnv, validateLocalGitTransportManifest, verifyLocalGitTransport, verifyMaterializedLocalGitSource } from "./local-git-transport.js";
 export type { LocalGitTransportLimits, LocalGitTransportManifest, LocalGitTransportUse } from "./local-git-transport.js";
 export type { VerifiedLocalGitSource } from "../../domain/index.js";
+export { inspectHarborTaskResources, parseHarborTaskResourceDeclaration } from "./task-resources.js";
+export type { HarborEnvironmentBuildDeclarationV1, HarborEnvironmentImageDeclarationV1, HarborEnvironmentImageFallbackV1, HarborTaskResourceDeclarationV1 } from "./task-resources.js";
 export { DEFAULT_HARBOR_VERSION, HARBOR_CREDENTIAL_ENV, doctorHarbor, locateHarbor, managedHarborExecutable, setupHarbor } from "./tools.js";
 export type { DoctorCheck, DoctorHarborOptions, DoctorResult, HarborLocation, LocateHarborOptions, HarborSetupResult, SetupHarborOptions } from "./tools.js";

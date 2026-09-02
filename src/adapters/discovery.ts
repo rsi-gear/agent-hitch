@@ -30,7 +30,7 @@ async function inspectDefinition(
   { env, probeVersions }: { env: NodeJS.ProcessEnv; probeVersions: boolean },
 ): Promise<DiscoveredAgent> {
   const configured = env[definition.path_env]?.trim() || definition.command;
-  const executable = await resolveExecutable(configured, env.PATH || "");
+  const executable = await resolveExecutable(configured, env.PATH || "", env.PATHEXT);
   if (!executable) return { ...definition, status: "unavailable" };
 
   const version = probeVersions

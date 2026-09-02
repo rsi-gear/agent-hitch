@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/interaction-capture-ref.schema.json",
+  "title": "Hitch interaction capture reference V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_id", "mode", "required", "topology", "completeness", "interaction_count",
+    "interactions_ref", "redaction"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "mode": { "enum": ["proxy", "hybrid"] },
+    "required": { "type": "boolean" },
+    "topology": { "enum": ["host-side", "in-sandbox"] },
+    "completeness": { "enum": ["complete", "partial", "none"] },
+    "interaction_count": { "type": "integer", "minimum": 0 },
+    "interactions_ref": { "$ref": "#/$defs/relativePath" },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "status", "rules"],
+      "properties": {
+        "policy": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "status": { "enum": ["applied", "not-needed", "failed"] },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rule_id", "count"],
+            "properties": {
+              "rule_id": { "type": "string", "minLength": 1 },
+              "count": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
+  }
+}

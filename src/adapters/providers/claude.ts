@@ -20,6 +20,12 @@ export const claudeAdapter: AdapterDefinition = {
       model_selection: true,
       graceful_cancel: true,
     },
+    requirements: {
+      network: "required",
+      credential_names: ["ANTHROPIC_API_KEY"],
+      endpoint_override: "supported",
+      capture: { native_events: true, native_session: true, model_proxy_compatible: true },
+    },
     process(request, executable) {
       const args = ["-p", "--output-format", "stream-json", "--verbose"];
       if (request.model) args.push("--model", request.model);

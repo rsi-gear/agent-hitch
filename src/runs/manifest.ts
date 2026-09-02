@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { SCHEMA_VERSION, sha256JSON } from "../foundation/index.js";
+import { SCHEMA_VERSION, credentialValuesFromEnv, sha256JSON } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { workspaceManifestFields } from "../workspaces/index.js";
 import type { WorkspacePlan } from "../workspaces/index.js";
@@ -37,7 +37,7 @@ export interface RunManifest extends Record<string, unknown> {
 
 export function buildManifest(runId: RunId, request: ValidatedRunRequest, workspacePlan: WorkspacePlan | null): RunManifest {
   const reference = parseHarnessReference(request.harness_ref);
-  const safeAgentArgs = safeAgentArgsForPersistence(request.agent_args);
+  const safeAgentArgs = safeAgentArgsForPersistence(request.agent_args, credentialValuesFromEnv(request.credential_names, process.env));
   const argsDigest = safeAgentArgs.length > 0 ? sha256JSON(safeAgentArgs) : undefined;
   const environmentIdentity = request.protocol_identity.environment_identity
     ?? sha256JSON({ platform: process.platform, arch: process.arch, node: process.versions.node });
@@ -78,14 +78,14 @@ export function buildManifest(runId: RunId, request: ValidatedRunRequest, worksp
   };
 }
 
-export function safeAgentArgsForPersistence(agentArgs: string[]): string[] {
+export function safeAgentArgsForPersistence(agentArgs: string[], credentialValues: readonly string[] = []): string[] {
   const sensitiveFlag = /(?:api[-_]?key|authorization|token|secret|password|credential|cookie)/i;
   const result: string[] = [];
   for (let index = 0; index < agentArgs.length; index += 1) {
     const argument = agentArgs[index] as string;
     const separator = argument.indexOf("=");
     const flag = separator >= 0 ? argument.slice(0, separator) : argument;
-    if (sensitiveFlag.test(flag)) {
+    if (flag.startsWith("-") && sensitiveFlag.test(flag)) {
       result.push(separator >= 0 ? `${flag}=[REDACTED]` : flag);
       if (separator < 0 && agentArgs[index + 1] !== undefined && !String(agentArgs[index + 1]).startsWith("--")) {
         result.push("[REDACTED]");
@@ -93,7 +93,7 @@ export function safeAgentArgsForPersistence(agentArgs: string[]): string[] {
       }
       continue;
     }
-    result.push(redactProviderText(argument));
+    result.push(redactProviderText(argument, new Map(), credentialValues));
   }
   return result;
 }

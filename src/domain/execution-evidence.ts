@@ -1,0 +1,42 @@
+import type { ResourceVectorV1 } from "./resources.js";
+import type { Sha256 } from "./ids.js";
+
+export interface ObservedContainerResourcesV1 {
+  container_id: string;
+  name?: string;
+  image_reference?: string;
+  image_config_digest?: Sha256;
+  first_observed_at: string;
+  last_observed_at: string;
+  peak_memory_bytes?: number;
+  cpu_time_ns?: number;
+  oom_killed?: boolean;
+  exit_code?: number;
+  exit_reason?: string;
+}
+
+export interface ExecutionEvidenceV1 {
+  schema_version: "1";
+  provider: string;
+  worker_id: string;
+  collision_domain_id: string;
+  eval_id: string;
+  work_id: string;
+  lease_id: string;
+  lease_epoch: number;
+  task_id: string;
+  reservation: ResourceVectorV1;
+  enforced: {
+    main_limits: ResourceVectorV1;
+    sidecar_limits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
+  };
+  observed: {
+    status: "partial" | "unavailable";
+    started_at: string;
+    collected_at: string;
+    sample_count: number;
+    containers: ObservedContainerResourcesV1[];
+    unavailable_fields: Array<"cpu_time_ns" | "peak_memory_bytes" | "exit_status" | "image_identity">;
+    issues: string[];
+  };
+}

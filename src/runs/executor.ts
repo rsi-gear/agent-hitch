@@ -1,13 +1,11 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { getAdapter } from "../adapters/index.js";
-import type { NormalizedEvent } from "../adapters/index.js";
 import { EventSink } from "./events.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, consumeLines, ensureDir, readJSON, terminateProcess } from "../foundation/index.js";
-import { parseHarnessReference } from "../revisions/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, consumeLines, credentialValuesFromEnv, ensureDir, prepareSpawnCommand, readJSON, terminateProcess } from "../foundation/index.js";
+import { parseHarnessReference, type VerifiedLocalGitSource } from "../revisions/index.js";
 import { assertPreparedArtifactRevision, prepareHarness, resolveHarness } from "../artifacts/index.js";
 import type { PreparedArtifact, ResolvedRevision } from "../artifacts/index.js";
-import type { VerifiedLocalGitSource } from "../revisions/index.js";
 import {
   abandonPlannedWorkspace,
   finalizeWorkspace,
@@ -21,8 +19,7 @@ import {
   workspaceDigest,
 } from "../workspaces/index.js";
 import type { WorkspacePlan } from "../workspaces/index.js";
-import { TrajectoryProjector, importDeepseekNativeSession } from "../trajectories/index.js";
-import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefPath, trajectoryRefV2 } from "../trajectories/index.js";
+import { TrajectoryProjector, TrajectoryWriter, canonicalTrajectoryFileRef, importDeepseekNativeSession, trajectoryRefPath, trajectoryRefV2 } from "../trajectories/index.js";
 import { ProviderCaptureWriter, redactProviderText } from "../trajectories/index.js";
 import type { ModelIdentityV1, RunId } from "../domain/index.js";
 import { looksImmutableModelId } from "./identity.js";
@@ -31,6 +28,7 @@ import type { RunRequestInput } from "./request.js";
 import { buildManifest, safeAgentArgsForPersistence } from "./manifest.js";
 import { assertQueuedRunIdentity } from "./queued.js";
 import { adapterFidelity, failureResult, mergeRedactions, providerModelId } from "./outcome.js";
+import { writeResultBundleIndex } from "./bundle.js";
 export interface ExecuteRunOptions {
   runId: RunId;
   request: RunRequestInput;
@@ -58,6 +56,7 @@ export async function executeRun({
   signal,
 }: ExecuteRunOptions): Promise<Record<string, unknown>> {
   const normalized = await validateRunRequest(request);
+  const credentialValues = credentialValuesFromEnv(normalized.credential_names, process.env);
   workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const runDirectory = path.join(runsRoot, runId);
   const runtimeHome = path.join(runDirectory, "runtime-home");
@@ -77,8 +76,8 @@ export async function executeRun({
   await atomicWriteJSON(path.join(runDirectory, "request.json"), {
     schema_version: SCHEMA_VERSION,
     ...normalized,
-    prompt: redactProviderText(normalized.prompt),
-    agent_args: safeAgentArgsForPersistence(normalized.agent_args),
+    prompt: redactProviderText(normalized.prompt, new Map(), credentialValues),
+    agent_args: safeAgentArgsForPersistence(normalized.agent_args, credentialValues),
   });
   await atomicWriteJSON(manifestPath, existingManifest);
   let sink: EventSink | undefined;
@@ -98,7 +97,7 @@ export async function executeRun({
   const projector = new TrajectoryProjector({
     runId,
     cwd: normalized.cwd,
-    prompt: redactProviderText(normalized.prompt),
+    prompt: redactProviderText(normalized.prompt, new Map(), credentialValues),
     model: normalized.model,
     fidelity: adapterFidelity(normalized.harness_ref),
   });
@@ -111,7 +110,7 @@ export async function executeRun({
     sink = new EventSink(runDirectory, runId, onEvent);
     await sink.open();
     sinkOpened = true;
-    providerCapture = await ProviderCaptureWriter.open({ runDirectory, structured: Boolean(adapter.translate) });
+    providerCapture = await ProviderCaptureWriter.open({ runDirectory, structured: Boolean(adapter.translate), credentialValues });
     stage = "resolution";
     resolution ||= await resolveHarness(reference, { root });
     await atomicWriteJSON(path.join(runDirectory, "resolution.json"), resolution);
@@ -198,12 +197,14 @@ export async function executeRun({
         PWD: workspaceLease.execution_workspace,
       };
       delete childEnvironment.OLDPWD;
-      child = spawn(specification.executable, specification.args, {
+      const invocation = prepareSpawnCommand(specification.executable, specification.args);
+      child = spawn(invocation.executable, invocation.args, {
         cwd: workspaceLease.execution_workspace,
         env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       const launched = child;
       launched.stdin?.on("error", () => { /* Process-level error/exit determines the typed result. */ });
@@ -215,7 +216,7 @@ export async function executeRun({
       signal?.addEventListener("abort", abortHandler, { once: true });
       consumeLines(launched.stdout as import("node:stream").Readable, (line) => {
         if (adapter.translateLine) {
-          const safeLine = providerCapture?.appendText(line) ?? redactProviderText(line);
+          const safeLine = providerCapture?.appendText(line) ?? redactProviderText(line, new Map(), credentialValues);
           sink?.writeStdout(safeLine);
           for (const event of adapter.translateLine(safeLine, adapterState)) {
             if (event.type === "message.delta" && event.text) {
@@ -231,7 +232,7 @@ export async function executeRun({
         try {
           native = JSON.parse(line);
         } catch {
-          const safeLine = providerCapture?.appendUnparsed(line) ?? redactProviderText(line);
+          const safeLine = providerCapture?.appendUnparsed(line) ?? redactProviderText(line, new Map(), credentialValues);
           sink?.writeStdout(safeLine);
           sink?.emit({ type: "process.stdout", text: safeLine });
           projector.feedText(`${safeLine}\n`);
@@ -257,7 +258,7 @@ export async function executeRun({
         }
       });
       consumeLines(launched.stderr as import("node:stream").Readable, (line) => {
-        const safeLine = redactProviderText(line);
+        const safeLine = redactProviderText(line, new Map(), credentialValues);
         sink?.writeStderr(safeLine);
         sink?.emit({ type: "process.stderr", text: safeLine });
       });
@@ -313,7 +314,7 @@ export async function executeRun({
     const launchStage = stage === "adapter_setup" || stage === "launch";
     const code = error instanceof HitchError ? error.code : launchStage ? "launch_failed" : "internal_error";
     const exitCode = error instanceof HitchError ? error.exitCode : launchStage ? 6 : 12;
-    result = failureResult(runId, startedAt, code, (error as Error)?.message || String(error), exitCode);
+    result = failureResult(runId, startedAt, code, redactProviderText((error as Error)?.message || String(error), new Map(), credentialValues), exitCode);
     if (sinkOpened) {
       try { sink?.emit({ type: "run.failed", status: (result as { status: string }).status, error: (result as { error: { code: string; message: string } }).error }); } catch { /* Finalization below remains authoritative. */ }
     }
@@ -335,7 +336,7 @@ export async function executeRun({
         changed: workspaceLease.changed ?? null,
       };
     } catch (error) {
-      const warning = { code: "workspace_finalization_failed", message: (error as Error)?.message || String(error) };
+      const warning = { code: "workspace_finalization_failed", message: redactProviderText((error as Error)?.message || String(error), new Map(), credentialValues) };
       try {
         const marked = await markWorkspaceFinalizationFailed(workspaceLease, {
           recordPath: workspacePath,
@@ -373,6 +374,7 @@ export async function executeRun({
           runDirectory,
           runId,
           status: status === "cancelled" ? "cancelled" : status === "timed_out" ? "timed_out" : status === "succeeded" ? "succeeded" : "failed",
+          credentialValues,
         })
       : null;
     const projected = deepseekNative
@@ -434,7 +436,7 @@ export async function executeRun({
     providerCapture = undefined;
     const warning = {
       code: "trajectory_recording_failed",
-      message: (error as Error)?.message || String(error),
+      message: redactProviderText((error as Error)?.message || String(error), new Map(), credentialValues),
     };
     if ((result as { status?: string } | undefined)?.status === "timed_out") {
       // The agent timeout is the authoritative terminal cause. Recording is a
@@ -451,7 +453,7 @@ export async function executeRun({
     try {
       await sink?.close();
     } catch (error) {
-      result = failureResult(runId, startedAt, "event_recording_failed", (error as Error).message, 12);
+      result = failureResult(runId, startedAt, "event_recording_failed", redactProviderText((error as Error).message, new Map(), credentialValues), 12);
     }
   }
   if (!result) result = failureResult(runId, startedAt, "internal_error", "run ended without a result", 12);
@@ -484,14 +486,15 @@ export async function executeRun({
             : "infrastructure_failure",
       }
     : undefined;
-  await atomicWriteJSON(manifestPath, {
+  const terminalManifest = {
     ...manifest,
     status: terminalStatus,
     result_ref: "result.json",
     ...(observation ? { observation } : {}),
     completed_at: (result as { completed_at?: string }).completed_at,
     sealed: !normalized.defer_benchmark_observation,
-  });
+  };
+  await atomicWriteJSON(manifestPath, terminalManifest);
+  if (terminalManifest.sealed) await writeResultBundleIndex(runDirectory);
   return result;
 }
-export type { NormalizedEvent };

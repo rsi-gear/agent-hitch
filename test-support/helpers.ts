@@ -1,6 +1,10 @@
 import { chmod, readdir, rm, writeFile } from "node:fs/promises";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
+import { prepareHostHarborArtifactForTest as prepareHostArtifact } from "../src/evals/prepared-harness.js";
+import type { EvalHarborArtifactBuilder } from "../src/evals/index.js";
+
+export const prepareHostHarborArtifactForTest: EvalHarborArtifactBuilder = prepareHostArtifact;
 
 /**
  * Remove a tree even when it contains read-only controller runtime bundles
@@ -223,7 +227,23 @@ process.exit(2);
   return file;
 }
 
-export async function writeFakeHarbor(directory: string): Promise<string> {
+export async function writeFakeHarbor(directory: string, {
+  delayMs = 0,
+  candidateStartDelayMs = 0,
+  postResultDelayMs = 0,
+  activityLog,
+  leakEnvName,
+  pythonPathLog,
+}: {
+  delayMs?: number;
+  candidateStartDelayMs?: number;
+  postResultDelayMs?: number;
+  activityLog?: string;
+  /** Test-only: persist the inherited PYTHONPATH used to import Harbor plugins. */
+  pythonPathLog?: string;
+  /** Test-only: print one inherited value so callers can verify host log redaction. */
+  leakEnvName?: string;
+} = {}): Promise<string> {
   const file = path.join(directory, "fake-harbor");
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -239,23 +259,51 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
   process.exit(2);
 }
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const pythonPathLog = ${pythonPathLog === undefined ? "null" : JSON.stringify(pythonPathLog)};
+if (pythonPathLog) fs.writeFileSync(pythonPathLog, process.env.PYTHONPATH || "");
+const leakEnvName = ${leakEnvName === undefined ? "null" : JSON.stringify(leakEnvName)};
+if (leakEnvName) {
+  process.stdout.write("inherited=" + (process.env[leakEnvName] || "") + "\\n");
+  process.stderr.write("Authorization: Bearer " + (process.env[leakEnvName] || "") + "\\n");
+}
 const output = path.join(config.jobs_dir, config.job_name);
 const logicalAttempt = config.agents[0].kwargs.logical_attempt || 1;
+const selectedTasks = config.datasets[0].task_names || null;
 const trials = [
   {task_name:"one",trial_name:"one__random-" + logicalAttempt,verifier_result:{rewards:{reward:1}}},
   {task_name:"two",trial_name:"two__random-" + logicalAttempt,verifier_result:{rewards:{reward:0.5}}}
-];
-fs.mkdirSync(output, {recursive:true});
-fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
-  n_total_trials: trials.length,
-  stats: {n_completed_trials: trials.length, n_errored_trials: 0, n_cancelled_trials: 0}
-}));
-for (const trial of trials) {
-  const trialOutput = path.join(output, trial.trial_name);
-  fs.mkdirSync(trialOutput, {recursive:true});
-  fs.writeFileSync(path.join(trialOutput, "result.json"), JSON.stringify(trial));
-}
-process.stdout.write("Results written\\n");
+].filter((trial) => selectedTasks === null || selectedTasks.includes(trial.task_name));
+const activityLog = ${activityLog === undefined ? "null" : JSON.stringify(activityLog)};
+const activity = (type) => {
+  if (activityLog) fs.appendFileSync(activityLog, JSON.stringify({type,time:Date.now(),logicalAttempt,tasks:trials.map((trial) => trial.task_name)}) + "\\n");
+};
+activity("start");
+const finish = () => {
+  fs.mkdirSync(output, {recursive:true});
+  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+    n_total_trials: trials.length,
+    stats: {n_completed_trials: trials.length, n_errored_trials: 0, n_cancelled_trials: 0}
+  }));
+  for (const trial of trials) {
+    const trialOutput = path.join(output, trial.trial_name);
+    fs.mkdirSync(trialOutput, {recursive:true});
+    fs.writeFileSync(path.join(trialOutput, "result.json"), JSON.stringify(trial));
+  }
+  activity("verifier-complete");
+  const complete = () => {
+    activity("end");
+    process.stdout.write("Results written\\n");
+  };
+  if (${postResultDelayMs} > 0) setTimeout(complete, ${postResultDelayMs});
+  else complete();
+};
+const runCandidate = () => {
+  activity("candidate-start");
+  if (${delayMs} > 0) setTimeout(finish, ${delayMs});
+  else finish();
+};
+if (${candidateStartDelayMs} > 0) setTimeout(runCandidate, ${candidateStartDelayMs});
+else runCandidate();
 `;
   await writeFile(file, source, { mode: 0o755 });
   await chmod(file, 0o755);

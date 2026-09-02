@@ -7,7 +7,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { resolveHarness } from "../src/artifacts/index.js";
-import { newEvalId, runEval } from "../src/evals/index.js";
+import { newEvalId, runEval as runEvalProduction } from "../src/evals/index.js";
+import type { RunEvalOptions } from "../src/evals/index.js";
 import { readJSON } from "../src/foundation/index.js";
 import {
   buildLocalGitTransport,
@@ -15,9 +16,10 @@ import {
   verifyLocalGitTransport,
   verifyMaterializedLocalGitSource,
 } from "../src/backends/harbor/index.js";
-import { fakePiSource, forceRemove, writeFakeHarbor } from "../test-support/helpers.js";
+import { fakePiSource, forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor } from "../test-support/helpers.js";
 
 const exec = promisify(execFile);
+const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, harborArtifactBuilder: prepareHostHarborArtifactForTest });
 
 test("local Git transport contains only exact commit objects and preserves its proof", async (t) => {
   const fixture = await localRepository("hitch local source 空格 ");
@@ -132,7 +134,7 @@ test("local Git transport fails closed on payload, manifest, commit, tree, and s
   assert.deepEqual(await readdir(abortedEval), []);
 });
 
-test("Harbor eval records and hands off a local exact commit transport", async (t) => {
+test("Harbor eval records a local exact commit transport without handing source to the trial", async (t) => {
   const fixture = await localRepository("hitch-local-eval-");
   t.after(() => forceRemove(fixture.root));
   const harbor = await writeFakeHarbor(fixture.root);
@@ -158,10 +160,8 @@ test("Harbor eval records and hands off a local exact commit transport", async (
   const job = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "job.json"));
   const agent = (job.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
   const kwargs = agent.kwargs as Record<string, unknown>;
-  const handoff = kwargs.local_source_transport as Record<string, unknown>;
-  assert.equal(handoff.commit, fixture.commit);
-  assert.equal(handoff.resolution_identity, (plan.candidate as Record<string, unknown>).revision_identity);
-  assert.equal(handoff.payload_sha256, summary.payload_sha256);
+  assert.equal(kwargs.local_source_transport, undefined);
+  assert.equal((kwargs.harness_artifact as Record<string, unknown>).revision_identity, (plan.candidate as Record<string, unknown>).revision_identity);
   assert.equal((result.local_source_transport as Record<string, unknown>).commit, fixture.commit);
   const events = await readFile(path.join(evalDirectory, "events.jsonl"), "utf8");
   assert.match(events, /eval\.local-source\.prepared/);
@@ -189,25 +189,6 @@ test("Harbor eval records and hands off a local exact commit transport", async (
   });
   assert.equal((rejected.error as { code: string }).code, "dirty_source");
   assert.equal(rejected.exit_code, 11);
-});
-
-test("Harbor bridge verifies, uploads, and reuses the same locked local source", async (t) => {
-  const fixture = await localRepository("hitch-local-bridge-");
-  t.after(() => forceRemove(fixture.root));
-  const transport = await buildLocalGitTransport({
-    evalDirectory: fixture.evalDirectory,
-    resolvedRevision: fixture.resolution,
-    sourceDirectory: fixture.source,
-  });
-  const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
-  const runtime = await ensureControllerRuntime({ root: fixture.stateRoot });
-  const smoke = path.resolve("test-support", "local_transport_bridge_smoke.py");
-  const bridge = path.resolve("integrations", "harbor", "hitch_harbor_agent.py");
-  const result = spawnSync("python3", [smoke, bridge, runtime.directory, transport.directory, path.join(fixture.root, "logs")], {
-    encoding: "utf8",
-  });
-  assert.equal(result.status, 0, result.stderr || result.stdout || undefined);
-  assert.match(result.stdout, /local transport bridge smoke OK/);
 });
 
 test("Git commands without input do not receive a writable stdin pipe", async (t) => {

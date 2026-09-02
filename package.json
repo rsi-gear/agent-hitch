@@ -1,6 +1,6 @@
 {
   "name": "agent-hitch",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Content-addressed version control and evidence storage for agent harnesses",
   "keywords": [
     "ai-agents",
@@ -23,10 +23,14 @@
     "./artifacts": "./dist/src/artifacts/index.js",
     "./backends": "./dist/src/backends/index.js",
     "./controller-runtime": "./dist/src/controller-runtime/index.js",
+    "./control-plane": "./dist/src/control-plane/index.js",
+    "./workers": "./dist/src/workers/index.js",
     "./daemon": "./dist/src/daemon/index.js",
     "./domain": "./dist/src/domain/index.js",
     "./evals": "./dist/src/evals/index.js",
     "./feedback": "./dist/src/feedback/index.js",
+    "./images": "./dist/src/images/index.js",
+    "./model-access": "./dist/src/model-access/index.js",
     "./foundation": "./dist/src/foundation/index.js",
     "./revisions": "./dist/src/revisions/index.js",
     "./runs": "./dist/src/runs/index.js",
@@ -44,6 +48,8 @@
     "dist/scripts/",
     "docs/schemas/",
     "integrations/harbor/hitch_harbor_agent.py",
+    "integrations/harbor/hitch_harbor_environment.py",
+    "integrations/harbor/hitch_harbor_task_resources.py",
     "integrations/harbor/hitch_harbor_verifier.py"
   ],
   "scripts": {
@@ -51,6 +57,13 @@
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "test": "node --test \"dist/test/*.test.js\"",
     "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test \"dist/test/*.test.js\"",
+    "canary:buildkit-secrets": "npm run build && node dist/scripts/canary-buildkit-secrets.js",
+    "canary:docker-images": "npm run build && node dist/scripts/canary-docker-image-observation.js",
+    "canary:resource-load": "npm run build && node dist/scripts/canary-resource-load.js",
+    "canary:harbor-load": "npm run build && node dist/scripts/canary-harbor-load.js",
+    "canary:packaged-harness": "npm run build && node dist/scripts/canary-packaged-harness.js",
+    "canary:collision-domains": "npm run build && node dist/scripts/canary-collision-domains.js",
+    "canary:gpu-hardware": "npm run build && node dist/scripts/canary-gpu-hardware.js",
     "check:architecture": "node dist/scripts/check-architecture.js",
     "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && node --test \"dist/test/*.test.js\"",
     "prepublishOnly": "npm run check"

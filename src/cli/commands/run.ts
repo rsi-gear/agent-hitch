@@ -8,7 +8,7 @@ import { executeRun, newRunId } from "../../runs/index.js";
 import { parseHarnessReference } from "../../revisions/index.js";
 import type { ResolvedRevision, VerifiedLocalGitSource } from "../../revisions/index.js";
 import { validateLocalGitTransportManifest, verifyMaterializedLocalGitSource } from "../../backends/index.js";
-import { assertNoArgs, parseRunRequest, takeFlag, takeOption } from "../arguments.js";
+import { assertNoArgs, parseRunRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
 import { waitForDaemonRun } from "../output.js";
 
 export async function runCommand(args: string[], root: string): Promise<void> {
@@ -18,15 +18,17 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   const internalArtifactFlags = takeInternalPreparedArtifactFlags(args);
   const internalRunId = takeOption(args, "--internal-run-id");
   const deferBenchmarkObservation = takeFlag(args, "--internal-defer-benchmark-observation");
-  if ((internalRunId || deferBenchmarkObservation) && process.env.HITCH_HARBOR_INTERNAL !== "1") {
+  const internalCredentialNames = takeRepeatedOption(args, "--internal-credential-name");
+  if ((internalRunId || deferBenchmarkObservation || internalCredentialNames.length > 0) && process.env.HITCH_HARBOR_INTERNAL !== "1") {
     throw invalidInput("internal eval run options are unavailable outside the Harbor bridge");
   }
   if (internalRunId && !/^run_[a-f0-9]{32}$/.test(internalRunId)) throw invalidInput("invalid internal run ID");
   const request = await parseRunRequest(args);
   if (deferBenchmarkObservation) request.defer_benchmark_observation = true;
+  if (internalCredentialNames.length > 0) request.credential_names = internalCredentialNames;
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
-  if ((internalFlags || internalArtifactFlags) && useDaemon) throw invalidInput("internal Harbor handoffs cannot use the daemon");
+  if ((internalFlags || internalArtifactFlags || internalCredentialNames.length > 0) && useDaemon) throw invalidInput("internal Harbor handoffs cannot use the daemon");
   const internal = internalFlags ? await loadInternalLocalGitSource(internalFlags, request.harness_ref as string) : null;
   const internalArtifact = internalArtifactFlags
     ? await loadInternalPreparedArtifact(internalArtifactFlags, request.harness_ref as string)

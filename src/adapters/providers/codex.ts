@@ -28,6 +28,12 @@ export const codexAdapter: AdapterDefinition = {
       model_selection: true,
       graceful_cancel: true,
     },
+    requirements: {
+      network: "required",
+      credential_names: ["OPENAI_API_KEY"],
+      endpoint_override: "supported",
+      capture: { native_events: true, native_session: true, model_proxy_compatible: true },
+    },
     process(request, executable, runtime = {}) {
       const args = ["exec", "--json"];
       if (codexSupportsEphemeral(runtime.observed_version)) args.push("--ephemeral");

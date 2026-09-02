@@ -10,6 +10,8 @@ export interface HitchEvent extends Record<string, unknown> {
   eval_id?: string;
 }
 
+export const MAX_RUN_EVENT_BYTES = 64 * 1024;
+
 export class EventSink {
   readonly runDirectory: string;
   readonly runId: RunId;
@@ -46,7 +48,16 @@ export class EventSink {
       ...event,
       type: (event.type as string) || "event",
     };
-    const line = `${JSON.stringify(framed)}\n`;
+    let line = `${JSON.stringify(framed)}\n`;
+    if (Buffer.byteLength(line) > MAX_RUN_EVENT_BYTES) {
+      const originalBytes = Buffer.byteLength(line);
+      for (const key of Object.keys(framed)) {
+        if (!["schema_version", "sequence", "timestamp", "run_id", "eval_id", "type"].includes(key)) delete framed[key];
+      }
+      framed.truncated = true;
+      framed.original_bytes = originalBytes;
+      line = `${JSON.stringify(framed)}\n`;
+    }
     this.pending = this.pending.then(() => writeChunk(this.events as WriteStream, line));
     try { this.onEvent(framed); } catch { /* Observers cannot break the persisted run lifecycle. */ }
     return framed;

@@ -1,3 +1,5 @@
+import type { AdapterRuntimeRequirementsV1 } from "../domain/index.js";
+
 export interface AdapterCapabilities {
   non_interactive: boolean;
   streaming: boolean;
@@ -70,6 +72,7 @@ export interface AdapterDefinition {
   version_args: string[];
   revision_sources?: Record<string, RevisionSourceDefinition>;
   capabilities: AdapterCapabilities;
+  requirements: AdapterRuntimeRequirementsV1;
   process(
     request: AdapterRequest,
     executable: string,
@@ -94,6 +97,7 @@ export interface PublicAdapterDefinition {
   command: string;
   path_env: string;
   capabilities: AdapterCapabilities;
+  requirements: AdapterRuntimeRequirementsV1;
   revision_selectors: string[];
   revision_sources: Record<string, PublicRevisionSource>;
 }

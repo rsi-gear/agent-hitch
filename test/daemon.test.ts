@@ -39,7 +39,19 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   const executable = await writeFakeCodex(root);
   const previous = process.env.HITCH_CODEX_PATH;
   process.env.HITCH_CODEX_PATH = executable;
-  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents });
+  const resourceCapacity = { cpu_millis: 2_500, memory_bytes: 3 * 1024 * 1024 * 1024, container_slots: 2, build_slots: 1 };
+  const runResources = { cpu_millis: 500, memory_bytes: 256 * 1024 * 1024, container_slots: 0, build_slots: 0 };
+  const evalTrialResources = { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 };
+  const server = new DaemonServer({
+    root,
+    port: 0,
+    maxConcurrent: 1,
+    logger: () => {},
+    discoverHarnesses: discoverAgents,
+    resourceCapacity,
+    runResources,
+    evalTrialResources,
+  });
   await server.start();
   t.after(async () => {
     await server.close();
@@ -48,11 +60,28 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   });
 
   const healthResponse = await fetch(`http://127.0.0.1:${server.port}/health`);
-  const health = await healthResponse.json() as { status: string; instance_id: string; root_id: string; agents: string[] };
+  const health = await healthResponse.json() as {
+    status: string;
+    instance_id: string;
+    root_id: string;
+    agents: string[];
+    resource_policy: { capacity: typeof resourceCapacity; run: typeof runResources; eval_trial: typeof evalTrialResources };
+    scheduler: { queued_runs: number; queued_evals: number; active_work_items: number; resources: Record<string, { allocated: number; allocatable: number; utilization: number }> };
+    workers: { healthy: number; degraded: number; lost: number };
+    metrics: { phase_resolution: { fallback_metric: string }; resources: Record<string, { allocated: number; allocatable: number }> };
+  };
   assert.equal(health.status, "running");
   assert.match(health.instance_id, /^[a-f0-9]{32}$/);
   assert.match(health.root_id, /^[a-f0-9]{24}$/);
   assert.ok(health.agents.includes("codex"));
+  assert.deepEqual(health.resource_policy, { capacity: resourceCapacity, run: runResources, eval_trial: evalTrialResources });
+  assert.deepEqual({ queued_runs: health.scheduler.queued_runs, queued_evals: health.scheduler.queued_evals, active_work_items: health.scheduler.active_work_items }, { queued_runs: 0, queued_evals: 0, active_work_items: 0 });
+  assert.deepEqual(health.scheduler.resources.cpu_millis, { allocated: 0, allocatable: 2_500, available: 2_500, utilization: 0 });
+  assert.deepEqual(health.workers, { total: 1, healthy: 1, degraded: 0, lost: 0, unavailable: 0, active_leases: 0, oldest_heartbeat_age_seconds: 0 });
+  assert.equal(health.metrics.phase_resolution.fallback_metric, "backend_agent_verifier");
+  assert.equal(health.metrics.resources.container_slots?.allocatable, 2);
+  const daemonState = await readJSON<{ resource_policy: typeof health.resource_policy }>(statePaths(root).daemon);
+  assert.deepEqual(daemonState.resource_policy, health.resource_policy);
 
   const unauthorized = await fetch(`http://127.0.0.1:${server.port}/v1/runs`, {
     method: "POST",
@@ -110,6 +139,11 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   assert.equal(typeof rawEvents, "string");
   const events = String(rawEvents).trim().split(/\r?\n/).map((line) => JSON.parse(line) as { type: string });
   assert.ok(events.some((event) => event.type === "run.completed"));
+  const measuredHealth = await client.request("/health") as {
+    metrics: { event_counts: Record<string, number>; phase_durations_ms: { queue_wait?: { count: number; total_ms: number } } };
+  };
+  assert.equal(measuredHealth.metrics.event_counts["run.completed"], 1);
+  assert.ok((measuredHealth.metrics.phase_durations_ms.queue_wait?.count ?? 0) >= 1);
   const nextOffset = Number(firstEventRead.headers.get("x-hitch-next-offset"));
   assert.ok(nextOffset > 0);
   const secondEventRead = await client.requestWithMetadata(`/v1/runs/${accepted.run_id as string}/events?offset=${nextOffset}`);

@@ -32,6 +32,12 @@ export const deepseekAdapter: AdapterDefinition = {
       model_selection: true,
       graceful_cancel: true,
     },
+    requirements: {
+      network: "required",
+      credential_names: ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"],
+      endpoint_override: "unknown",
+      capture: { native_events: true, native_session: true, model_proxy_compatible: false },
+    },
     async process(request, executable, runtime = {}) {
       const args = ["--profile", "headless", ...request.agent_args];
       const patchFile = await writeDeepseekRuntimePatch(request.model, runtime.run_directory, runtime.runtime_home);

@@ -132,6 +132,12 @@ The Hitch code uploaded into a Harbor task container is called a
           payload/
             package.json
             dist/
+            integrations/
+              harbor/
+                hitch_harbor_agent.py
+                hitch_harbor_environment.py
+                hitch_harbor_task_resources.py
+                hitch_harbor_verifier.py
   locks/
     controller-runtimes/
       <64-hex>.lock
@@ -221,6 +227,9 @@ Runtime identity is calculated as follows:
 The digest excludes cache path, source path, file mtime, uid/gid, creation
 time, and host-specific metadata. The executable bit is included. The package
 name/version are covered because `package.json` is part of the payload.
+The explicit payload allowlist also contains the four Harbor Python bridge
+modules. Generated `__pycache__` files and any other undeclared integration
+files are excluded.
 
 A bundle's identity is only valid when the recomputed canonical digest equals
 both the manifest's declared `runtime_id` and the content-addressed cache
@@ -253,6 +262,9 @@ Integrity is enforced by hashes, not by permission bits alone.
 - Every use validates the manifest, declared file set, sizes, executable bits,
   and SHA-256 digests before returning the bundle path.
 - Run/eval records store `runtime_id` and manifest digest.
+- The Harbor process prepends
+  `<runtime>/payload/integrations/harbor` to `PYTHONPATH`; it never imports the
+  bridge from the live package checkout after the runtime is fixed.
 - The Harbor bridge uploads the shared host bundle into each isolated trial
   container. V1 removes duplicate host copies; it does not remove the required
   container upload.
@@ -693,17 +705,26 @@ verifier execution, score, held-out evidence, and promotion decision.
 ### 7.7 Executable candidate evaluation
 
 Executable candidates require a complete, identity-pinned Harbor transport.
-The current eval path implements host-prepared artifact transfer for every
-supported immutable harness: Hitch prepares the artifact once, Harbor uploads
-it into every compatible trial, and container-side Hitch re-verifies the
-pinned content and entrypoint digests before execution. Compatibility includes
-OS, architecture, and the exact Node.js runtime version. On a mismatch, the
-bridge uses a persistent target-platform artifact cache under the Hitch state
-root. A host file lock elects one trial to prepare the missing artifact and
-download it atomically; concurrent and later trials upload that verified cache
-entry and do not invoke the package manager again. Ephemeral trial deletion
+The current eval path prepares every supported immutable harness in a dedicated
+target-platform builder container with exact Node.js and pnpm versions. The
+result is promoted atomically into a persistent cache under the Hitch state
+root, Harbor uploads it into every compatible trial, and container-side Hitch
+re-verifies the pinned content and entrypoint digests before execution. The
+cache key includes the controller runtime/adapter recipe, revision, builder
+image, OS/architecture, Node.js, and pnpm identities. Ephemeral trial deletion
 does not delete this host cache, and the cache is not mounted writable into
-trial containers.
+trial containers. An incompatible trial fails closed instead of preparing.
+
+The target platform is a planner-owned contract for each task environment, not
+a property of the controller host or a single eval-wide value. Task inspection
+records an explicit Compose `services.main.platform`; otherwise the planner's
+default target is `linux/amd64`. The planner groups tasks by Docker platform,
+artifact platform, and exact Node version, prepares one artifact per distinct
+contract before dispatch, and pins the matching artifact ID and runtime
+contract on every work item. Environment images may share an artifact only
+when this ABI contract is identical. Builder clone, install, and compilation
+use the container-native filesystem; a completed artifact is exported to the
+host and verified before atomic promotion.
 
 The supported transport designs are:
 
@@ -711,10 +732,10 @@ The supported transport designs are:
    remote commit inside each trial container; or
 2. Upload a validated offline source/artifact/controller bundle with exact
    identities and platform compatibility; or
-3. Have the Harbor agent receive a host-prepared artifact rather than resolving
-   and preparing the candidate again inside the container (implemented for all
-   supported immutable harnesses, with a one-builder target-platform host cache
-   when the initial host artifact is incompatible).
+3. Have the Harbor agent receive a dedicated-builder artifact rather than
+   resolving and preparing the candidate again inside the benchmark container
+   (implemented for all supported immutable harnesses with a target-platform
+   host cache).
 
 Removing the `git+file` input guard alone is insufficient because the
 container still cannot access the host repository.

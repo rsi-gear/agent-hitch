@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/execution-worker.schema.json",
+  "title": "Hitch execution worker V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "worker_id", "provider", "status", "collision_domain_id", "capabilities", "capacity"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "worker_id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["ready", "draining", "offline"] },
+    "collision_domain_id": { "type": "string", "minLength": 1 },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backends", "platforms", "task_membership", "isolated_same_task_attempts", "remote"],
+      "properties": {
+        "backends": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "platforms": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "task_membership": { "type": "array", "items": { "enum": ["known", "opaque"] }, "uniqueItems": true },
+        "isolated_same_task_attempts": { "type": "boolean" },
+        "remote": { "type": "boolean" }
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "reserved_for_system", "allocatable", "allocated"],
+      "properties": {
+        "total": { "$ref": "#/$defs/resources" },
+        "reserved_for_system": { "$ref": "#/$defs/resources" },
+        "allocatable": { "$ref": "#/$defs/resources" },
+        "allocated": { "$ref": "#/$defs/resources" }
+      }
+    }
+  },
+  "$defs": {
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 },
+        "memory_bytes": { "type": "integer", "minimum": 0 },
+        "container_slots": { "type": "integer", "minimum": 0 },
+        "build_slots": { "type": "integer", "minimum": 0 },
+        "gpu_count": { "type": "integer", "minimum": 0 },
+        "ephemeral_disk_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

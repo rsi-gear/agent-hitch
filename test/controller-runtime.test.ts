@@ -12,22 +12,38 @@ import type { ControllerRuntimeManifest } from "../src/domain/index.js";
 
 /**
  * Build a tiny fake payload root that matches the allowlist shape
- * (package.json + dist/bin + dist/src). `dist/scripts` exists in the checkout
- * but is release tooling and must be excluded from the execution closure.
+ * (package.json + dist/bin + dist/src + the Harbor Python bridge).
+ * `dist/scripts` exists in the checkout but is release tooling and must be
+ * excluded from the execution closure.
  */
 async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-runtime-payload-"));
   await mkdir(path.join(root, "dist", "bin"), { recursive: true });
   await mkdir(path.join(root, "dist", "src"), { recursive: true });
   await mkdir(path.join(root, "dist", "scripts"), { recursive: true });
+  await mkdir(path.join(root, "integrations", "harbor"), { recursive: true });
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ name: "fake-hitch", version: "0.2.0" })}\n`);
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
   await writeFile(path.join(root, "dist", "scripts", "check.js"), "export const check = () => {};\n");
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py"]) {
+    await writeFile(path.join(root, "integrations", "harbor", name), `# ${name}\n`);
+  }
   return {
     root,
     cleanup: () => forceRemove(root),
   };
+}
+
+async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): Promise<void> {
+  const relative = path.join("integrations", "harbor");
+  await mkdir(path.join(destinationRoot, relative), { recursive: true });
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py"]) {
+    await writeFile(
+      path.join(destinationRoot, relative, name),
+      await readFile(path.join(sourceRoot, relative, name)),
+    );
+  }
 }
 
 test("canonical hashing is deterministic and content-addressed", async () => {
@@ -36,7 +52,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 3);
+  assert.equal(first.fileCount, 7);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -45,6 +61,15 @@ test("changing any payload byte changes the runtime id", async () => {
   const fixture = await payloadFixture();
   const before = await hashRuntimePayload({ payloadRoot: fixture.root });
   await writeFile(path.join(fixture.root, "dist", "src", "cli.js"), "export const main = () => 1;\n");
+  const after = await hashRuntimePayload({ payloadRoot: fixture.root });
+  assert.notEqual(before.runtimeId, after.runtimeId);
+  await fixture.cleanup();
+});
+
+test("changing Harbor bridge bytes changes the runtime id", async () => {
+  const fixture = await payloadFixture();
+  const before = await hashRuntimePayload({ payloadRoot: fixture.root });
+  await writeFile(path.join(fixture.root, "integrations", "harbor", "hitch_harbor_agent.py"), "# changed bridge\n");
   const after = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.notEqual(before.runtimeId, after.runtimeId);
   await fixture.cleanup();
@@ -260,6 +285,7 @@ test("verification rejects an undeclared file inside the staged payload tree", a
   const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-staged-"));
   await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
   await mkdir(path.join(staged, "dist", "src"), { recursive: true });
+  await copyBridgeFixture(fixture.root, staged);
   await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
   await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
   await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
@@ -294,6 +320,7 @@ test("verification rejects a declared path that is a symlink", async () => {
   const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-symlink-"));
   await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
   await mkdir(path.join(staged, "dist", "src"), { recursive: true });
+  await copyBridgeFixture(fixture.root, staged);
   await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
   await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
   await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
@@ -315,6 +342,7 @@ test("verification rejects a hardlinked payload file", async () => {
   const staged = await mkdtemp(path.join(tmpdir(), "hitch-runtime-hardlink-"));
   await mkdir(path.join(staged, "dist", "bin"), { recursive: true });
   await mkdir(path.join(staged, "dist", "src"), { recursive: true });
+  await copyBridgeFixture(fixture.root, staged);
   await writeFile(path.join(staged, "package.json"), await readFile(path.join(fixture.root, "package.json")));
   await writeFile(path.join(staged, "dist", "bin", "hitch.js"), await readFile(path.join(fixture.root, "dist", "bin", "hitch.js")));
   await chmod(path.join(staged, "dist", "bin", "hitch.js"), 0o755);
@@ -391,7 +419,7 @@ test("runtime allowlist is the execution closure, excluding dev artifacts and re
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
-  assert.equal(result.fileCount, 3);
+  assert.equal(result.fileCount, 7);
   await fixture.cleanup();
 });
 

@@ -1,16 +1,17 @@
-import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
-import type { WriteStream } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { HitchError, atomicWriteJSON, consumeLines, detectVersion, ensureDir, fingerprintExecutable, invalidInput, packageRoot, readJSON, sha256JSON, statePaths, terminateProcess } from "../../foundation/index.js";
-import type { EvalRequest, ResolvedRevision } from "../../domain/index.js";
-import type { LocalGitTransportUse } from "./local-git-transport.js";
+import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, readJSON, sha256JSON } from "../../foundation/index.js";
+import type { DockerResourceOwnershipV1, EvalRequest, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
+import { invokeHarbor } from "./process.js";
+import { harborEnvironmentConfig } from "./environment-config.js";
+import type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
+import { parseHarborModelProxyRoute } from "./model-proxy-config.js";
+import { HARBOR_NODE_VERSION_WITH_PREFIX } from "./runtime-toolchain.js";
 
-const BRIDGE_DIRECTORY = path.join(packageRoot(), "integrations", "harbor");
+const BRIDGE_PAYLOAD_DIRECTORY = path.join("integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
 export interface HarborSettledTrialContext {
   bundleWaitExpired: boolean;
@@ -27,14 +28,22 @@ export interface RunHarborBackendOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string;
-  preparedArtifact?: HarborPreparedArtifactUse;
-  localTransport?: LocalGitTransportUse;
+  preparedArtifact: HarborPreparedArtifactUse;
   env?: NodeJS.ProcessEnv;
   harborExecutable?: string;
   signal?: AbortSignal;
   emit?: (event: Record<string, unknown>) => void;
   onTrialSettled?: (trial: Record<string, unknown>, context: HarborSettledTrialContext) => Promise<boolean>;
   trialBundleGraceMs?: number;
+  onProcessStarted?: (pid: number) => void | Promise<void>;
+  onProcessExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
+  recoverableProcess?: boolean;
+  executionResources?: ResourceVectorV1;
+  dockerOwnership?: DockerResourceOwnershipV1;
+  dockerServiceLimits?: HarborDockerServiceLimitsV1;
+  resolvedImages?: Record<string, string>;
+  prebuiltTaskImage?: string;
+  modelProxy?: ModelProxyRouteV1;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -49,6 +58,7 @@ export interface HarborPreparedArtifactUse {
   platform: string;
   node_version: string;
   source_type: string;
+  storage?: "host-artifact-store-v1" | "harbor-artifact-cache-v2";
 }
 
 export interface HarborBackendResult {
@@ -81,19 +91,26 @@ export async function runHarborBackend({
   runtimeDirectory,
   runtimeId,
   preparedArtifact,
-  localTransport,
   env = process.env,
   harborExecutable,
   signal,
   emit = () => {},
   onTrialSettled,
   trialBundleGraceMs = DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS,
+  onProcessStarted,
+  onProcessExited,
+  recoverableProcess = false,
+  executionResources,
+  dockerOwnership,
+  dockerServiceLimits,
+  resolvedImages,
+  prebuiltTaskImage,
+  modelProxy,
 }: RunHarborBackendOptions): Promise<HarborBackendResult> {
   const backendDirectory = await ensureDir(requestedBackendDirectory ?? path.join(evalDirectory, "harbor"));
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
   }
-  const harnessArtifactCacheDirectory = await ensureDir(path.join(statePaths(root).store, "harbor-artifacts"));
   const executable = await discoverHarbor(harborExecutable, root, env);
   const version = await detectVersion(executable, ["--version"]);
   const identity = await fingerprintExecutable(executable);
@@ -108,15 +125,20 @@ export async function runHarborBackend({
     runtimeDirectory,
     runtimeId,
     preparedArtifact,
-    harnessArtifactCacheDirectory,
-    localTransport,
     backendDirectory,
     ...(taskNames === undefined ? {} : { taskNames }),
     ...(logicalAttempt === undefined ? {} : { logicalAttempt }),
     jobName,
     env,
+    ...(executionResources ? { executionResources } : {}),
+    ...(dockerOwnership ? { dockerOwnership } : {}),
+    ...(dockerServiceLimits ? { dockerServiceLimits } : {}),
+    ...(resolvedImages ? { resolvedImages } : {}),
+    ...(prebuiltTaskImage ? { prebuiltTaskImage } : {}),
+    ...(modelProxy ? { modelProxy } : {}),
   });
   await atomicWriteJSON(configPath, config);
+  const credentialNames = credentialEnvironmentNames(request.pass_env, env);
   emit({
     type: "eval.backend.started",
     backend: "harbor",
@@ -133,17 +155,21 @@ export async function runHarborBackend({
   try {
     invocation = await invokeHarbor(executable, ["run", "--config", configPath, "--yes"], {
       cwd: evalDirectory,
-      env: withBridgePythonPath(env),
+      env: withBridgePythonPath(env, runtimeDirectory),
       stdoutPath: path.join(backendDirectory, "stdout.log"),
       stderrPath: path.join(backendDirectory, "stderr.log"),
       ...(signal ? { signal } : {}),
+      ...(onProcessStarted ? { onStarted: onProcessStarted } : {}),
+      ...(onProcessExited ? { onExited: onProcessExited } : {}),
+      ...(recoverableProcess ? { persistAcrossParentExit: true } : {}),
+      ...(recoverableProcess ? { exitStatusPath: path.join(backendDirectory, "process-exit.json") } : {}),
       emit,
+      redactEnvNames: credentialNames,
     });
   } finally {
     await monitor?.stop();
   }
-  const jobResult = await readJSON<Record<string, unknown> | null>(resultPath, null);
-  const rawResult = jobResult ? await attachTrialResults(jobDirectory, jobResult) : null;
+  const rawResult = await readHarborRawResult(jobDirectory);
   emit({
     type: "eval.backend.completed",
     backend: "harbor",
@@ -170,6 +196,11 @@ export async function runHarborBackend({
     rawResult,
     summary: rawResult ? normalizeHarborResult(rawResult) : null,
   };
+}
+
+export async function readHarborRawResult(jobDirectory: string): Promise<Record<string, unknown> | null> {
+  const jobResult = await readJSON<Record<string, unknown> | null>(path.join(jobDirectory, "result.json"), null);
+  return jobResult ? attachTrialResults(jobDirectory, jobResult) : null;
 }
 
 function monitorHarborTrials(
@@ -247,14 +278,18 @@ export interface BuildHarborJobConfigOptions {
   resolvedRevision: ResolvedRevision;
   runtimeDirectory: string;
   runtimeId?: string | undefined;
-  preparedArtifact?: HarborPreparedArtifactUse | undefined;
-  harnessArtifactCacheDirectory?: string | undefined;
-  localTransport?: LocalGitTransportUse | undefined;
+  preparedArtifact: HarborPreparedArtifactUse;
   backendDirectory: string;
   taskNames?: readonly string[];
   logicalAttempt?: number;
   jobName?: string;
   env?: NodeJS.ProcessEnv;
+  executionResources?: ResourceVectorV1;
+  dockerOwnership?: DockerResourceOwnershipV1;
+  dockerServiceLimits?: HarborDockerServiceLimitsV1;
+  resolvedImages?: Record<string, string>;
+  prebuiltTaskImage?: string;
+  modelProxy?: ModelProxyRouteV1;
 }
 
 export async function buildHarborJobConfig({
@@ -264,19 +299,24 @@ export async function buildHarborJobConfig({
   runtimeDirectory,
   runtimeId,
   preparedArtifact,
-  harnessArtifactCacheDirectory,
-  localTransport,
   backendDirectory,
   taskNames,
   logicalAttempt,
   jobName = "job",
   env = process.env,
+  executionResources,
+  dockerOwnership,
+  dockerServiceLimits,
+  resolvedImages,
+  prebuiltTaskImage,
+  modelProxy,
 }: BuildHarborJobConfigOptions): Promise<Record<string, unknown>> {
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
   }
   const timeoutSeconds = request.timeout_ms > 0 ? Math.ceil(request.timeout_ms / 1_000) : null;
   const setupTimeoutSeconds = request.setup_timeout_ms > 0 ? Math.ceil(request.setup_timeout_ms / 1_000) : null;
+  const credentialNames = credentialEnvironmentNames(request.pass_env, env);
   const agent: Record<string, unknown> = {
     import_path: "hitch_harbor_agent:HitchHarborAgent",
     model_name: request.model || null,
@@ -301,42 +341,26 @@ export async function buildHarborJobConfig({
       // (spec §4.2); `runtime_id` records the exact execution payload.
       hitch_runtime_dir: runtimeDirectory,
       ...(runtimeId ? { controller_runtime_id: runtimeId } : {}),
-      ...(harnessArtifactCacheDirectory ? { harness_artifact_cache_dir: harnessArtifactCacheDirectory } : {}),
-      ...(preparedArtifact ? {
-        harness_artifact: {
-          directory: preparedArtifact.directory,
-          artifact_id: preparedArtifact.artifact_id,
-          artifact_integrity: preparedArtifact.artifact_integrity,
-          entrypoint_integrity: preparedArtifact.entrypoint_integrity,
-          harness_id: preparedArtifact.harness_id,
-          revision_identity: preparedArtifact.revision_identity,
-          adapter_version: preparedArtifact.adapter_version,
-          recipe_version: preparedArtifact.recipe_version,
-          platform: preparedArtifact.platform,
-          node_version: preparedArtifact.node_version,
-          source_type: preparedArtifact.source_type,
-        },
-      } : {}),
-      ...(localTransport ? {
-        local_source_transport: {
-          kind: localTransport.manifest.kind,
-          manifest_path: localTransport.manifestPath,
-          payload_path: localTransport.payloadPath,
-          locked_resolution_path: localTransport.resolutionPath,
-          harness_id: localTransport.manifest.harness_id,
-          resolution_identity: localTransport.manifest.resolution_identity,
-          commit: localTransport.manifest.commit,
-          tree: localTransport.manifest.tree,
-          payload_sha256: localTransport.manifest.payload_sha256,
-          payload_bytes: localTransport.manifest.payload_bytes,
-          object_count: localTransport.manifest.object_count,
-          file_count: localTransport.manifest.file_count,
-        },
-      } : {}),
+      node_version: HARBOR_NODE_VERSION_WITH_PREFIX,
+      harness_artifact: {
+        directory: preparedArtifact.directory,
+        artifact_id: preparedArtifact.artifact_id,
+        artifact_integrity: preparedArtifact.artifact_integrity,
+        entrypoint_integrity: preparedArtifact.entrypoint_integrity,
+        harness_id: preparedArtifact.harness_id,
+        revision_identity: preparedArtifact.revision_identity,
+        adapter_version: preparedArtifact.adapter_version,
+        recipe_version: preparedArtifact.recipe_version,
+        platform: preparedArtifact.platform,
+        node_version: preparedArtifact.node_version,
+        source_type: preparedArtifact.source_type,
+      },
       hitch_timeout_ms: request.timeout_ms,
       agent_args: request.agent_args,
+      credential_names: credentialNames,
+      ...(modelProxy ? { model_capture: parseHarborModelProxyRoute(modelProxy) } : {}),
     },
-    env: credentialEnvironment(request.pass_env, env),
+    env: credentialEnvironment(credentialNames),
     include_logs: ["hitch-*"],
   };
   if (timeoutSeconds !== null) agent.override_timeout_sec = timeoutSeconds + 30;
@@ -347,7 +371,7 @@ export async function buildHarborJobConfig({
     jobs_dir: backendDirectory,
     n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
-    environment: { type: "docker", delete: true },
+    environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits, resolvedImages, prebuiltTaskImage, Boolean(modelProxy && process.platform === "linux")),
     verifier: harborVerifierConfig(request),
     agents: [agent],
     datasets: [await harborDatasetConfig(request.dataset, taskNames)],
@@ -416,83 +440,26 @@ async function discoverHarbor(explicit: string | undefined, root: string, env: N
   return located.executable;
 }
 
-function credentialEnvironment(explicitNames: string[], env: NodeJS.ProcessEnv): Record<string, string> {
-  const names = new Set(HARBOR_CREDENTIAL_ENV.filter((name) => env[name] !== undefined));
+function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.ProcessEnv): string[] {
+  const names = new Set<string>(HARBOR_CREDENTIAL_ENV.filter((name) => env[name] !== undefined));
   for (const name of explicitNames || []) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw invalidInput(`invalid environment variable name: ${name}`);
     if (env[name] === undefined) throw invalidInput(`environment variable is not set: ${name}`);
     names.add(name);
   }
-  return Object.fromEntries([...names].sort().map((name) => [name, `\${${name}}`]));
+  return [...names].sort();
 }
 
-function withBridgePythonPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function credentialEnvironment(names: readonly string[]): Record<string, string> {
+  return Object.fromEntries(names.map((name) => [name, `\${${name}}`]));
+}
+
+function withBridgePythonPath(env: NodeJS.ProcessEnv, runtimeDirectory: string): NodeJS.ProcessEnv {
+  const bridgeDirectory = path.join(runtimeDirectory, "payload", BRIDGE_PAYLOAD_DIRECTORY);
   return {
     ...env,
-    PYTHONPATH: [BRIDGE_DIRECTORY, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+    PYTHONPATH: [bridgeDirectory, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
   };
-}
-
-function invokeHarbor(
-  executable: string,
-  args: string[],
-  { cwd, env, stdoutPath, stderrPath, signal, emit }: {
-    cwd: string;
-    env: NodeJS.ProcessEnv;
-    stdoutPath: string;
-    stderrPath: string;
-    signal?: AbortSignal;
-    emit: (event: Record<string, unknown>) => void;
-  },
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  return new Promise((resolve, reject) => {
-    const stdout = createWriteStream(stdoutPath, { flags: "w", mode: 0o600 });
-    const stderr = createWriteStream(stderrPath, { flags: "w", mode: 0o600 });
-    const child = spawn(executable, args, {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      windowsHide: true,
-    });
-    child.stdout.pipe(stdout);
-    child.stderr.pipe(stderr);
-    consumeLines(child.stdout, (line) => emit({ type: "eval.backend.output", stream: "stdout", text: line }));
-    consumeLines(child.stderr, (line) => emit({ type: "eval.backend.output", stream: "stderr", text: line }));
-    let settled = false;
-    const abort = () => terminateProcess(child).catch(() => {});
-    signal?.addEventListener("abort", abort, { once: true });
-    child.once("error", (error: Error) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", abort);
-      stdout.destroy();
-      stderr.destroy();
-      reject(new HitchError(`failed to launch Harbor: ${error.message}`, {
-        code: "harbor_launch_failed",
-        exitCode: 6,
-        cause: error,
-      }));
-    });
-    child.once("close", (code: number | null, processSignal: NodeJS.Signals | null) => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener("abort", abort);
-      Promise.all([closeWriteStream(stdout), closeWriteStream(stderr)])
-        .then(() => resolve({ code, signal: processSignal }))
-        .catch(reject);
-    });
-    if (signal?.aborted) abort();
-  });
-}
-
-function closeWriteStream(stream: WriteStream): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (stream.closed) return resolve();
-    stream.once("error", reject);
-    stream.once("close", resolve);
-    stream.end();
-  });
 }
 
 function compact(value: Record<string, unknown>): Record<string, unknown> {

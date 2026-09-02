@@ -20,6 +20,12 @@ export const opencodeAdapter: AdapterDefinition = {
       model_selection: true,
       graceful_cancel: true,
     },
+    requirements: {
+      network: "required",
+      credential_names: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+      endpoint_override: "unknown",
+      capture: { native_events: true, native_session: true, model_proxy_compatible: false },
+    },
     process(request, executable) {
       const args = ["run", "--format", "json", "--dir", request.cwd];
       if (request.model) args.push("--model", request.model);

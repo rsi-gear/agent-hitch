@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { invalidInput } from "./errors.js";
 
@@ -25,6 +26,19 @@ export interface StatePaths {
   workspaceLocks: string;
   controllerRuntimeLocks: string;
   controllerRuntimes: string;
+  environmentImages: string;
+  environmentImagePins: string;
+  environmentImageReferenceLocks: string;
+  buildRecords: string;
+  buildLocks: string;
+  buildIndexes: string;
+  trainingDataCandidates: string;
+  workers: string;
+  workerLocks: string;
+  workerProtocol: string;
+  workerProtocolLocks: string;
+  workerStaging: string;
+  workerInputs: string;
   workspaces: string;
   temporary: string;
   indexes: string;
@@ -72,8 +86,25 @@ export function statePaths(root: string): StatePaths {
     workspaceLocks: path.join(root, "locks", "workspaces"),
     controllerRuntimeLocks: path.join(root, "locks", "controller-runtimes"),
     controllerRuntimes: path.join(root, "store", "controller-runtimes", "sha256"),
+    environmentImages: path.join(root, "store", "environment-images", "sha256"),
+    environmentImagePins: path.join(root, "store", "environment-image-pins", "sha256"),
+    environmentImageReferenceLocks: path.join(root, "locks", "environment-image-references"),
+    buildRecords: path.join(root, "store", "build-records", "sha256"),
+    buildLocks: path.join(root, "locks", "builds"),
+    buildIndexes: path.join(root, "indexes", "builds"),
+    trainingDataCandidates: path.join(root, "derived", "training-data-candidates", "sha256"),
+    workers: path.join(root, "workers"),
+    workerLocks: path.join(root, "locks", "workers"),
+    workerProtocol: path.join(root, "worker-protocol"),
+    workerProtocolLocks: path.join(root, "locks", "worker-protocol"),
+    workerStaging: path.join(root, "worker-staging"),
+    workerInputs: path.join(root, "store", "worker-inputs", "sha256"),
     workspaces: path.join(root, "workspaces"),
     temporary: path.join(root, "tmp"),
     indexes: path.join(root, "indexes"),
   };
+}
+
+export function hitchRootId(root: string): string {
+  return createHash("sha256").update(statePaths(root).root).digest("hex").slice(0, 24);
 }

@@ -34,13 +34,14 @@ export async function importDeepseekNativeSession(options: {
   runDirectory: string;
   runId: string;
   status: "succeeded" | "failed" | "cancelled" | "timed_out";
+  credentialValues?: readonly string[];
 }): Promise<DeepseekNativeSession | null> {
   const located = await findSessionFiles(path.join(options.runtimeHome, "sessions"));
   if (located.compressed.length > 0) {
     throw new Error("DeepSeek wrote a compressed native session despite Hitch's compression:none runtime patch");
   }
   if (located.jsonl.length === 0) return null;
-  const sessions = await Promise.all(located.jsonl.map((source) => readNativeSession(source)));
+  const sessions = await Promise.all(located.jsonl.map((source) => readNativeSession(source, options.credentialValues ?? [])));
   const roots = sessions.filter((session) => session.header.parentSession === undefined);
   if (roots.length !== 1) {
     throw new Error(`DeepSeek wrote ${roots.length} root native sessions for one run; refusing an ambiguous import`);
@@ -99,14 +100,14 @@ interface ParsedNativeSession {
   redactions: Map<string, number>;
 }
 
-async function readNativeSession(source: string): Promise<ParsedNativeSession> {
+async function readNativeSession(source: string, credentialValues: readonly string[]): Promise<ParsedNativeSession> {
   const input = await readFile(source, "utf8");
   const lines = input.split(/\r?\n/).filter((line) => line.length > 0);
   if (lines.length === 0) throw new Error(`DeepSeek native session is empty: ${source}`);
   const redactions = new Map<string, number>();
   const providerRows: unknown[] = [];
   const redact = (value: unknown): unknown => {
-    const result = redactProviderJSON(value);
+    const result = redactProviderJSON(value, credentialValues);
     for (const [rule, count] of result.redactions) {
       redactions.set(rule, (redactions.get(rule) || 0) + count);
     }

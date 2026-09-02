@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/eval-submission-input.schema.json",
+  "title": "Hitch control-plane eval submission input V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "request": { "$ref": "eval-request.schema.json" },
+    "execution": { "$ref": "eval-submission.schema.json#/$defs/execution" },
+    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[!-~]+$" }
+  }
+}
