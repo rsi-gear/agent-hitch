@@ -205,10 +205,14 @@ export async function executeRun({
       launched.stdin?.on("error", () => { /* Process-level error/exit determines the typed result. */ });
       onProcess?.({ child: launched });
       abortHandler = () => {
+        if (cancelled) return;
         cancelled = true;
         terminateProcess(launched).catch(() => {});
       };
       signal?.addEventListener("abort", abortHandler, { once: true });
+      // Cancellation can arrive during workspace launch or synchronously from
+      // onProcess, before this listener has been installed.
+      if (signal?.aborted) abortHandler();
       consumeLines(launched.stdout as import("node:stream").Readable, (line) => {
         if (adapter.translateLine) {
           const safeLine = providerCapture?.appendText(line) ?? redactProviderText(line, new Map(), credentialValues);

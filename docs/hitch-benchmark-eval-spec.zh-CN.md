@@ -672,6 +672,8 @@ Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原
 
 阶段执行 API 已独立提供：`prepare_phase(instruction=..., run_group_id=..., phase_index=..., task_digest=..., remaining_timeout_ms=...)` 在绑定工具前返回固定 `run_id`；`run_phase(prepared, environment, phase_context)` 单次消费该 handle。所有阶段沿用同一个冻结 task digest；禁止重新计算每阶段任务身份、重置整题预算或重用阶段。绑定/上传耗时从单调时钟 deadline 扣除。执行采用 `benchmark_phase` 和正常封存，不附加整题 observation。`copySealedPhaseRunBundle` 按原 index 复制完整文件集，校验原 run/context/parent 和复制前后摘要，保留 index 原始字节；完成标记位于 bundle 外侧，禁止覆盖已有目标。该路径已通过 stub Harbor 调用和实际 Hitch synthetic process bundle 复制检查，但默认标准包入口尚未选择它。原生阶段边界的候选停止/取消、完整 supervisor 以及 group 评分导入仍待装配。
 
+阶段取消 API 已提供：`request_phase_cancellation(prepared, environment, reason=...)` 将匹配 run ID 和随机 nonce 的私有请求送到 CLI，沿既有 `AbortSignal` 路径停止候选并封存轨迹。控制文件位于 bundle 外，nonce 不进入 handle、argv 或 host journal；候选自己拥有容器权限，因此取消状态不能证明原生阶段完成。Host 在候选不可见的 `trial/hitch-phase-control/` 先记 prepared，再记 delivered / delivery_failed；回执仅为 request-only。同一活跃阶段、同一原因的已投递请求可幂等读取，失败投递不能隐式重试。Supervisor 仍须根据 controller 的原生 reset / terminal 证据发起取消，并在有界停止/收集时间内等待 `run_phase` 完成、校验封存 bundle，之后才能回收容器或启动下一阶段。实际 Hitch CLI + synthetic harness 已验证取消结果、轨迹、原样导出与启动取消竞态；真实模型/OSWorld 任务和完整编排仍未验证。
+
 ### 9.6 CursorBench 与其他私有集
 
 授权数据的独立适配器输出标准包：repo/workspace 初始快照、任务说明、只向 grader 提供的参考变更/criteria、测试依赖、任务版本和合法使用范围。多 repo 根目录按 manifest 映射；答案补丁不能出现在 candidate 的 Git history 或对象包内。

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
+import secrets
 import shlex
 import stat as stat_module
 import tempfile
@@ -27,6 +29,7 @@ HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024
 HITCH_RESULT_MISSING_EXIT = 44
 HITCH_RESULT_NOT_FILE_EXIT = 45
 PHASE_EXPORT_MODULE = "dist/src/runs/phase-bundle.js"
+PHASE_CONTROL_MODULE = "dist/src/runs/phase-cancellation.js"
 
 
 class PreparedPhase(NamedTuple):
@@ -36,6 +39,9 @@ class PreparedPhase(NamedTuple):
     parent_json: str
     identity: str
     deadline_ns: int
+
+    def __repr__(self) -> str:
+        return f"PreparedPhase(run_id={self.run_id!r})"
 
 
 class HitchBridgeError(RuntimeError):
@@ -124,6 +130,10 @@ class HitchHarborAgent(BaseAgent):
         self._prepared_phase_keys: set[tuple[str, int]] = set()
         self._phase_group_contracts: dict[str, tuple[str, str, int]] = {}
         self._phase_inflight = False
+        self._active_phase: PreparedPhase | None = None
+        self._phase_cancel_lock: asyncio.Lock | None = None
+        self._phase_cancel_receipts: dict[str, dict[str, Any]] = {}
+        self._phase_control_tokens: dict[str, str] = {}
 
     @staticmethod
     def name() -> str:
@@ -165,7 +175,7 @@ class HitchHarborAgent(BaseAgent):
         # and the actual container upload, spec §4.6).
         self._verify_manifest_identity(manifest)
         self._verify_payload(manifest)
-        self._phase_export_available = any(file.get("path") == PHASE_EXPORT_MODULE for file in manifest["files"])
+        self._phase_export_available = {PHASE_EXPORT_MODULE, PHASE_CONTROL_MODULE}.issubset({file.get("path") for file in manifest["files"]})
         if self.harness_artifact is None:
             raise RuntimeError("hitch-artifact-materialize: Harbor requires a dedicated-builder artifact")
         try:
@@ -584,6 +594,7 @@ class HitchHarborAgent(BaseAgent):
         prepared = PreparedPhase("run_" + uuid.uuid4().hex, instruction, json.dumps(context, sort_keys=True),
                                  json.dumps(parent, sort_keys=True), identity,
                                  time.monotonic_ns() + remaining_timeout_ms * 1_000_000)
+        self._phase_control_tokens[prepared.run_id] = secrets.token_hex(32)
         self._prepared_phase_keys.add(key)
         self._phase_group_contracts[run_group_id] = (task_digest, identity, phase_index)
         self._prepared_phase = prepared
@@ -594,16 +605,96 @@ class HitchHarborAgent(BaseAgent):
             raise RuntimeError("candidate phase handle is stale, foreign, or already consumed")
         self._prepared_phase = None  # Every outcome consumes the handle.
         if prepared.identity != self._phase_identity():
+            self._phase_control_tokens.pop(prepared.run_id, None)
             raise RuntimeError("candidate identity changed after phase preparation")
         if prepared.deadline_ns <= time.monotonic_ns():
+            self._phase_control_tokens.pop(prepared.run_id, None)
             raise RuntimeError("candidate whole-task budget expired before phase start")
         self._phase_inflight = True
+        self._active_phase = prepared
         started_ns = time.monotonic_ns()
         try:
             await self._run(prepared.instruction, environment, context, prepared_phase=prepared)
         finally:
             self._phase_inflight = False
+            self._active_phase = None
+            self._phase_control_tokens.pop(prepared.run_id, None)
             self._write_phase_timing("agent", started_ns)
+
+    @staticmethod
+    def _phase_control_path(prepared: PreparedPhase) -> str:
+        return f"/tmp/hitch-phase-control-{prepared.run_id}.config.json"
+
+    @staticmethod
+    async def _upload_phase_json(environment: BaseEnvironment, target: str, value: dict[str, Any]) -> None:
+        # Keep control nonces out of both argv and the mounted agent log tree.
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="hitch-phase-control-", delete=False) as handle:
+            json.dump(value, handle)
+            temporary = Path(handle.name)
+        try:
+            await environment.upload_file(temporary, target)
+            result = await environment.exec(f"chmod 600 {shlex.quote(target)}")
+            if result.return_code != 0:
+                raise RuntimeError("could not protect candidate phase control input")
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    async def request_phase_cancellation(self, prepared: PreparedPhase, environment: BaseEnvironment, *, reason: str) -> dict[str, Any]:
+        """Request executor cancellation; await run_phase separately for sealed evidence.
+
+        This receipt proves only that the request was delivered, not that the
+        model stopped or that a native phase completed. Await this operation
+        before recycling the candidate. A caller must separately enforce a
+        bounded shutdown/collection allowance and whole-trial failure cleanup.
+        """
+        if reason not in {"native_phase_reset", "native_task_finished", "task_budget_expired", "cancelled"}:
+            raise ValueError("invalid phase cancellation reason")
+        if self._phase_cancel_lock is None:
+            self._phase_cancel_lock = asyncio.Lock()
+        async with self._phase_cancel_lock:
+            if not isinstance(prepared, PreparedPhase) or self._active_phase is not prepared:
+                raise RuntimeError("candidate phase is not active")
+            existing = self._phase_cancel_receipts.get(prepared.run_id)
+            if existing is not None:
+                if existing["reason"] != reason:
+                    raise RuntimeError("candidate phase cancellation reason already fixed")
+                if existing["status"] != "delivered":
+                    raise RuntimeError("candidate cancellation delivery is incomplete; implicit retries are forbidden")
+                return dict(existing)
+            phase = json.loads(prepared.context_json)
+            record_dir = self.logs_dir.parent / "hitch-phase-control"
+            record_dir.mkdir(mode=0o700, exist_ok=True)
+            if record_dir.is_symlink() or record_dir.stat().st_mode & 0o077:
+                raise RuntimeError("candidate cancellation records require a private host directory")
+            record_path = record_dir / f"{prepared.run_id}.request.json"
+            receipt = {"schema_version": "hitch-phase-cancel-request@1", "scope": "request-only",
+                       "status": "prepared",
+                       "request_id": "phase_cancel_" + uuid.uuid4().hex, "run_id": prepared.run_id,
+                       "run_group_id": phase["run_group_id"], "phase_index": phase["phase_index"],
+                       "reason": reason, "requested_at": datetime.now(timezone.utc).isoformat(),
+                       "record_ref": f"hitch-phase-control/{record_path.name}"}
+            with record_path.open("x", encoding="utf-8") as handle:
+                json.dump(receipt, handle, sort_keys=True)
+                handle.write("\n")
+            record_path.chmod(0o600)
+            self._phase_cancel_receipts[prepared.run_id] = receipt
+            try:
+                await self._upload_phase_json(environment, self._phase_control_path(prepared).replace(".config.json", ".request.json"), {
+                    "schema_version": "hitch-phase-cancel@1", "run_id": prepared.run_id,
+                    "token": self._phase_control_tokens[prepared.run_id], "reason": reason,
+                })
+                receipt["status"] = "delivered"
+            except BaseException as error:
+                receipt.update(status="delivery_failed", failure_type=type(error).__name__)
+                raise
+            finally:
+                update = record_path.with_suffix(".pending")
+                with update.open("x", encoding="utf-8") as handle:
+                    json.dump(receipt, handle, sort_keys=True)
+                    handle.write("\n")
+                update.chmod(0o600)
+                update.replace(record_path)
+            return dict(receipt)
 
     async def _run(
         self,
@@ -686,6 +777,10 @@ class HitchHarborAgent(BaseAgent):
                 parent_temporary.unlink(missing_ok=True)
 
         proxy_environment, proxy_health = await self._model_proxy_environment(environment, run_id)
+        if prepared_phase is not None:
+            await self._upload_phase_json(environment, self._phase_control_path(prepared_phase), {
+                "schema_version": "hitch-phase-control@1", "run_id": run_id, "token": self._phase_control_tokens[run_id],
+            })
         if self._entrypoint is None:
             raise RuntimeError("Hitch agent setup() must run before run() to resolve the runtime entrypoint")
         entry = self._remote_entry(self._entrypoint)
@@ -723,6 +818,8 @@ class HitchHarborAgent(BaseAgent):
             ])
             if prepared_phase is None:
                 arguments.append("--internal-defer-benchmark-observation")
+            else:
+                arguments.extend(["--internal-phase-control", shlex.quote(self._phase_control_path(prepared_phase))])
         if self.model_name:
             arguments.extend(["--model", shlex.quote(self.model_name)])
         for value in self.agent_args:

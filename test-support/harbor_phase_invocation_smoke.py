@@ -22,8 +22,18 @@ class Environment(BaseEnvironment):
         self.run_command = None
         self.phase_export = None
         self.context_payload = None
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancel_uploads = []
 
     async def upload_file(self, source, target):
+        if target.endswith(".request.json"):
+            request = json.loads(Path(source).read_text())
+            self.cancel_uploads.append(request)
+            record = self.host_logs.parent / "hitch-phase-control" / (request["run_id"] + ".request.json")
+            assert json.loads(record.read_text())["status"] == "prepared"
+            if self.case == "cancel-upload-failed":
+                raise RuntimeError("synthetic uncertain upload")
         if target == "/tmp/hitch-context.json":
             self.context_payload = json.loads(Path(source).read_text())
         if self.case == "expired-upload":
@@ -35,11 +45,16 @@ class Environment(BaseEnvironment):
             self.run_command = command
             self.run_id = re.search(r"--internal-run-id (run_[a-f0-9]{32})", command).group(1)
             observed = "run_" + "b" * 32 if self.case == "wrong-run" else self.run_id
-            return ExecResult(stdout=json.dumps({"type": "run.completed", "run_id": observed}), return_code=1 if self.case == "process-failed" else 0)
+            if self.case in {"cancel-request", "cancel-upload-failed"}:
+                self.started.set()
+                await self.release.wait()
+            return ExecResult(stdout=json.dumps({"type": "run.completed", "run_id": observed}), return_code=1 if self.case in {"process-failed", "cancel-request", "cancel-upload-failed"} else 0)
         if "cat --" in command and "/result.json" in command:
             result = self._valid_result(self.run_id)
             if self.case == "process-failed":
                 result.update(status="failed", exit_code=1)
+            if self.case in {"cancel-request", "cancel-upload-failed"}:
+                result.update(status="cancelled", exit_code=9)
             return ExecResult(stdout=json.dumps(result))
         if "copySealedPhaseRunBundle" in command:
             self.phase_export = command
@@ -63,7 +78,7 @@ def prepare(agent, **overrides):
 
 async def main():
     with tempfile.TemporaryDirectory() as temporary:
-        for case in ["valid", "wrong-run", "process-failed", "export-failed", "expired-upload", "identity-drift"]:
+        for case in ["valid", "wrong-run", "process-failed", "export-failed", "expired-upload", "identity-drift", "cancel-request", "cancel-upload-failed"]:
             logs = Path(temporary) / case / "trial" / "agent"
             logs.mkdir(parents=True)
             (logs.parent / "lock.json").write_text(json.dumps({"schema_version": 2, "task": {"name": "synthetic-phase-task"}}))
@@ -75,8 +90,11 @@ async def main():
             agent._setup_complete = agent._phase_export_available = True
             agent._entrypoint = "dist/bin/hitch.js"
             env = Environment(case)
+            env.host_logs = logs
             context = AgentContext()
             prepared = prepare(agent, remaining_timeout_ms=10 if case == "expired-upload" else 5000)
+            control_token = agent._phase_control_tokens[prepared.run_id]
+            assert control_token not in repr(prepared) and control_token not in json.dumps(prepared)
             assert env.run_command is None
             assert json.loads(prepared.context_json)["task_digest"] == digest
             await rejects(agent.run_phase(prepared._replace(instruction="forged"), env, context), "stale, foreign")
@@ -90,11 +108,34 @@ async def main():
                 assert env.run_command is None
                 continue
             failures = {"wrong-run": "hitch_phase_run_identity_mismatch", "process-failed": "hitch_process_failed", "export-failed": "hitch_run_bundle_export_failed"}
-            if case in failures:
+            if case in {"cancel-request", "cancel-upload-failed"}:
+                running = asyncio.create_task(agent.run_phase(prepared, env, context))
+                await asyncio.wait_for(env.started.wait(), 1)
+                if case == "cancel-upload-failed":
+                    await rejects(agent.request_phase_cancellation(prepared, env, reason="native_phase_reset"), "synthetic uncertain upload")
+                    await rejects(agent.request_phase_cancellation(prepared, env, reason="native_phase_reset"), "implicit retries")
+                    receipt = agent._phase_cancel_receipts[prepared.run_id]
+                    assert receipt["status"] == "delivery_failed"
+                else:
+                    receipt = await agent.request_phase_cancellation(prepared, env, reason="native_phase_reset")
+                    assert await agent.request_phase_cancellation(prepared, env, reason="native_phase_reset") == receipt
+                    assert receipt["status"] == "delivered"
+                assert receipt["scope"] == "request-only"
+                record = logs.parent / receipt["record_ref"]
+                assert json.loads(record.read_text()) == receipt and record.stat().st_mode & 0o077 == 0
+                assert control_token not in record.read_text()
+                assert len(env.cancel_uploads) == 1 and env.cancel_uploads[0]["token"] == control_token
+                await rejects(agent.request_phase_cancellation(prepared, env, reason="cancelled"), "reason already fixed")
+                env.release.set()
+                await rejects(running, "hitch_process_failed")
+                assert context.metadata["hitch_status"] == "cancelled"
+                await rejects(agent.request_phase_cancellation(prepared, env, reason="native_phase_reset"), "not active")
+            elif case in failures:
                 await rejects(agent.run_phase(prepared, env, context), failures[case])
             else:
                 await agent.run_phase(prepared, env, context)
             assert "--internal-defer-benchmark-observation" not in env.run_command
+            assert "--internal-phase-control" in env.run_command and control_token not in env.run_command
             assert env.run_id == prepared.run_id
             assert env.context_payload["kind"] == "benchmark_phase"
             assert context.metadata["hitch_run_id"] == prepared.run_id

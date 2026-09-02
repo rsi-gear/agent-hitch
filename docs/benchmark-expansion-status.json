@@ -465,7 +465,41 @@
             "python3 test-support/harbor_phase_invocation_smoke.py",
             "node --test dist/test/benchmark-phase-runs.test.js"
           ],
-          "limitation": "The bridge invocation test uses stub Harbor I/O. Bundle transfer uses actual Hitch executions with synthetic native harness processes and verifies every file and original index. No model, guest VM or official task is run. The APIs are not selected by the default standard-package entrypoint; native-boundary cancellation, controller supervision, recycled-container setup/binding and whole-task assessment/import remain incomplete."
+          "limitation": "The bridge invocation test uses stub Harbor I/O. Bundle transfer uses actual Hitch executions with synthetic native harness processes. The cancellation API is available, but native controller events, fresh-container setup/binding orchestration and whole-task assessment/import remain unwired. No model, guest VM or official task is run.",
+          "cancellation_request_api_complete": true
+        },
+        "phase_cancellation": {
+          "implemented": true,
+          "synthetic_only": true,
+          "scope": "request-only",
+          "api": "HitchHarborAgent.request_phase_cancellation(prepared, environment, reason=...)",
+          "internal_cli_option": "--internal-phase-control",
+          "run_id_and_nonce_fencing": true,
+          "bounded_private_regular_control_files": true,
+          "no_cli_pid_kill_or_container_restart_for_request": true,
+          "nonce_excluded_from_prepared_handle_argv_journal_and_test_bundles": true,
+          "malformed_config_errors_do_not_echo_nonce": true,
+          "candidate_self_cancel_not_native_completion_proof": true,
+          "host_request_record_before_delivery": true,
+          "delivery_states": [
+            "prepared",
+            "delivered",
+            "delivery_failed"
+          ],
+          "same_delivered_request_idempotent_while_active": true,
+          "uncertain_delivery_not_implicitly_retried": true,
+          "actual_hitch_cli_with_synthetic_native_harness_test_passed": true,
+          "cancelled_trajectory_and_bundle_verified_and_copied": true,
+          "launch_listener_cancellation_race_fixed": true,
+          "prelaunch_cancellation_test_passed": true,
+          "native_boundary_supervisor_wiring_complete": false,
+          "bounded_shutdown_and_collection_supervisor_complete": false,
+          "real_scored_tasks": 0,
+          "tests": [
+            "node --test dist/test/phase-cancellation.test.js",
+            "python3 test-support/harbor_phase_invocation_smoke.py"
+          ],
+          "limitation": "This is cancellation transport plus evidence preservation. A nonce fences requests but does not stop a root candidate from cancelling itself. The independent native controller must prove boundaries and scores. A delivered request does not prove process exit; the future supervisor must await and verify the sealed run, enforce a bounded shutdown/collection allowance, and clean up failed trials. No real model, OSWorld VM or official task was used."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -497,12 +531,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 353,
-    "passed": 350,
+    "total": 355,
+    "passed": 352,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/phase-invocation-check.log",
-    "additional_verification": "Phase preparation/execution passed stub Harbor I/O checks for preassigned run IDs, one-shot handles, frozen identities, budget expiration during uploads and failure evidence. Actual Hitch synthetic process bundles were copied with every indexed file and original index byte preserved; no-overwrite and context mismatch gates passed. No new real benchmark acceptance is claimed."
+    "evidence": ".hitch/benchmark-expansion/phase-cancellation-check.log",
+    "additional_verification": "An actual Hitch CLI with a synthetic native harness accepted only its matching cancellation request, sealed a cancelled run with valid trajectory, and exported the original bundle without nonce leakage. Prelaunch and launch-listener race cancellation passed. The bridge fixture verified private host journaling before delivery, active-request replay, reason mismatch and uncertain-delivery rejection. No new real benchmark acceptance is claimed."
   },
-  "updated_at": "2026-09-02T19:53:24.303561+00:00"
+  "updated_at": "2026-09-02T20:18:06.299402+00:00"
 }

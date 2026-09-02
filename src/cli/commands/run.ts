@@ -4,7 +4,7 @@ import type { RunId } from "../../domain/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput, readJSON, statePaths } from "../../foundation/index.js";
 import { loadPreparedArtifact } from "../../artifacts/index.js";
 import type { PreparedArtifact } from "../../artifacts/index.js";
-import { executeRun, newRunId } from "../../runs/index.js";
+import { executeRun, monitorPhaseCancellation, newRunId } from "../../runs/index.js";
 import { parseHarnessReference } from "../../revisions/index.js";
 import type { ResolvedRevision, VerifiedLocalGitSource } from "../../revisions/index.js";
 import { validateLocalGitTransportManifest, verifyMaterializedLocalGitSource } from "../../backends/index.js";
@@ -17,13 +17,18 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   const internalFlags = takeInternalLocalGitFlags(args);
   const internalArtifactFlags = takeInternalPreparedArtifactFlags(args);
   const internalRunId = takeOption(args, "--internal-run-id");
+  const phaseControlFile = takeOption(args, "--internal-phase-control");
   const deferBenchmarkObservation = takeFlag(args, "--internal-defer-benchmark-observation");
   const internalCredentialNames = takeRepeatedOption(args, "--internal-credential-name");
-  if ((internalRunId || deferBenchmarkObservation || internalCredentialNames.length > 0) && process.env.HITCH_HARBOR_INTERNAL !== "1") {
+  if ((internalRunId || phaseControlFile || deferBenchmarkObservation || internalCredentialNames.length > 0) && process.env.HITCH_HARBOR_INTERNAL !== "1") {
     throw invalidInput("internal eval run options are unavailable outside the Harbor bridge");
   }
   if (internalRunId && !/^run_[a-f0-9]{32}$/.test(internalRunId)) throw invalidInput("invalid internal run ID");
   const request = await parseRunRequest(args);
+  if (phaseControlFile && (!internalRunId || useDaemon || deferBenchmarkObservation
+    || (request.context as { kind?: unknown } | undefined)?.kind !== "benchmark_phase")) {
+    throw invalidInput("phase control requires a directly executed, normally sealed benchmark phase with an assigned run ID");
+  }
   if (deferBenchmarkObservation) request.defer_benchmark_observation = true;
   if (internalCredentialNames.length > 0) request.credential_names = internalCredentialNames;
   assertNoArgs(args);
@@ -50,18 +55,26 @@ export async function runCommand(args: string[], root: string): Promise<void> {
 
   const runId = (internalRunId || newRunId()) as RunId;
   const handedOffResolution = internalArtifact?.resolution || internal?.resolution;
-  const result = await executeRun({
-    runId,
-    request,
-    runsRoot: statePaths(root).runs,
-    root,
-    ...(handedOffResolution ? { resolvedRevision: handedOffResolution } : {}),
-    ...(internalArtifact ? { preparedArtifact: internalArtifact.artifact } : {}),
-    ...(internal ? { verifiedLocalGitSource: internal.source } : {}),
-    ...(output === "jsonl" ? { onEvent: (event) => process.stdout.write(`${JSON.stringify(event)}\n`) } : {}),
-  });
-  if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  process.exitCode = result.exit_code as number;
+  const cancellation = phaseControlFile ? await monitorPhaseCancellation({
+    configurationPath: phaseControlFile, expectedRunId: runId, runsRoot: statePaths(root).runs,
+  }) : undefined;
+  try {
+    const result = await executeRun({
+      runId,
+      request,
+      runsRoot: statePaths(root).runs,
+      root,
+      ...(cancellation ? { signal: cancellation.signal } : {}),
+      ...(handedOffResolution ? { resolvedRevision: handedOffResolution } : {}),
+      ...(internalArtifact ? { preparedArtifact: internalArtifact.artifact } : {}),
+      ...(internal ? { verifiedLocalGitSource: internal.source } : {}),
+      ...(output === "jsonl" ? { onEvent: (event) => process.stdout.write(`${JSON.stringify(event)}\n`) } : {}),
+    });
+    if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.exitCode = result.exit_code as number;
+  } finally {
+    await cancellation?.close();
+  }
 }
 
 interface InternalPreparedArtifactFlags {

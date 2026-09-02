@@ -286,6 +286,51 @@ with stub Harbor I/O, including budget expiration during uploads, handle replay,
 identity mismatch and export/process failures. `test/benchmark-phase-runs.test.ts`
 executes actual Hitch runs with synthetic native harness processes, copies their
 sealed phase bundles and verifies all file/index bytes plus identity/no-overwrite
-gates. These tests do not run a model or OSWorld. Native-boundary cancellation,
-controller/agent supervision, fresh environment setup/binding orchestration and
+gates. These tests do not run a model or OSWorld. Connecting native boundaries
+to candidate cancellation, controller/agent supervision, fresh environment setup/binding orchestration and
 whole-task assessment/import remain required.
+
+## Cancelling a phase while retaining its evidence
+
+After an authoritative native boundary, the supervisor may call
+`await agent.request_phase_cancellation(prepared, environment,
+reason="native_phase_reset")`. Other declared reasons are `native_task_finished`,
+`task_budget_expired` and `cancelled`. The call returns a **request-only** receipt;
+the supervisor must separately await the running `run_phase()` operation before
+recycling. A normal cancelled process still raises `hitch_process_failed` through
+the bridge, with its actual `hitch_status="cancelled"` and exported-bundle status
+in metadata. The supervisor may only accept that combination after verifying the
+native boundary and the complete bundle; it is not a success score.
+
+The bridge uploads a private, run-scoped control configuration outside the run
+bundle and passes its path via the internal `--internal-phase-control` option.
+The CLI monitors the corresponding cancellation request, matching run ID and a
+fresh 256-bit nonce, then aborts the existing executor through `AbortSignal`.
+It does not terminate the Hitch CLI itself, allowing trajectory, workspace and
+bundle sealing to finish. A request present before CLI start is also applied.
+The executor catches cancellation arriving between process creation and abort
+listener registration. Ordinary runs do not enable this control transport.
+
+Configuration/request inputs are written with mode 0600. Validation requires
+bounded regular files without group/other access; symlink, malformed, oversized
+and stale requests cannot trigger cancellation.
+The nonce stays in private agent memory/control files, outside the prepared
+handle, argv, request record and run bundle. A candidate with root access inside
+its own container can request its own cancellation. Thus cancellation status is
+never proof of a native reset, gate, completion or grader result.
+
+The host journal at `<trial>/hitch-phase-control/<run-id>.request.json` is outside
+candidate log mounts. It records `prepared`, then `delivered` or `delivery_failed`,
+without the nonce. Repeating the same delivered request while the phase is active
+is idempotent; changing its reason or retrying an incomplete delivery is rejected.
+The supervisor must impose a bounded shutdown/evidence-collection allowance. If
+the run cannot seal, whole-trial cleanup and an invalid result are required; a
+delivery receipt cannot substitute for evidence of process exit.
+
+`test/phase-cancellation.test.ts` runs the actual Hitch CLI against a synthetic
+native harness, checks stale requests, cancellation, valid native trajectory,
+byte-preserving export and absence of the nonce from all bundle files. It also
+tests cancellation during the launch-listener race and before launch. The bridge
+I/O fixture checks host journaling, same-request replay, reason mismatch and
+inactive-phase rejection. These are component tests, not real OSWorld validation;
+native controller events are not yet wired to this API.
