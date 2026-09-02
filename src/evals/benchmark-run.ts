@@ -78,7 +78,8 @@ export async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string):
           const agent = execution.agent as Record<string, unknown>;
           // Cancellation/export and host inspection each have a shutdown
           // allowance, bounded by collection_timeout_ms; snapshot has its own.
-          agent.timeout_sec = Number(agent.timeout_sec) + Math.ceil((3 * loaded.profile.budget.collection_timeout_ms + 2 * loaded.profile.budget.cleanup_grace_ms) / 1000);
+          const collections = nativePhases.protocol === "hitch-native-phase-control@2" ? 4 : 3;
+          agent.timeout_sec = Number(agent.timeout_sec) + Math.ceil((collections * loaded.profile.budget.collection_timeout_ms + 2 * loaded.profile.budget.cleanup_grace_ms) / 1000);
           await writeFile(path.join(taskPath, "task.toml"), stringifyTOML(execution));
         }
         await atomicWriteJSON(path.join(taskPath, ".hitch-benchmark.json"), {

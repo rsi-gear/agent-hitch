@@ -39,8 +39,9 @@ class Environment:
         if self.failure == "cancel" and phase == "prepare":
             raise asyncio.CancelledError()
         outputs = {"prepare": {"ready": True, "tool_bindings": [{"endpoint": "http://worker:8765/", "token": "secret-token-" * 4, "tools": config["tools"]}]}, "quiesce": {"quiesced": True}, "snapshot": {"artifacts": [{"path": "/state.json", "bytes": 25}]}, "cleanup": {"cleaned": True}}
-        if self.failure == "native-ready":
+        if self.failure in ["native-ready", "deadline-ready", "deadline-unready"]:
             outputs["prepare"] = {"ready": True, "native_phases_ready": True}
+            if self.failure == "deadline-ready": outputs["prepare"]["native_deadline_ready"] = True
         elif self.failure == "native-unready":
             outputs["prepare"] = {"ready": True}
         elif self.failure == "native-static":
@@ -89,18 +90,20 @@ async def main():
             assert "secret-token" not in journal
             assert (json.loads(journal)["failure"] is not None) == (failure is not None)
         config["task"]["driver"]["config"]["native_phases"] = {"protocol": "hitch-native-phase-control@1"}
-        for mode in ["native-ready", "native-unready", "native-static"]:
+        for mode in ["native-ready", "native-unready", "native-static", "deadline-ready", "deadline-unready"]:
+            config["task"]["driver"]["config"]["native_phases"]["protocol"] = "hitch-native-phase-control@2" if mode.startswith("deadline") else "hitch-native-phase-control@1"
+            ready = mode in ["native-ready", "deadline-ready"]
             env = object.__new__(wrapper.HitchHarborDockerEnvironment)
             Environment.__init__(env, root, mode)
             session = module.BenchmarkSession(env, config); env._hitch_benchmark = session
             try:
                 await env.start(False)
-                assert mode == "native-ready"
+                assert ready
                 await env.stop(True)
             except RuntimeError:
-                assert mode != "native-ready"
+                assert not ready
             assert env.released and not env.uploaded and env.calls[-1] == "cleanup"
-            assert (session.failure is not None) == (mode != "native-ready")
+            assert (session.failure is not None) == (not ready)
         del config["task"]["driver"]["config"]["native_phases"]
         # The native result has already coerced bool/string to an integer. Only
         # the original reward JSON can distinguish invalid output from real zero.

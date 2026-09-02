@@ -41,15 +41,17 @@ private lease-bound control, writable-state reset and an upstream DesktopEnv
 provider. Synthetic process tests pass both locally and as PID 1 in a Linux
 container. The SDK agent channel now preserves native phase resets, gates and
 prediction-step accounting in a synthetic parity test. Official guest boot,
-the fresh Hitch conversation supervisor, complete task/controller/web assembly
-and the two selected task evaluations remain
-unverified or incomplete.
+complete task/controller/web assembly and the two selected task evaluations remain
+unverified or incomplete. The generic fresh-conversation supervisor and whole-task
+assessment importer are connected through the standard native-phase package entry.
 
 The controller transport component exposes only `desktop.observe` and
 `desktop.submit` over authenticated HTTP. Lease-fenced management uses a private
 Unix socket. Its tests exercise actual HTTP/Unix sockets and the Node image
-client across synthetic phase changes. The dynamic candidate bind/start/retire
-loop still needs integration into the Harbor bridge; see the runtime README.
+client across synthetic phase changes. The Harbor bridge now connects dynamic
+candidate bind/start/retire and verifies the full native audit at import. Optional
+control protocol v2 also supports bounded final-state grading at a task deadline;
+see the runtime README for its explicit SDK adaptation and evidence contract.
 
 ## Native screenshot transport
 
@@ -117,8 +119,9 @@ requirements for the remaining executor:
   performs sequential setup, action budgets, phase evaluation and early gates
   on the same environment. `native_runner.py` now delegates to that pinned
   runner, and the channel parity test covers its multi-phase behavior. The
-  remaining supervisor must create a genuinely fresh candidate conversation on
-  each native reset; different run IDs alone do not establish this.
+  supervisor creates a fresh candidate conversation on each native reset and
+  requires retired-container receipts; different run IDs alone do not establish
+  this. Full VM integration remains to be validated.
 - The stock Docker provider launches its own container and allocates host ports.
   Calling it unchanged would bypass Hitch's resource ownership. The managed
   provider must own the VM and website namespace under the trial lease, fence

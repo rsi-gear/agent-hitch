@@ -51,7 +51,10 @@ export interface BenchmarkTaskV1 {
     kind: "tool-server";
     protocol_version: "1";
     config: { transport: "http-json-cli"; endpoint: string; schema: string; service: string;
-      native_phases?: { protocol: "hitch-native-phase-control@1"; argv: string[]; audit_path: string; shutdown_timeout_ms: number } };
+      native_phases?: { argv: string[]; audit_path: string; shutdown_timeout_ms: number } & (
+        { protocol: "hitch-native-phase-control@1"; finalization_timeout_ms?: never }
+        | { protocol: "hitch-native-phase-control@2"; finalization_timeout_ms: number }
+      ) };
   } | { kind: "terminal"; protocol_version: "1"; config: Record<string, never> }
     | { kind: "model-call"; protocol_version: "1"; config: { input: string } };
   requirements: string[];

@@ -21,7 +21,13 @@ class ChannelClosed(RuntimeError):
     pass
 
 
+class CandidateBudgetExpired(BaseException):
+    """Only the private native deadline adapter may turn this into final grading."""
+
+
 class AgentChannel:
+    budget_exception = CandidateBudgetExpired
+
     def __init__(self, evidence_dir, screen_size, validate_actions, *, max_actions_per_turn, max_text_bytes):
         if len(screen_size) != 2 or any(type(v) is not int or not 1 <= v <= 8192 for v in screen_size):
             raise ValueError('invalid locked screenshot dimensions')
@@ -43,6 +49,8 @@ class AgentChannel:
         self.answer = None
         self.receipts = {}
         self.task_current_date = None
+        self.budget_expired = False
+        self.budget_receipt = None
 
     def _audit(self, event, **fields):
         value = dict(event=event, generation=self.generation, sequence=self.sequence, **fields)
@@ -54,6 +62,7 @@ class AgentChannel:
     def reset(self, *_args, **_kwargs):
         """Called by the native runner once per new agent conversation."""
         with self.condition:
+            self.check_budget()
             if self.state in ['completed', 'failed', 'cancelled']:
                 raise ChannelClosed('native runner reset a closed channel')
             if self.pending is not None:
@@ -68,6 +77,7 @@ class AgentChannel:
     def predict(self, instruction, observation):
         """Wait for exactly one action batch, without making a model request."""
         with self.condition:
+            self.check_budget()
             if self.generation < 1 or self.state in ['completed', 'failed', 'cancelled']:
                 raise ChannelClosed('prediction requires an open native conversation')
             if self.pending is not None:
@@ -97,7 +107,8 @@ class AgentChannel:
             self.state = 'awaiting_actions' if self.binding else 'context_required'
             self._audit('prediction', **{k: v for k, v in self.pending.items() if k not in ['sequence', 'generation']})
             self.condition.notify_all()
-            self.condition.wait_for(lambda: self.answer is not None or self.state in ['completed', 'failed', 'cancelled'])
+            self.condition.wait_for(lambda: self.answer is not None or self.budget_expired or self.state in ['completed', 'failed', 'cancelled'])
+            self.check_budget()
             if self.answer is None:
                 raise ChannelClosed('candidate channel closed before a prediction completed')
             answer = self.answer
@@ -105,6 +116,28 @@ class AgentChannel:
             self.state = 'sdk_executing'
             self.condition.notify_all()
             return answer
+
+    def check_budget(self):
+        with self.condition:
+            if self.budget_expired:
+                raise CandidateBudgetExpired()
+
+    def expire_budget(self):
+        """Private supervisor deadline: revoke tools and unblock native grading."""
+        with self.condition:
+            if self.budget_receipt is not None:
+                return copy.deepcopy(self.budget_receipt)
+            if self.state in ['completed', 'failed', 'cancelled']:
+                raise ValueError('cannot expire a terminal native task')
+            self.budget_receipt = dict(budget_exhausted=True, generation=self.generation, sequence=self.sequence,
+                                       run_id=self.binding['run_id'] if self.binding else None,
+                                       pending_prediction=self.pending is not None, action_submitted=self.answer is not None)
+            self._audit('budget_exhausted', **{k: v for k, v in self.budget_receipt.items() if k not in ['budget_exhausted', 'generation', 'sequence']})
+            self.budget_expired = True
+            self.binding = self.pending = self.answer = None
+            self.state = 'finalizing'
+            self.condition.notify_all()
+            return copy.deepcopy(self.budget_receipt)
 
     def management_state(self):
         """Private supervisor view. This is not an agent-facing tool."""

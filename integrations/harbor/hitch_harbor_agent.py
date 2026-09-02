@@ -557,6 +557,7 @@ class HitchHarborAgent(BaseAgent):
                 binding={"endpoint": driver["config"]["endpoint"], "tools": config["tools"]},
                 task_digest=config["task_digest"], timeout_ms=remaining,
                 shutdown_timeout_ms=phases["shutdown_timeout_ms"],
+                finalization_timeout_ms=phases.get("finalization_timeout_ms"),
             ).run()
             context.metadata = {"candidate_id": self.candidate_id, "harness_ref": self.harness_ref,
                                 "revision_identity": self.revision_identity, "controller_runtime_id": self.controller_runtime_id,

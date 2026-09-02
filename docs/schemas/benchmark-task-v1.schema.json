@@ -50,7 +50,7 @@
                   ],
                   "properties": {
                     "protocol": {
-                      "const": "hitch-native-phase-control@1"
+                      "enum": ["hitch-native-phase-control@1", "hitch-native-phase-control@2"]
                     },
                     "argv": {
                       "type": "array",
@@ -70,8 +70,15 @@
                       "type": "integer",
                       "minimum": 1,
                       "maximum": 600000
+                    },
+                    "finalization_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
                     }
-                  }
+                  },
+                  "if": { "properties": { "protocol": { "const": "hitch-native-phase-control@2" } } },
+                  "then": { "required": ["finalization_timeout_ms"] },
+                  "else": { "not": { "required": ["finalization_timeout_ms"] } }
                 }
               },
               "required": [

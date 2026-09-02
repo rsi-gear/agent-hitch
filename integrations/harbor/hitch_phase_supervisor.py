@@ -64,7 +64,7 @@ def _write(path, value):
 class NativePhaseSupervisor:
     def __init__(self, agent, environment, *, controller, binding, task_digest,
                  timeout_ms, shutdown_timeout_ms=30_000, poll_interval_ms=250,
-                 run_group_id=None):
+                 run_group_id=None, finalization_timeout_ms=None):
         """controller={service, argv}; binding={endpoint, tools}, both locked.
 
         timeout_ms is the remaining *whole task* allowance, not a phase budget.
@@ -98,6 +98,9 @@ class NativePhaseSupervisor:
         self.controller, self.binding = _json(json.dumps(controller)), _json(json.dumps(binding))
         self.task_digest, self.timeout_ms = task_digest, timeout_ms
         self.shutdown_timeout_ms, self.poll_interval_ms = shutdown_timeout_ms, poll_interval_ms
+        if finalization_timeout_ms is not None and not _positive(finalization_timeout_ms, 9007199254740991):
+            raise ValueError("invalid native finalization allowance")
+        self.finalization_timeout_ms = finalization_timeout_ms
         self.root = Path(environment.trial_paths.trial_dir)
         if self.root.is_symlink() or not self.root.is_dir():
             raise ValueError("native phase evidence requires a real trial directory")
@@ -138,8 +141,8 @@ class NativePhaseSupervisor:
             # errors, including errors from a service_exec implementation.
             raise PhaseSupervisionError("native_controller_rpc_failed") from None
 
-    async def _state(self):
-        state = await self._rpc("state")
+    async def _state(self, *, finalizing=False):
+        state = await self._rpc("state", cleanup=finalizing)
         try:
             if set(state) != {"state", "generation", "sequence", "run_id", "prediction", "task_current_date"}:
                 raise ValueError()
@@ -148,7 +151,7 @@ class NativePhaseSupervisor:
                     or type(sequence) is not int or sequence < self.sequence or generation < 0):
                 raise ValueError()
             name, run_id, prediction = state["state"], state["run_id"], state["prediction"]
-            if name not in {"created", "context_required", "awaiting_actions", "sdk_executing", "completed", "failed", "cancelled"}:
+            if name not in {"created", "context_required", "awaiting_actions", "sdk_executing", "completed", "failed", "cancelled", "finalizing"}:
                 raise ValueError()
             if state["task_current_date"] is not None and (not isinstance(state["task_current_date"], str) or len(state["task_current_date"]) > 1024):
                 raise ValueError()
@@ -172,7 +175,9 @@ class NativePhaseSupervisor:
                 raise ValueError()
             if name == "context_required" and (generation < 1 or generation != self.phase_index + 1):
                 raise ValueError()
-            if name == "completed" and (prediction is not None or self.prepared is None or generation != self.phase_index):
+            if name == "finalizing" and (not finalizing or prediction is not None or not self.record.get("budget_finalization")):
+                raise ValueError()
+            if name == "completed" and (prediction is not None or not finalizing and (self.prepared is None or generation != self.phase_index)):
                 raise ValueError()
         except (ValueError, TypeError, KeyError):
             raise PhaseSupervisionError("native_controller_state_invalid") from None
@@ -223,6 +228,8 @@ class NativePhaseSupervisor:
 
     async def _settle(self, reason):
         deadline = time.monotonic_ns() + self.shutdown_timeout_ms * 1_000_000
+        if reason == "task_budget_expired" and self.record.get("budget_finalization", {}).get("receipt"):
+            self.cancel_reason = reason
         if not self.running.done():
             self.cancel_reason = reason
             try:
@@ -243,7 +250,8 @@ class NativePhaseSupervisor:
             # The bridge reports a nonzero executor exit for cancellation; only
             # this specific case can continue to independent bundle inspection.
             metadata = self.context.metadata or {}
-            if not (self.cancel_reason and getattr(error, "code", None) == "hitch_process_failed" and metadata.get("hitch_status") == "cancelled"
+            allowed = {"cancelled", "timed_out"} if self.cancel_reason == "task_budget_expired" and self.record.get("budget_finalization", {}).get("receipt") else {"cancelled"}
+            if not (self.cancel_reason and getattr(error, "code", None) == "hitch_process_failed" and metadata.get("hitch_status") in allowed
                     and metadata.get("hitch_bridge_error_code") == "hitch_process_failed"):
                 raise PhaseSupervisionError("native_candidate_failed") from None
         metadata = self.context.metadata or {}
@@ -274,7 +282,8 @@ class NativePhaseSupervisor:
         if process.returncode or len(stdout) > 65536:
             raise PhaseSupervisionError("native_phase_evidence_invalid")
         proof = _json(stdout)
-        if proof["process_status"] not in {"succeeded", "cancelled"} or proof["process_status"] != self.context.metadata.get("hitch_status"):
+        allowed = {"succeeded", "cancelled", "timed_out"} if self.record.get("budget_finalization", {}).get("receipt") else {"succeeded", "cancelled"}
+        if proof["process_status"] not in allowed or proof["process_status"] != self.context.metadata.get("hitch_status"):
             raise PhaseSupervisionError("native_phase_process_status_mismatch")
         prior = self.record["phases"][:-1]
         for phase in prior:
@@ -287,7 +296,7 @@ class NativePhaseSupervisor:
 
     async def _retire(self, state):
         finished = state["state"] == "completed"
-        await self._settle("native_task_finished" if finished else "native_phase_reset")
+        await self._settle("task_budget_expired" if self.record.get("budget_finalization", {}).get("receipt") else "native_task_finished" if finished else "native_phase_reset")
         entry = self.record["phases"][-1]
         entry.update(status="candidate_exported", boundary={"state": state["state"], "generation": state["generation"], "sequence": state["sequence"]})
         self._save()
@@ -308,6 +317,52 @@ class NativePhaseSupervisor:
         if not finished:
             await self.agent.setup(self.env)
         return finished
+
+    async def _finalize_budget(self):
+        if self._remaining_ms() > 0 or not self.record["phases"]:
+            raise PhaseSupervisionError("native_task_budget_expired")
+        self.record["budget_finalization"] = {"status": "requested", "timeout_ms": self.finalization_timeout_ms,
+                                               "elapsed_ms": self.timeout_ms - self._remaining_ms(),
+                                               "requested_at": datetime.now(timezone.utc).isoformat()}
+        self._save()
+        state = await self._state(finalizing=True)
+        if state["state"] != "completed":
+            receipt = await self._rpc("expire_budget", cleanup=True)
+            expected_run = self.prepared.run_id if self.prepared else None
+            if (set(receipt) != {"budget_exhausted", "generation", "sequence", "run_id", "pending_prediction", "action_submitted"}
+                    or receipt["budget_exhausted"] is not True
+                    or receipt["run_id"] != expected_run and not (receipt["run_id"] is None and receipt["generation"] == self.phase_index + 1)
+                    or type(receipt["generation"]) is not int or not self.phase_index <= receipt["generation"] <= self.phase_index + 1
+                    or type(receipt["sequence"]) is not int or receipt["sequence"] < self.sequence
+                    or type(receipt["pending_prediction"]) is not bool or type(receipt["action_submitted"]) is not bool):
+                raise PhaseSupervisionError("native_budget_receipt_invalid")
+            self.record["budget_finalization"]["receipt"] = receipt
+            self._save()
+            if self.prepared:
+                await self._settle("task_budget_expired")
+            while True:
+                state = await self._state(finalizing=True)
+                if state["state"] == "completed":
+                    break
+                if state["state"] != "finalizing":
+                    raise PhaseSupervisionError("native_budget_did_not_revoke_candidate")
+                await asyncio.sleep(self.poll_interval_ms / 1000)
+        else:
+            # The SDK completed just before the watchdog was observed. Do not
+            # invent a deadline event or replace that native completion reason.
+            del self.record["budget_finalization"]
+        if self.prepared:
+            await self._retire(state)
+        else:
+            # A reset already retired the previous candidate. Stop the fresh,
+            # unused replacement; its archived bundle/receipt remains evidence.
+            await self.env.stop_service("main")
+        if self.record.get("budget_finalization"):
+            self.record["budget_finalization"]["status"] = "completed"
+        self.record.update(status="completed", completed_at=datetime.now(timezone.utc).isoformat(),
+                           final_native_state={k: state[k] for k in ["state", "generation", "sequence"]})
+        self._save()
+        return _json(json.dumps(self.record))
 
     async def _cleanup(self):
         cleanup = {"controller_cancelled": False, "environment_stopped": False, "candidate_settled": self.running is None}
@@ -359,7 +414,14 @@ class NativePhaseSupervisor:
         self._save()
         try:
             while True:
-                state = await self._state()
+                try:
+                    state = await self._state()
+                except PhaseSupervisionError as error:
+                    if str(error) == "native_task_budget_expired" and self.finalization_timeout_ms is not None:
+                        return await asyncio.wait_for(self._finalize_budget(), self.finalization_timeout_ms / 1000)
+                    raise
+                if self._remaining_ms() <= 0 and self.finalization_timeout_ms is not None:
+                    return await asyncio.wait_for(self._finalize_budget(), self.finalization_timeout_ms / 1000)
                 if self.prepared is not None and (state["state"] == "completed" or state["generation"] == self.phase_index + 1):
                     if await self._retire(state):
                         self.record.update(status="completed", completed_at=datetime.now(timezone.utc).isoformat())

@@ -51,6 +51,9 @@ native.DEFAULT_USER_RESPONSE = "synthetic user response"
 native.log_task_completion = lambda *_a: None
 native.GuestMemoryTracer = lambda *_a: types.SimpleNamespace(capture=lambda *_a, **_k: None)
 native.time = types.SimpleNamespace(sleep=lambda _: None, perf_counter=lambda: 0)
+native.setup_logger = lambda *_a: None
+deadline_module = module("deadline_runner", runtime / "deadline_runner.py")
+deadline_run, _ = deadline_module.compile_deadline_runner(fixture.with_name("native_runner_source.py").read_bytes(), native, channel_module.CandidateBudgetExpired)
 
 
 def chunk(kind, data):
@@ -140,6 +143,10 @@ class LocalEnvironment:
             assert self.events[-1] == "setup", self.events
             self.events.append("bind"); self.binds.append(request["parameters"])
         result = await command("/bin/sh", "-c", text, timeout=kwargs["timeout_sec"] + 1)
+        if self.case == "finalize-budget" and request["operation"] == "expire_budget":
+            # The channel is already fenced. Delay the management reply so the
+            # CLI's own timeout wins over the supervisor cancellation request.
+            await asyncio.sleep(0.3)
         if self.case == "bad-binding" and request["operation"] == "bind":
             output = json.loads(result.stdout); output["binding"]["tools"] = []
             result.stdout = json.dumps(output)
@@ -161,7 +168,7 @@ class LocalEnvironment:
         self.fresh()
         return receipt
     async def stop_service(self, service):
-        assert service == "main" and self.events[-1] == "export"
+        assert service == "main" and (self.events[-1] == "export" or self.case == "finalize-between" and self.events[-1] == "setup")
         self.events.append("stop-main")
     async def stop(self, delete):
         assert delete is True
@@ -174,6 +181,8 @@ class SyntheticAgent(bridge.HitchHarborAgent):
         env.events.append("setup")
         self._setup_complete = self._phase_export_available = True
         self._phase_supervision_available = True
+        if env.case == "finalize-between" and env.number == 1:
+            await asyncio.sleep(1.1)
     async def _run(self, instruction, env, context, *, prepared_phase):
         prepared = prepared_phase
         assert env.events[-1] == "bind"
@@ -211,6 +220,7 @@ class SyntheticAgent(bridge.HitchHarborAgent):
 
 
 async def run_case(root, case, executable, revision):
+    finalizing = case.startswith("finalize")
     root.mkdir()
     (root / "lock.json").write_text(json.dumps({"schema_version": 2, "task": {"name": "synthetic-native-phases"}}))
     private = root / "private"; private.mkdir(mode=0o700)
@@ -218,7 +228,7 @@ async def run_case(root, case, executable, revision):
     session_file = private / "session.json"; session_file.write_text(json.dumps(session)); session_file.chmod(0o600)
     channel = channel_module.AgentChannel(root / "channel", (1920, 1080), policy, max_actions_per_turn=1, max_text_bytes=16384)
     channel.task_current_date = "2026-08-08"
-    server = server_module.ControllerServer(channel, session, policy, private / "control.sock", public_address=("127.0.0.1", 0), public_endpoint="http://127.0.0.1:0/")
+    server = server_module.ControllerServer(channel, session, policy, private / "control.sock", public_address=("127.0.0.1", 0), public_endpoint="http://127.0.0.1:0/", native_deadline=finalizing)
     server.endpoint = f"http://controller:{server.public.server_port}/"
     server.start()
     env = LocalEnvironment(root, server, case)
@@ -227,13 +237,22 @@ async def run_case(root, case, executable, revision):
     agent.executable = executable
     await agent.setup(env)
     supervisor = NativePhaseSupervisor(agent, env, controller={"service": "controller", "argv": [sys.executable, str(runtime / "controller_client.py"), "--socket", str(server.private_socket), "--session", str(session_file)]},
-                    binding={"endpoint": server.endpoint, "tools": server.tools}, task_digest=digest, timeout_ms=100 if case == "budget" else 20000, shutdown_timeout_ms=5000, poll_interval_ms=20)
+                    binding={"endpoint": server.endpoint, "tools": server.tools}, task_digest=digest, timeout_ms=100 if case == "budget" else 1000 if finalizing else 20000, shutdown_timeout_ms=5000, poll_interval_ms=20, finalization_timeout_ms=5000 if finalizing else None)
     guest, scores, errors = Guest(), [], []
     results = root / "native-results"; results.mkdir()
     def sdk():
         try:
-            native._run_multi_phase_task_example(channel, guest, Task(guest, case == "gated"), 1,
-                       types.SimpleNamespace(sleep_after_execution=0), str(results), scores, None)
+            if finalizing:
+                task = Task(guest, False)
+                if case == "finalize-failed":
+                    phases = task.get_phases()
+                    def fail(_): raise RuntimeError("synthetic evaluator failure")
+                    phases[0]["evaluate"] = fail
+                    task.get_phases = lambda: phases
+                deadline_run(channel, guest, task, 1, "", types.SimpleNamespace(sleep_after_execution=0), str(results), scores)
+            else:
+                native._run_multi_phase_task_example(channel, guest, Task(guest, case == "gated"), 1,
+                           types.SimpleNamespace(sleep_after_execution=0), str(results), scores, None)
             channel.finish("completed")
         except BaseException as error:
             errors.append(error); channel.finish("failed")
@@ -241,24 +260,31 @@ async def run_case(root, case, executable, revision):
     if case != "budget":
         thread.start()
     try:
-        if case in ["complete", "gated"]:
+        if case in ["complete", "gated", "finalize-budget", "finalize-between"]:
             env._hitch_benchmark = types.SimpleNamespace(config={
                 "task": {"driver": {"kind": "tool-server", "config": {"service": "controller", "endpoint": server.endpoint,
-                    "native_phases": {"protocol": "hitch-native-phase-control@1", "argv": supervisor.controller["argv"], "audit_path": "/evidence/channel.jsonl", "shutdown_timeout_ms": 5000}}}},
-                "tools": server.tools, "task_digest": digest, "agent_timeout_sec": 20})
+                    "native_phases": {"protocol": "hitch-native-phase-control@2" if finalizing else "hitch-native-phase-control@1", "argv": supervisor.controller["argv"], "audit_path": "/evidence/channel.jsonl", "shutdown_timeout_ms": 5000,
+                                      **({"finalization_timeout_ms": 5000} if finalizing else {})}}}},
+                "tools": server.tools, "task_digest": digest, "agent_timeout_sec": 1 if finalizing else 20})
             context = AgentContext()
             await agent.run("outer task prompt", env, context)
             result = json.loads((root / "hitch-native-phases/supervision.json").read_text())
             assert context.metadata["hitch_context_kind"] == "benchmark_phase_group"
             assert context.metadata["hitch_run_group_id"] == result["run_group_id"] and "hitch_run_id" not in context.metadata
-            count = 1 if case == "gated" else 2
+            count = 1 if case in ["gated", "finalize-budget", "finalize-between"] else 2
             assert result["status"] == "completed" and len(result["phases"]) == count
             assert result["scope"] == "candidate-evidence-only" and "reward" not in result
             assert len({p["evidence"]["provider_session_id"] for p in result["phases"]}) == count
-            assert all(p["evidence"]["process_status"] == "cancelled" and p["status"] == "sealed" for p in result["phases"])
-            assert guest.resets == 1 and guest.actions == ["DONE"] * count and scores == ([0.25] if case == "gated" else [0.75])
-            assert guest.setups == ([] if case == "gated" else ["two"])
-            assert env.events == ["setup", "bind", "run", "export"] + (["retire", "setup", "bind", "run", "export"] if count == 2 else []) + ["stop-main"]
+            assert all(p["evidence"]["process_status"] in (["cancelled", "timed_out"] if finalizing else ["cancelled"]) and p["status"] == "sealed" for p in result["phases"])
+            assert guest.resets == 1 and guest.actions == ([] if case == "finalize-budget" else ["DONE"] * count)
+            assert scores == ([0.25] if case in ["gated", "finalize-budget"] else [0.75])
+            assert guest.setups == ([] if case in ["gated", "finalize-budget"] else ["two"])
+            if finalizing:
+                assert result["budget_finalization"]["status"] == "completed"
+                assert result["budget_finalization"]["elapsed_ms"] >= 1000
+                assert result["budget_finalization"]["receipt"]["run_id"] == (None if case == "finalize-between" else result["phases"][0]["run_id"])
+                if case == "finalize-budget": assert result["phases"][0]["evidence"]["process_status"] == "timed_out"
+            assert env.events == ["setup", "bind", "run", "export"] + (["retire", "setup", "bind", "run", "export"] if count == 2 else ["retire", "setup"] if case == "finalize-between" else []) + ["stop-main"]
             for binding in env.tokens:
                 try: channel.observe(binding); raise AssertionError("retired binding accepted")
                 except PermissionError: pass
@@ -268,12 +294,13 @@ async def run_case(root, case, executable, revision):
                 result = json.loads((root / "hitch-native-phases/supervision.json").read_text())
                 expected = {"early-exit": "native_candidate_exited_before_boundary", "bad-binding": "native_binding_differs_from_locked_definition",
                             "bad-state": "native_controller_rpc_failed", "budget": "native_task_budget_expired",
+                            "finalize-failed": "native_controller_failed",
                             "recycle-failed": "RuntimeError", "reused-session": "native_phase_candidate_or_conversation_changed",
                             "cancel-upload-failed": "native_candidate_cancellation_delivery_failed"}
                 assert result["failure_code"] == expected[case], result
                 assert result["status"] == "failed" and result["cleanup_required"] is False and env.events[-1] == "cleanup"
                 assert len(env.binds) <= (2 if case == "reused-session" else 1)
-        if case not in ["complete", "gated"]:
+        if case not in ["complete", "gated", "finalize-budget", "finalize-between"]:
             try: await supervisor.run(); raise AssertionError("reused supervisor")
             except PhaseSupervisionError as error: assert "single_use" in str(error)
         persisted = (root / "hitch-native-phases/supervision.json").read_text()
@@ -304,6 +331,7 @@ async function tool(name, args) {
   if(!r.ok) throw Error('synthetic tool failure'); return r.json();
 }
 (async()=>{
+  if(mode === 'finalize-budget' || mode === 'finalize-failed') { setInterval(()=>{},1000); return; }
   const observation=await tool('desktop.observe', {}), data=JSON.parse(observation.content[0].text);
   await tool('desktop.submit', {sequence:data.sequence,request_id:'synthetic_submit',response:'done',actions:['DONE']});
   console.log(JSON.stringify({type:'item.completed',item:{id:'submitted',type:'agent_message',text:'submitted action'}}));
@@ -314,7 +342,7 @@ async function tool(name, args) {
         script = "import {resolveHarness,parseHarnessReference} from './dist/src/revisions/index.js';console.log((await resolveHarness(parseHarnessReference('codex'),{root:process.argv[1]})).identity)"
         resolved = await command("node", "--input-type=module", "-e", script, root / "resolution", env={**os.environ, "HITCH_CODEX_PATH": str(executable)})
         assert resolved.return_code == 0, resolved.stderr
-        for case in ["complete", "gated", "early-exit", "bad-binding", "bad-state", "budget", "recycle-failed", "reused-session", "cancel-upload-failed"]:
+        for case in ["complete", "gated", "finalize-budget", "finalize-between", "finalize-failed", "early-exit", "bad-binding", "bad-state", "budget", "recycle-failed", "reused-session", "cancel-upload-failed"]:
             await run_case(root / case, case, executable, resolved.stdout.strip())
     print("native phase orchestration passed; synthetic host environments only")
 

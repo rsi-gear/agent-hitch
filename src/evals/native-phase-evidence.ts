@@ -25,6 +25,7 @@ export interface NativePhaseDescriptor {
   primary_metric: string;
   metrics: BenchmarkManifestV1["metrics"];
   audit_path: string;
+  agent_timeout_ms: number;
 }
 export class NativePhaseBundlePendingError extends Error {}
 
@@ -61,11 +62,23 @@ export async function nativePhaseDescriptor(input: ImportEvalRunOptions, taskId:
     || !lockedTask || descriptor.task_digest !== lockedTask.task_digest || descriptor.package_digest !== lock.package_digest
     || descriptor.task_id !== taskId || task.source_task_id !== lockedTask.source_task_id) throw new Error("native compiled benchmark identity changed");
   return { task, task_digest: lockedTask.task_digest, primary_metric: String(descriptor.primary_metric),
-    metrics: descriptor.metrics as BenchmarkManifestV1["metrics"], audit_path: task.driver.config.native_phases.audit_path };
+    metrics: descriptor.metrics as BenchmarkManifestV1["metrics"], audit_path: task.driver.config.native_phases.audit_path,
+    agent_timeout_ms: Number(descriptor.agent_timeout_sec) * 1000 };
+}
+
+function budgetReceipt(supervision: RecordValue, protocol: unknown): RecordValue | undefined {
+  if (!supervision.budget_finalization) return undefined;
+  const finalization = object(supervision.budget_finalization), receipt = object(finalization.receipt);
+  const started = Date.parse(String(supervision.started_at)), requested = Date.parse(String(finalization.requested_at));
+  if (protocol !== "hitch-native-phase-control@2" || finalization.status !== "completed" || receipt.budget_exhausted !== true
+    || !Number.isSafeInteger(supervision.timeout_ms) || Number(supervision.timeout_ms) <= 0 || !Number.isFinite(started) || !Number.isFinite(requested)
+    || !Number.isSafeInteger(finalization.elapsed_ms) || Number(finalization.elapsed_ms) < Number(supervision.timeout_ms)
+    || typeof receipt.pending_prediction !== "boolean" || typeof receipt.action_submitted !== "boolean") throw new Error("native deadline finalization is unproven");
+  return receipt;
 }
 
 /** Verify the independently collected channel, not a caller-selected group prefix. */
-async function verifyNativeChannel(artifacts: string, auditPath: string, group: BenchmarkPhaseGroupV1, supervision: RecordValue): Promise<void> {
+async function verifyNativeChannel(artifacts: string, auditPath: string, group: BenchmarkPhaseGroupV1, supervision: RecordValue, protocol: unknown): Promise<void> {
   const relative = auditPath.replace(/^\//, "");
   const text = (await bytes(artifacts, relative, 128 * 1024 * 1024)).toString("utf8");
   if (!text.endsWith("\n")) throw new Error("native channel audit is incomplete");
@@ -73,17 +86,20 @@ async function verifyNativeChannel(artifacts: string, auditPath: string, group: 
   if (lines.length > 100_000) throw new Error("native channel audit exceeds limits");
   let generation = 0, sequence = 0, bound = false, pending = false, completed = false;
   const phases = supervision.phases as RecordValue[];
-  const first = new Set<number>();
+  const first = new Set<number>(), bindings = new Set<number>(), receipt = budgetReceipt(supervision, protocol);
+  let budgetSeen = false;
   for (const line of lines) {
     if (Buffer.byteLength(line) > 2 * 1024 * 1024) throw new Error("native channel record exceeds limits");
     const event = object(JSON.parse(line));
-    if (completed || !Number.isSafeInteger(event.generation) || !Number.isSafeInteger(event.sequence)) throw new Error("native channel sequence is invalid");
+    if (completed || budgetSeen && event.event !== "completed" || !Number.isSafeInteger(event.generation) || !Number.isSafeInteger(event.sequence)) throw new Error("native channel sequence is invalid");
     if (event.event === "context_required") {
-      if (pending || generation > 0 && !bound || event.generation !== generation + 1 || event.sequence !== sequence || generation >= group.phases.length) throw new Error("native phase coverage mismatch");
+      if (pending || generation > 0 && !bound || event.generation !== generation + 1 || event.sequence !== sequence
+        || generation >= group.phases.length + (receipt ? 1 : 0)) throw new Error("native phase coverage mismatch");
       generation += 1; bound = false;
       if (generation > 1) {
         const boundary = object(phases[generation - 2]!.boundary);
-        if (boundary.state !== "context_required" || boundary.generation !== generation || !Number.isSafeInteger(boundary.sequence)
+        const finalDeadlineBoundary = receipt && generation === group.phases.length + 1 && boundary.state === "completed";
+        if ((!finalDeadlineBoundary && boundary.state !== "context_required") || boundary.generation !== generation || !Number.isSafeInteger(boundary.sequence)
           || Number(boundary.sequence) < sequence || Number(boundary.sequence) > sequence + 1) throw new Error("supervisor reset differs from native audit");
       }
       continue;
@@ -96,24 +112,33 @@ async function verifyNativeChannel(artifacts: string, auditPath: string, group: 
       const screenshot = await bytes(artifacts, path.posix.join(path.posix.dirname(relative), event.screenshot_file), 4 * 1024 * 1024);
       if (sha256Bytes(screenshot) !== `sha256:${event.screenshot_sha256}`) throw new Error("native screenshot changed");
       if (!first.has(generation)) {
-        const phase = phases[generation - 1]!;
-        if (phase.first_prediction_sequence !== sequence || phase.first_screenshot_sha256 !== event.screenshot_sha256) throw new Error("supervisor first prediction differs from native audit");
+        const phase = phases[generation - 1];
+        if (phase && (phase.first_prediction_sequence !== sequence || phase.first_screenshot_sha256 !== event.screenshot_sha256)) throw new Error("supervisor first prediction differs from native audit");
+        if (!phase && (!receipt || generation !== group.phases.length + 1)) throw new Error("unrepresented native candidate phase");
         first.add(generation);
       }
     } else if (event.event === "context_bound") {
-      if (!pending || bound || event.run_id !== group.phases[generation - 1]!.run_id) throw new Error("native binding differs from phase group");
-      bound = true;
+      if (!pending || bound || !group.phases[generation - 1] || event.run_id !== group.phases[generation - 1]!.run_id) throw new Error("native binding differs from phase group");
+      bound = true; bindings.add(generation);
     } else if (event.event === "action_submitted") {
       if (!pending || !bound || event.run_id !== group.phases[generation - 1]!.run_id) throw new Error("native action has no matching bound prediction");
       pending = false;
+    } else if (event.event === "budget_exhausted") {
+      const expected = { event: "budget_exhausted", generation, sequence, run_id: bound ? group.phases[generation - 1]!.run_id : null,
+        pending_prediction: pending || event.action_submitted === true, action_submitted: event.action_submitted };
+      const { event: _event, ...fields } = expected;
+      if (!receipt || !isDeepStrictEqual(event, expected) || event.action_submitted === true && (!bound || pending)
+        || !isDeepStrictEqual(receipt, { ...fields, budget_exhausted: true })) throw new Error("native deadline receipt differs from audit");
+      pending = false; budgetSeen = true;
     } else if (event.event === "completed") {
-      if (pending || !bound || generation !== group.phases.length) throw new Error("native completion is incomplete");
-      const boundary = object(phases[generation - 1]!.boundary);
+      if (pending || !budgetSeen && (!bound || generation !== group.phases.length)
+        || budgetSeen && (generation < group.phases.length || generation > group.phases.length + 1)) throw new Error("native completion is incomplete");
+      const boundary = object(budgetSeen ? supervision.final_native_state : phases[generation - 1]!.boundary);
       if (boundary.state !== "completed" || boundary.generation !== generation || boundary.sequence !== sequence) throw new Error("supervisor completion differs from native audit");
       completed = true;
     } else throw new Error("native channel did not complete normally");
   }
-  if (!completed || first.size !== group.phases.length) throw new Error("native channel does not prove all phases completed");
+  if (!completed || Boolean(receipt) !== budgetSeen || group.phases.some((_, i) => !first.has(i + 1) || !bindings.has(i + 1))) throw new Error("native channel does not prove all phases completed");
 }
 
 interface MetricContract {
@@ -136,8 +161,8 @@ function verifyMetrics(value: RecordValue, descriptor: MetricContract, reward: n
   if (metrics[descriptor.primary_metric] !== reward) throw new Error("native primary metric differs from Harbor reward");
 }
 
-function verifyReplacements(receipts: RecordValue[], group: BenchmarkPhaseGroupV1, service: string): void {
-  if (receipts.length !== group.phases.length - 1) throw new Error("candidate retirement receipts are incomplete");
+function verifyReplacements(receipts: RecordValue[], group: BenchmarkPhaseGroupV1, service: string, unusedReplacement = false): void {
+  if (receipts.length !== group.phases.length - 1 + Number(unusedReplacement)) throw new Error("candidate retirement receipts are incomplete");
   let previous: RecordValue | undefined;
   const candidates = new Set<string>();
   for (const [offset, receipt] of receipts.entries()) {
@@ -173,10 +198,15 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
     || supervision.task_digest !== descriptor.task_digest || typeof supervision.run_group_id !== "string" || !/^run_group_[a-f0-9]{32}$/.test(supervision.run_group_id)
     || !Array.isArray(supervision.phases) || !supervision.phases.length || supervision.phases.length > 10000) throw new Error("native phase supervision is incomplete");
   const phases = supervision.phases.map(object);
+  const control = descriptor.task.driver.kind === "tool-server" ? descriptor.task.driver.config.native_phases! : undefined;
+  const deadline = budgetReceipt(supervision, control?.protocol);
+  if (deadline && (supervision.timeout_ms !== Math.min(descriptor.agent_timeout_ms, input.request.timeout_ms > 0 ? input.request.timeout_ms : descriptor.agent_timeout_ms)
+    || object(supervision.budget_finalization).timeout_ms !== control?.finalization_timeout_ms)) throw new Error("native deadline differs from frozen task budget");
+  const unusedReplacement = Boolean(deadline && phases[phases.length - 1]!.replacement_receipt_ref);
   const runIds: string[] = [];
   const runs = await ensureDir(statePaths(input.root).runs);
   for (const [offset, phase] of phases.entries()) {
-    const source = offset === phases.length - 1 ? "agent/hitch-run-bundle" : `hitch-candidate-phases/phase-${String(offset + 1).padStart(4, "0")}/agent/hitch-run-bundle`;
+    const source = offset === phases.length - 1 && !unusedReplacement ? "agent/hitch-run-bundle" : `hitch-candidate-phases/phase-${String(offset + 1).padStart(4, "0")}/agent/hitch-run-bundle`;
     if (phase.phase_index !== offset + 1 || phase.generation !== offset + 1 || phase.status !== "sealed" || phase.bundle_ref !== source
       || typeof phase.run_id !== "string" || !/^run_[a-f0-9]{32}$/.test(phase.run_id) || runIds.includes(phase.run_id)) throw new Error("invalid phase group membership");
     const expected = { run_id: phase.run_id, revision_identity: input.resolvedRevision.identity,
@@ -189,7 +219,7 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
     if (!isDeepStrictEqual(JSON.parse(JSON.stringify(proof)), phase.evidence)) throw new Error("phase bundle proof differs from supervisor");
     if (proof.model.requested_id !== defaultModelIdentity(input.request.model, input.resolvedRevision.harness_id).requested_id) throw new Error("phase model differs from the frozen candidate");
     if (parseHarnessReference(proof.harness.requested_ref).canonical !== parseHarnessReference(input.request.harness_ref).canonical) throw new Error("phase harness reference differs from the frozen candidate");
-    if (!["succeeded", "cancelled"].includes(proof.process_status)) throw new Error("native phase candidate did not finish or cancel at its boundary");
+    if (!["succeeded", "cancelled"].includes(proof.process_status) && !(deadline && offset === phases.length - 1 && proof.process_status === "timed_out")) throw new Error("native phase candidate did not finish or cancel at its boundary");
     const destinationDirectory = path.join(runs, phase.run_id);
     await withFileLock(path.join(statePaths(input.root).temporary, "phase-import-locks"), phase.run_id, async () => {
       try {
@@ -209,14 +239,14 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
   const reference = await sealBenchmarkPhaseGroup({ root: input.root, runIds });
   const group = await readBenchmarkPhaseGroup({ root: input.root, evalId: input.evalId, reference });
   const receipts: RecordValue[] = [];
-  for (let index = 0; index < phases.length - 1; index++) {
+  for (let index = 0; index < phases.length - 1 + Number(unusedReplacement); index++) {
     const ref = `hitch-candidate-phases/phase-${String(index + 1).padStart(4, "0")}/receipt.json`;
     if (phases[index]!.replacement_receipt_ref !== ref) throw new Error("candidate retirement receipt reference mismatch");
     receipts.push(await json(input.trialDirectory, ref));
   }
   const service = descriptor.task.driver.kind === "tool-server" ? descriptor.task.driver.config.service : "";
-  verifyReplacements(receipts, group, service);
-  await verifyNativeChannel(path.join(input.trialDirectory, "artifacts"), descriptor.audit_path, group, supervision);
+  verifyReplacements(receipts, group, service, unusedReplacement);
+  await verifyNativeChannel(path.join(input.trialDirectory, "artifacts"), descriptor.audit_path, group, supervision, control?.protocol);
   const lifecycle = await json(input.trialDirectory, "benchmark-lifecycle.json");
   if (lifecycle.failure || !["prepare", "quiesce", "snapshot"].every(name => object(object(lifecycle.phases)[name]).status === "ok")) throw new Error("native lifecycle snapshot is incomplete");
   const reward = primaryVerifierReward(input.trial);
@@ -257,12 +287,12 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
     for (const runId of runIds) await importTrialInteractionCapture(input, runId, await ensureDir(path.join(evidence, "phase-captures", runId)));
     await writeTrialExecutionEvidence(evidence, input.executionEvidence, { evalId: input.evalId, taskId: input.taskId });
     await writeTrialEnvironmentImageEvidence(evidence, input.taskId, input.environmentImages);
-    await verifyNativeChannel(path.join(evidence, "artifacts"), descriptor.audit_path, group, supervision);
+    await verifyNativeChannel(path.join(evidence, "artifacts"), descriptor.audit_path, group, supervision, control?.protocol);
     const record = { schema_version: "1", kind: "native-phase-assessment", eval_id: input.evalId, trial_id: input.trialId,
       task_id: input.taskId, attempt: input.attempt, benchmark_id: input.benchmarkId, benchmark_revision: input.benchmarkRevision,
       task_digest: descriptor.task_digest, verifier_identity: group.verifier_identity, run_group: reference, observation,
       publication_mode: input.publicationMode ?? "settle",
-      metric_contract: contract, controller_service: service,
+      metric_contract: contract, controller_service: service, native_control_protocol: control?.protocol, unused_candidate_replacement: unusedReplacement,
       native_audit_path: descriptor.audit_path, source_digest: sourceDigest, evidence_digest: await regradeTreeDigest(evidence), created_at: new Date().toISOString() };
     await atomicWriteJSON(path.join(directory, "assessment.json"), record);
     const ref = trialRef(input, reference, { id, digest: sha256Bytes(await bytes(directory, "assessment.json")) }, observation);
@@ -296,10 +326,10 @@ export async function readNativePhaseObservation(root: string, evalId: string, t
       || group.verifier_identity !== benchmarkVerifierIdentity(expected.benchmarkId, expected.benchmarkRevision))) throw new Error("native assessment identity mismatch");
   if (record.evidence_digest !== await regradeTreeDigest(path.join(directory, "evidence"))) throw new Error("native assessment evidence changed");
   const supervision = await json(path.join(directory, "evidence"), "supervision.json");
-  await verifyNativeChannel(path.join(directory, "evidence/artifacts"), String(record.native_audit_path), group, supervision);
+  await verifyNativeChannel(path.join(directory, "evidence/artifacts"), String(record.native_audit_path), group, supervision, record.native_control_protocol);
   const receipts = await json(path.join(directory, "evidence"), "candidate-replacements.json");
   if (!Array.isArray(receipts.receipts)) throw new Error("missing candidate replacement evidence");
-  verifyReplacements(receipts.receipts.map(object), group, String(record.controller_service));
+  verifyReplacements(receipts.receipts.map(object), group, String(record.controller_service), record.unused_candidate_replacement === true);
   const observation = validateRunObservation(record.observation);
   if (observation.status === "valid") verifyMetrics(await json(path.join(directory, "evidence"), "verifier/benchmark-rewards.json"), record.metric_contract as MetricContract, observation.reward);
   return observation;

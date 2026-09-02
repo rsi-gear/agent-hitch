@@ -127,8 +127,10 @@ export function parseTask(value: unknown, manifest: BenchmarkManifestV1): Benchm
   if (url.protocol !== "http:" || url.hostname !== config.service || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw invalidInput("tool endpoint must target the declared isolated Compose service root");
   relativePath(config.schema);
   if (config.native_phases !== undefined) {
-    const phases = fields(config.native_phases, ["protocol", "argv", "audit_path", "shutdown_timeout_ms"], "native_phases");
-    if (phases.protocol !== "hitch-native-phase-control@1") unsupported("unsupported native phase protocol");
+    const phases = fields(config.native_phases, ["protocol", "argv", "audit_path", "shutdown_timeout_ms", "finalization_timeout_ms"], "native_phases");
+    if (!["hitch-native-phase-control@1", "hitch-native-phase-control@2"].includes(String(phases.protocol))) unsupported("unsupported native phase protocol");
+    if (phases.protocol === "hitch-native-phase-control@2") positive(phases.finalization_timeout_ms, "native finalization timeout");
+    else if (phases.finalization_timeout_ms !== undefined) throw invalidInput("native finalization requires control protocol v2");
     if (!Array.isArray(phases.argv) || !phases.argv.length || phases.argv.length > 32) throw invalidInput("invalid native phase controller argv");
     phases.argv.forEach(arg => { nonempty(arg, "native phase argv"); if (arg.length > 8192) throw invalidInput("native phase argv too long"); });
     positive(phases.shutdown_timeout_ms, "phase shutdown timeout");

@@ -563,4 +563,8 @@ OSWorld 等任务的原生 runner 会在同一环境中多次重置候选会话�
 
 `EvalTrialRefV1` 是互斥联合：普通 trial 使用 `run_id`，多阶段 trial 使用 `run_group: {run_group_id, digest}` 和必需的 `assessment: {id, digest}`。Progress/result 按 task/attempt 聚合一次，并以 group ID 去重；发布前与只读加载时均验证全部 group 成员及 assessment。已封存 assessment 可以恢复 publication 写入中断，尚未封存的部分目标保留为诊断，不能自动覆盖。`collect-only` 支持 group；verifier-only regrade、远程单 bundle envelope 以及单 run comparison/training 不支持将 group 当成普通 run。
 
-整题导入测试使用实际 Hitch 执行的两个 synthetic phase，覆盖零分保留、原 bundle 不变、导入重放、发布恢复，以及截断 audit、错绑会话、指标和证据篡改拒绝。它不计作真实 benchmark 验收。OSWorld 原生 wall-clock deadline 的 final-state grading、授权任务 producer 和完整 VM/网站装配仍需完成。
+整题导入测试使用实际 Hitch 执行的两个 synthetic phase，覆盖零分保留、原 bundle 不变、导入重放、发布恢复，以及截断 audit、错绑会话、指标和证据篡改拒绝。它不计作真实 benchmark 验收。授权任务 producer、完整 VM/网站装配与官方两题验证仍需完成。
+
+Control v2 增加私有 `expire_budget` 和有界 finalization：只有整题单调时钟 deadline 耗尽后才能触发，必须匹配冻结任务预算与 native audit。OSWorld 的固定 SDK 控制流通过带身份摘要的 deadline adapter 退出动作循环，再继续原始评分与 gate 逻辑；不伪造候选动作。Group 可引用真实状态为 `timed_out` 的最后一个 run，原 bundle 保持不变，整题 observation 仍在 assessment 中。普通模型/评分失败不能借此转为有效分数。
+
+每个实际绑定的 native generation 必须对应完整 group 成员。预算若耗尽于容器替换后的未绑定阶段，最后一个候选 bundle 可以位于 host 归档，额外的 replacement receipt 记录该替换；完整 audit 必须确认尾部没有新绑定或动作，与 supervisor 的候选记录一致，并最终完成原生评分。回执本身不能证明没有遗漏会话。Read/import 同时核对预算 receipt、全部 binding、终态和替换链，避免将任意 prefix group 当成完成的任务。

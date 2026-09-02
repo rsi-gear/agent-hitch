@@ -17,7 +17,7 @@ import { benchmarkVerifierIdentity, executeRun, inspectSealedPhaseRunBundle, loa
 import { parseHarnessReference, resolveHarness } from "../src/revisions/index.js";
 import { writeBenchmarkFixture } from "../test-support/benchmark-fixture.js";
 
-test("native package imports one immutable whole-task assessment for all phase bundles and recovers publication", async t => {
+for (const budgetCase of ["normal", "active", "between"] as const) test(`native package imports one immutable whole-task assessment (${budgetCase}) and recovers publication`, async t => {
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-native-assessment-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = await ensureDir(path.join(directory, "state")), pkg = path.join(directory, "package");
@@ -25,6 +25,7 @@ test("native package imports one immutable whole-task assessment for all phase b
   const sourceTask = path.join(pkg, "tasks/add-seven");
   const task = await readJSON<Record<string, any>>(path.join(sourceTask, "task.hitch.json"));
   task.driver.config.native_phases = { protocol: "hitch-native-phase-control@1", argv: ["python", "/runtime/control.py"], audit_path: "/evidence/channel.jsonl", shutdown_timeout_ms: 30000 };
+  if (budgetCase !== "normal") Object.assign(task.driver.config.native_phases, { protocol: "hitch-native-phase-control@2", finalization_timeout_ms: 5000 });
   task.requirements.push("native-phases@1", "tool-result-images@1", "native-image-input");
   task.submission.paths = ["/evidence"];
   await atomicWriteJSON(path.join(sourceTask, "task.hitch.json"), task);
@@ -33,14 +34,20 @@ test("native package imports one immutable whole-task assessment for all phase b
   profile.tool_policy.allowed = task.requirements;
   await atomicWriteJSON(profilePath, profile);
   const loaded = await loadBenchmark(pkg);
-  for (const change of [ { ...task.driver.config.native_phases, audit_path: "/private/channel.jsonl" }, { ...task.driver.config.native_phases, protocol: "unknown@1" } ]) {
+  for (const change of [
+    { ...task.driver.config.native_phases, audit_path: "/private/channel.jsonl" },
+    { ...task.driver.config.native_phases, protocol: "unknown@1" },
+    { ...task.driver.config.native_phases, protocol: "hitch-native-phase-control@1", finalization_timeout_ms: 5000 },
+    { ...task.driver.config.native_phases, protocol: "hitch-native-phase-control@2", finalization_timeout_ms: undefined },
+    { ...task.driver.config.native_phases, protocol: "hitch-native-phase-control@2", finalization_timeout_ms: profile.budget.collection_timeout_ms + 1 },
+  ]) {
     await atomicWriteJSON(path.join(sourceTask, "task.hitch.json"), { ...task, driver: { ...task.driver, config: { ...task.driver.config, native_phases: change } } });
     await assert.rejects(loadBenchmark(pkg));
   }
   await atomicWriteJSON(path.join(sourceTask, "task.hitch.json"), task);
   const compiled = await compileBenchmark(loaded, root);
   const execution = parseTOML(await readFile(path.join(compiled.tasks, "add-seven/task.toml"), "utf8"));
-  assert.equal((execution.agent as Record<string, unknown>).timeout_sec, 300);
+  assert.equal((execution.agent as Record<string, unknown>).timeout_sec, budgetCase === "normal" ? 300 : 360);
   const descriptor = await readJSON<Record<string, any>>(path.join(compiled.tasks, "add-seven/.hitch-benchmark.json"));
   assert.equal(descriptor.agent_timeout_sec, 60, "model task budget must remain unchanged");
   const evalId = `eval_${"1".repeat(32)}`, groupId = `run_group_${"2".repeat(32)}`, trialId = "add-seven__native";
@@ -53,9 +60,13 @@ test("native package imports one immutable whole-task assessment for all phase b
   const executable = path.join(directory, "synthetic-codex");
   await writeFile(executable, `#!/usr/bin/env node
 if(process.argv.includes('--version')){console.log('codex-cli 9.9.9');process.exit(0);}
-process.stdin.resume();console.log(JSON.stringify({type:'thread.started',thread_id:require('node:crypto').randomUUID()}));
+let prompt='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>prompt+=part);
+console.log(JSON.stringify({type:'thread.started',thread_id:require('node:crypto').randomUUID()}));
+process.stdin.on('end',()=>{
+if(${JSON.stringify(budgetCase === "active")} && prompt.includes('native phase 2')) { setInterval(()=>{},1000); return; }
 console.log(JSON.stringify({type:'item.completed',item:{id:'answer',type:'agent_message',text:'synthetic phase'}}));
 console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));
+});
 `, { mode: 0o755 });
   const old = process.env.HITCH_CODEX_PATH; process.env.HITCH_CODEX_PATH = executable;
   t.after(() => { if (old === undefined) delete process.env.HITCH_CODEX_PATH; else process.env.HITCH_CODEX_PATH = old; });
@@ -77,9 +88,9 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
       task_id: "add-seven", task_digest: descriptor.task_digest, verifier_identity: benchmarkVerifierIdentity(request.benchmark_id, request.benchmark_revision), run_group_id: groupId, phase_index: phase };
     const parent = { kind: "eval", eval_id: evalId, trial_id: trialId, attempt: 1 };
     const result = await executeRun({ root: candidateRoot, runsRoot: path.join(candidateRoot, "runs"), runId: id,
-      request: { agent: "codex", model: request.model, cwd, prompt: `native phase ${phase}`, timeout_ms: 5000, workspace_mode: "copy", context, parent } });
-    assert.equal(result.status, "succeeded");
-    const bundleRef = phase === 2 ? "agent/hitch-run-bundle" : "hitch-candidate-phases/phase-0001/agent/hitch-run-bundle";
+      request: { agent: "codex", model: request.model, cwd, prompt: `native phase ${phase}`, timeout_ms: budgetCase === "active" && phase === 2 ? 1000 : 5000, workspace_mode: "copy", context, parent } });
+    assert.equal(result.status, budgetCase === "active" && phase === 2 ? "timed_out" : "succeeded");
+    const bundleRef = phase === 2 && budgetCase !== "between" ? "agent/hitch-run-bundle" : `hitch-candidate-phases/phase-${String(phase).padStart(4, "0")}/agent/hitch-run-bundle`;
     const sourceDirectory = path.join(trialDirectory, bundleRef);
     await ensureDir(path.dirname(sourceDirectory));
     await cp(path.join(candidateRoot, "runs", id), sourceDirectory, { recursive: true });
@@ -92,20 +103,38 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
     await writeFile(path.join(artifacts, screenshot), png);
     audit.push({ event: "context_required", generation: phase, sequence: phase - 1 },
       { event: "prediction", generation: phase, sequence: phase, screenshot_file: screenshot, screenshot_sha256: screenshotHash },
-      { event: "context_bound", generation: phase, sequence: phase, run_id: id },
-      { event: "action_submitted", generation: phase, sequence: phase, run_id: id });
+      { event: "context_bound", generation: phase, sequence: phase, run_id: id });
+    if (budgetCase !== "active" || phase !== 2) audit.push({ event: "action_submitted", generation: phase, sequence: phase, run_id: id });
   }
-  audit.push({ event: "completed", generation: 2, sequence: 2 });
+  if (budgetCase === "between") {
+    supervision.phases[1].boundary = { state: "context_required", generation: 3, sequence: 2 };
+    await writeFile(path.join(artifacts, "observation-000003.png"), png);
+    audit.push({ event: "context_required", generation: 3, sequence: 2 },
+      { event: "prediction", generation: 3, sequence: 3, screenshot_file: "observation-000003.png", screenshot_sha256: screenshotHash });
+  }
+  const terminal = { state: "completed", generation: budgetCase === "between" ? 3 : 2, sequence: budgetCase === "between" ? 3 : 2 };
+  if (budgetCase !== "normal") {
+    const receipt = { budget_exhausted: true, generation: terminal.generation, sequence: terminal.sequence,
+      run_id: budgetCase === "active" ? supervision.phases[1].run_id : null, pending_prediction: true, action_submitted: false };
+    supervision.started_at = new Date(Date.now() - 61000).toISOString(); supervision.timeout_ms = 60000;
+    supervision.budget_finalization = { status: "completed", timeout_ms: 5000, elapsed_ms: 60001, requested_at: new Date().toISOString(), receipt };
+    supervision.final_native_state = terminal;
+    const { budget_exhausted: _exhausted, ...fields } = receipt;
+    audit.push({ event: "budget_exhausted", ...fields });
+  }
+  audit.push({ event: "completed", generation: terminal.generation, sequence: terminal.sequence });
   // Synthetic host retirement receipt. Actual Docker retirement is covered by
   // its own canary; this test exercises import, retention and cross-checking.
-  supervision.phases[0].replacement_receipt_ref = "hitch-candidate-phases/phase-0001/receipt.json";
-  await atomicWriteJSON(path.join(trialDirectory, supervision.phases[0].replacement_receipt_ref), {
-    schema_version: "hitch-candidate-recycle@1", scope: "environment-only", status: "completed", phase_index: 1,
-    old_container_id: "1".repeat(64), new_container_id: "2".repeat(64), image: `sha256:${"a".repeat(64)}`, configuration_digest: `sha256:${"b".repeat(64)}`,
-    ownership: { "io.hitch.eval-id": evalId, "io.hitch.task-id": "add-seven", "io.hitch.lease-id": "synthetic-lease", "io.hitch.lease-epoch": "1" },
-    sidecars: { counter: { id: "3".repeat(64), image: `sha256:${"c".repeat(64)}`, started_at: new Date().toISOString() } },
-    archives: { "/logs/agent": "phase-0001/agent" },
-  });
+  for (let index = 0; index < (budgetCase === "between" ? 2 : 1); index++) {
+    supervision.phases[index].replacement_receipt_ref = `hitch-candidate-phases/phase-${String(index + 1).padStart(4, "0")}/receipt.json`;
+    await atomicWriteJSON(path.join(trialDirectory, supervision.phases[index].replacement_receipt_ref), {
+      schema_version: "hitch-candidate-recycle@1", scope: "environment-only", status: "completed", phase_index: index + 1,
+      old_container_id: String(index + 1).repeat(64), new_container_id: String(index + 2).repeat(64), image: `sha256:${"a".repeat(64)}`, configuration_digest: `sha256:${"b".repeat(64)}`,
+      ownership: { "io.hitch.eval-id": evalId, "io.hitch.task-id": "add-seven", "io.hitch.lease-id": "synthetic-lease", "io.hitch.lease-epoch": "1" },
+      sidecars: { counter: { id: "e".repeat(64), image: `sha256:${"c".repeat(64)}`, started_at: "2026-09-02T00:00:00Z" } },
+      archives: { "/logs/agent": `phase-${String(index + 1).padStart(4, "0")}/agent` },
+    });
+  }
   const auditPath = path.join(artifacts, "channel.jsonl"), auditBytes = audit.map(row => JSON.stringify(row)).join("\n") + "\n";
   await writeFile(auditPath, auditBytes);
   await ensureDir(path.join(trialDirectory, "hitch-native-phases"));
@@ -148,6 +177,14 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
     assert.equal((await importEvalTrialRun(options, trial)).observation_status, "invalid");
   }
   await writeFile(auditPath, auditBytes);
+  if (budgetCase !== "normal") {
+    const originalReceipt = supervision.budget_finalization.receipt;
+    supervision.budget_finalization.receipt = { ...originalReceipt, pending_prediction: false };
+    await atomicWriteJSON(path.join(trialDirectory, "hitch-native-phases/supervision.json"), supervision);
+    assert.equal((await importEvalTrialRun(options, trial)).observation_status, "invalid", "a deadline receipt must match the private native audit");
+    supervision.budget_finalization.receipt = originalReceipt;
+    await atomicWriteJSON(path.join(trialDirectory, "hitch-native-phases/supervision.json"), supervision);
+  }
   await atomicWriteJSON(path.join(verifierDir, "benchmark-rewards.json"), { ...rewards, metrics: { target_reached: 1 } });
   assert.equal((await importEvalTrialRun(options, trial)).observation_status, "invalid");
   await atomicWriteJSON(path.join(verifierDir, "benchmark-rewards.json"), rewards);

@@ -74,6 +74,8 @@ export async function loadBenchmark(directory: string): Promise<LoadedBenchmarkV
     for (const cap of config.requirements) if (!profile.tool_policy.allowed.includes(cap)) throw invalidInput(`profile does not grant required capability: ${cap}`);
     if (config.driver.kind === "tool-server" && config.driver.config.native_phases
       && config.driver.config.native_phases.shutdown_timeout_ms > profile.budget.collection_timeout_ms) throw invalidInput("native phase shutdown exceeds profile collection allowance");
+    if (config.driver.kind === "tool-server" && config.driver.config.native_phases?.protocol === "hitch-native-phase-control@2"
+      && config.driver.config.native_phases.finalization_timeout_ms > profile.budget.collection_timeout_ms) throw invalidInput("native finalization exceeds profile collection allowance");
     for (const [phase, hook] of Object.entries(config.lifecycle)) {
       const limit = phase === "prepare" ? profile.budget.setup_timeout_ms : phase === "cleanup" ? profile.budget.cleanup_grace_ms : profile.budget.collection_timeout_ms;
       if (hook.timeout_ms > limit) throw invalidInput(`hook ${phase} timeout exceeds profile phase budget`);

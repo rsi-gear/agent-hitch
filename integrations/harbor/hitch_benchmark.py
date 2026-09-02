@@ -93,7 +93,9 @@ class BenchmarkSession:
         if self.config["task"]["driver"]["config"].get("native_phases"):
             # There is no candidate identity yet. Only the phase supervisor may
             # bind and upload a phase token after prepare/setup have completed.
-            if response["output"].get("native_phases_ready") is not True or response["output"].get("tool_bindings", []) != []:
+            phases = self.config["task"]["driver"]["config"]["native_phases"]
+            if (response["output"].get("native_phases_ready") is not True or response["output"].get("tool_bindings", []) != []
+                    or phases["protocol"] == "hitch-native-phase-control@2" and response["output"].get("native_deadline_ready") is not True):
                 self.failure = {"phase": "prepare", "error": "NativePhasePrepareInvalid"}
                 self.write_journal()
                 raise RuntimeError("native phase prepare must confirm readiness without a static binding")

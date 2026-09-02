@@ -168,7 +168,7 @@
         "candidate_process_name": "codex"
       },
       "latest_session_check": {
-        "observed_at": "2026-09-02T21:24:34+00:00",
+        "observed_at": "2026-09-02T22:00:39.005292+00:00",
         "exec_session_id": 26799,
         "candidate_process_alive": true,
         "candidate_process_name": "codex",
@@ -512,7 +512,7 @@
             "node --test dist/test/phase-cancellation.test.js",
             "python3 test-support/harbor_phase_invocation_smoke.py"
           ],
-          "limitation": "The request receipt alone does not prove native completion. The generic supervisor requires independent native boundaries and sealed evidence; the standard importer checks full native audit and candidate retirement receipts. Official VM/task/model validation and native final-state grading on wall-clock expiry remain incomplete.",
+          "limitation": "A cancellation request alone does not prove native completion. Protocol v2 additionally requires a host deadline and private native budget receipt, completed native audit, sealed candidate evidence and original grading results. Official VM/task/model validation remains incomplete.",
           "generic_supervisor_api_available": true
         },
         "native_phase_supervisor": {
@@ -544,7 +544,10 @@
             "task_budget_expiry",
             "replacement_failure",
             "native_session_reuse",
-            "uncertain_cancellation_delivery"
+            "uncertain_cancellation_delivery",
+            "deadline_native_finalization",
+            "deadline_during_candidate_replacement",
+            "deadline_evaluator_failure"
           ],
           "container_and_setup_test_adapter": "local_directories",
           "full_docker_vm_orchestration_test_passed": false,
@@ -556,9 +559,10 @@
             "node --test dist/test/harbor-phase-supervisor.test.js",
             "node --test dist/test/native-phase-assessment.test.js"
           ],
-          "limitation": "Standard package entry, pinned native phase functions, real HTTP/Unix RPC and real Hitch CLI use a synthetic harness and local directory environment adapter. The separate Docker recycler canary is not a full VM test. Authorized OSWorld task production, VM/website lifecycle assembly and final-state grading on wall-clock expiry remain incomplete. No official OSWorld task or real model is used.",
+          "limitation": "Standard package entry, pinned native phase functions, real HTTP/Unix RPC and real Hitch CLI use a synthetic harness and local directory environment adapter. Protocol v2 finalizes native scoring at a monotonic task deadline, including when the previous candidate is already archived. This uses an explicitly identified SDK loop adaptation. The separate Docker recycler canary is not a full VM test. Authorized OSWorld task production and VM/website lifecycle assembly remain incomplete; no official OSWorld task or real model is used.",
           "standard_driver_config": "tool-server.config.native_phases",
-          "native_budget_expiry_final_state_grading_complete": false
+          "native_budget_expiry_final_state_grading_complete": true,
+          "official_vm_deadline_validation_passed": false
         },
         "native_phase_assessment": {
           "implemented": true,
@@ -567,7 +571,7 @@
           "source": "src/evals/native-phase-evidence.ts",
           "compiler": "harbor-package@4",
           "original_source_task_and_candidate_budget_preserved": true,
-          "compiled_outer_timeout_extra": "3 * collection_timeout_ms + 2 * cleanup_grace_ms",
+          "compiled_outer_timeout_extra": "v1: 3 * collection_timeout_ms + 2 * cleanup_grace_ms; v2: 4 * collection_timeout_ms + 2 * cleanup_grace_ms",
           "source_and_compiled_package_identity_verified": true,
           "all_original_phase_bundles_copied_without_resealing": true,
           "complete_native_audit_and_screenshot_hashes_verified": true,
@@ -587,9 +591,50 @@
           "remote_single_bundle_transport_supports_groups": false,
           "tests": [
             "node --test dist/test/native-phase-assessment.test.js",
-            "python3 test-support/benchmark_protocol_smoke.py"
+            "python3 test-support/benchmark_protocol_smoke.py integrations/harbor/hitch_benchmark.py"
           ],
-          "limitation": "Uses actual Hitch runs with synthetic harness output and fabricated fixture controller audit/retirement evidence. Separately tests standard supervisor entry with actual private RPC; these are not one joined Docker/VM/model test and add no official benchmark acceptance."
+          "limitation": "Uses actual Hitch runs with synthetic harness output and fabricated fixture controller audit/retirement evidence. Separately tests standard supervisor entry with actual private RPC; these are not one joined Docker/VM/model test and add no official benchmark acceptance.",
+          "deadline_receipt_and_frozen_task_budget_verified": true,
+          "last_timed_out_process_retains_original_status": true,
+          "unbound_terminal_native_phase_supported": true,
+          "last_archived_candidate_with_unused_replacement_supported": true
+        },
+        "native_deadline_finalization": {
+          "implemented": true,
+          "synthetic_only": true,
+          "real_scored_tasks": 0,
+          "control_protocol": "hitch-native-phase-control@2",
+          "adapter_protocol": "osworld-native-deadline@1",
+          "source": "benchmark-packages/osworld/runtime/deadline_runner.py",
+          "sdk_runner_sha256": "41dae164d16e1ee5ddd788073548caabb1bdceb551195b9f566463c1c156b5e0",
+          "source_fixture": "test-support/fixtures/osworld/native_runner_source.py",
+          "private_expiration_revokes_binding_and_unblocks_prediction": true,
+          "no_fabricated_done_fail_ask_user_or_candidate_response": true,
+          "new_actions_fenced_and_inflight_action_allowed_to_settle": true,
+          "original_sdk_evaluation_gates_sums_and_result_writers_retained": true,
+          "explicit_source_adapter_and_transformed_ast_identity": true,
+          "total_finalization_allowance_does_not_extend_candidate_budget": true,
+          "expired_before_any_candidate_evidence_remains_invalid": true,
+          "ordinary_candidate_or_evaluator_failure_remains_invalid": true,
+          "actual_hitch_timeout_and_private_rpc_case_passed": true,
+          "candidate_replacement_deadline_case_passed": true,
+          "cases": [
+            "normal parity",
+            "early gate",
+            "blocked prediction expiry",
+            "submitted batch prefix",
+            "second phase expiry",
+            "single-task raw result dictionary",
+            "actual CLI timed_out process",
+            "unused replacement after reset",
+            "native evaluator failure"
+          ],
+          "tests": [
+            "python3 test-support/osworld_deadline_smoke.py",
+            "python3 test-support/harbor_phase_supervisor_smoke.py",
+            "node --test dist/test/native-phase-assessment.test.js"
+          ],
+          "limitation": "The deadline adapter changes control flow around the pinned SDK loops and is explicitly identified; it is not an upstream-native wall-clock feature. Tests use synthetic environments, harnesses and evaluators. Official VM/task execution, task-specific strict metric mapping and full website lifecycle remain outstanding."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -621,12 +666,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 357,
-    "passed": 354,
+    "total": 360,
+    "passed": 357,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/native-phase-assessment-check.log",
-    "additional_verification": "Standard native-phase package entry with actual Hitch CLI and private native RPC passes synthetic two-phase/gate/error/cleanup cases. The group importer preserves zero, original bundle bytes and one-task counting; rejects incomplete/misbound/tampered evidence; and recovers committed assessment publication. The compiled outer timeout reserves final collection while preserving the source candidate budget. No new real benchmark acceptance."
+    "evidence": ".hitch/benchmark-expansion/native-deadline-check.log",
+    "additional_verification": "Native control v2 runs the pinned SDK deadline adaptation through the actual Hitch CLI and private RPC, preserving a real timed_out bundle and testing expiry during replacement and evaluator failure. Separate importer cases validate normal, active-budget and unbound-tail groups, preserve zero and immutable evidence, reject altered receipts and recover publication. These are synthetic environments/harnesses/graders; no new official task acceptance."
   },
-  "updated_at": "2026-09-02T21:29:57.964222+00:00"
+  "updated_at": "2026-09-02T22:00:39.005292+00:00"
 }

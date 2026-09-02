@@ -59,7 +59,7 @@ class _PublicServer(ThreadingHTTPServer):
 
 
 class ControllerServer:
-    def __init__(self, channel, session, action_policy, private_socket, *, public_address, public_endpoint):
+    def __init__(self, channel, session, action_policy, private_socket, *, public_address, public_endpoint, native_deadline=False):
         if channel.validate_actions is not action_policy:
             raise ValueError('tool schemas must use the channel action policy')
         coordinates = action_policy.actions['MOVE_TO']['parameters']
@@ -70,6 +70,7 @@ class ControllerServer:
         if not isinstance(session.get('lease_id'), str) or not session['lease_id'] or type(session.get('epoch')) is not int or session['epoch'] < 1:
             raise ValueError('invalid controller lease')
         self.channel, self.session = channel, copy.deepcopy(session)
+        self.native_deadline = native_deadline
         self.tools = action_policy.tool_definitions(max_actions_per_turn=channel.max_actions_per_turn, max_text_bytes=channel.max_text_bytes)
         self.private_socket = Path(private_socket)
         self.private_socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -214,6 +215,8 @@ class ControllerServer:
                 elif request['operation'] == 'cancel' and not params:
                     self.channel.finish('cancelled')
                     output = {'cancelled': True}
+                elif request['operation'] == 'expire_budget' and not params and self.native_deadline:
+                    output = self.channel.expire_budget()
                 else:
                     raise ValueError('unsupported management operation')
                 result = {'schema_version': '1', 'request_id': rid, 'status': 'ok', 'output': output}

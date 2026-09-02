@@ -379,8 +379,9 @@ and awaits its exported sealed run. A cancellation receipt or quiet model alone
 cannot advance the phase. A model that exits while another prediction still
 needs an answer fails the trial; no extra conversation is invented within a phase.
 `sdk_executing` allows native action evaluation to finish after normal model exit.
-Native budget expiry aborts and records failure; it does not synthesize a DONE
-action, final grade, or successful completion.
+Control protocol v1 records wall-clock expiry as failure. Protocol v2 can ask the
+private native runner to finish grading through the deadline adapter described
+below; it never submits a synthetic DONE action.
 
 At intermediate boundaries the old container is retired and its log directories
 archived before host-side `inspectSealedPhaseRunBundle` checks every indexed file,
@@ -436,9 +437,8 @@ budget. Its compiled Harbor outer agent timeout adds
 host inspection, snapshot and teardown. This outer guard cannot increase the
 candidate deadline. Phase shutdown is limited to the profile collection allowance
 and at most 600,000 ms. Intermediate setup, binding and execution consume the same
-whole-task deadline. Native wall-clock expiration currently produces invalid
-evidence; implementing the pinned SDK's final-state grading on that path remains
-required before claiming complete OSWorld budget semantics.
+whole-task deadline. Protocol v1 retains its original invalid-on-wall-clock-expiry
+behavior. Protocol v2 has a separate, bounded native finalization allowance.
 
 `src/evals/native-phase-evidence.ts` verifies the frozen source and compiled trees,
 all original run identities/bundle bytes, every native generation and prediction,
@@ -477,3 +477,68 @@ truncated/misbound/tampered evidence. The supervisor smoke test invokes standard
 `HitchHarborAgent.run()` for both two-phase and gate-completion cases. These are
 contract tests with synthetic task/controller evidence; no official OSWorld task
 or model score is claimed.
+
+## Native final-state grading at a deadline
+
+Select `hitch-native-phase-control@2` in the same `native_phases` object and add
+`finalization_timeout_ms`, bounded by the profile's collection allowance. This
+limits the entire post-deadline stop, seal, native grading and snapshot operation. The
+prepare hook must also return `native_deadline_ready: true`. The controller must
+use both `ControllerServer(..., native_deadline=True)` and
+`run_native(..., finalize_on_budget=True)`; announcing readiness without the
+matching runner will fail at finalization. The compiled Harbor watchdog reserves
+`4 * collection_timeout_ms + 2 * cleanup_grace_ms` beyond the source agent budget.
+Model execution still consumes only the original shared task deadline.
+
+The host supervisor checks its monotonic deadline, journals elapsed time, and
+calls private `expire_budget`. The channel atomically revokes the candidate tool
+token, records generation/sequence/binding plus any unfinished prediction or
+submitted-but-not-consumed batch, and wakes the native loop. Candidate HTTP tools
+cannot call this operation. While the SDK grades, the management state is
+`finalizing`; `completed` is written only after native result persistence.
+
+`deadline_runner.py` checks the exact upstream `lib_run_single.py` SHA256 before
+adapting two prediction loops, two action call sites and the phase loop. It adds
+budget checks and catches only the private `CandidateBudgetExpired` exception at
+those loop boundaries. This returns control to the original evaluator, gate,
+partial-score accumulation and result-writing code. It does not append DONE,
+FAIL, ASK_USER or invented candidate output. No new action starts after the
+controller expiration fence; an already executing action is allowed to settle.
+The next phase cannot start a candidate after expiry. Ordinary runtime/evaluator
+errors still fail the trial.
+
+This is an explicitly identified Hitch control-flow adaptation, not a claim that
+the upstream runner natively supports wall-clock finalization. The source file is
+not edited and its module globals are not patched. The adapter compiles isolated
+copies of the two entry functions; `deadline-adapter.json` and the returned runner
+metadata contain the original source, adapter and transformed AST hashes. The
+package snapshot must include this native result directory in its controller
+artifacts. Single-task result dictionaries and multi-phase result files retain
+their original contents and scoring semantics; strict score derivation remains a
+separate release/task contract.
+
+After expiration, the supervisor allows only bounded candidate sealing and native
+grading, then stops/snapshots the candidate environment. If the last candidate was
+already retired during a phase transition, its archived bundle remains the final
+group member and the fresh unused replacement is stopped. No empty or duplicate
+candidate run is invented. An unbound native phase at the end may appear in the
+audit, but every phase with a candidate binding must have a verified group member.
+Expiry before any candidate evidence exists, missing bundles, ordinary candidate
+failure, grader failure or an exhausted collection allowance remain invalid.
+
+The importer accepts a final `timed_out` process only with protocol v2, the frozen
+task deadline, a completed private finalization receipt and the matching complete
+native audit. The process status stays `timed_out` in its original bundle; the
+whole-task observation belongs to the assessment. Extra actions after the budget
+event, a missing binding or a mismatched receipt are rejected.
+
+Validation uses the exact Apache-2.0 upstream source fixture (see its provenance
+and license under `test-support/fixtures/osworld/`). Tests cover normal/gated
+parity, pending-prediction expiry, interruption within a submitted action batch,
+second-phase expiry, raw single-task results, real Hitch CLI timeout and private
+RPC, expiry during candidate replacement, and native evaluator failure. Import
+tests keep zero reward and the original timed-out bundle, accept the archived
+last candidate with an unbound native tail, and reject altered deadline evidence.
+These tests use synthetic environments, harness output and graders. Official VM,
+authorized task/assets, website lifecycle and real two-task validation remain
+outstanding.

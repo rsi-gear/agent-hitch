@@ -674,7 +674,11 @@ Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原
 
 阶段取消 API 已提供：`request_phase_cancellation(prepared, environment, reason=...)` 将匹配 run ID 和随机 nonce 的私有请求送到 CLI，沿既有 `AbortSignal` 路径停止候选并封存轨迹。控制文件位于 bundle 外，nonce 不进入 handle、argv 或 host journal；候选自己拥有容器权限，因此取消状态不能证明原生阶段完成。Host 在候选不可见的 `trial/hitch-phase-control/` 先记 prepared，再记 delivered / delivery_failed；回执仅为 request-only。同一活跃阶段、同一原因的已投递请求可幂等读取，失败投递不能隐式重试。Supervisor 仍须根据 controller 的原生 reset / terminal 证据发起取消，并在有界停止/收集时间内等待 `run_phase` 完成、校验封存 bundle，之后才能回收容器或启动下一阶段。实际 Hitch CLI + synthetic harness 已验证取消结果、轨迹、原样导出与启动取消竞态；真实模型/OSWorld 任务和完整编排仍未验证。
 
-Supervisor 的合成编排测试现已将固定原生 phase 函数、HTTP/Unix RPC 与实际 Hitch CLI 串联，覆盖两个阶段、gate 提前结束、候选提前退出、错误绑定/schema、预算耗尽、回收失败和 session 重用。候选容器在该测试中用本地目录适配，不能与独立 Docker recycler 测试合称真实 VM 验证。`hitch-native-phases/supervision.json` 保存全部观察到的边界和封存引用，仍不含评分。整题超时不会伪造 DONE 或最终分数；在原生 `predict()` 阻塞时取消只得到 invalid，需要后续按固定 SDK 实现 final-state grading 策略。调用合同详见 `benchmark-packages/osworld/runtime/README.md`。
+Supervisor 的合成编排测试现已将固定原生 phase 函数、HTTP/Unix RPC 与实际 Hitch CLI 串联，覆盖两个阶段、gate 提前结束、候选提前退出、错误绑定/schema、预算耗尽、回收失败和 session 重用。候选容器在该测试中用本地目录适配，不能与独立 Docker recycler 测试合称真实 VM 验证。`hitch-native-phases/supervision.json` 保存全部观察到的边界和封存引用，仍不含评分。Control v1 保留超时 invalid 行为；下述 v2 接入有界 final-state grading。调用合同详见 `benchmark-packages/osworld/runtime/README.md`。
+
+在 `native_phases` 选择 `protocol: "hitch-native-phase-control@2"` 并配置 `finalization_timeout_ms` 后，prepare 必须额外确认 `native_deadline_ready: true`。Host 在同一单调时钟整题 deadline 耗尽后发出私有 `expire_budget`；controller 原子撤销工具 binding、记录未答 prediction/已提交但未消费的 batch，并唤醒原生循环。`deadline_runner.py` 检查固定 SDK 文件 SHA256，仅给两个 prediction loop、两个 action 调用点和 phase loop 增加预算检查与专用异常退出；原 evaluator、gate、阶段分数累加和文件持久化继续执行。正在执行的一个动作可以收尾，后续动作和模型会话不能再启动；不会补造 DONE、FAIL 或 ASK_USER。这是显式标识的 Hitch 控制流适配，不能声称原 SDK 自带该 wall-clock 能力。原始 source、adapter 和转换后 AST 摘要保存为 `deadline-adapter.json`，须随原生评分产物收集。
+
+Finalization allowance 覆盖截止后的停止、封存、原生评分与最终收集，并受 profile collection 上限约束，不增加模型时间。整题 importer 只有在 v2 的冻结预算、host elapsed time、完整 controller `budget_exhausted → completed` 证据和全部绑定吻合时，才接受最后一个 `timed_out` run 的独立整题评分；其原 run 状态不改写。若预算在候选容器替换后耗尽，保留最后一个已归档 run 与替换回执，停止未使用的新容器；尾部未绑定的原生阶段不伪造成候选 run。没有候选证据、普通模型错误、评分错误或 finalization 自身超时仍为 invalid。合成验证覆盖等待模型、批次中断、第二阶段及容器替换期间超时，尚未增加官方两题验收数。
 
 整题导入测试保留真实零分语义，验证 phase bundle 原始字节、整题去重、幂等重放与 assessment 已封存但 publication 未写入的恢复。读取结果时重新核对 assessment digest、证据树和全部 group 成员；截断 audit、错误 run 绑定、指标/证据篡改均拒绝。`collect-only` 已识别 group 引用；多阶段 verifier-only regrade 和远程单 bundle 传输仍显式拒绝，不能声称已支持。
 
