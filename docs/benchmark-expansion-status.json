@@ -140,8 +140,72 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "implementation_pending_data_blocked",
-      "blocker": "User confirmed no authorized task/assets access. Official Python tasks and assets require Hugging Face authorization. No two-task execution evidence exists."
+      "status": "membership_locked_execution_and_data_blocked",
+      "blocker": "User confirmed no authorized task/assets access. Public file inventory supports fixed selection of task_031/task_095, but their contents and official hash manifest remain gated. Desktop/VM execution integration and two real scored trials are incomplete.",
+      "population": 108,
+      "tasks": [
+        "task_031",
+        "task_095"
+      ],
+      "selection": {
+        "algorithm": "sha256-rank-v1",
+        "seed": 20260902,
+        "population_size": 108,
+        "population_digest": "sha256:35f1d9889d1ad876dd3c08716920b7aaf8e9f3e10a07bb096a6cae8d0a4557be",
+        "tasks": [
+          "task_031",
+          "task_095"
+        ],
+        "resample_on_failure": false
+      },
+      "components": {
+        "osworld_code": {
+          "repository": "xlang-ai/OSWorld-V2",
+          "tag": "v2026.08.08",
+          "resolved_revision": "d578d2d4e0dc82b43e270fdaa7fa89d9708cd154",
+          "metadata_url": "https://api.github.com/repos/xlang-ai/OSWorld-V2/commits/v2026.08.08",
+          "metadata_digest": "sha256:6ed726fc4e49ced263a98c902f2a393e1698e8f7e8f7a914d670e7142e7534b6"
+        },
+        "website_code": {
+          "repository": "Task-Web/OSWorld-web",
+          "tag": "v2026.08.08",
+          "resolved_revision": "90ec2218f7747b15fe5117cdbe59b8978446ab9c",
+          "metadata_url": "https://api.github.com/repos/Task-Web/OSWorld-web/commits/v2026.08.08",
+          "metadata_digest": "sha256:c230534a461a1168adcacfb5181bad2de4fa1214d4692fd9eeb55e692e900ade"
+        },
+        "tasks": {
+          "repository": "xlangai/osworld_v2_tasks",
+          "repo_type": "dataset",
+          "tag": "v2026.08.08",
+          "resolved_revision": "3736efa55d9d5dc78f57e873ef78886663e41200",
+          "metadata_url": "https://huggingface.co/api/datasets/xlangai/osworld_v2_tasks/revision/v2026.08.08",
+          "metadata_digest": "sha256:d8fe8cfefe0c48e8a593b0fc1c7e9efca62c8178d005424b1fc145a9e5abbb7b"
+        },
+        "assets": {
+          "repository": "xlangai/osworld_v2_assets_gated",
+          "repo_type": "dataset",
+          "tag": "v2026.08.08",
+          "resolved_revision": "acad110ef3136405f95434b54862bf9066176c2a",
+          "metadata_url": "https://huggingface.co/api/datasets/xlangai/osworld_v2_assets_gated/revision/v2026.08.08",
+          "metadata_digest": "sha256:95f0756d7f099a42cae16bbab70202838afbc252ff923639f14c220c50f41a59"
+        }
+      },
+      "task_hash_manifest": {
+        "repository": "xlangai/osworld_v2_tasks",
+        "repo_type": "dataset",
+        "tag": "v2026.08.08",
+        "path": "manifests/task_hashes.json",
+        "sha256": "sha256:42f8f6f8939b8712997d5891456a575f8a2a5f53465e9e3e6747af5d6efd0915",
+        "task_count": 108
+      },
+      "selection_evidence": ".hitch/benchmark-expansion/osworld-selection/selection-lock.json",
+      "contract_validation": {
+        "synthetic_only": true,
+        "native_screenshot_transport": "hitch-tool-result@1",
+        "image_bytes_and_sha256_preserved": true,
+        "vm_execution_validated": false,
+        "real_scored_tasks": 0
+      }
     },
     {
       "id": "cursorbench",

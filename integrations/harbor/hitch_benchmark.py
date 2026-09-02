@@ -129,7 +129,10 @@ def candidate_instruction(instruction, environment):
         return instruction, None
     if config["task"]["driver"]["kind"] != "tool-server":
         return (json.dumps(config["candidate_input"]) if "candidate_input" in config else instruction), int(config["agent_timeout_sec"] * 1000)
-    return instruction + "\n\nTools are available through the locked tool-server bridge. Run `node /tmp/hitch-tools.mjs list` to read tool descriptions and JSON schemas. Invoke a tool using `node /tmp/hitch-tools.mjs TOOL_NAME 'JSON_ARGUMENTS'` (or pass - and JSON via stdin). Complete the requested workflow with these simulated service tools.\n", int(config["agent_timeout_sec"] * 1000)
+    instruction += "\n\nTools are available through the locked tool-server bridge. Run `node /tmp/hitch-tools.mjs list` to read tool descriptions and JSON schemas. Invoke a tool using `node /tmp/hitch-tools.mjs TOOL_NAME 'JSON_ARGUMENTS'` (or pass - and JSON via stdin). Complete the requested workflow with these simulated service tools.\n"
+    if "tool-result-images@1" in config["task"]["requirements"]:
+        instruction += "Image tool results contain absolute local paths. Open each image with your native image viewing tool to inspect the observation. The files contain the original image bytes; the JSON metadata is not a visual observation.\n"
+    return instruction, int(config["agent_timeout_sec"] * 1000)
 
 
 async def export_final_response(environment, result):

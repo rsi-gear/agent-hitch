@@ -3,7 +3,7 @@ import { HitchError, invalidInput } from "../foundation/index.js";
 
 export const BENCHMARK_CAPABILITIES = new Set([
   "shell", "artifact-export", "separate-verifier", "shared-verifier", "compose", "tool-server@1", "http-json-cli", "hitch-hook@1",
-  "model-call@1", "native-image-input", "no-tools",
+  "model-call@1", "native-image-input", "no-tools", "tool-result-images@1",
 ]);
 
 export function unsupported(message: string): never {
@@ -111,6 +111,7 @@ export function parseTask(value: unknown, manifest: BenchmarkManifestV1): Benchm
   if (!["tool-server", "terminal", "model-call"].includes(String(driver.kind)) || driver.protocol_version !== "1") unsupported("unsupported driver protocol");
   const required = driver.kind === "model-call" ? ["model-call@1", "native-image-input", "no-tools", "artifact-export", "separate-verifier"] : driver.kind === "terminal" ? ["shell"] : ["shell", "tool-server@1", "http-json-cli", "hitch-hook@1", "separate-verifier", "compose", "artifact-export"];
   for (const cap of required) if (!t.requirements.includes(cap)) throw invalidInput(`${driver.kind} driver requires capability ${cap}`);
+  if (t.requirements.includes("tool-result-images@1") && (driver.kind !== "tool-server" || !t.requirements.includes("native-image-input"))) throw invalidInput("tool-result-images@1 requires a tool-server driver and native-image-input");
   if (driver.kind !== "tool-server") {
     const config = fields(driver.config, driver.kind === "model-call" ? ["input"] : [], "driver.config");
     if (driver.kind === "model-call") relativePath(config.input);

@@ -17,7 +17,7 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
   if (options.resumeExisting || options.precreated || options.remoteWorkExecutor || options.normalizedRequest) throw invalidInput("standard benchmark packages currently support local managed runs only");
   const loaded = options.benchmark ? await loadBenchmark(options.benchmark) : await loadBenchmarkLock(options.benchmarkLock!);
   if (loaded.tasks.some(t => t.config.driver.kind === "model-call") && (!String(options.request.harness_ref).startsWith("model-call@") || (Array.isArray(options.request.agent_args) && options.request.agent_args.length))) throw invalidInput("no-tools tasks require the trusted model-call harness without agent overrides");
-  if (loaded.tasks.some(t => t.config.driver.kind === "terminal" && t.config.requirements.includes("native-image-input")) && !String(options.request.harness_ref).startsWith("codex@")) throw invalidInput("native-image terminal tasks currently require the Codex image-capable harness");
+  if (loaded.tasks.some(t => t.config.driver.kind !== "model-call" && t.config.requirements.includes("native-image-input")) && !String(options.request.harness_ref).startsWith("codex@")) throw invalidInput("native-image agent tasks currently require the Codex image-capable harness");
   const evalId = options.evalId ?? newEvalId();
   const compiled = await compileBenchmark(loaded, options.root);
   const request = {
