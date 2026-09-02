@@ -461,8 +461,9 @@ test("timed-out runs preserve a valid trajectory with a terminal boundary", asyn
 
 test("an interrupted run with an open tool call records a readable trajectory", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-open-tool-"));
+  const controller = new AbortController();
   // Fake codex emits a tool start (command_execution) and then stalls; the
-  // engine timeout must interrupt it with an open tool call in the step.
+  // engine must interrupt it after observing the open tool call in the step.
   const executable = path.join(root, "open-tool-codex");
   await writeFile(executable, `#!/usr/bin/env node
 if (process.argv.includes("--version")) { process.stdout.write("codex-cli 9.9.9\\n"); process.exit(0); }
@@ -483,10 +484,12 @@ process.stdin.on("end", () => {
 
   const result = await executeRun({
     runId,
-    request: request({ agent: "codex", cwd: root, prompt: "open tool", timeout_ms: 100, agent_args: [] }),
+    request: request({ agent: "codex", cwd: root, prompt: "open tool", timeout_ms: 5_000, agent_args: [] }),
     runsRoot: path.join(root, "runs"),
+    signal: controller.signal,
+    onEvent: (event) => { if (event.type === "tool.started") controller.abort(); },
   });
-  assert.equal(result.status, "timed_out");
+  assert.equal(result.status, "cancelled");
 
   // The trajectory must be structurally valid (open tool call paired with an
   // unknown-outcome result before step/end) and readable by consumers.

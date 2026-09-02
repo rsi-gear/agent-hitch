@@ -156,6 +156,43 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
   assert.equal((await scheduler.status(second))?.result?.status, "succeeded");
 });
 
+test("eval cancellation preserves a terminal record while executor cleanup is pending", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-terminal-cancel-"));
+  let releaseExecutor = () => {};
+  const cleanup = new Promise<void>((resolve) => { releaseExecutor = resolve; });
+  let signal: AbortSignal | undefined;
+  const scheduler = new EvalScheduler({
+    root,
+    resources: new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 2, build_slots: 1 }),
+    trialResources: TRIAL,
+    executor: async (options) => {
+      signal = options.signal;
+      const result = await fakeEvalExecutor(1)(options);
+      const directory = path.join(root, "evals", options.evalId!);
+      await atomicWriteJSON(path.join(directory, "result.json"), result);
+      const control = await readJSON<EvalControlV1>(path.join(directory, "control.json"));
+      await atomicWriteJSON(path.join(directory, "control.json"), { ...control, state: "succeeded" });
+      await cleanup;
+      return result;
+    },
+  });
+  t.after(async () => {
+    releaseExecutor();
+    await scheduler.shutdown();
+    await forceRemove(root);
+  });
+  await scheduler.initialize();
+  const evalId = await scheduler.submit(request(1));
+  await waitFor(() => scheduler.status(evalId).then((status) => status?.control.state === "succeeded"));
+  assert.equal(scheduler.snapshot().running, 1, "executor cleanup must still be pending");
+  assert.equal(await scheduler.cancel(evalId), "terminal");
+  assert.equal(signal?.aborted, false);
+  const status = await scheduler.status(evalId);
+  assert.equal(status?.control.state, "succeeded");
+  assert.equal(status?.control.cancel_requested_at, undefined);
+  assert.equal(status?.result?.status, "succeeded");
+});
+
 test("eval submission execution policy is pinned and drives admission", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-execution-policy-"));
   const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 4, build_slots: 1 });

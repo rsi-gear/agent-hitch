@@ -279,11 +279,12 @@ export class EvalScheduler {
       const directory = path.join(this.evalsRoot, evalId);
       const now = new Date().toISOString();
       await this.emitPersisted(directory, evalId, { type: "eval.cancel.requested", phase: "running" });
-      await this.updateControl(directory, (control) => ({
+      const control = await this.updateControl(directory, (control) => isTerminalControl(control.state) ? control : ({
         ...control,
         state: "cancelling",
         cancel_requested_at: control.cancel_requested_at || now,
       }));
+      if (isTerminalControl(control.state)) return "terminal";
       active.controller.abort();
       return "accepted";
     }
