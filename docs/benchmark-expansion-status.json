@@ -46,7 +46,15 @@
       "status": "canary_running",
       "blocker": null,
       "hardware_note": "memory_mb is a container limit, not a minimum launch requirement. Run on observed ~7.65 GiB Docker host without changing upstream limits; preserve any OOM/resource failure and do not treat this as an official leaderboard reproduction.",
-      "eval_id": "eval_40a396a80f8441a2b7cf1baf2b88606b"
+      "eval_id": "eval_40a396a80f8441a2b7cf1baf2b88606b",
+      "runtime_observation": {
+        "last_native_event_at": "2026-09-02T16:43:21.701Z",
+        "candidate_process_alive": true,
+        "tcp_connection_state": "CLOSE_WAIT with unread receive data",
+        "terminal_failure_observed": false,
+        "action": "Keep the original trial and upstream time budget; no replacement sample or candidate restart.",
+        "recorded_at": "2026-09-02T17:19:54.572201+00:00"
+      }
     },
     {
       "id": "gdpval-public-rubric",
@@ -204,7 +212,30 @@
         "native_screenshot_transport": "hitch-tool-result@1",
         "image_bytes_and_sha256_preserved": true,
         "vm_execution_validated": false,
-        "real_scored_tasks": 0
+        "real_scored_tasks": 0,
+        "hitch_visual_canary": {
+          "synthetic_only": true,
+          "benchmark_id": "hitch-desktop-contract",
+          "eval_id": "eval_672fce9c3b374b7d8eff13d51b3f179c",
+          "run_id": "run_4bbcad498ccf4e00b3cc75bab8613393",
+          "benchmark_revision": "sha256:d21a1df67f3fd3d830f0bac809ffd7780670c672563b9f735cc8a2902fcdfd4f",
+          "status": "valid",
+          "score": 1,
+          "clicks": [
+            {
+              "seq": 1,
+              "x": 235,
+              "y": 90
+            }
+          ],
+          "screenshot_sha256": "2646e0d4b635048e2d3c70272ef57efe6c13e7ae85c1be03f061cc8917687284",
+          "screenshot_evidence_path": ".hitch/benchmark-expansion/state/evals/eval_672fce9c3b374b7d8eff13d51b3f179c/harbor/work-items/work_f513c5341a1a5a2de44c48dbe47e62ff/epoch-000001/job/click-blue__2zw2pjh/artifacts/evidence/screen.png",
+          "reward_evidence_path": ".hitch/benchmark-expansion/state/evals/eval_672fce9c3b374b7d8eff13d51b3f179c/harbor/work-items/work_f513c5341a1a5a2de44c48dbe47e62ff/epoch-000001/job/click-blue__2zw2pjh/verifier/benchmark-rewards.json",
+          "reward_evidence_sha256": "02568e3163dbf27d3c7c91e80a2c2aa0102d3aedad55b70138be9f6f6eb9f085",
+          "native_viewer_invocation_visible_in_cli_log": false,
+          "limitation": "The native CLI log exposes screenshot materialization and the candidate click, but does not emit a separate image-viewer invocation event. This proves the synthetic screenshot/action/scoring path, not OSWorld execution or complete image-read observability.",
+          "completed_at": "2026-09-02T17:18:27.479Z"
+        }
       }
     },
     {

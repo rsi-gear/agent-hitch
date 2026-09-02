@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rsi-gear/agent-hitch/schemas/benchmark-tool-result-v1.schema.json",
+  "title": "Native image tool result envelope",
+  "type": "object",
+  "required": ["protocol", "content"],
+  "properties": {
+    "protocol": {"const": "hitch-tool-result@1"},
+    "content": {
+      "type": "array",
+      "maxItems": 64,
+      "contains": {"type": "object", "required": ["type"], "properties": {"type": {"const": "image"}}},
+      "minContains": 0,
+      "maxContains": 8,
+      "items": {
+        "oneOf": [
+          {"type": "object", "required": ["type", "text"], "properties": {
+            "type": {"const": "text"}, "text": {"type": "string"}
+          }},
+          {"type": "object", "required": ["type", "mimeType", "data"], "properties": {
+            "type": {"const": "image"},
+            "mimeType": {"enum": ["image/png", "image/jpeg", "image/webp"]},
+            "data": {"type": "string", "minLength": 4, "maxLength": 5592408, "contentEncoding": "base64"}
+          }}
+        ]
+      }
+    }
+  },
+  "$comment": "Wire payload is limited to 16 MiB. Runtime additionally verifies canonical base64, MIME signatures and a 4 MiB decoded image limit. The CLI replaces each image data field with a generated absolute path, byte count and SHA256; this schema describes the server's wire response, not that materialized CLI output."
+}

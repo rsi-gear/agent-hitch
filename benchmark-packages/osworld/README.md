@@ -39,6 +39,7 @@ evaluator evidence can satisfy the real two-task validation requirement.
 ## Native screenshot transport
 
 The generic `tool-server@1` bridge supports `hitch-tool-result@1` image responses.
+Its wire schema is `docs/schemas/benchmark-tool-result-v1.schema.json`.
 Declare both `tool-result-images@1` and `native-image-input` in task requirements
 and the profile's allowed capabilities. Currently the native-image agent path
 requires the Codex harness. A server can return:
@@ -66,7 +67,19 @@ These temporary files are candidate observations, not trusted final scoring
 evidence. The future OSWorld controller must retain the original screenshots
 and action sequence in its own sealed artifacts. Tests currently prove transport
 and byte preservation against a synthetic HTTP server; they do **not** prove an
-OSWorld VM run or candidate screenshot understanding.
+OSWorld VM run or candidate screenshot understanding. The separate
+`writeDesktopBenchmarkFixture()` helper in `test-support/desktop-benchmark-fixture.ts`
+creates a synthetic one-click visual canary for the actual Hitch/Codex path;
+its results must be reported separately from OSWorld acceptance.
+
+The actual Hitch canary `eval_672fce9c3b374b7d8eff13d51b3f179c` completed with
+one valid trial and reward `1`. Codex 0.145.0 / gpt-5.4 received the screenshot
+file and clicked `(235, 90)` once; the isolated verifier checked the click and
+the exported controller screenshot's SHA256. All four lifecycle hooks completed.
+The native CLI log did not emit a separate image-viewer invocation, so this is
+evidence of successful screenshot/action/scoring transport, not complete
+observation of the model's image-reading call. See
+`docs/benchmark-expansion-status.json` for run and artifact references.
 
 ## Pinned SDK integration constraints
 
