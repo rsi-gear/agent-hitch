@@ -13,7 +13,7 @@ import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { harborEnvironmentConfig, lockedHarnessRef } from "../src/backends/harbor/index.js";
 import type { HarborTrialRuntimeContract } from "../src/backends/harbor/index.js";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
-import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
+import { benchmarkTaskDigest, benchmarkVerifierIdentity, loadVerifierEvidence } from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/store.js";
 import { forceRemove, prepareHostHarborArtifactForTest, writeFakeDeepseekNpm, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
@@ -1193,6 +1193,11 @@ test("Harbor eval retries a masked verifier bootstrap failure without rerunning 
   assert.equal(history.status, "recovered");
   assert.equal(history.candidate_rerun, false);
   assert.deepEqual(history.attempts[0]?.signals, ["dns_resolution_failed", "test_runner_missing"]);
+  const evidence = await loadVerifierEvidence(root, trial.runId);
+  assert.equal(evidence.verifier.status, "complete");
+  assert.deepEqual(evidence.verifier.diagnostics?.ctrf?.json, {});
+  assert.equal(evidence.verifier.diagnostics?.stdout?.[0]?.text, "1 passed in 0.01s\n");
+  assert.equal(evidence.verifier.diagnostics?.retry_history?.length, 1);
   assert.equal(await readFile(path.join(root, "fake-harbor-verifier-retry.count"), "utf8"), "1");
   await assert.rejects(
     stat(path.join(root, "evals", evalId, "infrastructure-retries")),

@@ -59,10 +59,12 @@ hitch run \
   --output jsonl
 ```
 
-The output includes a run ID. Use it to inspect the saved trajectory:
+The output includes a run ID. Use it to inspect the saved trajectory or
+run-centered verifier evidence:
 
 ```bash
 hitch trajectory inspect RUN_ID
+hitch verifier inspect RUN_ID --json
 ```
 
 Every run is stored below `~/.hitch/runs/RUN_ID` with its manifest, result,
@@ -105,12 +107,13 @@ Hitch records the chain from request to result:
 - normalized control-plane events and raw process logs;
 - redacted provider-native events where supported;
 - DSH-compatible canonical trajectory with SHA-256-bound files; and
-- versioned message feedback and evaluation evidence.
+- versioned message feedback and bounded verifier/evaluation evidence.
 
 Use the CLI to query runs and attach feedback without rewriting the trajectory:
 
 ```bash
 hitch runs list --json
+hitch verifier inspect RUN_ID --json
 hitch feedback list RUN_ID --json
 hitch feedback put RUN_ID \
   --message MESSAGE_ID \
@@ -173,6 +176,7 @@ run the real NVIDIA gate through the manually dispatched
 
 - [Design and architecture](docs/design.md)
 - [Harbor-backed evals](docs/evals.md)
+- [Verifier evidence](docs/verifier-evidence.md)
 - [Workspace isolation](docs/workspaces.md)
 - [Daemon design](docs/daemon.md)
 - [Hitch 0.2 development spec](docs/hitch-0.2-development-spec.md)

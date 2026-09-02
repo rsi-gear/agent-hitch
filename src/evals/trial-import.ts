@@ -16,6 +16,7 @@ import {
 } from "../runs/index.js";
 import { readHarborBridgeError } from "./harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
+import { persistTrialVerifierDiagnostics } from "./verifier-artifacts.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
@@ -42,6 +43,8 @@ export interface ImportEvalRunsOptions {
   interactionCaptureExporter?: EvalInteractionCaptureExporter;
   publicationMode?: EvalTrialPublicationMode;
   env?: NodeJS.ProcessEnv;
+  verifierDiagnosticsMaxBytes?: number;
+  signal?: AbortSignal;
 }
 
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
@@ -94,6 +97,7 @@ export async function importEvalTrialRun(
     published = bundle !== null;
     return ref;
   } catch (error) {
+    if (options.signal?.aborted || (error as Error)?.name === "AbortError") throw error;
     if (error instanceof TrialBundlePendingError || error instanceof TrialIdentityConflictError) throw error;
     const safeMessage = safeDiagnosticMessage(error, credentialValuesFromEnv(options.request.pass_env ?? [], options.env ?? process.env));
     if (bundle) {
@@ -209,7 +213,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       primaryVerifierReward(input.trial),
     );
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(staging, verifierInfrastructure);
-    await copyVerifierRetryHistory(input.trialDirectory, staging);
+    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, signal: input.signal });
     const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
     const observation = verifierObservation({
       trial: input.trial,
@@ -271,7 +275,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
       primaryVerifierReward(input.trial),
     );
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-    await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
+    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, signal: input.signal });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(
         input.trialDirectory,
@@ -451,16 +455,6 @@ function withoutKeys(record: Record<string, unknown>, keys: string[]): Record<st
   const result = { ...record };
   for (const key of keys) delete result[key];
   return result;
-}
-
-async function copyVerifierRetryHistory(trialDirectory: string, runDirectory: string): Promise<void> {
-  const source = path.join(trialDirectory, "verifier", "infrastructure-retry-history.json");
-  const history = await readJSON<Record<string, unknown> | null>(source, null).catch(() => null);
-  if (history?.schema_version !== "1"
-    || history.code !== "verifier_infrastructure_retry_history"
-    || history.candidate_rerun !== false
-    || !Array.isArray(history.attempts)) return;
-  await atomicWriteJSON(path.join(runDirectory, "verifier", "infrastructure-retry-history.json"), history);
 }
 
 async function validateJSONLines(file: string): Promise<void> {

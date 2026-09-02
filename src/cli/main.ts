@@ -16,6 +16,7 @@ import { feedbackCommand } from "./commands/feedback.js";
 import { daemonCommand } from "./commands/daemon.js";
 import { workerCommand } from "./commands/worker.js";
 import { imagesCommand } from "./commands/images.js";
+import { verifierCommand } from "./commands/verifier.js";
 
 export async function main(argv: string[]): Promise<void> {
   const args = [...argv];
@@ -33,6 +34,7 @@ export async function main(argv: string[]): Promise<void> {
     case "eval": return evalCommand(args, root);
     case "workspace": return workspaceCommand(args, root);
     case "trajectory": return trajectoryCommand(args, root);
+    case "verifier": return verifierCommand(args, root);
     case "feedback": return feedbackCommand(args, root);
     case "daemon": return daemonCommand(args, root);
     case "worker": return workerCommand(args, root);

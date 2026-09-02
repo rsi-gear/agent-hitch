@@ -103,6 +103,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         request: spec.request, resolvedRevision: spec.resolution,
         benchmarkId: spec.request.benchmark_id, benchmarkRevision: spec.request.benchmark_revision,
         runtimeId: runtime.runtime_id, executionEvidence,
+        signal,
         ...(spec.plan.model_capture ? { modelCapturePlan: spec.plan.model_capture } : {}),
         ...(captureRuntime.exporter ? { interactionCaptureExporter: captureRuntime.exporter } : {}),
         requireCompleteMarker: true, allowMissingBundleDiagnostic: true,

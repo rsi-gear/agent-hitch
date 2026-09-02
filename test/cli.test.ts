@@ -162,6 +162,7 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /hitch images gc/);
   assert.match(help.stdout, /hitch images pin/);
   assert.match(help.stdout, /hitch runs candidate <run-id>/);
+  assert.match(help.stdout, /hitch verifier inspect <run-id>/);
   assert.match(help.stdout, /hitch eval run \[--backend harbor\] --dataset <ref>/);
   assert.match(help.stdout, /hitch eval submit \[--backend harbor\]/);
   assert.match(help.stdout, /--cpu-per-trial <integer-cpus>/);

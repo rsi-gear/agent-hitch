@@ -3,6 +3,7 @@ export type { StatePaths } from "./config.js";
 export { HitchError, invalidInput } from "./errors.js";
 export type { HitchErrorOptions } from "./errors.js";
 export { appendLine, atomicWriteJSON, ensureDir, readJSON, removeIfExists, writePrivateFile } from "./fs.js";
+export { openContainedRegularFile, type ContainedRegularFile } from "./contained-file.js";
 export { reclaimStaleLock } from "./locks.js";
 export { withFileLock } from "./locks.js";
 export { captureProcessIdentity, inspectProcessIdentity, validateProcessIdentity } from "./process-identity.js";

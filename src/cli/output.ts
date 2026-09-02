@@ -107,6 +107,7 @@ Usage:
   hitch images pin <sha256:image-id> [--reason <text>]
   hitch images unpin <sha256:image-id>
   hitch trajectory inspect <run-id> [--json]
+  hitch verifier inspect <run-id> [--json]
   hitch feedback list <run-id> [--json]
   hitch feedback put <run-id> --message <id> --rating positive|negative [--note <text>] [--if-version <v>] [--json]
   hitch feedback delete <run-id> --message <id> [--if-version <v>] [--json]
@@ -137,9 +138,10 @@ Eval:
   Verifier infrastructure failures are retried once by default; use --infrastructure-retries 0 to disable.
   --task selects every invalid or missing attempt for the named task.
 
-Trajectory and feedback:
+Trajectory, verifier evidence, and feedback:
   Structured adapters preserve provider-native events plus a DSH-compatible canonical view
   under runs/<run>/trajectory/, bound by trajectory.ref.json V2 checksums.
+  Verifier inspection returns bounded, redacted, run-centered result and diagnostic evidence.
   Message feedback is a lifecycle-bound sidecar.
 
 Workspace modes:

@@ -115,6 +115,7 @@ export class RemoteWorkCoordinator {
         lease: lease.current(),
         artifactPath: this.protocol.artifactPath(worker.worker.worker_id, lease.leaseId, artifact.digest),
         runtimeId: input.runtimeId,
+        ...(input.signal ? { signal: input.signal } : {}),
         ...(input.environmentImages ? { environmentImages: input.environmentImages } : {}),
         ...(input.modelCapturePlan ? { modelCapturePlan: input.modelCapturePlan } : {}),
         ...(input.publicationMode ? { publicationMode: input.publicationMode } : {}),

@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
@@ -41,7 +41,8 @@ export async function removeIfExists(file: string): Promise<void> {
   await rm(file, { force: true });
 }
 
-export async function writePrivateFile(file: string, value: string): Promise<void> {
+export async function writePrivateFile(file: string, value: string | Uint8Array): Promise<void> {
   await ensureDir(path.dirname(file));
   await writeFile(file, value, { mode: 0o600 });
+  await chmod(file, 0o600);
 }

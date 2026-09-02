@@ -16,5 +16,7 @@ export * from "./workers.js";
 export * from "./providers.js";
 export * from "./images.js";
 export * from "./interactions.js";
+export * from "./verifier-evidence.js";
+export * from "./verifier-evidence-validation.js";
 export * from "./validation.js";
 export type { EvalRequest } from "./evals.js";

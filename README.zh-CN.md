@@ -59,10 +59,11 @@ hitch run \
   --output jsonl
 ```
 
-输出中包含 run ID，可以用它查看保存的轨迹：
+输出中包含 run ID，可以用它查看保存的轨迹或以 run 为中心的 verifier 证据：
 
 ```bash
 hitch trajectory inspect RUN_ID
+hitch verifier inspect RUN_ID --json
 ```
 
 每次运行的 manifest、结果、事件、日志和轨迹都会保存在
@@ -105,12 +106,13 @@ Hitch 记录从请求到结果的完整链路：
 - 规范化控制面事件与原始进程日志；
 - 支持场景下经过脱敏的 provider-native 事件；
 - 采用 SHA-256 绑定文件、兼容 DSH 的规范化轨迹；
-- 带版本的消息反馈与评测证据。
+- 带版本的消息反馈，以及有界的 verifier/评测证据。
 
 可以通过 CLI 查询运行，并在不改写轨迹的情况下附加反馈：
 
 ```bash
 hitch runs list --json
+hitch verifier inspect RUN_ID --json
 hitch feedback list RUN_ID --json
 hitch feedback put RUN_ID \
   --message MESSAGE_ID \
@@ -159,6 +161,7 @@ hitch run --daemon --harness codex@version:0.92.0 --prompt-file task.md
 
 - [设计与架构](docs/design.md)
 - [Harbor 评测](docs/evals.md)
+- [Verifier evidence](docs/verifier-evidence.md)
 - [工作区隔离](docs/workspaces.md)
 - [守护进程设计](docs/daemon.md)
 - [Hitch 0.2 开发规范](docs/hitch-0.2-development-spec.md)
