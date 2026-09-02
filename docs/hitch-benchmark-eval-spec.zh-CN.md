@@ -2,7 +2,7 @@
 
 状态：Proposed；调研日期：2026-09-02。代码基线：`65982cb059ae21d84dc0bc1916eb4fff60809e4b`，Hitch 0.2.7，仓库默认 Harbor 0.21.0。
 
-本文是实现设计，所列新增接口、命令与文件尚未实现。本次核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型；没有运行付费模型评测，也没有验证整套 benchmark 的环境兼容性。上游 `main` 页面只用于调研，实现时必须另行锁定提交和数据文件。
+本文保留最初的实现设计，并在第 9 节补充接入进度。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型；后续实现、真实运行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，不能将设计条目视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
 
 ## 1. 设计决定
 
@@ -658,23 +658,25 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 实施更新：官方现已发布 `osworld-v2-2026.08.08`，直接以该 release 为目标。必须拿到其可授权 task/assets，并按官方 release manifest 锁定代码、任务、assets、网站与 VM 镜像；全部组件一致才运行。拿不到时该目标明确是 `blocked_on_dataset`，不能换成 6 月任务。参见[官方版本清单](https://github.com/xlang-ai/OSWorld-V2/blob/main/benchmark_releases/osworld-v2-2026.08.08.json)。
 
-当前组件：`benchmark-packages/osworld/runtime/` 已包含受管 VM owner/provider、原生 `Agent.reset/predict` channel、动作校验和固定 SHA256 的 runner wrapper。多阶段流程委托给 `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` 的原始 `lib_run_single.run_single_example`，保留同一 VM 的 phase setup、gate 和评分文件；synthetic 对照已覆盖这些语义。每次 reset 撤销旧 token，并要求 supervisor 绑定新的 Hitch run。候选启动、取消与封存现已接入通用 supervisor API；**标准包入口和整题评分导入尚未接通**。Run ID 检查只能防止复用标识，不能替代清空模型会话的证据。
+当前组件：`benchmark-packages/osworld/runtime/` 已包含受管 VM owner/provider、原生 `Agent.reset/predict` channel、动作校验和固定 SHA256 的 runner wrapper。多阶段流程委托给 `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` 的原始 `lib_run_single.run_single_example`，保留同一 VM 的 phase setup、gate 和评分文件；synthetic 对照已覆盖这些语义。每次 reset 撤销旧 token，并要求 supervisor 绑定新的 Hitch run。候选启动、取消与封存现已接入标准包入口，整题 assessment 导入也已接通；**这些合同测试尚不代表 OSWorld VM 与官方两题验收完成**。Run ID 检查只能防止复用标识，不能替代清空模型会话的证据。
 
 当前动作 profile 是 screenshot + graphical `computer_13`，按固定 SDK 定义校验，排除 `EXECUTE` 与裸 Python，不做 OCR/缩放/坐标变换。部署需锁定 1920×1080 截图、单批动作数和文本大小；这不是 Anthropic 原始工具配置的精确复现声明。
 
 `controller_server.py` 已实现候选 HTTP `POST /call`（仅 `desktop.observe` / `desktop.submit`）与 controller 私有 Unix socket 管理接口；后者校验 token、lease、epoch，支持 `state/bind/cancel`。Socket 0600、所在目录 0700；管理接口不监听 TCP。公开工具 schema 从实际动作校验器生成。原生 reset 后旧阶段 token 失效；管理变更与动作提交各自保留幂等回执。`controller_client.py` 从文件读取私有凭据，以 stdin JSON 发起管理调用，凭据不进入 argv。实际 HTTP/Unix/Node 工具客户端的两阶段 synthetic 测试已通过。
 
-默认 Harbor bridge 入口在 prepare 时上传一个静态 binding，随后只启动一个 Hitch run。通用动态候选 API 为 `NativePhaseSupervisor(...).run()`：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传当前 binding → 启动模型 → 原生边界停止并封存该 run → 回收容器后验证证据 → 再执行下一阶段。除 run ID 外，它记录不同 native session ID、各阶段 bundle 和不重叠的运行时间；隔离仍须由真实容器回收保证。绑定回执含 token，不进入生命周期 journal 或评分证据。标准包选择该 API、授权任务 producer、controller 生命周期装配、网站 reset、partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
+标准 Harbor bridge 在锁定 task 的 `driver.config.native_phases` 存在时选择 `NativePhaseSupervisor(...).run()`：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传当前 binding → 启动模型 → 原生边界停止并封存该 run → 回收容器后验证证据 → 再执行下一阶段。Prepare 必须返回 `native_phases_ready: true` 且没有静态 binding，task/profile 同时声明 `native-phases@1`、原生图片输入和工具图片输出能力。除 run ID 外，它记录不同 native session ID、各阶段 bundle 和不重叠的运行时间；隔离仍须由真实容器回收保证。绑定回执含 token，不进入生命周期 journal 或评分证据。授权任务 producer、controller/VM 生命周期装配、网站 reset、固定 release 的 partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
-Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial/task digest、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。现有单 bundle 导入器会拒绝 phase run，整题 group assessment 尚待接通。后续 importer 必须结合 supervisor 候选隔离记录与原生 reset/gate/terminal 证据核对 group 完整性；不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
+Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial/task digest、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。多阶段 importer 单独校验完整 controller audit、全部 prediction 截图摘要、run 绑定、最终 completed 事件和候选容器替换链，再将独立 verifier 的整题评分保存为 assessment。Trial 引用 `run_group + assessment`，每个 task/attempt 只计一次；不伪造代表 run_id，不回写各 phase 的分数。不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
 
 通用 Harbor environment 现提供 `recycle_candidate_phase(phase_index)`：由持有 lease 的 host supervisor 在撤销旧 token、结束并导出旧 run 后调用。它只移除 `main` 容器，确认旧容器消失，将原日志目录移到候选不可见的 `trial/hitch-candidate-phases/phase-NNNN/`，新建空日志目录，再用原镜像 content ID 重建 `main`；禁止构建、拉取或重启依赖。检查前后资源/配置摘要、挂载、ownership 以及全部 sidecar 的容器 ID、image 和 start timestamp 一致。只支持原生 Harbor 日志路径的 writable bind、fresh tmpfs 和与日志/归档不相交的 read-only bind；其他持久卷、额外 writable host path 或共享日志路径在销毁前拒绝。回执只证明环境操作，失败或中断后禁止隐式重试，应由 supervisor 清理 trial。真实 Docker 两次切换 canary 已验证日志和 writable layer 不可见、后台写入进程终止、sidecar 保留与 cleanup；未使用模型、VM 或 OSWorld 官方题目。Supervisor 现于中间阶段调用该 API，再完成 host bundle 校验、runtime setup、新 run/token 绑定后才启动下一候选；最后阶段只停止 main 并执行最终 snapshot。
 
-阶段执行 API 已独立提供：`prepare_phase(instruction=..., run_group_id=..., phase_index=..., task_digest=..., remaining_timeout_ms=...)` 在绑定工具前返回固定 `run_id`；`run_phase(prepared, environment, phase_context)` 单次消费该 handle。所有阶段沿用同一个冻结 task digest；禁止重新计算每阶段任务身份、重置整题预算或重用阶段。绑定/上传耗时从单调时钟 deadline 扣除。执行采用 `benchmark_phase` 和正常封存，不附加整题 observation。`copySealedPhaseRunBundle` 按原 index 复制完整文件集，校验原 run/context/parent、harness revision 和复制前后摘要，保留 index 原始字节；完成标记位于 bundle 外侧，禁止覆盖已有目标。`inspectSealedPhaseRunBundle` 在容器退役后由可信 host 校验。实际取消结果没有 revision/artifact 字段时，以封存 manifest 中的身份为依据。默认标准包入口和 group 评分导入仍待装配。
+阶段执行 API 已独立提供：`prepare_phase(instruction=..., run_group_id=..., phase_index=..., task_digest=..., remaining_timeout_ms=...)` 在绑定工具前返回固定 `run_id`；`run_phase(prepared, environment, phase_context)` 单次消费该 handle。所有阶段沿用同一个冻结 task digest；禁止重新计算每阶段任务身份、重置整题预算或重用阶段。绑定/上传耗时从单调时钟 deadline 扣除。执行采用 `benchmark_phase` 和正常封存，不附加整题 observation。`copySealedPhaseRunBundle` 按原 index 复制完整文件集，校验原 run/context/parent、harness revision 和复制前后摘要，保留 index 原始字节；完成标记位于 bundle 外侧，禁止覆盖已有目标。`inspectSealedPhaseRunBundle` 在容器退役后由可信 host 校验。实际取消结果没有 revision/artifact 字段时，以封存 manifest 中的身份为依据。编译器 `harbor-package@4` 保留原 candidate 预算，仅给 Harbor 外层 watchdog 增加停止、收集和清理时间；完整 task config 示例见 runtime README。
 
 阶段取消 API 已提供：`request_phase_cancellation(prepared, environment, reason=...)` 将匹配 run ID 和随机 nonce 的私有请求送到 CLI，沿既有 `AbortSignal` 路径停止候选并封存轨迹。控制文件位于 bundle 外，nonce 不进入 handle、argv 或 host journal；候选自己拥有容器权限，因此取消状态不能证明原生阶段完成。Host 在候选不可见的 `trial/hitch-phase-control/` 先记 prepared，再记 delivered / delivery_failed；回执仅为 request-only。同一活跃阶段、同一原因的已投递请求可幂等读取，失败投递不能隐式重试。Supervisor 仍须根据 controller 的原生 reset / terminal 证据发起取消，并在有界停止/收集时间内等待 `run_phase` 完成、校验封存 bundle，之后才能回收容器或启动下一阶段。实际 Hitch CLI + synthetic harness 已验证取消结果、轨迹、原样导出与启动取消竞态；真实模型/OSWorld 任务和完整编排仍未验证。
 
 Supervisor 的合成编排测试现已将固定原生 phase 函数、HTTP/Unix RPC 与实际 Hitch CLI 串联，覆盖两个阶段、gate 提前结束、候选提前退出、错误绑定/schema、预算耗尽、回收失败和 session 重用。候选容器在该测试中用本地目录适配，不能与独立 Docker recycler 测试合称真实 VM 验证。`hitch-native-phases/supervision.json` 保存全部观察到的边界和封存引用，仍不含评分。整题超时不会伪造 DONE 或最终分数；在原生 `predict()` 阻塞时取消只得到 invalid，需要后续按固定 SDK 实现 final-state grading 策略。调用合同详见 `benchmark-packages/osworld/runtime/README.md`。
+
+整题导入测试保留真实零分语义，验证 phase bundle 原始字节、整题去重、幂等重放与 assessment 已封存但 publication 未写入的恢复。读取结果时重新核对 assessment digest、证据树和全部 group 成员；截断 audit、错误 run 绑定、指标/证据篡改均拒绝。`collect-only` 已识别 group 引用；多阶段 verifier-only regrade 和远程单 bundle 传输仍显式拒绝，不能声称已支持。
 
 ### 9.6 CursorBench 与其他私有集
 

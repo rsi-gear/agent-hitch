@@ -20,7 +20,7 @@ import threading
 import types
 import zlib
 
-from bridge_smoke import ExecResult, install_harbor_stubs, load_bridge
+from bridge_smoke import AgentContext, ExecResult, install_harbor_stubs, load_bridge
 
 install_harbor_stubs()
 repo = Path(__file__).resolve().parents[1]
@@ -242,7 +242,15 @@ async def run_case(root, case, executable, revision):
         thread.start()
     try:
         if case in ["complete", "gated"]:
-            result = await supervisor.run()
+            env._hitch_benchmark = types.SimpleNamespace(config={
+                "task": {"driver": {"kind": "tool-server", "config": {"service": "controller", "endpoint": server.endpoint,
+                    "native_phases": {"protocol": "hitch-native-phase-control@1", "argv": supervisor.controller["argv"], "audit_path": "/evidence/channel.jsonl", "shutdown_timeout_ms": 5000}}}},
+                "tools": server.tools, "task_digest": digest, "agent_timeout_sec": 20})
+            context = AgentContext()
+            await agent.run("outer task prompt", env, context)
+            result = json.loads((root / "hitch-native-phases/supervision.json").read_text())
+            assert context.metadata["hitch_context_kind"] == "benchmark_phase_group"
+            assert context.metadata["hitch_run_group_id"] == result["run_group_id"] and "hitch_run_id" not in context.metadata
             count = 1 if case == "gated" else 2
             assert result["status"] == "completed" and len(result["phases"]) == count
             assert result["scope"] == "candidate-evidence-only" and "reward" not in result
@@ -265,8 +273,9 @@ async def run_case(root, case, executable, revision):
                 assert result["failure_code"] == expected[case], result
                 assert result["status"] == "failed" and result["cleanup_required"] is False and env.events[-1] == "cleanup"
                 assert len(env.binds) <= (2 if case == "reused-session" else 1)
-        try: await supervisor.run(); raise AssertionError("reused supervisor")
-        except PhaseSupervisionError as error: assert "single_use" in str(error)
+        if case not in ["complete", "gated"]:
+            try: await supervisor.run(); raise AssertionError("reused supervisor")
+            except PhaseSupervisionError as error: assert "single_use" in str(error)
         persisted = (root / "hitch-native-phases/supervision.json").read_text()
         for secret in [session["token"], "f" * 64, *env.tokens, *agent._phase_control_tokens.values()]:
             assert secret not in persisted

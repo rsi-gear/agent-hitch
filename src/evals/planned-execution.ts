@@ -1,3 +1,4 @@
+import { ProgressPublisher } from "./planned-progress-publisher.js";
 import path from "node:path";
 import type { ResolvedRevision } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
@@ -14,9 +15,8 @@ import { runInfrastructureRetries } from "./infrastructure-retry.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { runRemoteInfrastructureRetries } from "./remote-infrastructure-retry.js";
 import { beginPlannedInfrastructureRetry } from "./planned-retry-lifecycle.js";
-import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { assertBackendTrialSet, localSourceBackendFailure } from "./result-helpers.js";
-import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
+import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError } from "./trial-import.js";
 import type { WorkItemAdmissionController } from "./service-types.js";
 import type { EvalDockerResourceReaper } from "./service-types.js";
 import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
@@ -449,52 +449,4 @@ async function executeLeasedWorkItem(
   options.sink.emit({ type: "eval.collection.completed", work_id: item.work_id, duration_ms: Date.now() - collectionStartedAt });
   if (run.rawResult !== null) assertBackendTrialSet(run.rawResult, refs);
   return { attempt: logicalAttempt, workId: item.work_id, tasks: [taskId], refs, run, ...(environmentImages ? { environmentImages } : {}) };
-}
-
-class ProgressPublisher {
-  private progress: EvalProgressV1;
-  private tail: Promise<void> = Promise.resolve();
-  private readonly options: ExecutePlannedHarborOptions;
-
-  constructor(progress: EvalProgressV1, options: ExecutePlannedHarborOptions) {
-    this.progress = progress;
-    this.options = options;
-  }
-
-  publish(ref: EvalTrialRefV1, workId: string): Promise<void> {
-    const operation = this.tail.then(async () => {
-      const previous = this.progress.generation;
-      const next = mergeEvalProgressTrial(this.progress, ref);
-      if (next.generation === previous) return;
-      await validateEvalTrialReferences(this.options.root, this.options.evalId, [ref], {
-        benchmarkId: this.options.request.benchmark_id,
-        benchmarkRevision: this.options.request.benchmark_revision,
-      });
-      const bundle = await readJSON<{ bundle_digest?: string }>(path.join(this.options.root, "runs", ref.run_id, "bundle.index.json"));
-      this.options.sink.emit({ type: "result.bundle.sealed", work_id: workId, run_id: ref.run_id, trial_id: ref.trial_id, bundle_digest: bundle.bundle_digest });
-      this.progress = next;
-      await writeEvalProgress(this.options.evalDirectory, this.progress);
-      this.options.sink.emit({
-        type: "eval.trial.published",
-        work_id: workId,
-        trial_id: ref.trial_id,
-        task_id: ref.task_id,
-        attempt: ref.attempt,
-        run_id: ref.run_id,
-        observation_status: ref.observation_status,
-        settled_trials: this.progress.trials.length,
-        generation: this.progress.generation,
-      });
-    });
-    this.tail = operation.catch(() => {});
-    return operation;
-  }
-
-  async settle(): Promise<void> {
-    await this.tail;
-  }
-
-  current(): EvalProgressV1 {
-    return this.progress;
-  }
 }

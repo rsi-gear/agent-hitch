@@ -198,13 +198,13 @@ API can inspect and seal a group of consecutive phases with matching candidate
 identity, distinct native sessions and verified bundle hashes. The group is
 candidate evidence only; it does not publish a score or prove native completion.
 
-The remaining supervisor must use a fresh candidate environment across native
-resets and reinstall the runtime/tool binding before each model process. The
+The supervisor uses a fresh candidate environment across native
+resets and reinstalls the runtime/tool binding before each model process. The
 generic Harbor environment now provides `recycle_candidate_phase(phase_index)`
 for this boundary (see below). VM and website state remain under the upstream
-phase runner. The current one-bundle Harbor importer cannot publish these groups
-yet; group import and reconciliation with native terminal/gate evidence remain
-required.
+phase runner. The native-phase importer checks the complete controller audit,
+candidate replacement receipts and all sealed phase bundles before publishing
+one whole-task assessment. Ordinary single-run import remains separate.
 See section 18 of `docs/provider-native-trajectory-comparison-spec.zh-CN.md`.
 
 ## Candidate container replacement
@@ -258,8 +258,9 @@ task_digest=..., remaining_timeout_ms=...)` reserves a fresh run ID without
 starting a model. Call it after setup, then use `prepared.run_id` for the private
 controller bind and upload that binding before calling
 `await agent.run_phase(prepared, environment, phase_context)`. The handle is
-immutable and can be consumed once by the creating agent. This API is separate
-from the default single-run `run()` path; no standard package selects it yet.
+immutable and can be consumed once by the creating agent. Standard packages with
+`driver.config.native_phases` select the supervisor from `run()`; the supervisor
+uses this per-phase API internally.
 
 The supervisor supplies the same frozen whole-task digest for each phase, even
 when native instructions change. Preparation rejects reused/skipped phase
@@ -287,7 +288,8 @@ identity mismatch and export/process failures. `test/benchmark-phase-runs.test.t
 executes actual Hitch runs with synthetic native harness processes, copies their
 sealed phase bundles and verifies all file/index bytes plus identity/no-overwrite
 gates. These tests do not run a model or OSWorld. The supervisor below connects
-these APIs; standard-package selection and whole-task assessment/import remain required.
+these APIs; standard-package selection and whole-task assessment/import also have
+synthetic tests, described below.
 
 ## Cancelling a phase while retaining its evidence
 
@@ -356,10 +358,11 @@ evidence = await NativePhaseSupervisor(
 ).run()
 ```
 
-The default Harbor `run()` path does **not** invoke this API. Standard-package
-driver/lifecycle assembly and phase-group assessment import are still missing.
-This example describes the callable integration seam, not a runnable OSWorld
-package. A compatible frozen controller runtime and a lease are required.
+The standard Harbor `run()` path selects this API only for a locked native-phase
+tool-server task. A compatible frozen controller runtime and a lease are required.
+The OSWorld authorized task producer, full VM/website lifecycle assembly and real
+task validation remain incomplete; this example alone is not a runnable OSWorld
+package.
 
 The controller command accepts `{request_id, operation, parameters}` on stdin and
 prints just its JSON output; `controller_client.py` authenticates privately.
@@ -393,8 +396,8 @@ references, never scores or tool credentials. Failed delivery, exit, replacement
 inspection or native state initiates private cancellation and whole-trial cleanup.
 The journal records whether cleanup is still required. A supervisor is single-use
 and refuses to adopt an existing evidence directory. Lease-owner cleanup remains
-necessary if teardown itself fails. Native controller audit and final grading
-files must still be checked independently when implementing the trial importer.
+necessary if teardown itself fails. The trial importer independently checks the
+native controller audit and final grading files before accepting the group.
 
 Validation: `test-support/harbor_phase_supervisor_smoke.py` combines the pinned
 native phase functions, actual private Unix/HTTP RPC, actual Hitch CLI cancellation
@@ -403,3 +406,74 @@ and setup are represented by a local directory adapter. Cases cover two phases,
 gate termination, early model exit, schema/state errors, task budget exhaustion,
 recycle failure, uncertain cancellation delivery and reused native sessions. This does not prove a full Docker/VM
 deployment, and adds no official OSWorld task acceptance.
+
+## Standard package and whole-task assessment
+
+Declare the existing tool-server endpoint/schema/service and add:
+
+```json
+{
+  "native_phases": {
+    "protocol": "hitch-native-phase-control@1",
+    "argv": ["python", "/opt/osworld/controller_client.py", "--socket", "/private/control.sock", "--session", "/private/session.json"],
+    "audit_path": "/evidence/channel.jsonl",
+    "shutdown_timeout_ms": 30000
+  }
+}
+```
+
+This fragment belongs to `driver.config`. Both task requirements and profile tool
+policy must grant `native-phases@1`, `native-image-input` and
+`tool-result-images@1`, in addition to the normal Compose/tool-server capabilities.
+The task declares `/evidence` among its controller submission paths. The private
+prepare hook returns `{"ready":true,"native_phases_ready":true}` inside its normal
+hook `output`; it must omit static tool bindings or return an empty list. The
+supervisor alone binds a reserved run ID and uploads the resulting phase token.
+
+Compiler `harbor-package@4` retains the original source task and candidate time
+budget. Its compiled Harbor outer agent timeout adds
+`3 * collection_timeout_ms + 2 * cleanup_grace_ms` for final cancellation/export,
+host inspection, snapshot and teardown. This outer guard cannot increase the
+candidate deadline. Phase shutdown is limited to the profile collection allowance
+and at most 600,000 ms. Intermediate setup, binding and execution consume the same
+whole-task deadline. Native wall-clock expiration currently produces invalid
+evidence; implementing the pinned SDK's final-state grading on that path remains
+required before claiming complete OSWorld budget semantics.
+
+`src/evals/native-phase-evidence.ts` verifies the frozen source and compiled trees,
+all original run identities/bundle bytes, every native generation and prediction,
+screenshot hashes, matching private run bindings and final `completed` event.
+Retirement receipts must form an unbroken chain of fresh candidate containers with
+unchanged image/configuration/ownership and preserved sidecars. A truncated audit,
+foreign binding, missing phase or changed receipt cannot settle a valid trial.
+The independent verifier's metric membership, ranges, source task ID, task digest,
+metric map and Harbor primary reward must agree. A valid zero is retained.
+
+The resulting trial reference has exactly one candidate form: `run_id` for an
+ordinary task, or `run_group: {run_group_id, digest}` plus mandatory
+`assessment: {id, digest}` for a native-phase task. A group counts once per task
+and attempt. It never invents a representative run ID or gives each phase the
+whole-task grade. Original bundles remain byte-for-byte sealed under `runs/`.
+
+Whole-task evidence is stored under
+`evals/<eval>/assessments/<assessment>/evidence/`: original controller artifacts
+and verifier files, supervision/lifecycle records, candidate replacement receipts,
+resource/image evidence and per-phase interaction capture. `assessment.json`
+commits the group reference, observation, metric contract and evidence tree digest.
+Readers recheck the assessment, all group members and native evidence. Replayed
+imports reuse the same assessment only when source evidence is unchanged; partial
+uncommitted destinations are retained for diagnosis rather than overwritten.
+
+The separate `eval/publication.json` receipt and eval progress can be recovered
+from a committed assessment after an interrupted publication. Recovery validates
+the complete evidence before settling the trial. `collect-only` recognizes the
+group reference; verifier-only regrade and the remote single-bundle transport
+currently reject groups explicitly.
+
+Validation: `test/native-phase-assessment.test.ts` imports two actual Hitch runs
+with synthetic harness output as one task, keeps zero reward and original bundle
+bytes, replays the import, recovers a missing publication receipt, and rejects
+truncated/misbound/tampered evidence. The supervisor smoke test invokes standard
+`HitchHarborAgent.run()` for both two-phase and gate-completion cases. These are
+contract tests with synthetic task/controller evidence; no official OSWorld task
+or model score is claimed.

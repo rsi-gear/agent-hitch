@@ -35,7 +35,8 @@ export interface CollectOnlyRerunInput {
 
 interface CollectedSource {
   source_trial_id: string;
-  source_run_id: string;
+  source_run_id?: string;
+  source_run_group_id?: string;
   source_work_id: string;
   source_backend_directory: string;
 }
@@ -166,7 +167,7 @@ async function collectSlot(
       ref,
       source: {
         source_trial_id: ref.trial_id,
-        source_run_id: ref.run_id,
+        ...(ref.run_group ? { source_run_group_id: ref.run_group.run_group_id } : { source_run_id: ref.run_id }),
         source_work_id: work.work_id,
         source_backend_directory: relativeBackend.split(path.sep).join("/"),
       },

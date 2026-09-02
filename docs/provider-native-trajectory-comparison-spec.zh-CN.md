@@ -547,7 +547,7 @@ OSWorld 等任务的原生 runner 会在同一环境中多次重置候选会话�
 
 `inspectBenchmarkPhaseGroup`、`sealBenchmarkPhaseGroup` 和 `readBenchmarkPhaseGroup` 已提供有序阶段证据集合。Group 文件位于 `evals/<eval-id>/run-groups/<run-group-id>/group.json`，schema 为 `benchmark-phase-group.schema.json`；只引用原 `runs/` 的 bundle digest/index digest 与 native session ID。成员必须从 phase 1 连续排列，属于同一 trial/attempt、benchmark、task ID 与冻结 task digest、verifier、harness/model identity；执行时间不重叠，session ID 不重复，记录与轨迹均通过完整性校验。读取 group 时重新检查全部成员，封存后的 group 不允许用不同成员或证据覆盖。
 
-该集合的 scope 固定为 `candidate-evidence-only`，不含 reward/observation。**连续编号和不同 session ID 不证明原生任务已完成，也不能独自证明没有恢复旧上下文。** 当前单 run 导入器拒绝把 phase run 当成完整 trial；多阶段整题评分仍未接通。后续 supervisor/导入器必须：
+该集合的 scope 固定为 `candidate-evidence-only`，不含 reward/observation。**连续编号和不同 session ID 不证明原生任务已完成，也不能独自证明没有恢复旧上下文。** 单 run 导入器拒绝把 phase run 当成完整 trial；标准包通过专门的多阶段导入器关联整题评分。Supervisor/导入器必须：
 
 1. 在每次原生 reset 后准备独立候选环境、runtime 和日志挂载，防止后续候选读取旧阶段 prompt、scratch 或轨迹；销毁旧候选进程及其后台子进程后才启动下一会话，保留原生 VM/网站的阶段状态。
 2. 在启动前私有绑定 `run_id`，仅把当前阶段的 instruction、观察和工具绑定交给候选；禁止恢复/分叉旧模型会话，记录实际 native session ID 和运行命令配置。
@@ -557,4 +557,10 @@ OSWorld 等任务的原生 runner 会在同一环境中多次重置候选会话�
 
 当前测试通过实际 Hitch 执行器启动合成 harness 进程，验证独立 copy workspace、独立 session 标识、不可变 group、错误身份/顺序/篡改拒绝和计分排除。它未执行真实模型、OSWorld VM 或官方任务，不计作 benchmark 两题验收。
 
-通用 `NativePhaseSupervisor` API 现已串起私有 native state/bind/cancel、候选 prepare/run/cancel、容器回收、重新 setup 与绑定。它在容器退役后调用 `inspectSealedPhaseRunBundle`，检查原始 task/context/parent、harness revision、bundle、trajectory 及会话/时间一致性；完整阶段列表与原生边界写到候选不可见的 `hitch-native-phases/supervision.json`，scope 仍为 `candidate-evidence-only`。整题预算不会逐阶段重置，退出但尚有待答 observation 的候选不会被另一会话续跑。最后阶段停止 `main` 并走最终 snapshot，异常走整题 cleanup。实际 Hitch CLI + 原生函数/RPC 的合成测试通过；容器替换在该编排测试中由本地目录模拟，真实 Docker 的独立 recycler canary 不能替代整体 VM 验收。标准包入口和上述第 3–5 项的整题 assessment 导入仍待完成。
+通用 `NativePhaseSupervisor` API 现已串起私有 native state/bind/cancel、候选 prepare/run/cancel、容器回收、重新 setup 与绑定。它在容器退役后调用 `inspectSealedPhaseRunBundle`，检查原始 task/context/parent、harness revision、bundle、trajectory 及会话/时间一致性；完整阶段列表与原生边界写到候选不可见的 `hitch-native-phases/supervision.json`，scope 仍为 `candidate-evidence-only`。整题预算不会逐阶段重置，退出但尚有待答 observation 的候选不会被另一会话续跑。最后阶段停止 `main` 并走最终 snapshot，异常走整题 cleanup。声明 `native_phases` 的标准包已从默认 Harbor bridge 入口选择该 API。实际 Hitch CLI + 原生函数/RPC 的合成测试通过；容器替换在该编排测试中由本地目录模拟，真实 Docker 的独立 recycler canary 不能替代整体 VM 验收。
+
+第 3–5 项由 `src/evals/native-phase-evidence.ts` 实现：先验证冻结 source/compiled package，再核对完整原生 audit 的 generation、prediction、截图摘要、run 绑定与最终 completed；容器替换回执必须形成连续且身份一致的链。独立 verifier 的指标集合、范围、task identity 和 primary reward 必须吻合。额外证据保存到 `evals/<eval>/assessments/<assessment>/evidence/`，`assessment.json` 封存 group 引用、整题 observation、metric contract 和证据树摘要，原 phase bundle 保持逐字节不变。
+
+`EvalTrialRefV1` 是互斥联合：普通 trial 使用 `run_id`，多阶段 trial 使用 `run_group: {run_group_id, digest}` 和必需的 `assessment: {id, digest}`。Progress/result 按 task/attempt 聚合一次，并以 group ID 去重；发布前与只读加载时均验证全部 group 成员及 assessment。已封存 assessment 可以恢复 publication 写入中断，尚未封存的部分目标保留为诊断，不能自动覆盖。`collect-only` 支持 group；verifier-only regrade、远程单 bundle envelope 以及单 run comparison/training 不支持将 group 当成普通 run。
+
+整题导入测试使用实际 Hitch 执行的两个 synthetic phase，覆盖零分保留、原 bundle 不变、导入重放、发布恢复，以及截断 audit、错绑会话、指标和证据篡改拒绝。它不计作真实 benchmark 验收。OSWorld 原生 wall-clock deadline 的 final-state grading、授权任务 producer 和完整 VM/网站装配仍需完成。

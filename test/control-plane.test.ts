@@ -829,6 +829,7 @@ test("eval recovery reconciles a promoted bundle before progress and does not re
   const originalProgress = await readJSON<EvalProgressV1>(path.join(evalDirectory, "progress.json"));
   assert.equal(originalProgress.trials.length, 1);
   const originalTrial = originalProgress.trials[0]!;
+  assert.ok(!originalTrial.run_group);
   const publication = await readJSON<Record<string, unknown>>(path.join(root, "runs", originalTrial.run_id, "eval", "publication.json"));
   assert.equal(publication.eval_id, evalId);
   assert.equal(publication.mode, "settle");

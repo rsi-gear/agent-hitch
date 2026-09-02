@@ -37,6 +37,7 @@ export async function sealRegradeAssessment(directory: string, record: Record<st
 }
 
 export async function readRegradeObservation(root: string, evalId: string, trial: EvalTrialRefV1): Promise<RunObservationV1> {
+  if (trial.run_group) throw new Error("phase groups require their native phase assessment");
   const reference = trial.assessment;
   if (!reference || !/^assessment_[a-f0-9]{32}$/.test(reference.id) || !/^sha256:[a-f0-9]{64}$/.test(reference.digest)) throw new Error("invalid regrade assessment reference");
   const directory = path.join(statePaths(root).evals, evalId, "assessments", reference.id);

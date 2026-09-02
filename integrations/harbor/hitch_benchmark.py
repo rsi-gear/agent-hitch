@@ -90,6 +90,14 @@ class BenchmarkSession:
             self.write_journal()
             return
         response = await self.phase("prepare")
+        if self.config["task"]["driver"]["config"].get("native_phases"):
+            # There is no candidate identity yet. Only the phase supervisor may
+            # bind and upload a phase token after prepare/setup have completed.
+            if response["output"].get("native_phases_ready") is not True or response["output"].get("tool_bindings", []) != []:
+                self.failure = {"phase": "prepare", "error": "NativePhasePrepareInvalid"}
+                self.write_journal()
+                raise RuntimeError("native phase prepare must confirm readiness without a static binding")
+            return
         bindings = response["output"]["tool_bindings"]
         expected = self.config["task"]["driver"]["config"]
         if len(bindings) != 1 or bindings[0]["endpoint"] != expected["endpoint"] or bindings[0]["tools"] != self.config["tools"]:

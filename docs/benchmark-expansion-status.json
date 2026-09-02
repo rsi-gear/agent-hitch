@@ -168,7 +168,7 @@
         "candidate_process_name": "codex"
       },
       "latest_session_check": {
-        "observed_at": "2026-09-02T20:49:39.792973+00:00",
+        "observed_at": "2026-09-02T21:24:34+00:00",
         "exec_session_id": 26799,
         "candidate_process_alive": true,
         "candidate_process_name": "codex",
@@ -396,7 +396,7 @@
           "harbor_lifecycle_and_sdk_thread_wiring_complete": false,
           "real_scored_tasks": 0,
           "test": "python3 test-support/osworld_controller_smoke.py",
-          "limitation": "Two synthetic phases use actual HTTP/Unix sockets and the Node tool client. NativePhaseSupervisor now connects dynamic candidate binding through a separate callable API; full standard-package assembly and official VM/task/model execution remain incomplete."
+          "limitation": "Two synthetic phases use actual HTTP/Unix sockets and the Node tool client. NativePhaseSupervisor connects dynamic binding through the standard native-phase package entry. The OSWorld authorized task producer, full VM/website assembly and official task/model execution remain incomplete."
         },
         "phase_run_evidence": {
           "implemented": true,
@@ -448,7 +448,7 @@
             "image": "sha256:6623b5adf2d6b5b4b75b03ce24669474d9ef0216869b6738a071bf74733b24ed",
             "started_at": "2026-09-02T19:36:47.513830005Z"
           },
-          "limitation": "Independent synthetic Docker canary only; no guest VM, model, official task or score. NativePhaseSupervisor now calls the recycler after native revocation and candidate export, then verifies the host archive and reinstalls/binds the next candidate. Its joined orchestration test uses a local directory adapter, not Docker; full package/VM integration and group scoring remain incomplete."
+          "limitation": "Independent synthetic Docker canary only; no guest VM, model, official task or score. NativePhaseSupervisor now calls the recycler after native revocation and candidate export, then verifies the host archive and reinstalls/binds the next candidate. Its joined orchestration test uses a local directory adapter, not Docker; the generic group assessment importer now verifies the full native audit and retirement chain. Full OSWorld package/VM integration and real task scoring remain incomplete."
         },
         "phase_invocation_and_export": {
           "implemented": true,
@@ -468,15 +468,15 @@
           "completion_marker_outside_sealed_bundle": true,
           "failed_process_evidence_preserved": true,
           "overwrite_and_identity_mismatch_rejected": true,
-          "native_boundary_cancellation_complete": false,
-          "dynamic_supervisor_wiring_complete": false,
-          "group_assessment_import_complete": false,
+          "native_boundary_cancellation_complete": true,
+          "dynamic_supervisor_wiring_complete": true,
+          "group_assessment_import_complete": true,
           "real_scored_tasks": 0,
           "tests": [
             "python3 test-support/harbor_phase_invocation_smoke.py",
             "node --test dist/test/benchmark-phase-runs.test.js"
           ],
-          "limitation": "Bridge invocation uses stub Harbor I/O. Separate orchestration tests connect real Hitch CLI and native RPC through a synthetic local environment adapter. The default standard-package entrypoint and group assessment importer remain incomplete; no model, guest VM or official task runs.",
+          "limitation": "Invocation and import use synthetic Harbor I/O. Separate orchestration tests invoke the standard HitchHarborAgent.run entry with actual Hitch CLI and private native RPC through a local directory adapter. No model, guest VM or official task runs.",
           "cancellation_request_api_complete": true,
           "native_boundary_cancellation_api_complete": true,
           "generic_supervisor_api_available": true
@@ -505,14 +505,14 @@
           "cancelled_trajectory_and_bundle_verified_and_copied": true,
           "launch_listener_cancellation_race_fixed": true,
           "prelaunch_cancellation_test_passed": true,
-          "native_boundary_supervisor_wiring_complete": false,
-          "bounded_shutdown_and_collection_supervisor_complete": false,
+          "native_boundary_supervisor_wiring_complete": true,
+          "bounded_shutdown_and_collection_supervisor_complete": true,
           "real_scored_tasks": 0,
           "tests": [
             "node --test dist/test/phase-cancellation.test.js",
             "python3 test-support/harbor_phase_invocation_smoke.py"
           ],
-          "limitation": "The request receipt alone does not prove native completion. The generic NativePhaseSupervisor now checks independent private native boundaries, awaits export, retires the old environment and verifies sealed evidence, with failed-trial cleanup. Standard package integration and whole-task grading remain incomplete; no official VM/task/model validation.",
+          "limitation": "The request receipt alone does not prove native completion. The generic supervisor requires independent native boundaries and sealed evidence; the standard importer checks full native audit and candidate retirement receipts. Official VM/task/model validation and native final-state grading on wall-clock expiry remain incomplete.",
           "generic_supervisor_api_available": true
         },
         "native_phase_supervisor": {
@@ -548,14 +548,48 @@
           ],
           "container_and_setup_test_adapter": "local_directories",
           "full_docker_vm_orchestration_test_passed": false,
-          "standard_package_entrypoint_complete": false,
-          "group_assessment_import_complete": false,
+          "standard_package_entrypoint_complete": true,
+          "group_assessment_import_complete": true,
           "real_scored_tasks": 0,
           "tests": [
             "python3 test-support/harbor_phase_supervisor_smoke.py",
-            "node --test dist/test/benchmark-phase-runs.test.js"
+            "node --test dist/test/harbor-phase-supervisor.test.js",
+            "node --test dist/test/native-phase-assessment.test.js"
           ],
-          "limitation": "Pinned native phase functions, real HTTP/Unix RPC and real Hitch CLI use a synthetic harness. Candidate containers/setup are represented by a local directory adapter; the separate Docker recycler canary is not a full VM test. Standard package lifecycle selection, native final-state grading on wall-clock expiry and whole-task assessment/import remain incomplete. No official OSWorld task or real model is used."
+          "limitation": "Standard package entry, pinned native phase functions, real HTTP/Unix RPC and real Hitch CLI use a synthetic harness and local directory environment adapter. The separate Docker recycler canary is not a full VM test. Authorized OSWorld task production, VM/website lifecycle assembly and final-state grading on wall-clock expiry remain incomplete. No official OSWorld task or real model is used.",
+          "standard_driver_config": "tool-server.config.native_phases",
+          "native_budget_expiry_final_state_grading_complete": false
+        },
+        "native_phase_assessment": {
+          "implemented": true,
+          "synthetic_only": true,
+          "real_scored_tasks": 0,
+          "source": "src/evals/native-phase-evidence.ts",
+          "compiler": "harbor-package@4",
+          "original_source_task_and_candidate_budget_preserved": true,
+          "compiled_outer_timeout_extra": "3 * collection_timeout_ms + 2 * cleanup_grace_ms",
+          "source_and_compiled_package_identity_verified": true,
+          "all_original_phase_bundles_copied_without_resealing": true,
+          "complete_native_audit_and_screenshot_hashes_verified": true,
+          "native_bindings_match_each_group_member": true,
+          "candidate_replacement_receipts_chain_verified": true,
+          "final_native_completion_required": true,
+          "strict_metric_identity_mapping_and_primary_reward_checked": true,
+          "valid_zero_retained": true,
+          "one_trial_reference_per_whole_task": "run_group + assessment; no representative run_id",
+          "evidence": "evals/<eval>/assessments/<assessment>/evidence/",
+          "group_and_evidence_revalidated_on_read": true,
+          "unchanged_import_replay_idempotent": true,
+          "committed_assessment_recovers_missing_publication": true,
+          "partial_uncommitted_destinations_not_overwritten": true,
+          "collect_only_group_reference_supported": true,
+          "verifier_only_group_regrade_supported": false,
+          "remote_single_bundle_transport_supports_groups": false,
+          "tests": [
+            "node --test dist/test/native-phase-assessment.test.js",
+            "python3 test-support/benchmark_protocol_smoke.py"
+          ],
+          "limitation": "Uses actual Hitch runs with synthetic harness output and fabricated fixture controller audit/retirement evidence. Separately tests standard supervisor entry with actual private RPC; these are not one joined Docker/VM/model test and add no official benchmark acceptance."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -587,12 +621,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 356,
-    "passed": 353,
+    "total": 357,
+    "passed": 354,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/native-phase-supervisor-check.log",
-    "additional_verification": "Actual Hitch CLI, pinned native phase functions and private RPC passed two-phase/gate/error/cleanup orchestration cases with a synthetic harness and local directory environment adapter. Host inspection checks revision/trajectory/bundle/session/interval, and phase groups reject task-digest changes. No new real benchmark acceptance."
+    "evidence": ".hitch/benchmark-expansion/native-phase-assessment-check.log",
+    "additional_verification": "Standard native-phase package entry with actual Hitch CLI and private native RPC passes synthetic two-phase/gate/error/cleanup cases. The group importer preserves zero, original bundle bytes and one-task counting; rejects incomplete/misbound/tampered evidence; and recovers committed assessment publication. The compiled outer timeout reserves final collection while preserving the source candidate budget. No new real benchmark acceptance."
   },
-  "updated_at": "2026-09-02T20:49:39.793049+00:00"
+  "updated_at": "2026-09-02T21:29:57.964222+00:00"
 }

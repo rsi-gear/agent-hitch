@@ -1,5 +1,6 @@
-import { cp, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { stringify as stringifyTOML } from "smol-toml";
 import { benchmarkTreeDigest, loadBenchmark, loadBenchmarkLock } from "../benchmarks/index.js";
 import type { LoadedBenchmarkV1 } from "../domain/index.js";
 import { atomicWriteJSON, ensureDir, invalidInput, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
@@ -46,8 +47,8 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
   } });
 }
 
-async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string): Promise<{ source: string; tasks: string; digest: string }> {
-  const digest = sha256JSON({ lock: loaded.lock, compiler: "harbor-package@3" });
+export async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string): Promise<{ source: string; tasks: string; digest: string }> {
+  const digest = sha256JSON({ lock: loaded.lock, compiler: "harbor-package@4" });
   const store = await ensureDir(path.join(root, "store", "benchmarks"));
   const target = path.join(store, digest.slice(7));
   await withFileLock(path.join(store, "locks"), digest, async () => {
@@ -68,6 +69,18 @@ async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string): Promis
       for (const task of snapshot.tasks) {
         const taskPath = path.join(temporary, "tasks", task.id);
         await cp(path.join(snapshot.directory, task.path), taskPath, { recursive: true });
+        const nativePhases = task.config.driver.kind === "tool-server" && task.config.driver.config.native_phases;
+        if (nativePhases) {
+          // Hitch enforces the original candidate budget in its private phase
+          // supervisor. Harbor's outer guard also allows final evidence export
+          // and failure teardown without extending the model's deadline.
+          const execution = structuredClone(task.harbor);
+          const agent = execution.agent as Record<string, unknown>;
+          // Cancellation/export and host inspection each have a shutdown
+          // allowance, bounded by collection_timeout_ms; snapshot has its own.
+          agent.timeout_sec = Number(agent.timeout_sec) + Math.ceil((3 * loaded.profile.budget.collection_timeout_ms + 2 * loaded.profile.budget.cleanup_grace_ms) / 1000);
+          await writeFile(path.join(taskPath, "task.toml"), stringifyTOML(execution));
+        }
         await atomicWriteJSON(path.join(taskPath, ".hitch-benchmark.json"), {
           schema_version: "1", task_id: task.id, task: task.config,
           profile_digest: loaded.lock.profile_digest, profile: loaded.profile,

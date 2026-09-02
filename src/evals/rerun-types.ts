@@ -49,7 +49,8 @@ export interface EvalRerunResult {
   remaining_invalid_trials: Array<{ task_id: string; attempt: number }>;
   sources?: Array<{
     source_trial_id: string;
-    source_run_id: string;
+    source_run_id?: string;
+    source_run_group_id?: string;
     source_work_id: string;
     source_backend_directory: string;
   }>;

@@ -29,22 +29,7 @@
     "planned_trials": { "type": ["integer", "null"], "minimum": 0 },
     "trials": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["trial_id", "run_id", "task_id", "attempt", "observation_status"],
-        "properties": {
-          "trial_id": { "type": "string", "minLength": 1 },
-          "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
-          "task_id": { "type": "string", "minLength": 1 },
-          "attempt": { "type": "integer", "minimum": 1 },
-          "observation_status": { "enum": ["valid", "invalid"] },
-          "reward": { "type": "number" },
-          "verifier_result_ref": { "type": "string", "minLength": 1 },
-          "invalid_reason": { "type": "string", "minLength": 1 },
-          "assessment": { "$ref": "regrade-assessment-reference.schema.json" }
-        }
-      }
+      "items": { "$ref": "eval-trial-reference.schema.json" }
     },
     "summary": {
       "type": "object",

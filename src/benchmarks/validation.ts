@@ -3,7 +3,7 @@ import { HitchError, invalidInput } from "../foundation/index.js";
 
 export const BENCHMARK_CAPABILITIES = new Set([
   "shell", "artifact-export", "separate-verifier", "shared-verifier", "compose", "tool-server@1", "http-json-cli", "hitch-hook@1",
-  "model-call@1", "native-image-input", "no-tools", "tool-result-images@1",
+  "model-call@1", "native-image-input", "no-tools", "tool-result-images@1", "native-phases@1",
 ]);
 
 export function unsupported(message: string): never {
@@ -118,7 +118,7 @@ export function parseTask(value: unknown, manifest: BenchmarkManifestV1): Benchm
     if (driver.kind !== "model-call" && t.requirements.includes("no-tools")) unsupported("only the trusted model-call runner enforces no-tools");
     fields(t.lifecycle, [], "native lifecycle (Harbor owns the lifecycle)");
   } else {
-  const config = fields(driver.config, ["transport", "endpoint", "schema", "service"], "driver.config");
+  const config = fields(driver.config, ["transport", "endpoint", "schema", "service", "native_phases"], "driver.config");
   if (config.transport !== "http-json-cli") unsupported("unsupported tool-server transport");
   nonempty(config.service, "tool service");
   if (!/^[a-z][a-z0-9_-]*$/.test(config.service) || config.service === "main") throw invalidInput("tool service must be a sidecar");
@@ -126,6 +126,17 @@ export function parseTask(value: unknown, manifest: BenchmarkManifestV1): Benchm
   const url = new URL(config.endpoint);
   if (url.protocol !== "http:" || url.hostname !== config.service || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw invalidInput("tool endpoint must target the declared isolated Compose service root");
   relativePath(config.schema);
+  if (config.native_phases !== undefined) {
+    const phases = fields(config.native_phases, ["protocol", "argv", "audit_path", "shutdown_timeout_ms"], "native_phases");
+    if (phases.protocol !== "hitch-native-phase-control@1") unsupported("unsupported native phase protocol");
+    if (!Array.isArray(phases.argv) || !phases.argv.length || phases.argv.length > 32) throw invalidInput("invalid native phase controller argv");
+    phases.argv.forEach(arg => { nonempty(arg, "native phase argv"); if (arg.length > 8192) throw invalidInput("native phase argv too long"); });
+    positive(phases.shutdown_timeout_ms, "phase shutdown timeout");
+    if (phases.shutdown_timeout_ms > 600000) throw invalidInput("native phase shutdown allowance too large");
+    nonempty(phases.audit_path, "native phase audit path");
+    if (!phases.audit_path.startsWith("/") || phases.audit_path.slice(1).split("/").some(p => !p || p === "." || p === "..") || /[\\\x00-\x1f\x7f]/.test(phases.audit_path)) throw invalidInput("invalid native phase audit path");
+    for (const cap of ["native-phases@1", "native-image-input", "tool-result-images@1"]) if (!t.requirements.includes(cap)) throw invalidInput(`native phases require ${cap}`);
+  }
   const lifecycle = fields(t.lifecycle, ["prepare", "quiesce", "snapshot", "cleanup"], "lifecycle");
   for (const phase of ["prepare", "quiesce", "snapshot", "cleanup"]) {
     const hook = fields(lifecycle[phase], ["protocol", "target", "argv", "timeout_ms"], `hook.${phase}`);
@@ -135,11 +146,16 @@ export function parseTask(value: unknown, manifest: BenchmarkManifestV1): Benchm
     hook.argv.forEach((arg) => nonempty(arg, "hook argv")); positive(hook.timeout_ms, "hook timeout");
   }
   }
+  if (t.requirements.includes("native-phases@1") && (driver.kind !== "tool-server" || !(driver.config as Record<string, unknown>).native_phases)) throw invalidInput("native-phases@1 requires a native phase controller");
   const submission = fields(t.submission, ["kind", "paths", "max_bytes", "final_response"], "submission");
   if (submission.kind !== "artifacts" && !(driver.kind === "terminal" && submission.kind === "environment")) unsupported("unsupported submission");
   strings(submission.paths, "submission.paths"); positive(submission.max_bytes, "submission.max_bytes");
   if ((submission.kind === "artifacts" && !submission.paths.length) || submission.paths.some((p) => !p.startsWith("/") || p.split("/").includes(".."))) throw invalidInput("submission paths must be absolute safe container paths");
   if (submission.kind === "environment" && submission.paths.length) throw invalidInput("environment submission uses the upstream verifier's live workspace, not artifact paths");
+  if (driver.kind === "tool-server") {
+    const phases = (driver.config as { native_phases?: { audit_path: string } }).native_phases;
+    if (phases && !submission.paths.some(p => phases.audit_path === p || phases.audit_path.startsWith(p.replace(/\/$/, "") + "/"))) throw invalidInput("native audit must be in a declared controller snapshot");
+  }
   if (submission.final_response !== undefined && (submission.final_response !== "/hitch-evidence/final-response.json" || !submission.paths.includes(submission.final_response) || driver.kind === "tool-server")) throw invalidInput("invalid final response export");
   if (driver.kind === "model-call" && !submission.final_response) throw invalidInput("model-call requires canonical final response export");
   const grading = fields(t.grading, ["kind", "entrypoint", "metric_map"], "grading");

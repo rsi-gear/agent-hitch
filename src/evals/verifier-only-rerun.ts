@@ -43,7 +43,7 @@ export async function frozenRerunBenchmark(evalDirectory: string): Promise<{ id:
   if (lock.protocol !== "hitch-benchmark@1" || pkg.package_digest !== lock.package_digest
     || lock.package_digest !== sha256JSON(lock.files) || lock.package_digest !== await benchmarkTreeDigest(pkg.source)
     || compiled.digest !== pkg.compiled_digest
-    || compiled.digest !== sha256JSON({ lock, compiler: "harbor-package@3" })
+    || !["harbor-package@3", "harbor-package@4"].some(compiler => compiled.digest === sha256JSON({ lock, compiler }))
     || compiled.tasks_digest !== await benchmarkTreeDigest(pkg.tasks)) throw unavailable("compiled benchmark identity changed");
   return { id: lock.benchmark_id, revision: lock.package_digest, tasks: pkg.tasks };
 }
@@ -64,7 +64,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
   for (const slot of input.selectedTrials) {
     if (input.signal?.aborted) throw unavailable("verifier-only was aborted");
     const original = progress.trials.find(ref => ref.task_id === slot.task_id && ref.attempt === slot.attempt);
-    if (!original || original.assessment || original.observation_status !== "invalid"
+    if (!original || original.run_group || original.assessment || original.observation_status !== "invalid"
       || !["verifier_infrastructure_failure", "verifier_result_missing"].includes(original.invalid_reason ?? "")) throw unavailable("selected slot has no verifier-invalid original candidate");
     await validateEvalTrialReferences(input.root, input.evalId, [original], { benchmarkId: benchmark.id, benchmarkRevision: benchmark.revision });
     const runDirectory = path.join(statePaths(input.root).runs, original.run_id);
