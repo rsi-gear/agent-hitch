@@ -36,6 +36,12 @@ reset/evaluate, and release-specific partial/strict metrics. Candidate access
 must exclude task setup/evaluator code. Only an actual Hitch run plus official
 evaluator evidence can satisfy the real two-task validation requirement.
 
+The [managed VM components](runtime/README.md) now provide process ownership,
+private lease-bound control, writable-state reset and an upstream DesktopEnv
+provider. Synthetic process tests pass both locally and as PID 1 in a Linux
+container. Official guest boot, the complete task/controller/web assembly and
+the two selected task evaluations remain unverified or incomplete.
+
 ## Native screenshot transport
 
 The generic `tool-server@1` bridge supports `hitch-tool-result@1` image responses.

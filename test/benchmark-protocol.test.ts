@@ -33,3 +33,9 @@ test("GDPval public rubric handles partial credit, penalties and invalid judge o
   assert.equal(result.status,0,result.stderr);
   assert.match(result.stdout,/public rubric contract passed/);
 });
+
+test("OSWorld VM component fences leases and owns child processes without a host Docker socket", () => {
+  const result = spawnSync("python3", ["test-support/osworld_vm_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /failed-boot receipts passed/);
+});

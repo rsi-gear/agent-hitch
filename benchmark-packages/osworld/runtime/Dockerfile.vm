@@ -1,0 +1,8 @@
+# Assemble beside the verified, extracted official VM file named System.qcow2.
+# The producer must verify the release's archive SHA256 before extraction.
+FROM happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
+COPY vm_owner.py /hitch-vm/vm_owner.py
+COPY System.qcow2 /System.qcow2
+ENV CPU_CORES=4 RAM_SIZE=4G DISK_SIZE=32G DISPLAY=disabled NETWORK=user USER_PORTS=5000,9222,8080 KVM=Y VM_BOOT_TIMEOUT_SEC=300
+ENTRYPOINT ["/usr/bin/python3", "/hitch-vm/vm_owner.py"]
