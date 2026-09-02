@@ -38,7 +38,7 @@ Harbor 是第一种兼容任务格式和默认执行后端。Package v1 复用 H
 | Humanity’s Last Exam / 60.9% 无工具、65.0% 有工具 | 官方发布多模态选择/短答题及预测、judge 脚本；数据会修订，README 的规模说明不是 immutable manifest。 | 一题一任务，答案对 agent 隐藏。`no-tools` 与 `with-tools` 是不同 profile；只跑文本题必须另命名。[官方仓库](https://github.com/centerforaisafety/hle) |
 | AutomationBench / 31.4% | 公开集含六领域各 100 题；simple 的 200 题不进入主分。输出 `partial_credit` 和全断言通过的 `task_completed_correctly`。榜单使用另一套私有任务。 | 模拟 SaaS 环境 + 工具桥 + 官方状态断言；公共集标记 `public`，不能称作页面私有榜单复现。[官方 README](https://github.com/zapier/AutomationBench/blob/main/README.md) |
 | GDPval-AA v2 / 1853 | 使用 GDPval 220 题，产物盲评后拟合 Bradley–Terry 得到 Elo；v2 使用三个 frontier judge 组成的 panel，人类锚点为 1000。 | 先实现 GDPval-public 的文件产物与本地评审；得到同一 AA grading pool、修复后的输入和评分协议之前，不能把本地 Elo 标作 GDPval-AA。[AA 方法](https://artificialanalysis.ai/methodology/intelligence-benchmarking)、[AA 页面](https://artificialanalysis.ai/evaluations/gdpval-aa) |
-| OSWorld 2.0 / partial 77.9%、strict 41.7% | 公共仓库说明的 release 是 `osworld-v2-2026.06.24`；Python task 与完整 assets 需 gated dataset。 | VM/桌面环境 + computer-use bridge + 官方 evaluator。**发布页脚注明确使用 2026 年 8 月任务**；6 月版只能建立另一条基线。[官方仓库](https://github.com/xlang-ai/OSWorld-V2)、[发布记录](https://github.com/xlang-ai/OSWorld-V2/releases)、[发布页脚注](https://www.anthropic.com/claude-fable-and-mythos-5-1) |
+| OSWorld 2.0 / partial 77.9%、strict 41.7% | 已确认官方发布 `osworld-v2-2026.08.08`；代码、Python task、完整 assets 与网站必须配套，task/assets 仍需 gated dataset。 | VM/桌面环境 + computer-use bridge + 官方 evaluator。**发布页脚注明确使用 2026 年 8 月任务**；实施选用匹配的 8 月 release，并将各组件 tag 解析到 commit/hash。[官方仓库](https://github.com/xlang-ai/OSWorld-V2)、[发布记录](https://github.com/xlang-ai/OSWorld-V2/releases)、[发布页脚注](https://www.anthropic.com/claude-fable-and-mythos-5-1) |
 | CursorBench 3.2.0 / 73.4% | Cursor 描述它为基于真实内部会话的内部 eval，公开分数和方法；本次未找到完整公开任务和 grader。 | 取得授权包后导入 repo snapshot + query + grader；自建任务使用 `hitch-coding-workflows` 等独立名称。[榜单](https://cursor.com/cursorbench)、[方法](https://cursor.com/blog/cursorbench) |
 
 额外的口径要求：
@@ -656,7 +656,7 @@ CUA bridge 合同：`observe → image/artifact refs + seq`；`act(seq, action) 
 
 Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服务 namespace capacity；QEMU 需要的 KVM、内存与磁盘在 preflight 检查。CPU/memory 仍进入现有 ledger；VM 和远端网站账户也需要 lease/mutex。仅重置 VM 而不重置网站数据不算环境复原。
 
-先实现公开 6 月 release；正式复现页面前，必须拿到 8 月 release 的可授权 task/assets/code manifest 并验证整套组件一致。拿不到时该目标明确是 `blocked_on_dataset`，不是换个数据版本继续跑。
+实施更新：官方现已发布 `osworld-v2-2026.08.08`，直接以该 release 为目标。必须拿到其可授权 task/assets，并按官方 release manifest 锁定代码、任务、assets、网站与 VM 镜像；全部组件一致才运行。拿不到时该目标明确是 `blocked_on_dataset`，不能换成 6 月任务。参见[官方版本清单](https://github.com/xlang-ai/OSWorld-V2/blob/main/benchmark_releases/osworld-v2-2026.08.08.json)。
 
 ### 9.6 CursorBench 与其他私有集
 

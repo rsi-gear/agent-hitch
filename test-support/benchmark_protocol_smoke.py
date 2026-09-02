@@ -17,7 +17,7 @@ config = {
     "task_id": "unregistered", "profile_digest": "sha256:" + "a" * 64,
     "profile": {"budget": {"collection_timeout_ms": 10000}},
     "tools": [{"name": "new_tool", "description": "test", "inputSchema": {"type": "object"}}],
-    "task": {"lifecycle": {p: {"target": "environment:worker", "argv": ["python", "/test.py", "argument with spaces"], "timeout_ms": 1000} for p in phases}, "driver": {"config": {"endpoint": "http://worker:8765/"}}, "submission": {"paths": ["/state.json"], "max_bytes": 1000}},
+    "task": {"lifecycle": {p: {"target": "environment:worker", "argv": ["python", "/test.py", "argument with spaces"], "timeout_ms": 1000} for p in phases}, "driver": {"kind": "tool-server", "config": {"endpoint": "http://worker:8765/"}}, "submission": {"paths": ["/state.json"], "max_bytes": 1000}},
 }
 
 class Environment:
@@ -86,7 +86,7 @@ async def main():
         # the original reward JSON can distinguish invalid output from real zero.
         task_dir = root / "task"; task_dir.mkdir()
         config.update({"metrics": {"score": {"type": "binary", "range": [0, 1]}}, "primary_metric": "score", "task_digest": "sha256:" + "a" * 64})
-        config["task"].update({"grading": {"metric_map": {"score": "passed"}}, "source_task_id": "original"})
+        config["task"].update({"grading": {"kind": "command", "metric_map": {"score": "passed"}}, "source_task_id": "original"})
         (task_dir / ".hitch-benchmark.json").write_text(json.dumps(config))
         verifier_dir = root / "verifier"; verifier_dir.mkdir()
         (root / "benchmark-lifecycle.json").write_text(json.dumps({"phases": dict.fromkeys(phases, {}), "failure": None}))
@@ -101,6 +101,43 @@ async def main():
                 pass
         (verifier_dir / "reward.json").write_text(json.dumps({"passed": 0}))
         assert module.normalize_rewards(verifier, result)["rewards"]["reward"] == 0
+        # Native verifiers use Harbor JSON-first precedence and accept real zero.
+        config["task"]["driver"] = {"kind": "terminal", "config": {}}
+        config["task"]["grading"] = {"kind": "harbor", "metric_map": {"score": "reward"}}
+        (task_dir / ".hitch-benchmark.json").write_text(json.dumps(config))
+        (root / "benchmark-lifecycle.json").write_text(json.dumps({"phases": {}, "failure": None}))
+        (verifier_dir / "reward.json").unlink()
+        (verifier_dir / "reward.txt").write_text("0")
+        assert module.normalize_rewards(verifier, result)["rewards"]["reward"] == 0
+        (verifier_dir / "reward.json").write_text('{"reward": 1}')
+        assert module.normalize_rewards(verifier, result)["rewards"]["reward"] == 1
+        config["task"]["submission"]["final_response"] = "/hitch-evidence/final-response.json"
+        (task_dir / ".hitch-benchmark.json").write_text(json.dumps(config))
+        class EvidenceEnvironment:
+            environment_dir = task_dir / "environment"
+            trial_paths = SimpleNamespace(trial_dir=root)
+            def __init__(self): self.files = {}
+            async def exec(self, command): return SimpleNamespace(return_code=0)
+            async def upload_file(self, source, target): self.files[target] = Path(source).read_text()
+        candidate = EvidenceEnvironment()
+        await module.export_final_response(candidate, {"run_id": "run_test", "status": "succeeded", "output": "4"})
+        candidate.files["/hitch-evidence/final-response.json"] = "forged artifact"
+        verifier.environment = EvidenceEnvironment()
+        await module.restore_final_response(verifier)
+        observed = json.loads(verifier.environment.files["/hitch-evidence/final-response.json"])
+        assert observed["response"] == "4" and observed["run_id"] == "run_test"
+        config["task"]["requirements"] = ["separate-verifier"]
+        config["task"]["submission"].update({"paths": ["/output"], "max_bytes": 4})
+        (task_dir / ".hitch-benchmark.json").write_text(json.dumps(config))
+        output = root / "artifacts" / "output"; output.mkdir(parents=True)
+        (output / "answer").write_text("four")
+        module.validate_collected_submission(verifier)
+        (output / "answer").write_text("oversized")
+        try:
+            module.validate_collected_submission(verifier)
+            raise AssertionError("oversized artifact accepted")
+        except RuntimeError:
+            pass
     print("benchmark protocol failure gates passed")
 
 asyncio.run(main())

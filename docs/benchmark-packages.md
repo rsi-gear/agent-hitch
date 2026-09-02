@@ -1,11 +1,21 @@
-# Standard benchmark packages — MVP
+# Standard benchmark packages
 
 Implemented scope: local Package v1 loading, validation and content locking;
-explicit task enumeration; the existing Harbor 0.21 executor and real Hitch
-harnesses; `tool-server@1` over `http-json-cli`; command hooks and separate
-command grading with declared metric mapping. This is P0/P1 of
-`hitch-benchmark-eval-spec.zh-CN.md`. Full Eval V2, reports/regrade, other drivers,
-remote package execution and the full AutomationBench suite remain later work.
+explicit task enumeration; Harbor 0.21 execution with real Hitch harnesses;
+`tool-server@1`, native terminal tasks, and a trusted no-tools model-call driver.
+The terminal driver retains upstream collect hooks, task budgets, resource limits
+and shared/separate verifier behavior. Its grader accepts Harbor reward JSON or
+text with JSON-first precedence. Standard command graders require reward JSON.
+
+Independent producers are available under `benchmark-packages/automationbench`,
+`harbor-source` (Terminal-Bench 4.0 and Science 0.1), `gdpval` (public weighted
+rubric), and `hle` (authorized public data, separate no-tools/with-tools profiles).
+Implementation and real execution coverage are separate: see
+`benchmark-expansion-status.json` for fixed samples, attempts and blockers.
+OSWorld 2.0 requires its matching gated tasks/assets and VM integration;
+CursorBench requires its authorized task/grader package. Neither has a validated
+integration. Full Eval V2, report/regrade and remote package execution remain
+later work.
 
 ## Commands
 

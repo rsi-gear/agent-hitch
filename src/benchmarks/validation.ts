@@ -2,7 +2,8 @@ import type { BenchmarkManifestV1, BenchmarkProfileV1, BenchmarkTaskV1 } from ".
 import { HitchError, invalidInput } from "../foundation/index.js";
 
 export const BENCHMARK_CAPABILITIES = new Set([
-  "shell", "artifact-export", "separate-verifier", "compose", "tool-server@1", "http-json-cli", "hitch-hook@1",
+  "shell", "artifact-export", "separate-verifier", "shared-verifier", "compose", "tool-server@1", "http-json-cli", "hitch-hook@1",
+  "model-call@1", "native-image-input", "no-tools",
 ]);
 
 export function unsupported(message: string): never {
@@ -30,7 +31,7 @@ export function positive(value: unknown, label: string): asserts value is number
 }
 export function relativePath(value: unknown): string {
   nonempty(value, "package path");
-  if (!/^[A-Za-z0-9_.\/-]+$/.test(value) || value.startsWith("/") || value.split("/").some((part) => ["", ".", ".."].includes(part))) {
+  if (/[\x00-\x1f\x7f\\:]/.test(value) || value.startsWith("/") || value.split("/").some((part) => ["", ".", ".."].includes(part))) {
     throw invalidInput(`invalid package-relative path: ${value}`);
   }
   return value;
@@ -106,9 +107,16 @@ export function parseTask(value: unknown, manifest: BenchmarkManifestV1): Benchm
   if (t.schema_version !== "1") unsupported("unsupported task extension version");
   nonempty(t.source_task_id, "source_task_id"); strings(t.requirements, "requirements");
   for (const cap of t.requirements) if (!BENCHMARK_CAPABILITIES.has(cap)) unsupported(`required capability unavailable: ${cap}`);
-  for (const cap of ["shell", "tool-server@1", "http-json-cli", "hitch-hook@1", "separate-verifier", "compose", "artifact-export"]) if (!t.requirements.includes(cap)) throw invalidInput(`tool-server driver requires capability ${cap}`);
   const driver = fields(t.driver, ["kind", "protocol_version", "config"], "driver");
-  if (driver.kind !== "tool-server" || driver.protocol_version !== "1") unsupported("unsupported driver protocol");
+  if (!["tool-server", "terminal", "model-call"].includes(String(driver.kind)) || driver.protocol_version !== "1") unsupported("unsupported driver protocol");
+  const required = driver.kind === "model-call" ? ["model-call@1", "native-image-input", "no-tools", "artifact-export", "separate-verifier"] : driver.kind === "terminal" ? ["shell"] : ["shell", "tool-server@1", "http-json-cli", "hitch-hook@1", "separate-verifier", "compose", "artifact-export"];
+  for (const cap of required) if (!t.requirements.includes(cap)) throw invalidInput(`${driver.kind} driver requires capability ${cap}`);
+  if (driver.kind !== "tool-server") {
+    const config = fields(driver.config, driver.kind === "model-call" ? ["input"] : [], "driver.config");
+    if (driver.kind === "model-call") relativePath(config.input);
+    if (driver.kind !== "model-call" && t.requirements.includes("no-tools")) unsupported("only the trusted model-call runner enforces no-tools");
+    fields(t.lifecycle, [], "native lifecycle (Harbor owns the lifecycle)");
+  } else {
   const config = fields(driver.config, ["transport", "endpoint", "schema", "service"], "driver.config");
   if (config.transport !== "http-json-cli") unsupported("unsupported tool-server transport");
   nonempty(config.service, "tool service");
@@ -125,12 +133,16 @@ export function parseTask(value: unknown, manifest: BenchmarkManifestV1): Benchm
     if (!Array.isArray(hook.argv) || !hook.argv.length) throw invalidInput(`missing hook argv: ${phase}`);
     hook.argv.forEach((arg) => nonempty(arg, "hook argv")); positive(hook.timeout_ms, "hook timeout");
   }
-  const submission = fields(t.submission, ["kind", "paths", "max_bytes"], "submission");
-  if (submission.kind !== "artifacts") unsupported("unsupported submission");
+  }
+  const submission = fields(t.submission, ["kind", "paths", "max_bytes", "final_response"], "submission");
+  if (submission.kind !== "artifacts" && !(driver.kind === "terminal" && submission.kind === "environment")) unsupported("unsupported submission");
   strings(submission.paths, "submission.paths"); positive(submission.max_bytes, "submission.max_bytes");
-  if (!submission.paths.length || submission.paths.some((p) => !p.startsWith("/") || p.includes(".."))) throw invalidInput("submission paths must be absolute safe container paths");
+  if ((submission.kind === "artifacts" && !submission.paths.length) || submission.paths.some((p) => !p.startsWith("/") || p.split("/").includes(".."))) throw invalidInput("submission paths must be absolute safe container paths");
+  if (submission.kind === "environment" && submission.paths.length) throw invalidInput("environment submission uses the upstream verifier's live workspace, not artifact paths");
+  if (submission.final_response !== undefined && (submission.final_response !== "/hitch-evidence/final-response.json" || !submission.paths.includes(submission.final_response) || driver.kind === "tool-server")) throw invalidInput("invalid final response export");
+  if (driver.kind === "model-call" && !submission.final_response) throw invalidInput("model-call requires canonical final response export");
   const grading = fields(t.grading, ["kind", "entrypoint", "metric_map"], "grading");
-  if (grading.kind !== "command" || JSON.stringify(grading.entrypoint) !== '["bash","/tests/test.sh"]') unsupported("unsupported grader command");
+  if ((grading.kind !== "command" && !(driver.kind === "terminal" && grading.kind === "harbor")) || JSON.stringify(grading.entrypoint) !== '["bash","/tests/test.sh"]') unsupported("unsupported grader command");
   const mapping = object(grading.metric_map, "metric_map");
   if (Object.keys(mapping).sort().join("\0") !== Object.keys(manifest.metrics).sort().join("\0")) throw invalidInput("metric_map must cover exactly the declared metrics");
   Object.values(mapping).forEach((v) => nonempty(v, "metric mapping"));

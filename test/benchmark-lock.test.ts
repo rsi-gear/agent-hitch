@@ -31,7 +31,7 @@ test("new tool/metric names work without registration; unknown features, missing
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeBenchmarkFixture(root, { benchmark: "unregistered-synthetic", task: "different-task", tool: "grow", metric: "complete" });
   const loaded = await loadBenchmark(root);
-  assert.equal(loaded.tasks[0]!.config.driver.config.transport, "http-json-cli");
+  assert.equal(loaded.tasks[0]!.config.driver.kind, "tool-server");
   assert.deepEqual(mapBenchmarkMetrics({ passed: 1 }, loaded.manifest, loaded.tasks[0]!.config), { primary: 1, metrics: { complete: 1 } });
   const file = path.join(root, "tasks/different-task/task.hitch.json");
   const original = JSON.parse(await readFile(file, "utf8")) as Record<string, any>;

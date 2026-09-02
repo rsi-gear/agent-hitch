@@ -44,34 +44,47 @@ export const codexAdapter: AdapterDefinition = {
       const auth = codexContainerAuth();
       return { executable, args, input: request.prompt, ...(auth ? { env: auth } : {}) };
     },
-    translate(event) {
+    translate(event, state = {}) {
+      const pendingCommands = (state.pendingCommands ??= {}) as Record<string, Record<string, unknown>>;
       if (event.type === "thread.started") {
         return [{ type: "session.created", session_id: asString(event.thread_id) }];
       }
       if (event.type === "item.completed" && (event.item as Record<string, unknown>)?.type === "agent_message") {
-        return [{ type: "message.delta", text: asString((event.item as Record<string, unknown>).text) }];
+        return [{ type: "message.completed", text: asString((event.item as Record<string, unknown>).text) }];
       }
       const toolTypes = new Set(["command_execution", "file_change", "mcp_tool_call", "web_search"]);
       const item = (event.item || {}) as Record<string, unknown>;
       if (event.type === "item.started" && toolTypes.has(item.type as string)) {
+        if (item.type === "command_execution") pendingCommands[asString(item.id)] = item;
         return [{
           type: "tool.started",
           call_id: asString(item.id),
           name: asString(item.type),
+          input: item.type === "command_execution" ? { command: item.command } : item,
           native: item,
         }];
       }
       if (event.type === "item.completed" && toolTypes.has(item.type as string)) {
+        delete pendingCommands[asString(item.id)];
         return [{
           type: "tool.completed",
           call_id: asString(item.id),
           name: asString(item.type),
-          status: (item.status as string) || "completed",
+          status: item.status === "failed" || (typeof item.exit_code === "number" && item.exit_code !== 0) ? "failed" : "succeeded",
+          output: item.aggregated_output ?? item,
           native: item,
         }];
       }
-      if (event.type === "turn.completed" && event.usage) {
-        return [{ type: "usage.updated", usage: event.usage as Record<string, unknown> }];
+      if (event.type === "turn.completed") {
+        // Codex can finish while a long-lived server remains in progress. Close
+        // the observation with an explicitly unknown outcome, never success.
+        const detached = Object.entries(pendingCommands).map(([id, command]) => ({
+          type: "tool.completed" as const, call_id: id, name: "command_execution", status: "unknown",
+          output: "Codex turn ended without a command completion event; process outcome is unknown.",
+          native: { ...command, hitch_observation: "open_at_turn_end" },
+        }));
+        for (const id of Object.keys(pendingCommands)) delete pendingCommands[id];
+        return [...detached, ...(event.usage ? [{ type: "usage.updated" as const, usage: event.usage as Record<string, unknown> }] : [])];
       }
       if (event.type === "error") {
         return [{ type: "diagnostic", level: "error", message: asString(event.message) || "Codex error" }];

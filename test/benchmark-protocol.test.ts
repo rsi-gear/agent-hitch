@@ -27,3 +27,9 @@ test("Codex container auth stays outside result bundles and nested credentials a
   assert.ok(values.includes(token));
   assert.ok(!redactCredentialText(`value=${token}`, values).text.includes(token));
 });
+
+test("GDPval public rubric handles partial credit, penalties and invalid judge outputs", () => {
+  const result = spawnSync("python3", ["test-support/benchmark_sources_smoke.py"], {encoding:"utf8"});
+  assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/public rubric contract passed/);
+});

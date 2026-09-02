@@ -86,6 +86,9 @@ class BenchmarkSession:
 
     async def prepare(self):
         self.started = True
+        if self.config["task"]["driver"]["kind"] != "tool-server":
+            self.write_journal()
+            return
         response = await self.phase("prepare")
         bindings = response["output"]["tool_bindings"]
         expected = self.config["task"]["driver"]["config"]
@@ -103,6 +106,11 @@ class BenchmarkSession:
     async def snapshot(self):
         if self.stopped:
             return
+        if self.config["task"]["driver"]["kind"] != "tool-server":
+            # Harbor collects the native task's declared artifacts. Shared
+            # verifiers retain upstream live-workspace semantics.
+            self.stopped = True
+            return
         async def collect():
             await self.phase("quiesce")
             await self.phase("snapshot")
@@ -111,7 +119,7 @@ class BenchmarkSession:
         self.stopped = True
 
     async def cleanup(self):
-        if self.started:
+        if self.started and self.config["task"]["driver"]["kind"] == "tool-server":
             await self.phase("cleanup")
 
 
@@ -119,7 +127,76 @@ def candidate_instruction(instruction, environment):
     config = descriptor(environment.environment_dir)
     if config is None:
         return instruction, None
+    if config["task"]["driver"]["kind"] != "tool-server":
+        return (json.dumps(config["candidate_input"]) if "candidate_input" in config else instruction), int(config["agent_timeout_sec"] * 1000)
     return instruction + "\n\nTools are available through the locked tool-server bridge. Run `node /tmp/hitch-tools.mjs list` to read tool descriptions and JSON schemas. Invoke a tool using `node /tmp/hitch-tools.mjs TOOL_NAME 'JSON_ARGUMENTS'` (or pass - and JSON via stdin). Complete the requested workflow with these simulated service tools.\n", int(config["agent_timeout_sec"] * 1000)
+
+
+async def export_final_response(environment, result):
+    config = descriptor(environment.environment_dir)
+    target = config["task"]["submission"].get("final_response") if config else None
+    if not target:
+        return
+    if not isinstance(result.get("output"), str):
+        raise RuntimeError("canonical candidate final response is unavailable")
+    with tempfile.TemporaryDirectory(prefix="hitch-response-") as temp:
+        source = Path(temp) / "response.json"
+        encoded = json.dumps({"schema_version": "1", "run_id": result["run_id"],
+            "response": result["output"], "termination": result["status"], "source": "hitch-run-result"})
+        if len(encoded.encode()) > config["task"]["submission"]["max_bytes"]:
+            raise RuntimeError("canonical response exceeds submission limit")
+        source.write_text(encoded)
+        # Keep an authoritative copy outside the candidate environment. A
+        # background process cannot replace the response used for grading.
+        (environment.trial_paths.trial_dir / "hitch-final-response.json").write_text(encoded)
+        prepared = await environment.exec("mkdir -p /hitch-evidence")
+        if prepared.return_code != 0:
+            raise RuntimeError("cannot prepare candidate response export")
+        await environment.upload_file(source, target)
+
+
+async def restore_final_response(verifier):
+    config = descriptor(verifier.task.paths.environment_dir)
+    target = config["task"]["submission"].get("final_response") if config else None
+    if not target:
+        return
+    source = verifier.trial_paths.trial_dir / "hitch-final-response.json"
+    if not source.is_file():
+        raise RuntimeError("trusted candidate response evidence is missing")
+    # Called after Harbor uploads the frozen artifacts, in the separate grader.
+    prepared = await verifier.environment.exec("rm -rf -- /hitch-evidence && mkdir -p /hitch-evidence")
+    if prepared.return_code != 0:
+        raise RuntimeError("cannot restore trusted candidate response")
+    await verifier.environment.upload_file(source, target)
+
+
+def validate_collected_submission(verifier):
+    config = descriptor(verifier.task.paths.environment_dir)
+    if not config or config["task"]["driver"]["kind"] == "tool-server":
+        return
+    task = config["task"]
+    if "separate-verifier" not in task["requirements"]:
+        return
+    # Harbor 0.21 mirrors absolute sources directly under artifacts/.
+    root = verifier.trial_paths.trial_dir / "artifacts"
+    seen, size = set(), 0
+    for source in task["submission"]["paths"]:
+        file = root / source.lstrip("/")
+        for ancestor in [file, *file.parents]:
+            if ancestor == root.parent:
+                break
+            if ancestor.is_symlink():
+                raise RuntimeError("collected submission contains a symlink")
+        if not file.exists():
+            raise RuntimeError(f"submission_missing: {source}")
+        for entry in [file, *(file.rglob("*") if file.is_dir() else [])]:
+            if entry.is_symlink():
+                raise RuntimeError("collected submission contains a symlink")
+            if entry.is_file() and entry not in seen:
+                seen.add(entry)
+                size += entry.stat().st_size
+                if size > task["submission"]["max_bytes"]:
+                    raise RuntimeError("collected submission exceeds package limit")
 
 
 def normalize_rewards(verifier, result):
@@ -127,14 +204,21 @@ def normalize_rewards(verifier, result):
     if config is None:
         return result
     journal = json.loads((verifier.trial_paths.trial_dir / "benchmark-lifecycle.json").read_text())
-    if journal["failure"] or not {"prepare", "quiesce", "snapshot"} <= journal["phases"].keys():
+    native = config["task"]["driver"]["kind"] != "tool-server"
+    if journal["failure"] or (not native and not {"prepare", "quiesce", "snapshot"} <= journal["phases"].keys()):
         raise RuntimeError("benchmark lifecycle did not produce a valid snapshot")
     directory = verifier.trial_paths.verifier_dir
-    if (directory / "reward.txt").exists():
+    upstream = config["task"]["grading"]["kind"] == "harbor"
+    if (directory / "reward.txt").exists() and not upstream:
         raise RuntimeError("standard packages require only reward.json")
     # Read the original JSON before Harbor/Pydantic numeric coercion: bools and
     # numeric strings must not become valid binary scores via the result model.
-    raw = json.loads((directory / "reward.json").read_text())
+    if (directory / "reward.json").is_file():
+        raw = json.loads((directory / "reward.json").read_text())
+    elif upstream:
+        raw = {"reward": float((directory / "reward.txt").read_text().strip())}
+    else:
+        raise RuntimeError("metric_missing: reward.json")
     if not isinstance(raw, dict):
         raise RuntimeError("invalid grader metric object")
     mapped = {}

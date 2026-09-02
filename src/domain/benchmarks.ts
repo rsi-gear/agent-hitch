@@ -51,11 +51,12 @@ export interface BenchmarkTaskV1 {
     kind: "tool-server";
     protocol_version: "1";
     config: { transport: "http-json-cli"; endpoint: string; schema: string; service: string };
-  };
+  } | { kind: "terminal"; protocol_version: "1"; config: Record<string, never> }
+    | { kind: "model-call"; protocol_version: "1"; config: { input: string } };
   requirements: string[];
-  lifecycle: Record<BenchmarkHookPhase, BenchmarkHookV1>;
-  submission: { kind: "artifacts"; paths: string[]; max_bytes: number };
-  grading: { kind: "command"; entrypoint: ["bash", "/tests/test.sh"]; metric_map: Record<string, string> };
+  lifecycle: Partial<Record<BenchmarkHookPhase, BenchmarkHookV1>>;
+  submission: { kind: "artifacts" | "environment"; paths: string[]; max_bytes: number; final_response?: "/hitch-evidence/final-response.json" };
+  grading: { kind: "command" | "harbor"; entrypoint: ["bash", "/tests/test.sh"]; metric_map: Record<string, string> };
   extensions?: Record<string, unknown>;
 }
 

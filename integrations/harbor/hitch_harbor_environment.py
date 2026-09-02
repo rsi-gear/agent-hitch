@@ -79,7 +79,10 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                     positional[task_env_position] = updated
         super().__init__(*positional, **kwargs)
         self._hitch_benchmark = None
+        self._hitch_benchmark_platform = None
         directory = getattr(self, "environment_dir", None)
+        if directory and (directory.parent / ".hitch-benchmark.json").is_file():
+            self._hitch_benchmark_platform = "linux/amd64"
         if directory and directory.name == "environment" and (directory.parent / ".hitch-benchmark.json").is_file():
             from hitch_benchmark import BenchmarkSession, descriptor
             self._hitch_benchmark = BenchmarkSession(self, descriptor(directory))
@@ -90,6 +93,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             or self._hitch_prebuilt_task_image
             or self._hitch_model_proxy_host_gateway
             or self._hitch_main_gpu_count > 0
+            or self._hitch_benchmark_platform
         ):
             self._hitch_ownership_compose_path = self._write_ownership_overlay()
 
@@ -171,6 +175,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         service_overlays: dict[str, dict[str, Any]] = {}
         for name in sorted(services):
             config: dict[str, Any] = {}
+            if getattr(self, "_hitch_benchmark_platform", None):
+                config["platform"] = self._hitch_benchmark_platform
             if labels:
                 config["labels"] = labels
             resolved_image = image_overlays.get(name)

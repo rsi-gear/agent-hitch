@@ -53,7 +53,8 @@
     "integrations/harbor/hitch_harbor_task_resources.py",
     "integrations/harbor/hitch_harbor_verifier.py",
     "integrations/harbor/hitch_benchmark.py",
-    "integrations/harbor/hitch_tool_client.mjs"
+    "integrations/harbor/hitch_tool_client.mjs",
+    "integrations/model-call/cli.js"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -81,5 +82,8 @@
     "@types/node": "^22.20.1",
     "typescript": "^5.9.3"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "smol-toml": "1.8.0"
+  }
 }

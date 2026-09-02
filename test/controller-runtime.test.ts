@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashRuntimePayload, verifyRuntimePayload, canonicalEncodeManifest, isEntrypointPath } from "../src/controller-runtime/hash.js";
@@ -22,6 +22,10 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
   await mkdir(path.join(root, "dist", "src"), { recursive: true });
   await mkdir(path.join(root, "dist", "scripts"), { recursive: true });
   await mkdir(path.join(root, "integrations", "harbor"), { recursive: true });
+  await mkdir(path.join(root, "integrations", "model-call"), { recursive: true });
+  await writeFile(path.join(root, "integrations", "model-call", "cli.js"), "// trusted model-call fixture\n");
+  await mkdir(path.join(root, "node_modules", "smol-toml"), { recursive: true });
+  await writeFile(path.join(root, "node_modules", "smol-toml", "index.js"), "export const parse = () => ({});\n");
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ name: "fake-hitch", version: "0.2.0" })}\n`);
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
@@ -36,6 +40,8 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
 }
 
 async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): Promise<void> {
+  await cp(path.join(sourceRoot, "node_modules"), path.join(destinationRoot, "node_modules"), { recursive: true });
+  await cp(path.join(sourceRoot, "integrations", "model-call"), path.join(destinationRoot, "integrations", "model-call"), { recursive: true });
   const relative = path.join("integrations", "harbor");
   await mkdir(path.join(destinationRoot, relative), { recursive: true });
   for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
@@ -52,7 +58,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 9);
+  assert.equal(first.fileCount, 11);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -419,7 +425,7 @@ test("runtime allowlist is the execution closure, excluding dev artifacts and re
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
-  assert.equal(result.fileCount, 9);
+  assert.equal(result.fileCount, 11);
   await fixture.cleanup();
 });
 

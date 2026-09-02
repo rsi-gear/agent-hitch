@@ -29,6 +29,7 @@ import { buildManifest, safeAgentArgsForPersistence } from "./manifest.js";
 import { assertQueuedRunIdentity } from "./queued.js";
 import { adapterFidelity, failureResult, mergeRedactions, providerModelId } from "./outcome.js";
 import { writeResultBundleIndex } from "./bundle.js";
+import { prepareAdapterProcess } from "./adapter-process.js";
 export interface ExecuteRunOptions {
   runId: RunId;
   request: RunRequestInput;
@@ -178,13 +179,7 @@ export async function executeRun({
     stage = "adapter_setup";
     const adapterState: Record<string, unknown> = {};
     const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
-    const specification = await adapter.process(executionRequest, artifact.executable, {
-      observed_version: artifact.observed_version ?? undefined,
-      resolution,
-      run_directory: runDirectory,
-      runtime_home: runtimeHome,
-    });
-    if (artifact.entrypoint_args?.length) specification.args.unshift(...artifact.entrypoint_args);
+    const specification = await prepareAdapterProcess(adapter, executionRequest, artifact, resolution, runDirectory, runtimeHome);
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);
       sink.emit({ type: "run.failed", status: "cancelled", error: (result.error as { code: string; message: string }) });

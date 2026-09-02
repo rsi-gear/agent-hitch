@@ -686,6 +686,9 @@ mv "$stage_dir" "$target_dir"
 """.strip()
         )
         hitch_result, result_error_code, result_error_message = self._parse_hitch_result(result_read, run_id)
+        if hitch_result is not None and getattr(environment, "_hitch_benchmark", None):
+            from hitch_benchmark import export_final_response
+            await export_final_response(environment, hitch_result)
         primary_code: str | None = None
         primary_message: str | None = None
         if execution.return_code != 0:

@@ -1,0 +1,129 @@
+{
+  "schema_version": "1",
+  "goal": "Support all remaining benchmarks and validate two randomly sampled real tasks per benchmark",
+  "status": "in_progress",
+  "sampling": {
+    "algorithm": "sha256-rank-v1",
+    "seed": 20260902,
+    "count_per_benchmark": 2,
+    "resample_on_failure": false
+  },
+  "benchmarks": [
+    {
+      "id": "terminal-bench",
+      "release": "4.0.0",
+      "population": 66,
+      "release_digest": "sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732",
+      "tasks": [
+        "live-database-cutover",
+        "cumulative-layout-shift"
+      ],
+      "package": ".hitch/benchmark-expansion/packages/terminal-v2",
+      "status": "first_canary_invalid_repairs_pending",
+      "eval_id": "eval_2ec2393893824d2eb0377adad917969c",
+      "validation": {
+        "eval_id": "eval_2ec2393893824d2eb0377adad917969c",
+        "valid_tasks": 0,
+        "invalid_tasks": 2,
+        "issues": {
+          "cumulative-layout-shift": "Candidate completed; trajectory rejected a still-running command. Adapter fix passes regression tests; fresh real trial pending.",
+          "live-database-cutover": "Docker refused required 16 CPU limit on a 10 CPU host; no candidate run. Requires suitable worker."
+        }
+      },
+      "repair_package": ".hitch/benchmark-expansion/packages/terminal-layout-repair"
+    },
+    {
+      "id": "terminal-bench-science",
+      "release": "0.1.0",
+      "population": 70,
+      "release_digest": "sha256:91531bf50016a7c64f6cc60794a17c64c6b2c14858a8ae0de39ca16f2abd611a",
+      "tasks": [
+        "rolling-shutter-oma",
+        "cmb-cross-inference"
+      ],
+      "package": ".hitch/benchmark-expansion/packages/science-v2",
+      "status": "canary_running",
+      "blocker": null,
+      "hardware_note": "memory_mb is a container limit, not a minimum launch requirement. Run on observed ~7.65 GiB Docker host without changing upstream limits; preserve any OOM/resource failure and do not treat this as an official leaderboard reproduction.",
+      "eval_id": "eval_40a396a80f8441a2b7cf1baf2b88606b"
+    },
+    {
+      "id": "gdpval-public-rubric",
+      "revision": "11e7900cdcac61bc4daf59e65feb238acda98fbf",
+      "population": 220,
+      "tasks": [
+        "e14e32ba-d310-4d45-9b8a-6d73d0ece1ae",
+        "1b1ade2d-f9f6-4a04-baa5-aa15012b53be"
+      ],
+      "package": ".hitch/benchmark-expansion/packages/gdpval-v2",
+      "status": "canary_running",
+      "eval_id": "eval_05f887d2c1a24f2899ae3368e9608261",
+      "comparison": "Local public-rubric score, not GDPval-AA v2 private panel/Elo",
+      "previous_invalid_evals": [
+        "eval_ca9c56892af84432bf78eb08715d89a5",
+        "eval_b015bb2945e042619086c8af7bcb42a2"
+      ],
+      "parquet_sha256": "f8422fab9b21d90c0ee5f0659842ab666d418cb8940842918f9f4b0df7ae0202",
+      "source_integrity_verified": true,
+      "completed_tasks": [
+        {
+          "task_id": "1b1ade2d-f9f6-4a04-baa5-aa15012b53be",
+          "run_id": "run_0773df49c3a343d9ab3e39f11a97eb40",
+          "observation_status": "valid",
+          "rubric_score": 0.8260869565217391,
+          "strict_success": 0
+        }
+      ]
+    },
+    {
+      "id": "hle",
+      "revision": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
+      "status": "producer_and_runner_contract_validated_real_data_blocked",
+      "blocker": "Official cais/hle is gated=auto. Exact Parquet download returned HTTP 401; no HF_TOKEN/cache token. Candidate OPENAI_API_KEY and verifier HLE_JUDGE_API_KEY are also unavailable. No real HLE tasks were sampled or executed.",
+      "contract_validation": {
+        "synthetic_only": true,
+        "native_text_and_image_import": true,
+        "single_request_no_tools": true,
+        "untrusted_runner_rejected": true,
+        "official_grader_revision": "73ae974b1844c3ffa64c3f4343d9f1f259575700"
+      }
+    },
+    {
+      "id": "osworld-v2",
+      "release": "osworld-v2-2026.08.08",
+      "status": "implementation_pending_data_blocked",
+      "blocker": "User confirmed no authorized task/assets access. Official Python tasks and assets require Hugging Face authorization. No two-task execution evidence exists."
+    },
+    {
+      "id": "cursorbench",
+      "release": "3.2.0",
+      "status": "authorized_package_blocked",
+      "blocker": "User confirmed no authorized task/grader package. No public equivalent can be named CursorBench."
+    }
+  ],
+  "hardware": {
+    "host_memory_bytes": 17179869184,
+    "docker_memory_bytes": 8217968640,
+    "architecture": "aarch64",
+    "task_platform": "linux/amd64",
+    "note": "live-database-cutover needs 16 CPUs/16 GiB; Docker provides 10 CPUs/~7.65 GiB. Suitable remote worker requested; no answer yet. Requirements were not reduced.",
+    "docker_cpus": 10
+  },
+  "completion": {
+    "proven": false,
+    "requirements": [
+      "each benchmark has an executable standard package",
+      "two preselected real tasks executed through Hitch",
+      "upstream or explicitly named public rubric grading returns valid scores",
+      "raw evidence and identities recorded",
+      "regression tests pass"
+    ]
+  },
+  "regression": {
+    "command": "npm run check",
+    "passed": 334,
+    "skipped": 3,
+    "failed": 0,
+    "evidence": ".hitch/benchmark-expansion/check-3.log"
+  }
+}

@@ -16,6 +16,8 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
   if (options.request.dataset) throw invalidInput("--dataset and --benchmark are mutually exclusive");
   if (options.resumeExisting || options.precreated || options.remoteWorkExecutor || options.normalizedRequest) throw invalidInput("standard benchmark packages currently support local managed runs only");
   const loaded = options.benchmark ? await loadBenchmark(options.benchmark) : await loadBenchmarkLock(options.benchmarkLock!);
+  if (loaded.tasks.some(t => t.config.driver.kind === "model-call") && (!String(options.request.harness_ref).startsWith("model-call@") || (Array.isArray(options.request.agent_args) && options.request.agent_args.length))) throw invalidInput("no-tools tasks require the trusted model-call harness without agent overrides");
+  if (loaded.tasks.some(t => t.config.driver.kind === "terminal" && t.config.requirements.includes("native-image-input")) && !String(options.request.harness_ref).startsWith("codex@")) throw invalidInput("native-image terminal tasks currently require the Codex image-capable harness");
   const evalId = options.evalId ?? newEvalId();
   const compiled = await compileBenchmark(loaded, options.root);
   const request = {
@@ -45,7 +47,7 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
 }
 
 async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string): Promise<{ source: string; tasks: string; digest: string }> {
-  const digest = sha256JSON({ lock: loaded.lock, compiler: "harbor-tool-server@1" });
+  const digest = sha256JSON({ lock: loaded.lock, compiler: "harbor-package@3" });
   const store = await ensureDir(path.join(root, "store", "benchmarks"));
   const target = path.join(store, digest.slice(7));
   await withFileLock(path.join(store, "locks"), digest, async () => {
@@ -71,6 +73,7 @@ async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string): Promis
           profile_digest: loaded.lock.profile_digest, profile: loaded.profile,
           primary_metric: loaded.manifest.primary_metric, metrics: loaded.manifest.metrics,
           tools: task.tools, agent_timeout_sec: (task.harbor.agent as Record<string, unknown>).timeout_sec,
+          ...(task.config.driver.kind === "model-call" ? { candidate_input: JSON.parse(await readFile(path.join(snapshot.directory, task.config.driver.config.input), "utf8")) } : {}),
           package_digest: loaded.lock.package_digest, task_digest: loaded.lock.tasks.find((t) => t.task_id === task.id)!.task_digest,
         });
       }

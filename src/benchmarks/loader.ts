@@ -1,6 +1,7 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { BenchmarkEnvironmentRefV1, BenchmarkFileV1, BenchmarkLockV1, LoadedBenchmarkV1, Sha256 } from "../domain/index.js";
+import { fileURLToPath } from "node:url";
+import type { BenchmarkEnvironmentRefV1, BenchmarkFileV1, BenchmarkLockV1, BenchmarkTaskV1, LoadedBenchmarkV1, Sha256 } from "../domain/index.js";
 import { atomicWriteJSON, invalidInput, sha256Bytes, sha256JSON } from "../foundation/index.js";
 import { parseBenchmarkToml } from "./toml.js";
 import { fields, object, parseManifest, parseProfile, parseTask, relativePath, unsupported } from "./validation.js";
@@ -56,11 +57,19 @@ export async function loadBenchmark(directory: string): Promise<LoadedBenchmarkV
     if (sourceIds.has(config.source_task_id)) throw invalidInput("duplicate source_task_id");
     sourceIds.add(config.source_task_id);
     const harbor = parseBenchmarkToml(await readFile(required(`${taskPath}/task.toml`), "utf8"));
-    validateHarbor(harbor, config.driver.config.service, config.submission.paths);
-    required(`${taskPath}/environment/docker-compose.yaml`);
-    required(`${taskPath}/tests/test.sh`); required(`${taskPath}/tests/Dockerfile`);
-    const tools = await read(config.driver.config.schema);
-    validateTools(tools);
+    validateHarbor(harbor, config);
+    required(`${taskPath}/tests/test.sh`);
+    let tools: unknown[] = [];
+    if (config.driver.kind === "model-call") {
+      if (!config.driver.config.input.startsWith(`${taskPath}/environment/`)) throw invalidInput("model input must be in the candidate environment");
+      required(config.driver.config.input);
+    }
+    if (config.driver.kind === "tool-server") {
+      required(`${taskPath}/environment/docker-compose.yaml`);
+      required(`${taskPath}/tests/Dockerfile`);
+      const schema = await read(config.driver.config.schema);
+      validateTools(schema); tools = schema;
+    }
     required(`${taskPath}/instruction.md`);
     for (const cap of config.requirements) if (!profile.tool_policy.allowed.includes(cap)) throw invalidInput(`profile does not grant required capability: ${cap}`);
     for (const [phase, hook] of Object.entries(config.lifecycle)) {
@@ -74,7 +83,11 @@ export async function loadBenchmark(directory: string): Promise<LoadedBenchmarkV
       const dockerfiles = files.filter((f) => f.path.startsWith(`${taskPath}/${area}/`) && /^Dockerfile(?:\.|$)/.test(path.basename(f.path)));
       for (const dockerfile of dockerfiles) {
         const stages = new Set<string>();
+        let continued = false;
         for (const line of (await readFile(required(dockerfile.path), "utf8")).split(/\r?\n/)) {
+          const continuation = continued;
+          if (line.trim() && !line.trimStart().startsWith("#")) continued = line.trimEnd().endsWith("\\");
+          if (continuation) continue;
           const match = /^\s*FROM\s+(?:--platform=linux\/amd64\s+)?(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(line);
           if (!match) { if (/^\s*FROM\b/i.test(line)) unsupported("unsupported Docker FROM syntax"); continue; }
           const image = match[1]!;
@@ -94,6 +107,7 @@ export async function loadBenchmark(directory: string): Promise<LoadedBenchmarkV
   // Values, modes and paths participate in identity; host directory and mtime do not.
   const packageDigest = sha256JSON(files);
   const resolverFiles = await Promise.all(["loader", "validation", "toml", "metrics"].map(async (name) => sha256Bytes(await readFile(new URL(`./${name}.js`, import.meta.url)))));
+  resolverFiles.push(sha256JSON(await inventory(path.dirname(fileURLToPath(import.meta.resolve("smol-toml"))))));
   const lock: BenchmarkLockV1 = {
     schema_version: "1", protocol: "hitch-benchmark@1", benchmark_id: manifest.id, release: manifest.release,
     package_digest: packageDigest,
@@ -168,7 +182,29 @@ function validateTools(value: unknown): asserts value is unknown[] {
   }
 }
 
-function validateHarbor(h: Record<string, unknown>, service: string, paths: string[]): void {
+function validateHarbor(h: Record<string, unknown>, task: BenchmarkTaskV1): void {
+  if (task.driver.kind !== "tool-server") {
+    // Preserve the native Harbor task rather than imposing the sidecar dialect.
+    // The existing Harbor inspector validates the full resource/config model.
+    fields(h, ["schema_version", "version", "task", "metadata", "agent", "environment", "verifier", "artifacts", "solution", "source"], "Harbor task");
+    if (h.schema_version !== undefined && h.schema_version !== "1.4") unsupported("unsupported Harbor task schema");
+    const agent = object(h.agent, "Harbor agent");
+    if (typeof agent.timeout_sec !== "number" || agent.timeout_sec <= 0) throw invalidInput("task agent timeout must be positive");
+    const environment = object(h.environment, "Harbor environment");
+    if (environment.network_mode !== undefined && environment.network_mode !== "public") unsupported("terminal profile requires public network");
+    const verifier = object(h.verifier, "Harbor verifier");
+    const mode = verifier.environment_mode ?? "shared";
+    if (!["shared", "separate"].includes(String(mode))) unsupported("unsupported verifier mode");
+    if (!task.requirements.includes(`${mode}-verifier`)) throw invalidInput("verifier isolation must be declared in requirements");
+    if (task.submission.final_response && mode !== "separate") throw invalidInput("canonical final response requires a separate verifier");
+    if (mode === "separate" && task.submission.kind !== "artifacts") throw invalidInput("separate verifier requires explicit artifacts");
+    const artifacts = h.artifacts ?? [];
+    if (!Array.isArray(artifacts)) throw invalidInput("invalid Harbor artifacts");
+    const paths = artifacts.map(a => typeof a === "string" ? a : object(a, "artifact").source);
+    if (task.submission.kind === "artifacts" && JSON.stringify([...paths].sort()) !== JSON.stringify([...task.submission.paths].sort())) throw invalidInput("submission paths and Harbor artifacts differ");
+    return;
+  }
+  const service = task.driver.config.service, paths = task.submission.paths;
   fields(h, ["schema_version", "metadata", "agent", "environment", "verifier", "artifacts"], "Harbor task");
   if (h.schema_version !== "1.4") unsupported("unsupported Harbor task schema");
   const agent = fields(h.agent, ["timeout_sec"], "Harbor agent");

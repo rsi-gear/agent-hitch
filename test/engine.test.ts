@@ -540,18 +540,21 @@ process.stdin.on("end", () => {
   assert.notEqual(saved.status, "succeeded");
 });
 
-test("run engine preserves the complete ordered final reply", async (t) => {
+test("run engine uses Codex's last complete reply and preserves earlier messages in events", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-output-"));
   const executable = await writeFakeCodex(root, { splitReply: true });
   const previous = process.env.HITCH_CODEX_PATH;
   process.env.HITCH_CODEX_PATH = executable;
   t.after(() => restoreEnv("HITCH_CODEX_PATH", previous));
+  const messages: string[] = [];
   const result = await executeRun({
     runId: newRunId(),
     request: request({ agent: "codex", cwd: root, prompt: "complete", timeout_ms: 5_000, agent_args: [] }),
     runsRoot: path.join(root, "runs"),
+    onEvent: event => { if (event.type === "message.completed") messages.push(String(event.text)); },
   });
-  assert.equal(result.output, "reply:complete");
+  assert.equal(result.output, "complete");
+  assert.deepEqual(messages, ["reply:", "complete"]);
 });
 
 test("event observers cannot strand an otherwise successful run", async (t) => {
