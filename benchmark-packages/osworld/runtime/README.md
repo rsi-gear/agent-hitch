@@ -1,7 +1,7 @@
 # OSWorld runtime components — integration in progress
 
 These are OSWorld package components, not a standalone runnable benchmark.
-The authorized-task producer, controller image/Compose assembly, website
+The authorized-task producer, full Compose assembly, website
 provisioning, release-specific metric mapping and two real OSWorld evaluations
 are still incomplete. Harbor hooks and the fresh Hitch conversation supervisor
 have component tests. The components below are separately tested;
@@ -566,6 +566,7 @@ are no guessed defaults for an official leaderboard setting.
 | `profile_digest`, `task_sha256` | Exact `sha256:` identities from the frozen producer output |
 | `sdk_root`, `sdk_commit` | Read-only SDK root; `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` |
 | `task_path` | Verified authorized file ending in `<source_task_id>.py` |
+| `assets_directory` | Existing read-only local snapshot of the authorized release assets; worker explicitly sets `OSWORLD_FILE_BASE_URL` to this path before loading the task |
 | `private_root` | Fresh private directory, e.g. `/private/runtime`, mode 0700 |
 | `session_directory` | Controller/VM-only volume, e.g. `/control`; candidate and guest must not mount it |
 | `evidence_directory`, `cache_directory` | Separate fresh writable roots, e.g. `/evidence` and `/cache` |
@@ -641,3 +642,57 @@ disposable Linux container, verifies adoption and reaping of a daemonized helper
 and confirms snapshot follows child shutdown. The SDK task/VM/grader are
 synthetic in these tests. No official guest boot, website reset or authorized
 OSWorld task has been validated by them.
+
+## Building the controller image
+
+`../prepare-controller.py` exports all 1086 regular files from SDK commit
+`d578d2d4e0dc82b43e270fdaa7fa89d9708cd154`, checks the pinned tree and each Git
+blob, and records SHA256, byte length and mode. It copies the package runtime
+separately and publishes a fresh context with `source-manifest.json`. Local
+worktree edits, untracked files, credentials and Git configuration are excluded.
+The `desktop_env/server` gitlink is recorded but not initialized: the guest
+server is supplied by the separately verified official VM image.
+
+```sh
+python3 benchmark-packages/osworld/prepare-controller.py \
+  --sdk-checkout /path/to/OSWorld-V2 \
+  --out /path/to/new-controller-context
+docker build --platform linux/amd64 \
+  -f /path/to/new-controller-context/runtime/Dockerfile.controller \
+  -t local-osworld-controller /path/to/new-controller-context
+```
+
+`Dockerfile.controller` pins Python 3.12 and uv to resolved image digests. It
+installs the upstream base dependencies with `uv sync --locked`, preserving the
+upstream `pyproject.toml` and `uv.lock` bytes and excluding optional legacy/full
+extras. This follows the [uv Docker guidance](https://docs.astral.sh/uv/guides/integration/docker/).
+The installed Python and Debian package inventories are retained in `/opt/`.
+Debian repositories and isolated Python build dependencies can change between
+builds, so a rebuild is not promised to be byte-identical: resolve and freeze the
+**resulting image digest** for each benchmark package. Additional dependencies
+needed by an authorized task must become another explicit image/profile.
+
+The image entrypoint verifies all SDK/runtime files, modes and Python package
+versions before `exec` preserves PID 1 for the lifecycle owner. Its configuration
+must use `/opt/osworld-sdk`. `--verify-image` runs only the integrity check and
+does not start a task. Source directories and `/opt/venv` should remain read-only
+at runtime; private, session, evidence, cache and working directories need
+separate writable storage. No host Docker socket is required inside this image.
+
+The worker sets both the private website namespace and local asset base before
+SDK imports. It supplies the original runner's `sleep_after_execution` and the
+original result logger's `result_dir`; summary records remain under
+`native/summary/results.json`. An evaluator result alone does not make the
+worker completed: native logging, recording download and persistence must finish
+first. Private failure status includes exception type and frame locations, not
+exception messages, credentials or candidate-visible diagnostics.
+
+`python3 test-support/osworld_sdk_container_canary.py --image <image-id> --output
+<new-receipt.json>` exercises the production image entrypoint and worker with
+the installed SDK loader/environment and declared deadline adapter over the
+byte-pinned runner source. It uses a synthetic
+task, a mock guest/control endpoint in a network-disabled container and a scripted
+DONE submission; there is no model or real VM. The SDK's 60-second preparation
+sleep is retained. The canary checks native result/summary persistence, image
+identity, local asset resolution, quiescence, snapshot and VM-close transport.
+It is an integration gate, not either of the two selected official OSWorld tasks.

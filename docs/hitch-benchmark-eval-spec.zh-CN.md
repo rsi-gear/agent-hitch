@@ -664,7 +664,7 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 `controller_server.py` 已实现候选 HTTP `POST /call`（仅 `desktop.observe` / `desktop.submit`）与 controller 私有 Unix socket 管理接口；后者校验 token、lease、epoch，支持 `state/bind/cancel`。Socket 0600、所在目录 0700；管理接口不监听 TCP。公开工具 schema 从实际动作校验器生成。原生 reset 后旧阶段 token 失效；管理变更与动作提交各自保留幂等回执。`controller_client.py` 从文件读取私有凭据，以 stdin JSON 发起管理调用，凭据不进入 argv。实际 HTTP/Unix/Node 工具客户端的两阶段 synthetic 测试已通过。
 
-标准 Harbor bridge 在锁定 task 的 `driver.config.native_phases` 存在时选择 `NativePhaseSupervisor(...).run()`：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传当前 binding → 启动模型 → 原生边界停止并封存该 run → 回收容器后验证证据 → 再执行下一阶段。Prepare 必须返回 `native_phases_ready: true` 且没有静态 binding，task/profile 同时声明 `native-phases@1`、原生图片输入和工具图片输出能力。除 run ID 外，它记录不同 native session ID、各阶段 bundle 和不重叠的运行时间；隔离仍须由真实容器回收保证。绑定回执含 token，不进入生命周期 journal 或评分证据。授权任务 producer、controller 镜像与完整 Compose 装配、网站 reset、固定 release 的 partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
+标准 Harbor bridge 在锁定 task 的 `driver.config.native_phases` 存在时选择 `NativePhaseSupervisor(...).run()`：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传当前 binding → 启动模型 → 原生边界停止并封存该 run → 回收容器后验证证据 → 再执行下一阶段。Prepare 必须返回 `native_phases_ready: true` 且没有静态 binding，task/profile 同时声明 `native-phases@1`、原生图片输入和工具图片输出能力。除 run ID 外，它记录不同 native session ID、各阶段 bundle 和不重叠的运行时间；隔离仍须由真实容器回收保证。绑定回执含 token，不进入生命周期 journal 或评分证据。授权任务 producer、完整 Compose 装配、网站 reset、固定 release 的 partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
 Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial/task digest、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。多阶段 importer 单独校验完整 controller audit、全部 prediction 截图摘要、run 绑定、最终 completed 事件和候选容器替换链，再将独立 verifier 的整题评分保存为 assessment。Trial 引用 `run_group + assessment`，每个 task/attempt 只计一次；不伪造代表 run_id，不回写各 phase 的分数。不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
 
@@ -683,6 +683,10 @@ Finalization allowance 覆盖截止后的停止、封存、原生评分与最终
 包内 `controller_lifecycle.py` 已实现四个 Harbor hooks 的进程生命周期：controller 作为独立服务的 PID 1，持有一个 `native_worker.py` 子进程；prepare 等原生首个待答 observation，quiesce 等完成元数据后停止并回收 SDK 与后台子进程，snapshot 才能导出有摘要和字节数的 `/evidence`，cleanup 撤销工具并关闭 leased VM。私有 lifecycle socket 与候选 HTTP 分离；相同请求回放成功或失败回执，不重复启动 SDK。准备失败或清理期间到达的观察不能恢复服务，VM 关闭异常也必须保存失败回执。原始日志、token 和生命周期私有文件不放入评分证据。
 
 `runtime_config.py` 校验 `osworld-controller@1` 的冻结配置、互不重叠的源文件/可写目录、任务文件摘要及四个 SDK 核心文件摘要；worker 在 SDK import 前设置私有网站 namespace，并通过原生 loader/provider/runner 执行。固定核心文件与单任务摘要不能代替授权 release manifest、完整依赖树和镜像验证。字段、CLI、超时关系和 artifact 路径详见 `benchmark-packages/osworld/runtime/README.md` 的 Controller process and Harbor lifecycle。10 个真实子进程/Unix/HTTP/标准 Harbor hook 合成用例，以及 Linux PID 1 回收脱离原进程组的 helper 测试已通过；官方任务、VM、网站和 grader 仍未在这些测试中执行。
+
+Controller 镜像由 `benchmark-packages/osworld/prepare-controller.py` 从固定 Git tree 导出，逐文件校验 Git blob 并记录 SHA256、大小和权限，复制包内 runtime，不携带 checkout 的未提交文件、凭据或 Git 配置。`Dockerfile.controller` 固定 Python/uv 基础镜像摘要，按未修改的上游 `uv.lock` 安装 base 依赖，保留 Python/Debian 包清单；最终镜像摘要必须进入冻结 package。当前构建产物是本地 Docker image ID，跨 worker 分发还须固定 OCI artifact 或 registry manifest 引用，不能将该 ID 当作可 pull 的 `repo@digest`。Image entrypoint 在进入 PID 1 生命周期前核对全部 SDK/runtime 文件及 Python 版本清单。配置现在必须给出 `assets_directory`，worker 显式设置 `OSWORLD_FILE_BASE_URL`，禁止默用上游可变化的线上 main 资产。完整授权资产的版本与内容仍由 producer 验证。
+
+生产 worker 同时向原生 runner/result logger 提供动作间隔与 `result_dir`，原始 summary 随 `native/` 收集。镜像级 canary 用真实安装的 SDK、生产 entrypoint/worker、合成任务与模拟桌面服务，保留原生 60 秒准备等待，检查评分、summary、快照和关闭。该测试不使用真实 VM、模型或官方抽样任务，不能增加真实 benchmark 验收数。
 
 整题导入测试保留真实零分语义，验证 phase bundle 原始字节、整题去重、幂等重放与 assessment 已封存但 publication 未写入的恢复。读取结果时重新核对 assessment digest、证据树和全部 group 成员；截断 audit、错误 run 绑定、指标/证据篡改均拒绝。`collect-only` 已识别 group 引用；多阶段 verifier-only regrade 和远程单 bundle 传输仍显式拒绝，不能声称已支持。
 

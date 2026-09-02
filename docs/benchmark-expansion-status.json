@@ -168,7 +168,7 @@
         "candidate_process_name": "codex"
       },
       "latest_session_check": {
-        "observed_at": "2026-09-02T22:25:19.144157+00:00",
+        "observed_at": "2026-09-02T22:55:07.552449+00:00",
         "exec_session_id": 26799,
         "candidate_process_alive": true,
         "candidate_process_name": "codex",
@@ -666,7 +666,58 @@
             "test-support/osworld_lifecycle_pid1_canary.py as PID 1 in a disposable Linux container",
             "node --test dist/test/benchmark-protocol.test.js"
           ],
-          "limitation": "Real processes, Unix/HTTP transport, hook CLI and BenchmarkSession with a synthetic SDK worker and fake VM closure. Production native_worker entrypoint is wired but has not booted the official SDK/VM/task. Four core hashes and a task digest do not establish authorized release membership or full dependency/runtime identity. Controller image/Compose, websites, strict metric mapping and two official tasks remain incomplete."
+          "limitation": "Lifecycle component tests use synthetic observations/VM closure. A separate built-image canary now exercises the installed SDK and production worker through a declared deadline adapter with a synthetic task/mock guest. Official VM, authorized task/assets, full Compose/websites and strict metric mapping remain unverified.",
+          "installed_sdk_worker_with_mock_guest_verified": true,
+          "native_result_logger_persistence_verified": true
+        },
+        "controller_image": {
+          "implemented": true,
+          "built_locally": true,
+          "synthetic_only": true,
+          "real_scored_tasks": 0,
+          "image_id": "sha256:5bcda6a57bf63dbebaeaca6ff2a688b826833a9a90c974a21e036c822b7bf496",
+          "image_id_kind": "Docker local image configuration SHA256; not a registry manifest or pull reference",
+          "platform": "linux/amd64",
+          "python_base_manifest": "sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef",
+          "uv_base_manifest": "sha256:3f47db7d4a0e00a2323de663864d0b75cb53e5708121f44b8add6d598be667b9",
+          "sdk_commit": "d578d2d4e0dc82b43e270fdaa7fa89d9708cd154",
+          "sdk_git_tree": "2c8d3b74876f44a050c94103a10e54ca68c1ef22",
+          "sdk_git_archive_sha256": "sha256:2d239f5dae3de8c356550da7ea73e890e8874b7ad07c16f9d5afbdd84765c3d2",
+          "sdk_files": 1086,
+          "runtime_files": 16,
+          "installed_python_packages": 220,
+          "source_manifest_sha256": "sha256:e50acb7c896056f8ce12032597b30e793dad06514dd009fb0b79275f8e1df2f8",
+          "runtime_python_records_sha256": "sha256:602470a480758161f1d05abf287222331bd2912bfd2f0257eb065d20ff6e96f5",
+          "dependency_install": "uv sync --locked --no-install-project --no-cache; upstream base dependencies; no legacy/full extra",
+          "sdk_import_passed": true,
+          "image_integrity_check_passed": true,
+          "local_assets_directory_required": true,
+          "excluded_guest_submodules": {
+            "desktop_env/server": "a3cc3f0c64e463f020d1a44780307e9b46cbcab1"
+          },
+          "canary_image_id": "sha256:8f1f94e91a70c7bc237be5fb078640da09d0503a6877757d3e46c565d1736900",
+          "canary_to_final_image_changes": [
+            "runtime/README.md only; identical SDK/Python runtime records"
+          ],
+          "production_worker_single_phase_canary_passed": true,
+          "unchanged_sdk_prepare_wait_seconds": 60,
+          "native_result_summary_and_recording_transport_persisted": true,
+          "native_task_and_guest": "synthetic fixtures; scripted DONE, no model or official VM",
+          "native_deadline_adapter": "osworld-native-deadline@1",
+          "tests": [
+            "python3 test-support/osworld_image_smoke.py",
+            "python3 test-support/osworld_lifecycle_smoke.py",
+            "test-support/osworld_sdk_container_canary.py with the built controller image",
+            "image entrypoint --verify-image"
+          ],
+          "evidence": {
+            "build": ".hitch/benchmark-expansion/controller-build-v5.log",
+            "source_manifest": ".hitch/benchmark-expansion/controller-build-v5/source-manifest.json",
+            "integrity": ".hitch/benchmark-expansion/controller-image-check-v5.json",
+            "python_and_debian_packages": ".hitch/benchmark-expansion/controller-image-packages-v4.json",
+            "sdk_canary": ".hitch/benchmark-expansion/controller-sdk-canary-v3.json"
+          },
+          "limitation": "Local controller image and installed-SDK integration only. The same Python runtime/SDK were exercised in the canary; the final image changes README bytes and passes its own integrity check. No authorized release task, official VM, full website/Compose assembly, task-specific strict metric mapping or remote image distribution has been validated. Debian repositories and isolated build dependencies can change a rebuild, so freeze each resulting image identity."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -698,12 +749,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 361,
-    "passed": 358,
+    "total": 362,
+    "passed": 359,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/controller-lifecycle-check.log",
-    "additional_verification": "10 synthetic OSWorld lifecycle cases exercise real owned processes, Unix/HTTP, the hook CLI and standard BenchmarkSession; a separate Linux PID1 canary reaps a daemonized helper before snapshot. Prior deadline, immutable assessment and native-phase tests remain in the passing suite. No additional official task acceptance."
+    "evidence": ".hitch/benchmark-expansion/controller-image-check.log",
+    "additional_verification": "Pinned Git source export and image integrity tests plus existing lifecycle/deadline/assessment suite. A separate installed-SDK production-worker canary with a synthetic task/mock guest caught and verified the fix for missing result_dir in native logging. Image source, dependency inventories and final integrity receipt retained. No new official benchmark acceptance."
   },
-  "updated_at": "2026-09-02T22:25:19.144157+00:00"
+  "updated_at": "2026-09-02T22:55:07.552449+00:00"
 }

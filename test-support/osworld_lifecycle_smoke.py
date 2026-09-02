@@ -38,11 +38,13 @@ class LifecycleTests(unittest.TestCase):
         source = self.root / 'tasks'; source.mkdir()
         (source / 'task_031.py').write_text('# synthetic task, not an authorized release\n')
         sdk = self.root / 'sdk'; sdk.mkdir()
+        (self.root / 'assets').mkdir()
         (sdk / 'core.py').write_text('# synthetic sdk core\n')
         self.config = {
             'protocol': 'osworld-controller@1', 'task_id': 'osworld-task-031', 'source_task_id': 'task_031',
             'profile_digest': 'sha256:' + 'a' * 64, 'sdk_root': str(sdk), 'sdk_commit': SDK_COMMIT,
             'task_path': str(source / 'task_031.py'), 'task_sha256': digest((source / 'task_031.py').read_bytes()),
+            'assets_directory': str(self.root / 'assets'),
             **{key: str(self.root / name) for key, name in [('private_root', 'private'), ('session_directory', 'session'), ('evidence_directory', 'evidence'), ('cache_directory', 'cache')]},
             'max_steps': 3, 'max_actions_per_turn': 2, 'max_text_bytes': 16384, 'max_artifact_bytes': 1024 * 1024,
             'prepare_timeout_sec': 3, 'shutdown_timeout_sec': 1, 'sleep_after_execution': 0, 'native_deadline': True,
@@ -208,7 +210,7 @@ class LifecycleTests(unittest.TestCase):
             with patch('runtime_config.SDK_FILES', {'core.py': hashlib.sha256((self.root / 'sdk/core.py').read_bytes()).hexdigest()}):
                 return load_config(self.config_file)
         self.assertEqual(load(self.config)[0], self.config)
-        for change in [{'sdk_commit': '0' * 40}, {'task_sha256': 'sha256:' + 'b' * 64}, {'max_steps': True}, {'website_host_suffix': ''}, {'evidence_directory': self.config['sdk_root']}]:
+        for change in [{'sdk_commit': '0' * 40}, {'task_sha256': 'sha256:' + 'b' * 64}, {'max_steps': True}, {'website_host_suffix': ''}, {'evidence_directory': self.config['sdk_root']}, {'assets_directory': str(self.root / 'missing')}, {'cache_directory': str(self.root / 'assets')}]:
             with self.assertRaises(ValueError): load({**self.config, **change})
         evidence = Path(self.config['evidence_directory']); evidence.mkdir()
         secret = evidence / 'secret'; secret.write_text('private-password')

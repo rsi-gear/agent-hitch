@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import sys
 import threading
+import traceback
 import types
 from urllib.parse import urlparse
 
@@ -35,6 +36,7 @@ def main():
         sys.path.insert(0, config['sdk_root'])
         # This is set before importing the SDK; never inherit its hosted default.
         os.environ['WEBSITE_HOST_SUFFIX'] = config['website_host_suffix']
+        os.environ['OSWORLD_FILE_BASE_URL'] = config['assets_directory']
         policy = load_graphical_policy()
         channel = AgentChannel(evidence / 'channel', (1920, 1080), policy,
                                max_actions_per_turn=config['max_actions_per_turn'], max_text_bytes=config['max_text_bytes'])
@@ -47,7 +49,8 @@ def main():
         password = read_bytes(config['client_password_file'], 4096).decode().strip() if config['client_password_file'] else ''
         env = create_desktop_env(session, cache_dir=config['cache_directory'], screen_size=(1920, 1080),
                                  action_space='computer_13', headless=True, enable_proxy=False, client_password=password)
-        metadata = run_native(channel, env, task, config['max_steps'], types.SimpleNamespace(sleep_after_execution=config['sleep_after_execution']),
+        native_args = types.SimpleNamespace(sleep_after_execution=config['sleep_after_execution'], result_dir=str(evidence / 'native'))
+        metadata = run_native(channel, env, task, config['max_steps'], native_args,
                               evidence / 'native', finalize_on_budget=config['native_deadline'])
         write_json(evidence / 'native-execution.json', {'protocol': 'osworld-native-execution@1', 'config_digest': config_digest,
                    'source_task_id': config['source_task_id'], 'task_sha256': config['task_sha256'], 'native': metadata})
@@ -57,7 +60,9 @@ def main():
     except BaseException as error:
         if channel: channel.finish('failed')
         # SDK stdout/stderr stays private to the parent; errors never echo keys.
-        write_json(status_file, {'state': 'failed', 'error_type': type(error).__name__, 'config_digest': config_digest})
+        locations = [{'file': Path(frame.filename).name, 'line': frame.lineno, 'function': frame.name}
+                     for frame in traceback.extract_tb(error.__traceback__)]
+        write_json(status_file, {'state': 'failed', 'error_type': type(error).__name__, 'error_locations': locations, 'config_digest': config_digest})
     finally:
         # Keep the completed state RPC available for the host supervisor until
         # quiesce. A cancelled/stuck native thread is bounded by the parent's

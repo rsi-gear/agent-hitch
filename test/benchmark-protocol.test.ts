@@ -57,3 +57,9 @@ test("OSWorld lifecycle owns the SDK child and freezes evidence through standard
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /immutable snapshot and failure receipts passed/);
 });
+
+test("OSWorld image export preserves pinned source and checks runtime/dependency identity", () => {
+  const result = spawnSync("python3", ["test-support/osworld_image_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /image integrity gates passed/);
+});

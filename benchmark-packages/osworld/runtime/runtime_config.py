@@ -51,7 +51,7 @@ def digest(data):
 def load_config(file):
     raw = read_bytes(file)
     value = strict_json(raw)
-    fields = {'protocol', 'task_id', 'source_task_id', 'profile_digest', 'sdk_root', 'sdk_commit', 'task_path', 'task_sha256',
+    fields = {'protocol', 'task_id', 'source_task_id', 'profile_digest', 'sdk_root', 'sdk_commit', 'task_path', 'task_sha256', 'assets_directory',
               'private_root', 'session_directory', 'evidence_directory', 'cache_directory', 'max_steps', 'max_actions_per_turn',
               'max_text_bytes', 'max_artifact_bytes', 'prepare_timeout_sec', 'shutdown_timeout_sec', 'sleep_after_execution',
               'native_deadline', 'public_endpoint', 'website_host_suffix', 'client_password_file'}
@@ -76,13 +76,15 @@ def load_config(file):
     url = urlparse(value['public_endpoint'])
     if url.scheme != 'http' or not re.fullmatch(r'[a-z][a-z0-9_-]*', url.hostname or '') or url.username or url.password or url.path != '/' or url.query or url.fragment or not url.port:
         raise ValueError('invalid private tool endpoint')
-    path_keys = ['sdk_root', 'task_path', 'private_root', 'session_directory', 'evidence_directory', 'cache_directory']
+    path_keys = ['sdk_root', 'task_path', 'assets_directory', 'private_root', 'session_directory', 'evidence_directory', 'cache_directory']
     for key in path_keys + (['client_password_file'] if value['client_password_file'] is not None else []):
         if not isinstance(value[key], str) or not Path(value[key]).is_absolute() or '..' in Path(value[key]).parts or Path(value[key]).is_symlink():
             raise ValueError('controller paths must be absolute and unlinked')
         value[key] = str(Path(value[key]).resolve())
     writes = [Path(value[key]) for key in ['private_root', 'session_directory', 'evidence_directory', 'cache_directory']]
-    reads = [Path(value['sdk_root']), Path(value['task_path']).parent, Path(file).resolve()]
+    if not Path(value['assets_directory']).is_dir():
+        raise ValueError('an explicit local asset snapshot is required')
+    reads = [Path(value['sdk_root']), Path(value['task_path']).parent, Path(value['assets_directory']), Path(file).resolve()]
     if value['client_password_file'] is not None:
         reads.append(Path(value['client_password_file']))
         read_bytes(value['client_password_file'], 4096)
