@@ -58,12 +58,12 @@ export async function waitForDaemonEval(client: { request: (pathname: string, op
 export async function waitForDaemonEvalRerun(client: { request: (pathname: string, options?: RequestInit) => Promise<Record<string, unknown>> }, evalId: string, rerunId: string): Promise<Record<string, unknown>> {
   for (;;) {
     const status = await client.request(`/v1/evals/${evalId}/reruns/${rerunId}`);
-    if (status.result) {
+    if (status.result && (status.state as { status?: string })?.status === "completed") {
       process.stdout.write(`${JSON.stringify(status.result, null, 2)}\n`);
       return status.result as Record<string, unknown>;
     }
     const state = status.state as { status?: unknown; error?: { code?: unknown; message?: unknown } } | undefined;
-    if (state?.status === "failed") {
+    if (state?.status === "failed" || state?.status === "cancelled") {
       throw new HitchError(typeof state.error?.message === "string" ? state.error.message : "eval rerun failed", {
         code: typeof state.error?.code === "string" ? state.error.code : "eval_rerun_failed",
         exitCode: 12,
@@ -96,7 +96,8 @@ Usage:
       [--model-capture off|native|proxy|hybrid] [--require-model-capture]
   hitch eval watch <eval-id> [--output json|jsonl]
   hitch eval cancel <eval-id>
-  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--daemon] [--output json]
+  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--daemon] [--rerun-id <id>] [--output json]
+  hitch eval rerun-cancel <eval-id> <rerun-id>
   hitch eval list [--json]
   hitch eval inspect <eval-id> [--json]
   hitch workspace inspect <run-id> [--json]

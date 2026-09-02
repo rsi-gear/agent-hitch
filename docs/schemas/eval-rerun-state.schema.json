@@ -11,7 +11,7 @@
     "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
     "rerun_type": { "enum": ["candidate-restart", "candidate-resume", "trajectory-replay", "verifier-only", "collect-only"] },
     "semantics": { "$ref": "eval-rerun-submission.schema.json#/$defs/semantics" },
-    "status": { "enum": ["queued", "running", "completed", "failed"] },
+    "status": { "enum": ["queued", "running", "completed", "failed", "cancelled"] },
     "tasks": { "type": "array", "items": { "type": "string" } },
     "trials": { "type": "array", "items": { "$ref": "#/$defs/trial" } },
     "repaired_tasks": { "type": "array", "items": { "type": "string" } },

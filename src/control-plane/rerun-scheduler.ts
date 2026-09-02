@@ -5,22 +5,26 @@ import type { EvalExecutionPolicyV1, EvalId, EvalRequest, ResourceVectorV1 } fro
 import {
   assertEvalRerunTypeSupported,
   evalRerunSemantics,
-  parseEvalRerunType,
   rerunEval,
   validateEvalId,
 } from "../evals/index.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions, RerunSelector } from "../evals/index.js";
 import { EvalEventSink } from "../evals/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, invalidInput, readJSON, safeDiagnosticMessage, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage, statePaths } from "../foundation/index.js";
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
 import { defaultEvalExecutionPolicy, evalCollisionKeys, isTerminalControl, parseEvalControl, parseEvalSubmission } from "./eval-records.js";
 import { ResourceLedger, scaleResources, zeroResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 
+import { parseEvalRerunSubmissionInput, parsePersistedSubmission, serializedSelector, validateRerunId } from "./rerun-submission.js";
+import type { ParsedRerunInput } from "./rerun-submission.js";
+export { parseEvalRerunSubmissionInput } from "./rerun-submission.js";
+
 export type EvalRerunExecutor = (options: RerunEvalOptions) => Promise<EvalRerunResult>;
 
 export interface EvalRerunSubmissionInput {
+  rerun_id?: string;
   rerun_type?: EvalRerunType;
   selector: RerunSelector;
 }
@@ -74,6 +78,7 @@ export class EvalRerunScheduler {
   private readonly queue: QueuedRerun[] = [];
   private readonly active = new Map<string, ActiveRerun>();
   private readonly completions = new Map<string, Promise<void>>();
+  private readonly mutations = new Map<string, Promise<unknown>>();
   private accepting = true;
   private draining = false;
 
@@ -102,15 +107,33 @@ export class EvalRerunScheduler {
     const evalId = validateEvalId(evalIdValue);
     const input = parseEvalRerunSubmissionInput(value);
     assertEvalRerunTypeSupported(input.rerun_type);
+    const rerunId = input.rerun_id ?? `rerun_${randomUUID().replaceAll("-", "")}`;
+    return this.serialize(evalId, rerunId, async () => {
+      const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
+      if (await readJSON(path.join(directory, "cancellation.json"), null)) {
+        throw new HitchError("rerun identity has been cancelled", { code: "eval_rerun_cancelled", exitCode: 12 });
+      }
+      const existing = await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null);
+      if (existing) {
+        const parsed = parsePersistedSubmission(existing, evalId, rerunId);
+        if (parsed.rerun_type !== input.rerun_type || JSON.stringify(parsed.selector) !== JSON.stringify(input.selector)) {
+          throw new HitchError("rerun identity already belongs to a different request", { code: "idempotency_conflict", exitCode: 12 });
+        }
+        return { evalId, rerunId, rerunType: input.rerun_type };
+      }
+      return this.submitNew(evalId, rerunId, input);
+    });
+  }
+
+  private async submitNew(evalId: EvalId, rerunId: string, input: ParsedRerunInput): Promise<{ evalId: EvalId; rerunId: string; rerunType: EvalRerunType }> {
     const source = await this.loadSource(evalId);
     if (!this.resources.canEverFit(rerunResourceUnit(input.rerun_type, source.execution.resources.default_trial))) {
       throw new HitchError("one rerun trial exceeds the daemon resource capacity", { code: "resource_request_unsatisfiable", exitCode: 10 });
     }
-    const rerunId = `rerun_${randomUUID().replaceAll("-", "")}`;
     const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
     const entry = await this.queuedEntry(evalId, rerunId, input.rerun_type, input.selector, source.request, source.execution, directory);
     await ensureDir(path.dirname(directory));
-    await mkdir(directory, { recursive: false, mode: 0o700 });
+    await mkdir(directory, { recursive: true, mode: 0o700 });
     const submittedAt = new Date().toISOString();
     try {
       await atomicWriteJSON(path.join(directory, "submission.json"), {
@@ -133,9 +156,49 @@ export class EvalRerunScheduler {
     return { evalId, rerunId, rerunType: input.rerun_type };
   }
 
+  /** Acknowledges only after execution, source publication and lease cleanup stop.
+   * Unknown IDs are durably fenced so a delayed submission cannot launch later. */
+  async cancel(evalIdValue: string, rerunId: string): Promise<string> {
+    const evalId = validateEvalId(evalIdValue);
+    validateRerunId(rerunId);
+    return this.serialize(evalId, rerunId, async () => {
+      const key = operationKey(evalId, rerunId);
+      const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
+      const status = await this.status(evalId, rerunId);
+      if (status?.state.status === "failed" && (status.state.error as { code?: string })?.code === "execution_state_ambiguous") {
+        throw new HitchError("cannot prove interrupted rerun execution has stopped", { code: "execution_state_ambiguous", exitCode: 12 });
+      }
+      const index = this.queue.findIndex(entry => entry.evalId === evalId && entry.rerunId === rerunId);
+      const queued = index < 0 ? undefined : this.queue.splice(index, 1)[0];
+      try {
+        await ensureDir(directory);
+        await atomicWriteJSON(path.join(directory, "cancellation.json"), { schema_version: SCHEMA_VERSION, eval_id: evalId, rerun_id: rerunId });
+      } catch (error) {
+        if (queued) { this.queue.push(queued); this.scheduleDrain(); }
+        throw error;
+      }
+      this.active.get(key)?.controller.abort();
+      await this.completions.get(key);
+      const state = await readJSON<Record<string, unknown> | null>(path.join(directory, "state.json"), null);
+      if (state && state.status !== "completed" && state.status !== "failed" && state.status !== "cancelled") {
+        await atomicWriteJSON(path.join(directory, "state.json"), { ...state, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() });
+      }
+      return state?.status === "completed" || state?.status === "failed" ? state.status : "cancelled";
+    });
+  }
+
+  private async serialize<T>(evalId: EvalId, rerunId: string, action: () => Promise<T>): Promise<T> {
+    const key = operationKey(evalId, rerunId);
+    const previous = this.mutations.get(key) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(action);
+    this.mutations.set(key, current);
+    try { return await current; }
+    finally { if (this.mutations.get(key) === current) this.mutations.delete(key); }
+  }
+
   async status(evalIdValue: string, rerunId: string): Promise<EvalRerunStatus | null> {
     const evalId = validateEvalId(evalIdValue);
-    if (!/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
+    validateRerunId(rerunId);
     const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
     const submission = await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null);
     let state = await readJSON<Record<string, unknown> | null>(path.join(directory, "state.json"), null);
@@ -144,8 +207,8 @@ export class EvalRerunScheduler {
     // The terminal state is written before the terminal event is flushed. Do
     // not expose that narrow intermediate state through the API while this
     // scheduler still owns the completion tail.
-    if (state.status === "completed" || state.status === "failed") {
-      const completion = this.completions.get(rerunId);
+    if (state.status === "completed" || state.status === "failed" || state.status === "cancelled") {
+      const completion = this.completions.get(operationKey(evalId, rerunId));
       if (completion) {
         await completion;
         state = await readJSON<Record<string, unknown>>(path.join(directory, "state.json"));
@@ -166,6 +229,7 @@ export class EvalRerunScheduler {
   async shutdown(): Promise<void> {
     if (!this.accepting && this.completions.size === 0) return;
     this.accepting = false;
+    await Promise.allSettled([...this.mutations.values()]);
     for (const entry of this.queue.splice(0)) {
       await this.fail(entry, "daemon_shutdown", "rerun was cancelled before launch because the daemon shut down");
     }
@@ -206,9 +270,9 @@ export class EvalRerunScheduler {
       const unit = rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial);
       const parallelism = entry.rerunType === "collect-only" ? 1 : this.resources.maximumUnits(unit, entry.execution.max_parallelism);
       if (parallelism < 1) continue;
-      const collisions = this.collisions.tryAcquire(entry.rerunId, entry.collisionKeys);
+      const collisions = this.collisions.tryAcquire(operationKey(entry.evalId, entry.rerunId), entry.collisionKeys);
       if (!collisions) continue;
-      const resources = this.resources.tryAcquire(entry.rerunId, "eval", scaleResources(unit, parallelism));
+      const resources = this.resources.tryAcquire(operationKey(entry.evalId, entry.rerunId), "eval", scaleResources(unit, parallelism));
       if (resources) return { index, parallelism, resources, collisions };
       collisions.release();
     }
@@ -217,17 +281,18 @@ export class EvalRerunScheduler {
 
   private start(entry: QueuedRerun, parallelism: number, resources: ResourceLease, collisions: CollisionLease): void {
     const controller = new AbortController();
-    this.active.set(entry.rerunId, { controller, resources, collisions });
+    const key = operationKey(entry.evalId, entry.rerunId);
+    this.active.set(key, { controller, resources, collisions });
     const completion = this.execute(entry, parallelism, resources, controller)
-      .catch((error) => this.fail(entry, errorCode(error), safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.pass_env, this.credentialEnv))))
+      .catch((error) => this.fail(entry, errorCode(error), safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.pass_env, this.credentialEnv)), controller.signal.aborted ? "cancelled" : "failed"))
       .finally(() => {
-        this.active.delete(entry.rerunId);
-        this.completions.delete(entry.rerunId);
+        this.active.delete(key);
+        this.completions.delete(key);
         resources.release();
         collisions.release();
         this.scheduleDrain();
       });
-    this.completions.set(entry.rerunId, completion);
+    this.completions.set(key, completion);
   }
 
   private async execute(entry: QueuedRerun, parallelism: number, resources: ResourceLease, controller: AbortController): Promise<void> {
@@ -238,6 +303,7 @@ export class EvalRerunScheduler {
       started_at: new Date().toISOString(),
     });
     await this.emit(entry, { type: "eval.rerun.started", rerun_type: entry.rerunType, admitted_parallelism: parallelism });
+    controller.signal.throwIfAborted();
     const result = await this.executor({
       evalId: entry.evalId,
       rerunId: entry.rerunId,
@@ -249,16 +315,17 @@ export class EvalRerunScheduler {
       env: this.credentialEnv,
       signal: controller.signal,
     });
+    controller.signal.throwIfAborted();
     await atomicWriteJSON(path.join(entry.directory, "result.json"), result);
     await this.synchronizeSourceControl(entry.evalId, result);
     await this.mergeState(entry, { status: "completed", completed_at: result.completed_at });
     await this.emit(entry, { type: "eval.rerun.completed", rerun_type: entry.rerunType, eval_status: result.eval_status });
   }
 
-  private async fail(entry: QueuedRerun, code: string, message: string): Promise<void> {
+  private async fail(entry: QueuedRerun, code: string, message: string, status: "failed" | "cancelled" = "failed"): Promise<void> {
     const completedAt = new Date().toISOString();
-    await this.mergeState(entry, { status: "failed", error: { code, message }, completed_at: completedAt });
-    await this.emit(entry, { type: "eval.rerun.failed", rerun_type: entry.rerunType, code });
+    await this.mergeState(entry, { status, error: { code, message }, completed_at: completedAt });
+    await this.emit(entry, { type: `eval.rerun.${status}`, rerun_type: entry.rerunType, code });
   }
 
   private async mergeState(entry: QueuedRerun, patch: Record<string, unknown>): Promise<void> {
@@ -343,6 +410,11 @@ export class EvalRerunScheduler {
         const submission = await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null);
         if (!state || !submission || !new Set(["queued", "running"]).has(String(state.status))) continue;
         const parsed = parsePersistedSubmission(submission, evalEntry.name as EvalId, entry.name);
+        assertRerunStateIdentity(state, evalEntry.name as EvalId, entry.name);
+        if (state.status === "queued" && await readJSON(path.join(directory, "cancellation.json"), null)) {
+          await atomicWriteJSON(path.join(directory, "state.json"), { ...state, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() });
+          continue;
+        }
         const source = await this.loadSource(evalEntry.name as EvalId);
         const queued = await this.queuedEntry(evalEntry.name as EvalId, entry.name, parsed.rerun_type, parsed.selector, source.request, source.execution, directory);
         if (state.status === "queued") this.queue.push(queued);
@@ -352,48 +424,7 @@ export class EvalRerunScheduler {
   }
 }
 
-export function parseEvalRerunSubmissionInput(value: unknown): Required<EvalRerunSubmissionInput> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("eval rerun request must be an object");
-  const input = value as Record<string, unknown>;
-  if (Object.keys(input).some((key) => key !== "rerun_type" && key !== "selector")) throw invalidInput("eval rerun request has unknown fields");
-  const rerunType = parseEvalRerunType(input.rerun_type ?? "candidate-restart");
-  return { rerun_type: rerunType, selector: parseSelector(input.selector) };
-}
-
-function parsePersistedSubmission(value: Record<string, unknown>, evalId: EvalId, rerunId: string): Required<EvalRerunSubmissionInput> {
-  const allowed = new Set(["schema_version", "rerun_id", "eval_id", "rerun_type", "semantics", "selector", "submitted_at"]);
-  if (value.schema_version !== "1" || value.eval_id !== evalId || value.rerun_id !== rerunId
-    || Object.keys(value).some((key) => !allowed.has(key))
-    || typeof value.submitted_at !== "string" || !Number.isFinite(Date.parse(value.submitted_at))) {
-    throw new TypeError("eval rerun submission identity is invalid");
-  }
-  const parsed = parseEvalRerunSubmissionInput({ rerun_type: value.rerun_type, selector: value.selector });
-  if (JSON.stringify(value.semantics) !== JSON.stringify(evalRerunSemantics(parsed.rerun_type))) {
-    throw new TypeError("eval rerun submission semantics do not match rerun_type");
-  }
-  return parsed;
-}
-
-function parseSelector(value: unknown): RerunSelector {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("eval rerun selector must be an object");
-  const selector = value as Record<string, unknown>;
-  if (selector.mode === "invalid") {
-    if (Object.keys(selector).some((key) => key !== "mode")) throw invalidInput("invalid selector has unknown fields");
-    return { mode: "invalid" };
-  }
-  if (selector.mode !== "tasks" || Object.keys(selector).some((key) => key !== "mode" && key !== "task_names")
-    || !Array.isArray(selector.task_names) || selector.task_names.length < 1 || selector.task_names.length > 10_000
-    || selector.task_names.some((task) => typeof task !== "string" || task.length < 1 || task.length > 1_024)) {
-    throw invalidInput("task selector requires 1-10000 bounded task_names");
-  }
-  const taskNames = selector.task_names as string[];
-  if (new Set(taskNames).size !== taskNames.length) throw invalidInput("eval rerun task_names must be unique");
-  return { mode: "tasks", taskNames: [...taskNames] };
-}
-
-function serializedSelector(selector: RerunSelector): Record<string, unknown> {
-  return selector.mode === "invalid" ? { mode: "invalid" } : { mode: "tasks", task_names: [...selector.taskNames] };
-}
+function operationKey(evalId: EvalId, rerunId: string): string { return `${evalId}/${rerunId}`; }
 
 function queuedState(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, timestamp: string): Record<string, unknown> {
   return {
@@ -412,7 +443,7 @@ function queuedState(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, 
 
 function assertRerunStateIdentity(state: Record<string, unknown>, evalId: EvalId, rerunId: string): void {
   if (state.schema_version !== "1" || state.eval_id !== evalId || state.rerun_id !== rerunId
-    || typeof state.status !== "string" || !new Set(["queued", "running", "completed", "failed"]).has(state.status)) {
+    || typeof state.status !== "string" || !new Set(["queued", "running", "completed", "failed", "cancelled"]).has(state.status)) {
     throw new TypeError("eval rerun state identity is invalid");
   }
 }

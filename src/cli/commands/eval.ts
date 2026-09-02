@@ -14,11 +14,12 @@ export async function evalCommand(args: string[], root: string): Promise<void> {
     case "watch": return evalWatchCommand(args, root);
     case "cancel": return evalCancelCommand(args, root);
     case "rerun": return evalRerunCommand(args, root);
+    case "rerun-cancel": return evalRerunCancelCommand(args, root);
     case "list": return evalListCommand(args, root);
     case "inspect": return evalInspectCommand(args, root);
     case "setup": return evalSetupCommand(args, root);
     case "doctor": return evalDoctorCommand(args, root);
-    default: throw invalidInput("eval requires run, submit, watch, cancel, rerun, list, inspect, setup, or doctor");
+    default: throw invalidInput("eval requires run, submit, watch, cancel, rerun, rerun-cancel, list, inspect, setup, or doctor");
   }
 }
 
@@ -30,6 +31,8 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   let useDaemon = takeFlag(args, "--daemon");
   const taskNames = takeRepeatedOption(args, "--task");
   const rerunType = parseEvalRerunType(takeOption(args, "--type") || "candidate-restart");
+  const rerunId = takeOption(args, "--rerun-id");
+  if (rerunId !== undefined && !/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
   assertNoArgs(args);
@@ -50,6 +53,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
     const accepted = await client.request(`/v1/evals/${evalId}/reruns`, {
       method: "POST",
       body: JSON.stringify({
+        ...(rerunId === undefined ? {} : { rerun_id: rerunId }),
         rerun_type: rerunType,
         selector: invalid ? { mode: "invalid" } : { mode: "tasks", task_names: taskNames },
       }),
@@ -57,6 +61,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
     await waitForDaemonEvalRerun(client, evalId, accepted.rerun_id as string);
     return;
   }
+  if (rerunId !== undefined) throw invalidInput("--rerun-id requires a daemon rerun");
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
@@ -75,6 +80,15 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
   }
+}
+
+async function evalRerunCancelCommand(args: string[], root: string): Promise<void> {
+  const evalId = validateEvalId(args.shift() || "");
+  const rerunId = args.shift();
+  if (!rerunId || !/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun-cancel requires a rerun ID");
+  assertNoArgs(args);
+  const result = await (await daemonClient(root)).request(`/v1/evals/${evalId}/reruns/${rerunId}/cancel`, { method: "POST" });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
 async function evalSetupCommand(args: string[], root: string): Promise<void> {
