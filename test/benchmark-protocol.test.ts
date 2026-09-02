@@ -45,3 +45,9 @@ test("OSWorld channel preserves native phase resets, gates and per-prediction bu
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /batch-budget channel parity passed/);
 });
+
+test("OSWorld controller separates candidate HTTP tools from lease-fenced Unix management", () => {
+  const result = spawnSync("python3", ["test-support/osworld_controller_smoke.py"], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /phase fencing transport passed/);
+});

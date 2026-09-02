@@ -158,7 +158,7 @@
         "recorded_at": "2026-09-02T17:19:54.572201+00:00"
       },
       "latest_liveness_check": {
-        "observed_at": "2026-09-02T18:41:16.876063+00:00",
+        "observed_at": "2026-09-02T18:54:26.088394+00:00",
         "candidate_process_alive": true,
         "events_bytes": 92418,
         "last_event_file_mtime": "2026-09-02T16:43:21.703055+00:00",
@@ -370,6 +370,22 @@
           "real_scored_tasks": 0,
           "test": "python3 test-support/osworld_channel_smoke.py",
           "limitation": "Unmodified native phase functions exercised against a synthetic environment. Different run IDs fence phases but do not prove fresh model conversations. No official task, booted VM or model is used by this test."
+        },
+        "controller_transports": {
+          "implemented": true,
+          "synthetic_only": true,
+          "candidate": "HTTP POST /call; desktop.observe and desktop.submit only; per-phase bearer token",
+          "management": "private mode-0600 Unix socket in mode-0700 directory; session token, lease and epoch checks",
+          "native_coordinate_dimensions_enforced": true,
+          "actual_http_unix_and_node_image_client_test_passed": true,
+          "stale_candidate_tokens_and_admin_leases_rejected": true,
+          "action_and_management_mutations_idempotent": true,
+          "socket_and_listener_cleanup_test_passed": true,
+          "fresh_hitch_conversation_supervisor_complete": false,
+          "harbor_lifecycle_and_sdk_thread_wiring_complete": false,
+          "real_scored_tasks": 0,
+          "test": "python3 test-support/osworld_controller_smoke.py",
+          "limitation": "Two synthetic phases use actual HTTP/Unix sockets and the existing Node tool client. No model, official VM or official OSWorld task is executed. Dynamic candidate run binding and full package assembly remain incomplete."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -401,12 +417,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 348,
-    "passed": 345,
+    "total": 349,
+    "passed": 346,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/osworld-channel-check.log",
-    "additional_verification": "OSWorld native phase/reset/gate/batch-budget parity and changed-source preflight passed with synthetic fixtures. Prior real regrade assessment/eval/bundle validation remains recorded above."
+    "evidence": ".hitch/benchmark-expansion/osworld-controller-check.log",
+    "additional_verification": "Actual HTTP/Unix/Node image-client transport passed across synthetic OSWorld phase changes and cancellation; native phase parity tests also pass. This does not establish real OSWorld acceptance."
   },
-  "updated_at": "2026-09-02T18:45:58.173300+00:00"
+  "updated_at": "2026-09-02T18:59:55.959316+00:00"
 }

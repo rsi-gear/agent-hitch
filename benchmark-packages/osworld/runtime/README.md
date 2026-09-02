@@ -1,8 +1,8 @@
 # OSWorld runtime components — integration in progress
 
 These are OSWorld package components, not a standalone runnable benchmark.
-The authorized-task producer, authenticated controller tool server, website
-provisioning, fresh Hitch conversation supervisor and two real OSWorld
+The authorized-task producer, Harbor lifecycle wiring, website provisioning,
+fresh Hitch conversation supervisor and two real OSWorld
 evaluations are still incomplete. The components below are separately tested;
 they do not yet constitute an executable standard package.
 
@@ -97,9 +97,10 @@ Each native reset revokes the previous token and requires a different run ID.
 The ID check is a fence, **not proof that a new model conversation was created**.
 The pending supervisor must actually start a fresh Hitch run, retire the previous
 candidate, bind the new run and record their relationship to the benchmark trial.
-It must not forward prior-phase conversation history into the new run. HTTP
-authentication, lease/epoch checks, candidate termination and resource ownership
-remain responsibilities of that assembly. Channel cancellation alone cannot
+It must not forward prior-phase conversation history into the new run. The
+transport below supplies HTTP authentication and private lease/epoch checks;
+candidate termination and resource ownership remain responsibilities of the
+assembly. Channel cancellation alone cannot
 interrupt an action already executing inside the SDK.
 
 `action_policy.py` validates the declared **graphical `computer_13`** profile
@@ -126,3 +127,64 @@ tokens/run IDs, idempotent submission, cancellation, screenshot preservation,
 native action definitions and failure on a changed runner. The Apache-2.0
 fixtures and source hashes are in `test-support/fixtures/osworld/`. This is
 control-flow parity evidence; no official task, booted VM or real model is used.
+
+## Candidate tools and private management transport
+
+`controller_server.ControllerServer` runs two distinct listeners in the
+controller service. Candidate HTTP exposes only `POST /call` with
+`desktop.observe` and `desktop.submit`, using the generic `tool-server@1`
+request envelope. Public tools and their JSON schemas are generated from the
+same action-policy object that validates submissions. Screenshot dimensions
+must equal the native coordinate space. There is no public bind/reset/evaluate,
+administration or arbitrary proxy route.
+
+The phase token authenticates each request. A native reset, failure or
+cancellation revokes it; stale requests fail before reading a body and are
+checked again at the channel operation. Input size, ambiguous JSON fields,
+non-finite values and slow connections are bounded or rejected. The HTTP
+listener permits at most 16 concurrent request workers and emits no request or
+token logs. `public_endpoint` must match the locked tool binding and actual
+listener port. Bind it to the private Compose service network; do not publish
+it as a host port.
+
+Management uses a mode-0600 Unix socket in a mode-0700 controller-only directory,
+not another TCP endpoint. Each request authenticates the private session token,
+lease ID and epoch. `state` reads the current channel state; `bind` assigns the
+pending generation to a fresh run and returns its tool binding; `cancel` closes
+the channel. Mutation receipts are idempotent, including rejected operations.
+State reads are fresh and are not retained as receipts. An existing socket is
+never adopted, and closing the server removes only its own socket.
+
+`controller_client.py` is the private hook/supervisor client. It reads the
+credential from a file and accepts the operation through stdin. For example,
+inside the controller service:
+
+```sh
+python /opt/osworld-hitch/controller_client.py \
+  --socket /run/hitch-private/control.sock --session /control/session.json <<'JSON'
+{"request_id":"inspect_phase_0001","operation":"state","parameters":{}}
+JSON
+```
+
+After preparing a new Hitch run with its own candidate workspace/runtime, the
+supervisor invokes `bind` with `generation` and `run_id`. It uploads the returned
+`binding` to that candidate's private tool-binding file before releasing its
+model process to execute. Native session IDs and sealed per-phase run evidence
+must confirm fresh conversations; run IDs alone are insufficient. Bind responses contain
+the phase token: they must not be written into the lifecycle journal, model
+prompt, result bundle or diagnostics. Private in-memory management receipts
+also stay outside exported evidence. The model receives only its current
+phase's instruction, observations and tool capabilities.
+
+The current Harbor bridge prepares one tool binding before it assigns one
+candidate run. The dynamic bind/start/retire loop above is **not wired into that
+bridge yet**. The server cannot establish fresh model context by itself; it
+requires that supervisor, the SDK execution thread, lifecycle hooks and the
+authorized package assembly. Cancellation closes the channel, while the owning
+supervisor must still stop the candidate and VM and seal the native outputs.
+
+Validation: `python3 test-support/osworld_controller_smoke.py` uses real HTTP and
+Unix sockets plus the existing Node tool client. Two synthetic phases verify
+image bytes, distinct phase bindings, stale token/lease rejection, action retry
+idempotence, cancellation and socket/thread cleanup. This runs no model or VM
+and contributes zero real OSWorld task validations.

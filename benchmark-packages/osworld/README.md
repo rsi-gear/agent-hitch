@@ -41,9 +41,15 @@ private lease-bound control, writable-state reset and an upstream DesktopEnv
 provider. Synthetic process tests pass both locally and as PID 1 in a Linux
 container. The SDK agent channel now preserves native phase resets, gates and
 prediction-step accounting in a synthetic parity test. Official guest boot,
-the fresh Hitch conversation supervisor, authenticated tool server, complete
-task/controller/web assembly and the two selected task evaluations remain
+the fresh Hitch conversation supervisor, complete task/controller/web assembly
+and the two selected task evaluations remain
 unverified or incomplete.
+
+The controller transport component exposes only `desktop.observe` and
+`desktop.submit` over authenticated HTTP. Lease-fenced management uses a private
+Unix socket. Its tests exercise actual HTTP/Unix sockets and the Node image
+client across synthetic phase changes. The dynamic candidate bind/start/retire
+loop still needs integration into the Harbor bridge; see the runtime README.
 
 ## Native screenshot transport
 

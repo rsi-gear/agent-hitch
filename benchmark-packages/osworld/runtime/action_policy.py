@@ -52,6 +52,43 @@ class GraphicalActionPolicy:
                 if not valid:
                     raise ValueError('invalid graphical action parameter: ' + name)
 
+    def tool_definitions(self, *, max_actions_per_turn, max_text_bytes):
+        """Public tool schemas; privileged SDK operations are never tools."""
+        variants = [{'type': 'string', 'enum': ['WAIT', 'FAIL', 'DONE']}]
+        for name, definition in self.actions.items():
+            properties = {'action_type': {'const': name}}
+            required = ['action_type']
+            for key, spec in definition.get('parameters', {}).items():
+                kind, domain = spec['type'], spec.get('range')
+                field = {'type': {float: 'number', int: 'integer', str: 'string', list: 'array'}[kind]}
+                if domain is not None:
+                    if kind is float:
+                        field.update(minimum=domain[0], maximum=domain[1])
+                    elif kind is list:
+                        field['items'] = {'type': 'string', 'enum': domain[0]}
+                    else:
+                        field['enum'] = domain
+                if kind is str:
+                    field['maxLength'] = max_text_bytes
+                properties[key] = field
+                if not spec.get('optional', False):
+                    required.append(key)
+            value = {'type': 'object', 'properties': properties, 'required': required, 'additionalProperties': False}
+            if 'x' in properties:
+                value['dependentRequired'] = {'x': ['y'], 'y': ['x']}
+            variants.append(value)
+        return [
+            {'name': 'desktop.observe', 'description': 'Read the current native screenshot and observation sequence. A processing response means the SDK is still executing. Open the returned image with the native image viewer.',
+             'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
+            {'name': 'desktop.submit', 'description': f'Submit one action batch for an observed sequence. One batch consumes one native prediction step. Use the same request_id and payload when retrying. An empty batch asks the native user simulator the question in response. The complete payload is limited to {max_text_bytes} UTF-8 bytes.',
+             'inputSchema': {'type': 'object', 'properties': {
+                 'sequence': {'type': 'integer', 'minimum': 1},
+                 'request_id': {'type': 'string', 'pattern': '^[a-zA-Z0-9_-]{8,128}$'},
+                 'response': {'type': 'string', 'maxLength': max_text_bytes},
+                 'actions': {'type': 'array', 'maxItems': max_actions_per_turn, 'items': {'oneOf': variants}}},
+                 'required': ['sequence', 'request_id', 'response', 'actions'], 'additionalProperties': False}}
+        ]
+
 
 def load_graphical_policy():
     spec = importlib.util.find_spec('desktop_env.actions')

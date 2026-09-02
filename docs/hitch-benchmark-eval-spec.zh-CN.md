@@ -660,7 +660,11 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 当前组件：`benchmark-packages/osworld/runtime/` 已包含受管 VM owner/provider、原生 `Agent.reset/predict` channel、动作校验和固定 SHA256 的 runner wrapper。多阶段流程委托给 `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` 的原始 `lib_run_single.run_single_example`，保留同一 VM 的 phase setup、gate 和评分文件；synthetic 对照已覆盖这些语义。每次 reset 撤销旧 token，并要求 supervisor 绑定新的 Hitch run。**真正的新候选会话启动/退出仍未接入**；run ID 检查只能防止复用标识，不能替代清空模型会话的证据。
 
-当前动作 profile 是 screenshot + graphical `computer_13`，按固定 SDK 定义校验，排除 `EXECUTE` 与裸 Python，不做 OCR/缩放/坐标变换。部署需锁定 1920×1080 截图、单批动作数和文本大小；这不是 Anthropic 原始工具配置的精确复现声明。HTTP tool/admin 隔离、lease 检查、fresh-run supervisor、授权任务 producer、网站 reset、partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
+当前动作 profile 是 screenshot + graphical `computer_13`，按固定 SDK 定义校验，排除 `EXECUTE` 与裸 Python，不做 OCR/缩放/坐标变换。部署需锁定 1920×1080 截图、单批动作数和文本大小；这不是 Anthropic 原始工具配置的精确复现声明。
+
+`controller_server.py` 已实现候选 HTTP `POST /call`（仅 `desktop.observe` / `desktop.submit`）与 controller 私有 Unix socket 管理接口；后者校验 token、lease、epoch，支持 `state/bind/cancel`。Socket 0600、所在目录 0700；管理接口不监听 TCP。公开工具 schema 从实际动作校验器生成。原生 reset 后旧阶段 token 失效；管理变更与动作提交各自保留幂等回执。`controller_client.py` 从文件读取私有凭据，以 stdin JSON 发起管理调用，凭据不进入 argv。实际 HTTP/Unix/Node 工具客户端的两阶段 synthetic 测试已通过。
+
+现有 Harbor bridge 在 prepare 时上传一个静态 binding，随后只启动一个 Hitch run。仍需加入通用的动态候选会话编排：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传该候选的 binding → 释放模型进程开始执行 → 阶段结束后停止并封存该 run，再执行下一阶段。除 run ID 外，还须记录不同 native session ID 和各阶段 bundle，以证明模型上下文确实重置。绑定回执含 token，不得进入生命周期 journal 或评分证据。fresh-run supervisor、授权任务 producer、controller 生命周期装配、网站 reset、partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
 ### 9.6 CursorBench 与其他私有集
 

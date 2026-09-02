@@ -84,6 +84,9 @@ class AgentChannel:
             user_response = observation.get('user_response')
             if user_response is not None and (not isinstance(user_response, str) or len(user_response.encode()) > self.max_text_bytes):
                 raise ValueError('invalid native user-simulator response')
+            text_payload = json.dumps(dict(instruction=instruction, user_response=user_response), ensure_ascii=False, allow_nan=False)
+            if len(text_payload.encode()) > self.max_text_bytes:
+                raise ValueError('native observation text exceeds transport limit')
             self.sequence += 1
             filename = f'observation-{self.sequence:06d}.png'
             descriptor = os.open(self.directory / filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -158,7 +161,7 @@ class AgentChannel:
                 raise ValueError('action batch exceeds the locked profile')
             # JSON is also a copy boundary: caller mutation cannot change a
             # submitted action after validation or a receipt's identity.
-            encoded = json.dumps(dict(sequence=sequence, response=response, actions=actions), sort_keys=True, allow_nan=False)
+            encoded = json.dumps(dict(sequence=sequence, response=response, actions=actions), sort_keys=True, ensure_ascii=False, allow_nan=False)
             if len(encoded.encode()) > self.max_text_bytes:
                 raise ValueError('action request exceeds transport limit')
             digest = hashlib.sha256(encoded.encode()).hexdigest()
