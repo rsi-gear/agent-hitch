@@ -666,7 +666,9 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 现有 Harbor bridge 在 prepare 时上传一个静态 binding，随后只启动一个 Hitch run。仍需加入通用的动态候选会话编排：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传该候选的 binding → 释放模型进程开始执行 → 阶段结束后停止并封存该 run，再执行下一阶段。除 run ID 外，还须记录不同 native session ID 和各阶段 bundle，以证明模型上下文确实重置。绑定回执含 token，不得进入生命周期 journal 或评分证据。fresh-run supervisor、授权任务 producer、controller 生命周期装配、网站 reset、partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
-Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial identity、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。现有单 bundle 导入器会拒绝 phase run，整题 group assessment 尚待接通。后续 supervisor 必须隔离并清理旧候选的文件、日志挂载和后台进程，再结合原生 reset/gate/terminal 证据核对 group 完整性；不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
+Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial identity、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。现有单 bundle 导入器会拒绝 phase run，整题 group assessment 尚待接通。后续 supervisor 必须结合候选隔离与原生 reset/gate/terminal 证据核对 group 完整性；不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
+
+通用 Harbor environment 现提供 `recycle_candidate_phase(phase_index)`：由持有 lease 的 host supervisor 在撤销旧 token、结束并导出旧 run 后调用。它只移除 `main` 容器，确认旧容器消失，将原日志目录移到候选不可见的 `trial/hitch-candidate-phases/phase-NNNN/`，新建空日志目录，再用原镜像 content ID 重建 `main`；禁止构建、拉取或重启依赖。检查前后资源/配置摘要、挂载、ownership 以及全部 sidecar 的容器 ID、image 和 start timestamp 一致。只支持原生 Harbor 日志路径的 writable bind、fresh tmpfs 和与日志/归档不相交的 read-only bind；其他持久卷、额外 writable host path 或共享日志路径在销毁前拒绝。回执只证明环境操作，失败或中断后禁止隐式重试，应由 supervisor 清理 trial。真实 Docker 两次切换 canary 已验证日志和 writable layer 不可见、后台写入进程终止、sidecar 保留与 cleanup；未使用模型、VM 或 OSWorld 官方题目。该 API 尚未连接阶段 supervisor；下一候选仍需重新安装 runtime、绑定新 run/token 后才能启动。
 
 ### 9.6 CursorBench 与其他私有集
 

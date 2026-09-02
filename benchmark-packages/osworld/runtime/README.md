@@ -198,10 +198,55 @@ API can inspect and seal a group of consecutive phases with matching candidate
 identity, distinct native sessions and verified bundle hashes. The group is
 candidate evidence only; it does not publish a score or prove native completion.
 
-The remaining supervisor must recycle the candidate's environment, including
-its writable files, runtime, log mounts and background processes, across native
-resets. Old phase records must be archived outside mounts visible to the next
-candidate. VM and website state remain under the upstream phase runner. The
-current one-bundle Harbor importer cannot publish these groups yet; group
-import and reconciliation with native terminal/gate evidence remain required.
+The remaining supervisor must use a fresh candidate environment across native
+resets and reinstall the runtime/tool binding before each model process. The
+generic Harbor environment now provides `recycle_candidate_phase(phase_index)`
+for this boundary (see below). VM and website state remain under the upstream
+phase runner. The current one-bundle Harbor importer cannot publish these groups
+yet; group import and reconciliation with native terminal/gate evidence remain
+required.
 See section 18 of `docs/provider-native-trajectory-comparison-spec.zh-CN.md`.
+
+## Candidate container replacement
+
+`integrations/harbor/hitch_candidate_recycle.py` is a trusted host component,
+included in the controller runtime identity. It is not a candidate tool. The
+supervisor must hold the trial lease, revoke the old phase token, finish/export
+the old Hitch run, and only then call
+`await environment.recycle_candidate_phase(phase_index)`. The method does not
+validate those native/model preconditions, start a model, bind a token, or import
+a phase bundle. No ordinary single-run trial invokes it automatically.
+
+The method checks the Compose inventory and ownership labels, removes only
+`main` (including its processes and writable layer), verifies its removal, and
+atomically moves each Harbor log directory into the private host directory
+`<trial>/hitch-candidate-phases/phase-NNNN/`. Fresh directories are mounted in a
+replacement `main`; the old image's actual content ID is pinned with no build,
+pull or dependency restart. The replacement's resource/configuration digest,
+mounts and ownership must match. Every sidecar must retain its container ID,
+image and start timestamp. The supervisor then reinstalls the harness/runtime,
+creates the new run and uploads its new private tool binding before releasing
+the next candidate.
+
+Supported candidate mounts are fresh tmpfs, read-only binds disjoint from the
+archive/log sources, and writable binds at Harbor's exact agent/verifier/artifact
+log paths. Persistent volumes, extra writable host directories, shared log
+mounts, symlinked sources, privileged containers and shared process namespaces
+are rejected before retirement. This restricted contract fits an isolated CUA
+client; arbitrary terminal task filesystem state must not be recycled this way.
+
+An environment-only receipt records transitions and concrete container/image
+identities. A completed call is idempotent while that replacement is current;
+skipped phases, stale calls and failed/incomplete receipts cannot launch another
+candidate. A failed operation requires the caller's whole-trial cleanup. The
+archive is not a score, conversation reset proof, or native phase coverage proof.
+It contains old run evidence but never a copy of Docker environment values.
+
+Validation: `python3 test-support/harbor_candidate_recycle_smoke.py` covers
+ownership, mount exposure, image/resource/configuration checks and failure/replay
+gates. With the pinned Harbor 0.21.0 Python and a local
+`node:22.23.0-bookworm-slim` image, run
+`test-support/harbor_candidate_recycle_docker_canary.py` for two real Docker
+replacements. It verifies old container removal, old log/writable-layer
+invisibility, a stopped background writer, preserved sidecar state, and scoped
+cleanup. It uses no model, VM or official OSWorld tasks.

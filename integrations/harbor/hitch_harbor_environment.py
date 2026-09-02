@@ -62,6 +62,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         self._hitch_main_gpu_count = hitch_main_gpu_count
         self._hitch_ownership_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._hitch_ownership_compose_path: Path | None = None
+        self._hitch_phase_compose_path: Path | None = None
+        self._hitch_candidate_recycler = None
         positional = list(args)
         task_env_config = kwargs.get("task_env_config")
         task_env_position: int | None = None
@@ -102,7 +104,20 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         paths = list(super()._docker_compose_paths)
         if self._hitch_ownership_compose_path is not None:
             paths.append(self._hitch_ownership_compose_path)
+        if self._hitch_phase_compose_path is not None:
+            paths.append(self._hitch_phase_compose_path)
         return paths
+
+    async def recycle_candidate_phase(self, phase_index: int) -> dict[str, Any]:
+        """Replace only main after the supervisor has exported the retired run.
+
+        Does not start a model or prepare a tool binding. The native task VM and
+        service containers remain live. Failures require whole-trial cleanup.
+        """
+        if self._hitch_candidate_recycler is None:
+            from hitch_candidate_recycle import CandidateRecycler
+            self._hitch_candidate_recycler = CandidateRecycler(self)
+        return await self._hitch_candidate_recycler.recycle(phase_index)
 
     async def start(self, force_build: bool):
         try:

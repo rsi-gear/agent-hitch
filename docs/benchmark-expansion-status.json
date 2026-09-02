@@ -404,7 +404,40 @@
           "phase_group_scored_trial_import_complete": false,
           "real_scored_tasks": 0,
           "test": "node --test dist/test/benchmark-phase-runs.test.js",
-          "limitation": "The group has candidate-evidence-only scope. Synthetic harness processes verify separate copy workspaces and independent native session identifiers; no real model/VM/task runs. Native phase coverage, candidate container/log/process isolation, group import and final assessment remain incomplete."
+          "limitation": "The group has candidate-evidence-only scope. Synthetic harness processes verify separate copy workspaces and independent native session identifiers; no real model/VM/task runs. Native phase coverage, dynamic candidate supervision, group import and final assessment remain incomplete. The separate container recycler is component-tested but not wired into that supervisor."
+        },
+        "candidate_container_recycle": {
+          "implemented": true,
+          "synthetic_only": true,
+          "scope": "environment-only",
+          "api": "HitchHarborDockerEnvironment.recycle_candidate_phase(phase_index)",
+          "old_container_and_background_process_removed": true,
+          "old_logs_archived_outside_candidate_mounts": true,
+          "new_candidate_has_fresh_writable_layer": true,
+          "image_resource_configuration_and_ownership_checked": true,
+          "sidecar_container_image_and_start_time_preserved": true,
+          "unsafe_persistent_mounts_rejected_before_retirement": true,
+          "stale_failed_and_incomplete_replays_rejected": true,
+          "real_docker_replacements": 2,
+          "cleanup_remaining_containers": 0,
+          "dynamic_supervisor_wiring_complete": false,
+          "real_scored_tasks": 0,
+          "test": "python3 test-support/harbor_candidate_recycle_smoke.py",
+          "docker_canary": "test-support/harbor_candidate_recycle_docker_canary.py (Harbor 0.21.0 Python)",
+          "evidence": ".hitch/benchmark-expansion/candidate-recycle-canary.json",
+          "evidence_sha256": "sha256:6b38c7bdae7852e6ea2fdce40e8500dcedb0f48ef422d801dd46358914d56d60",
+          "candidate_image": "sha256:6623b5adf2d6b5b4b75b03ce24669474d9ef0216869b6738a071bf74733b24ed",
+          "container_ids": [
+            "c465046b660facb485d31414c47a8290f924852a8f573d691ea948955b41f56d",
+            "4e467b3d75b0bd3e9b6a4e4f9810a68b9bb983f687d75d09db8d041a7231e0c0",
+            "23e118b9239024e43b2bfbc04dc17adb2755e108677543583b305b17a7f5aa92"
+          ],
+          "sidecar": {
+            "id": "9f4d4e346250d47eb6217d0367f129e08f466b82a3a3693ddd4b2fc47b319c74",
+            "image": "sha256:6623b5adf2d6b5b4b75b03ce24669474d9ef0216869b6738a071bf74733b24ed",
+            "started_at": "2026-09-02T19:36:47.513830005Z"
+          },
+          "limitation": "Only synthetic Docker environments were used; no model, guest VM, official task or score. The trusted caller must hold the lease, revoke the old binding, finish/export the old run, invoke replacement, then reinstall runtime and bind the new run before starting its model. This does not implement or prove those supervisor preconditions, native phase coverage or group scoring."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -436,12 +469,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 351,
-    "passed": 348,
+    "total": 352,
+    "passed": 349,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/phase-evidence-check.log",
-    "additional_verification": "Hitch phase contexts and immutable candidate-evidence groups passed actual synthetic process/workspace tests, including reused sessions, membership, score exclusion and source tamper rejection. OSWorld transport/native phase parity tests remain green; no new real benchmark acceptance is claimed."
+    "evidence": ".hitch/benchmark-expansion/candidate-recycle-check.log",
+    "additional_verification": "The Harbor candidate recycler passed failure/replay/mount/ownership tests and a real Docker canary with two replacements, archived logs, a fresh writable layer, a terminated background writer, unchanged sidecar identities and zero remaining canary containers. This is component evidence only; no new real benchmark acceptance is claimed."
   },
-  "updated_at": "2026-09-02T19:18:35.607229+00:00"
+  "updated_at": "2026-09-02T19:38:36.097556+00:00"
 }
