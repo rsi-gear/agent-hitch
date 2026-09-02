@@ -28,6 +28,17 @@ export type RunContextV1 =
       task_id: string;
       task_digest: Sha256;
       verifier_identity: Sha256;
+    }
+  | {
+      /** One conversation within a task; the whole-task score belongs to its trial assessment. */
+      kind: "benchmark_phase";
+      benchmark_id: string;
+      benchmark_revision: string;
+      task_id: string;
+      task_digest: Sha256;
+      verifier_identity: Sha256;
+      run_group_id: string;
+      phase_index: number;
     };
 
 export interface EvalRunParentV1 {
@@ -67,6 +78,36 @@ export interface ProtocolIdentityV1 {
   initial_workspace_digest?: Sha256;
   environment_identity?: Sha256;
   tool_policy_sha256?: Sha256;
+}
+
+/** Candidate evidence only; native completion and grading belong to the trial. */
+export interface BenchmarkPhaseGroupV1 {
+  schema_version: "1";
+  kind: "benchmark-phase-group";
+  scope: "candidate-evidence-only";
+  run_group_id: string;
+  eval_id: string;
+  trial_id: string;
+  attempt: number;
+  benchmark_id: string;
+  benchmark_revision: string;
+  task_id: string;
+  verifier_identity: Sha256;
+  harness: HarnessIdentityV1;
+  model: ModelIdentityV1;
+  phases: Array<{
+    phase_index: number;
+    run_id: string;
+    process_status: RunStatus;
+    provider_session_id: string;
+    bundle_digest: Sha256;
+    bundle_index_digest: Sha256;
+  }>;
+}
+
+export interface BenchmarkPhaseGroupRefV1 {
+  run_group_id: string;
+  digest: Sha256;
 }
 
 /** Logical projection of runs/<run-id>/{request,resolution,manifest,result,...}. */

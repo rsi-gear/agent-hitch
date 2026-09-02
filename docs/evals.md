@@ -552,3 +552,31 @@ cancellation response. Use a fresh ID for a new repair. This fence survives daem
 restart. If the daemon itself crashed during execution and cannot prove that the
 backend stopped, cancellation returns `execution_state_ambiguous` instead of
 claiming success; the controller must retain ownership for reconciliation.
+
+## Multiphase candidate evidence (integration in progress)
+
+Tasks that reset the candidate conversation between phases use ordinary Hitch
+runs with `context.kind = benchmark_phase`, an eval parent, `run_group_id` and
+a one-based `phase_index`. Each phase has its own request, process result,
+native session and sealed bundle. Phase manifests cannot contain a standalone
+`observation`: an entire task's score must not be assigned to just one phase.
+They can be queried by benchmark/task/eval identity, while standalone strict
+comparison and training-candidate derivation exclude them.
+
+The `agent-hitch/runs` API exports
+`inspectBenchmarkPhaseGroup`, `sealBenchmarkPhaseGroup` and
+`readBenchmarkPhaseGroup`. The group file is stored at
+`evals/<eval-id>/run-groups/<run-group-id>/group.json` and references the original
+run bundles without copying their trajectories. Inspection requires consecutive
+phase indices, matching trial and candidate identity, terminal non-overlapping
+execution intervals, valid trajectories/bundles and distinct native session IDs.
+Reads revalidate every referenced bundle. A sealed group cannot be replaced by
+different membership or evidence.
+
+This group has scope `candidate-evidence-only`. It does not prove that every
+native task phase ran, that its gates passed, or that a new session received no
+prior context. The runtime supervisor must establish those facts with native
+controller evidence and isolated candidate environments. Dynamic Harbor
+candidate replacement, group import/publication and native score reconciliation
+are not connected yet. The existing single-run importer rejects phase runs;
+these records cannot currently produce a scored eval trial.

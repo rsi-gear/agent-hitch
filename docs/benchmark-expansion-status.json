@@ -158,13 +158,14 @@
         "recorded_at": "2026-09-02T17:19:54.572201+00:00"
       },
       "latest_liveness_check": {
-        "observed_at": "2026-09-02T18:54:26.088394+00:00",
+        "observed_at": "2026-09-02T19:16:18.911274+00:00",
         "candidate_process_alive": true,
         "events_bytes": 92418,
         "last_event_file_mtime": "2026-09-02T16:43:21.703055+00:00",
         "stderr_bytes": 0,
         "terminal_failure_observed": false,
-        "original_session_preserved": true
+        "original_session_preserved": true,
+        "candidate_process_name": "codex"
       }
     },
     {
@@ -386,6 +387,24 @@
           "real_scored_tasks": 0,
           "test": "python3 test-support/osworld_controller_smoke.py",
           "limitation": "Two synthetic phases use actual HTTP/Unix sockets and the existing Node tool client. No model, official VM or official OSWorld task is executed. Dynamic candidate run binding and full package assembly remain incomplete."
+        },
+        "phase_run_evidence": {
+          "implemented": true,
+          "synthetic_only": true,
+          "context_kind": "benchmark_phase",
+          "standalone_score_forbidden": true,
+          "ordinary_hitch_run_bundles": true,
+          "immutable_group_references_original_bundles": true,
+          "consecutive_phase_and_candidate_identity_checks": true,
+          "distinct_native_session_and_nonoverlap_checks": true,
+          "source_bundle_tamper_detected": true,
+          "standalone_strict_comparison_and_training_exclusion": true,
+          "actual_hitch_executor_with_synthetic_process_test_passed": true,
+          "fresh_harbor_candidate_supervisor_complete": false,
+          "phase_group_scored_trial_import_complete": false,
+          "real_scored_tasks": 0,
+          "test": "node --test dist/test/benchmark-phase-runs.test.js",
+          "limitation": "The group has candidate-evidence-only scope. Synthetic harness processes verify separate copy workspaces and independent native session identifiers; no real model/VM/task runs. Native phase coverage, candidate container/log/process isolation, group import and final assessment remain incomplete."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -417,12 +436,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 349,
-    "passed": 346,
+    "total": 351,
+    "passed": 348,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/osworld-controller-check.log",
-    "additional_verification": "Actual HTTP/Unix/Node image-client transport passed across synthetic OSWorld phase changes and cancellation; native phase parity tests also pass. This does not establish real OSWorld acceptance."
+    "evidence": ".hitch/benchmark-expansion/phase-evidence-check.log",
+    "additional_verification": "Hitch phase contexts and immutable candidate-evidence groups passed actual synthetic process/workspace tests, including reused sessions, membership, score exclusion and source tamper rejection. OSWorld transport/native phase parity tests remain green; no new real benchmark acceptance is claimed."
   },
-  "updated_at": "2026-09-02T18:59:55.959316+00:00"
+  "updated_at": "2026-09-02T19:18:35.607229+00:00"
 }

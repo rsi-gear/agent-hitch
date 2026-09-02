@@ -57,23 +57,28 @@ export function validateRunContext(value: unknown = { kind: "ad_hoc" }): RunCont
     if (iterationId !== undefined) context.iteration_id = nonEmptyString(iterationId, "iteration_id");
     return context;
   }
-  if (kind === "benchmark_task") {
+  if (kind === "benchmark_task" || kind === "benchmark_phase") {
     assertExactFields(record, [
       "kind", "benchmark_id", "benchmark_revision", "task_id",
       "task_digest", "verifier_identity",
-    ], "benchmark_task context");
+      ...(kind === "benchmark_phase" ? ["run_group_id", "phase_index"] : []),
+    ], `${kind} context`);
     const revision = nonEmptyString(record.benchmark_revision, "benchmark_revision");
     if (revision.toLowerCase() === "latest") {
       throw new TypeError("benchmark_revision must be immutable and cannot be 'latest'");
     }
-    return {
-      kind,
+    const identity = {
       benchmark_id: nonEmptyString(record.benchmark_id, "benchmark_id"),
       benchmark_revision: revision,
       task_id: nonEmptyString(record.task_id, "task_id"),
       task_digest: asSha256(record.task_digest, "task_digest"),
       verifier_identity: asSha256(record.verifier_identity, "verifier_identity"),
     };
+    if (kind === "benchmark_task") return { kind, ...identity };
+    const groupId = nonEmptyString(record.run_group_id, "run_group_id");
+    const phaseIndex = asInteger(record.phase_index, "phase_index");
+    if (!/^run_group_[a-f0-9]{32}$/.test(groupId) || phaseIndex < 1) throw new TypeError("invalid benchmark phase identity");
+    return { kind, ...identity, run_group_id: groupId, phase_index: phaseIndex };
   }
   throw new TypeError(`invalid run context kind: ${kind}`);
 }

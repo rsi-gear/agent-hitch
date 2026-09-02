@@ -666,6 +666,8 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 现有 Harbor bridge 在 prepare 时上传一个静态 binding，随后只启动一个 Hitch run。仍需加入通用的动态候选会话编排：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传该候选的 binding → 释放模型进程开始执行 → 阶段结束后停止并封存该 run，再执行下一阶段。除 run ID 外，还须记录不同 native session ID 和各阶段 bundle，以证明模型上下文确实重置。绑定回执含 token，不得进入生命周期 journal 或评分证据。fresh-run supervisor、授权任务 producer、controller 生命周期装配、网站 reset、partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
+Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial identity、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。现有单 bundle 导入器会拒绝 phase run，整题 group assessment 尚待接通。后续 supervisor 必须隔离并清理旧候选的文件、日志挂载和后台进程，再结合原生 reset/gate/terminal 证据核对 group 完整性；不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
+
 ### 9.6 CursorBench 与其他私有集
 
 授权数据的独立适配器输出标准包：repo/workspace 初始快照、任务说明、只向 grader 提供的参考变更/criteria、测试依赖、任务版本和合法使用范围。多 repo 根目录按 manifest 映射；答案补丁不能出现在 candidate 的 Git history 或对象包内。

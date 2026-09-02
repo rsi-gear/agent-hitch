@@ -5,6 +5,10 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["prompt"],
+  "allOf": [{
+    "if": { "properties": { "context": { "properties": { "kind": { "const": "benchmark_phase" } }, "required": ["kind"] } }, "required": ["context"] },
+    "then": { "required": ["parent"], "properties": { "defer_benchmark_observation": { "const": false } } }
+  }],
   "oneOf": [
     {
       "required": ["harness_ref"],

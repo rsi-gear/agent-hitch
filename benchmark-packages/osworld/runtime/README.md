@@ -188,3 +188,20 @@ Unix sockets plus the existing Node tool client. Two synthetic phases verify
 image bytes, distinct phase bindings, stale token/lease rejection, action retry
 idempotence, cancellation and socket/thread cleanup. This runs no model or VM
 and contributes zero real OSWorld task validations.
+
+## Phase run storage
+
+Hitch now accepts `benchmark_phase` run contexts with an eval parent,
+`run_group_id` and `phase_index`. Each run seals its own native trajectory and
+process outcome without a standalone benchmark observation. The generic runs
+API can inspect and seal a group of consecutive phases with matching candidate
+identity, distinct native sessions and verified bundle hashes. The group is
+candidate evidence only; it does not publish a score or prove native completion.
+
+The remaining supervisor must recycle the candidate's environment, including
+its writable files, runtime, log mounts and background processes, across native
+resets. Old phase records must be archived outside mounts visible to the next
+candidate. VM and website state remain under the upstream phase runner. The
+current one-bundle Harbor importer cannot publish these groups yet; group
+import and reconciliation with native terminal/gate evidence remain required.
+See section 18 of `docs/provider-native-trajectory-comparison-spec.zh-CN.md`.

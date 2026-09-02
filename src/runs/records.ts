@@ -61,6 +61,9 @@ export function projectRunRecord(manifestValue: unknown): RunRecordV1 {
     created_at: isoTimestamp(manifest.created_at, "created_at"),
   };
   if (manifest.parent !== undefined) record.parent = validateEvalRunParent(manifest.parent);
+  if (context.kind === "benchmark_phase" && (!record.parent || manifest.observation !== undefined)) {
+    throw new TypeError("benchmark phase requires an eval parent and cannot carry a standalone observation");
+  }
   if (manifest.observation !== undefined) record.observation = validateRunObservation(manifest.observation);
   if (manifest.result_ref !== undefined) record.result_ref = validateRelativePath(manifest.result_ref, "result_ref");
   else if (isTerminal(status)) record.result_ref = "result.json";
