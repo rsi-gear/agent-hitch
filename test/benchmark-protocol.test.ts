@@ -63,3 +63,9 @@ test("OSWorld image export preserves pinned source and checks runtime/dependency
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /image integrity gates passed/);
 });
+
+test("OSWorld static website routes preserve ordered paths and HTTPS without a Docker socket", () => {
+  const result = spawnSync("python3", ["test-support/osworld_web_routes_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /routing and private topology gates passed/);
+});

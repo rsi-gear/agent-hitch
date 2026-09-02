@@ -718,6 +718,80 @@
             "sdk_canary": ".hitch/benchmark-expansion/controller-sdk-canary-v3.json"
           },
           "limitation": "Local controller image and installed-SDK integration only. The same Python runtime/SDK were exercised in the canary; the final image changes README bytes and passes its own integrity check. No authorized release task, official VM, full website/Compose assembly, task-specific strict metric mapping or remote image distribution has been validated. Debian repositories and isolated build dependencies can change a rebuild, so freeze each resulting image identity."
+        },
+        "website_router": {
+          "implemented": true,
+          "official_task_execution_verified": false,
+          "real_scored_tasks": 0,
+          "website_commit": "90ec2218f7747b15fe5117cdbe59b8978446ab9c",
+          "applications_compiled": 24,
+          "services": 39,
+          "hostnames": 25,
+          "all_pinned_compose_sources_sha256": "sha256:a152589d8ba349b51487ff164f0e70f9e90eedc74a235ad1e1f09813d657b2c3",
+          "all_routes_caddyfile_sha256": "sha256:d3e7b2c2920d6382f3e6499b5e9106c0cf6f3d806d06d0ffcadc8cb0fe654313",
+          "caddy_image": "lucaslorentz/caddy-docker-proxy:2.8-alpine@sha256:06b32ac4ea4a8417441e2cc3312ef8136368667cb36c622a3c7a0bb12190d9e6",
+          "real_caddy_configuration_validation_passed": true,
+          "protocol": "osworld-web-routes@1",
+          "preserves_api_mcp_route_order": true,
+          "preserves_upstream_http_https_defaults": true,
+          "https_controller_and_guest_trust_implemented": false,
+          "full_task_assembly_complete": false,
+          "real_application_canary": {
+            "application": "budgetwise_web",
+            "commit": "d7450221ba688ab50f0abb74fa1bf1dbcf8bc601",
+            "git_archive_sha256": "sha256:5cc21d2738b8c03a2c4697f8c5bcd8646a5ca3882552c9f89dc1906bc86fc318",
+            "base_images": [
+              {
+                "image": "python:3.11-slim",
+                "manifest": "sha256:d1053354624536b044162aaab1e418bd000ea35184fb1ae098ab3166b1072e72",
+                "pinned": "python:3.11-slim@sha256:d1053354624536b044162aaab1e418bd000ea35184fb1ae098ab3166b1072e72"
+              },
+              {
+                "image": "ghcr.io/astral-sh/uv:0.12.1",
+                "manifest": "sha256:f6edac8c6d516a01a5387a8655c97481e0db46dd0a62ab62f41e5b2294376f6e",
+                "pinned": "ghcr.io/astral-sh/uv:0.12.1@sha256:f6edac8c6d516a01a5387a8655c97481e0db46dd0a62ab62f41e5b2294376f6e"
+              },
+              {
+                "image": "node:20-alpine",
+                "manifest": "sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb",
+                "pinned": "node:20-alpine@sha256:afdf98210b07b586eb71fa22ba2e432e058e4cd1304d31ed60888755b8c865fb"
+              },
+              {
+                "image": "nginx:1.27-alpine",
+                "manifest": "sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8",
+                "pinned": "nginx:1.27-alpine@sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8"
+              }
+            ],
+            "image_ids": {
+              "web_proxy": "sha256:df7f1c392fd517e2c7310ac48efab297b86e2617973b572fbf0838286a7d8bc6",
+              "budgetwise_web_backend": "sha256:bac290d08cc461ac7397f9b194e3f2ffe8035142584e2a73176c9add2dadd2cb",
+              "budgetwise_web_frontend": "sha256:4f6f138fbb94d71f92d0d30337b2a5d7fdb03573ef2a15cfbafe7759c9270d1b"
+            },
+            "image_id_kind": "local Docker configuration SHA256; not registry pull references",
+            "checks": {
+              "html_and_assets": true,
+              "assets_fetched": 2,
+              "api_get_put_delete": true,
+              "separate_cookie_state": true,
+              "state_reset": true,
+              "mcp_backend_route": true,
+              "mcp_get_status": 400
+            },
+            "private_networks_verified": true,
+            "no_host_ports_or_docker_socket_verified": true,
+            "cleanup_passed": true,
+            "official_task": false,
+            "official_vm": false,
+            "candidate_model": false
+          },
+          "evidence": {
+            "source_inventory": ".hitch/benchmark-expansion/osworld-web-compose-sources/sources.json",
+            "all_routes": ".hitch/benchmark-expansion/osworld-all-web-routes/routes.json",
+            "caddy_validation": ".hitch/benchmark-expansion/osworld-caddy-validate.log",
+            "application_source_lock": ".hitch/benchmark-expansion/budgetwise-build/source-lock.json",
+            "application_canary": ".hitch/benchmark-expansion/osworld-budgetwise-canary-v4.json"
+          },
+          "limitation": "Static deployment component and one real public application only. No authorized task initialization, official VM/guest browser or official task score. Collaborative Overleaf requires private CA trust in both controller and guest; interfacinglinux has a floating main build asset that must be bound to authorized release bytes. Application source, final images, networks, state volumes, assets and resource limits still require complete task assembly."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -749,12 +823,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 362,
-    "passed": 359,
+    "total": 363,
+    "passed": 360,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/controller-image-check.log",
-    "additional_verification": "Pinned Git source export and image integrity tests plus existing lifecycle/deadline/assessment suite. A separate installed-SDK production-worker canary with a synthetic task/mock guest caught and verified the fix for missing result_dir in native logging. Image source, dependency inventories and final integrity receipt retained. No new official benchmark acceptance."
+    "evidence": ".hitch/benchmark-expansion/web-router-check.log",
+    "additional_verification": "All 24 pinned website compose definitions compiled and the real Caddy image validated their configuration. Budgetwise frontend/backend built from frozen Git source and resolved base images; isolated container canary verified static assets, API state/cookie/reset semantics, MCP backend routing and cleanup. Three pure routing regression cases added. No new official benchmark acceptance."
   },
-  "updated_at": "2026-09-02T22:55:07.552449+00:00"
+  "updated_at": "2026-09-02T23:20:22.894802+00:00"
 }

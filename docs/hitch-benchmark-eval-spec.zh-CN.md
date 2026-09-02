@@ -688,6 +688,8 @@ Controller 镜像由 `benchmark-packages/osworld/prepare-controller.py` 从固�
 
 生产 worker 同时向原生 runner/result logger 提供动作间隔与 `result_dir`，原始 summary 随 `native/` 收集。镜像级 canary 用真实安装的 SDK、生产 entrypoint/worker、合成任务与模拟桌面服务，保留原生 60 秒准备等待，检查评分、summary、快照和关闭。该测试不使用真实 VM、模型或官方抽样任务，不能增加真实 benchmark 验收数。
 
+网站静态路由组件 `compile-web-router.py` 从父仓库固定 gitlink 的 Git 对象读取 compose，输出 Caddyfile、带来源摘要的 `osworld-web-routes@1` 和私有 Compose 片段。已覆盖该 release 的 24 个运行应用、39 个服务、25 个域名，并通过真实 Caddy 配置校验；按上游默认 scheme 保留 HTTPS、多域名与有序 `/api`、`/mcp` 路由，无 host 端口或 Docker socket。Budgetwise 从固定源码和基础镜像构建，用独立应用容器验证页面/API/cookie 隔离与恢复默认状态；它不是官方抽样任务。协作版 Overleaf 的 Secure Cookie 需要 controller 与 guest 同时信任 trial CA，证书装配尚未实现；网站中的浮动 main 构建资产必须先绑定匹配 release。应用镜像、网络、资源、fresh volume、授权 task 初始化仍须由完整 producer 装配；不能把路由片段当作完整任务包。具体合同见 `benchmark-packages/osworld/WEB-ROUTER.md`。
+
 整题导入测试保留真实零分语义，验证 phase bundle 原始字节、整题去重、幂等重放与 assessment 已封存但 publication 未写入的恢复。读取结果时重新核对 assessment digest、证据树和全部 group 成员；截断 audit、错误 run 绑定、指标/证据篡改均拒绝。`collect-only` 已识别 group 引用；多阶段 verifier-only regrade 和远程单 bundle 传输仍显式拒绝，不能声称已支持。
 
 ### 9.6 CursorBench 与其他私有集
