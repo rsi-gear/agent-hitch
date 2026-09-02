@@ -1,4 +1,5 @@
 export * from "./ids.js";
+export * from "./benchmarks.js";
 export * from "./runs.js";
 export * from "./trajectories.js";
 export * from "./eval-records.js";

@@ -90,6 +90,9 @@ Usage:
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
   hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>] [execution policy]
+  hitch benchmark validate --package <directory>
+  hitch benchmark lock --package <directory> [--out <benchmark.lock.json>]
+  hitch eval run --benchmark <directory> | --benchmark-lock <file> --harness <immutable-ref> [--model <id>]
   hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>] [execution policy]
     execution policy: [--provider <id>] [--cpu-per-trial <integer-cpus>] [--memory-per-trial <size>]
       [--build-mode backend|prebuild-preferred|prebuild-required]

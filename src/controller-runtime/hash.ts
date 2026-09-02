@@ -31,6 +31,8 @@ export const RUNTIME_HARBOR_BRIDGE_FILES = [
   "integrations/harbor/hitch_harbor_environment.py",
   "integrations/harbor/hitch_harbor_task_resources.py",
   "integrations/harbor/hitch_harbor_verifier.py",
+  "integrations/harbor/hitch_benchmark.py",
+  "integrations/harbor/hitch_tool_client.mjs",
 ] as const;
 
 /**

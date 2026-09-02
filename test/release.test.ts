@@ -28,7 +28,7 @@ test("package exports contain only module facades", () => {
   assert.deepEqual(Object.keys(metadata.exports), [
     "./adapters",
     "./artifacts",
-    "./backends",
+    "./backends", "./benchmarks",
     "./controller-runtime",
     "./control-plane",
     "./workers",

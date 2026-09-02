@@ -1,0 +1,138 @@
+import type { BenchmarkManifestV1, BenchmarkProfileV1, BenchmarkTaskV1 } from "../domain/index.js";
+import { HitchError, invalidInput } from "../foundation/index.js";
+
+export const BENCHMARK_CAPABILITIES = new Set([
+  "shell", "artifact-export", "separate-verifier", "compose", "tool-server@1", "http-json-cli", "hitch-hook@1",
+]);
+
+export function unsupported(message: string): never {
+  throw new HitchError(message, { code: "unsupported_feature", exitCode: 2 });
+}
+export function object(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput(`${label} must be an object`);
+  return value as Record<string, unknown>;
+}
+export function fields(value: unknown, allowed: string[], label: string): Record<string, unknown> {
+  const result = object(value, label);
+  for (const key of Object.keys(result)) if (!allowed.includes(key)) unsupported(`${label}.${key} is unsupported`);
+  return result;
+}
+export function nonempty(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string" || !value.trim() || /[\0\r\n]/.test(value)) throw invalidInput(`${label} must be a nonempty string`);
+}
+export function strings(value: unknown, label: string): asserts value is string[] {
+  if (!Array.isArray(value)) throw invalidInput(`${label} must be an array`);
+  value.forEach((item) => nonempty(item, label));
+  if (new Set(value).size !== value.length) throw invalidInput(`${label} contains duplicates`);
+}
+export function positive(value: unknown, label: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) throw invalidInput(`${label} must be a positive integer`);
+}
+export function relativePath(value: unknown): string {
+  nonempty(value, "package path");
+  if (!/^[A-Za-z0-9_.\/-]+$/.test(value) || value.startsWith("/") || value.split("/").some((part) => ["", ".", ".."].includes(part))) {
+    throw invalidInput(`invalid package-relative path: ${value}`);
+  }
+  return value;
+}
+
+export function parseManifest(value: unknown): BenchmarkManifestV1 {
+  const m = fields(value, ["schema_version", "protocol", "id", "release", "task_root", "task_ids", "default_profile", "primary_metric", "task_format", "source", "metrics", "publication", "runtime_components", "extensions"], "manifest");
+  if (m.schema_version !== "1" || m.protocol !== "hitch-benchmark@1") unsupported("unsupported benchmark protocol");
+  for (const key of ["id", "release", "primary_metric"]) nonempty(m[key], key);
+  relativePath(m.task_root); relativePath(m.default_profile);
+  strings(m.task_ids, "task_ids");
+  if (!m.task_ids.length || m.task_ids.some((id) => !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(id))) throw invalidInput("invalid or empty task membership");
+  const dialect = fields(m.task_format, ["name", "schema_version"], "task_format");
+  if (dialect.name !== "harbor" || dialect.schema_version !== "1.4") unsupported("only Harbor schema 1.4 is supported");
+  const source = fields(m.source, ["kind", "path", "uri", "resolved_revision", "license", "access"], "source");
+  nonempty(source.license, "source.license");
+  if (source.access !== undefined && !["public", "private", "gated"].includes(String(source.access))) throw invalidInput("invalid source access");
+  if (source.kind === "git") {
+    nonempty(source.uri, "source.uri");
+    let uri: URL;
+    try { uri = new URL(source.uri); } catch { throw invalidInput("Git source requires a credential-free HTTPS URI"); }
+    if (uri.protocol !== "https:" || uri.username || uri.password || uri.search || uri.hash || source.path !== undefined) throw invalidInput("Git source requires a credential-free HTTPS URI without a host path");
+    if (!/^[a-f0-9]{40}$/.test(String(source.resolved_revision))) throw invalidInput("Git source requires a full resolved commit");
+  } else if (source.kind !== "local") unsupported("unsupported source kind");
+  else if (source.path !== "." || source.uri !== undefined || source.resolved_revision !== undefined) throw invalidInput("local source must name package root '.'; its content identity is resolved by Hitch");
+  const metrics = object(m.metrics, "metrics");
+  if (!Object.hasOwn(metrics, m.primary_metric as string)) throw invalidInput("primary_metric must name a declared metric");
+  for (const [name, value] of Object.entries(metrics)) {
+    nonempty(name, "metric name");
+    const metric = fields(value, ["type", "direction", "range", "reducer"], `metrics.${name}`);
+    if (!["binary", "scalar"].includes(String(metric.type)) || !["maximize", "minimize"].includes(String(metric.direction)) || metric.reducer !== "task_macro_mean") unsupported(`unsupported metric definition: ${name}`);
+    if (!Array.isArray(metric.range) || metric.range.length !== 2 || !metric.range.every((v) => typeof v === "number" && Number.isFinite(v)) || metric.range[0] > metric.range[1]) throw invalidInput(`invalid metric range: ${name}`);
+    if (metric.type === "binary" && JSON.stringify(metric.range) !== "[0,1]") throw invalidInput("binary metrics require range [0,1]");
+  }
+  const publication = fields(m.publication, ["track", "training_eligible"], "publication");
+  if (!["custom", "public-subset"].includes(String(publication.track)) || publication.training_eligible !== false) unsupported("MVP packages require custom/public-subset track and training_eligible=false");
+  m.runtime_components ??= [];
+  if (!Array.isArray(m.runtime_components)) throw invalidInput("runtime_components must be an array");
+  const ids = new Set<string>();
+  for (const value of m.runtime_components) {
+    const component = fields(value, ["id", "protocol", "path"], "runtime component");
+    nonempty(component.id, "component.id"); nonempty(component.protocol, "component.protocol"); relativePath(component.path);
+    if (ids.has(component.id)) throw invalidInput("duplicate runtime component id");
+    ids.add(component.id);
+  }
+  return m as unknown as BenchmarkManifestV1;
+}
+
+export function parseProfile(value: unknown): BenchmarkProfileV1 {
+  const p = fields(value, ["schema_version", "id", "track", "input_mode", "tool_policy", "budget", "sampling", "grading", "extensions"], "profile");
+  if (p.schema_version !== "1" || p.input_mode !== "instruction") unsupported("unsupported profile version/input mode");
+  nonempty(p.id, "profile.id");
+  if (!["custom", "public-subset"].includes(String(p.track))) unsupported("unsupported profile track");
+  const policy = fields(p.tool_policy, ["id", "allowed", "network", "enforcement"], "tool_policy");
+  nonempty(policy.id, "tool_policy.id"); strings(policy.allowed, "tool_policy.allowed");
+  if (policy.network !== "open" || policy.enforcement !== "required") unsupported("this backend profile currently supports explicit open network only");
+  if (policy.allowed.some((c) => !BENCHMARK_CAPABILITIES.has(c))) unsupported("unknown allowed tool capability");
+  const budget = fields(p.budget, ["agent_timeout", "setup_timeout_ms", "collection_timeout_ms", "cleanup_grace_ms"], "budget");
+  const timeout = fields(budget.agent_timeout, ["source"], "agent_timeout");
+  if (timeout.source !== "task") unsupported("agent timeout must inherit task");
+  for (const key of ["setup_timeout_ms", "collection_timeout_ms", "cleanup_grace_ms"]) positive(budget[key], key);
+  const sampling = fields(p.sampling, ["attempts_per_task", "seed"], "sampling");
+  positive(sampling.attempts_per_task, "attempts_per_task");
+  if (!Number.isSafeInteger(sampling.seed)) throw invalidInput("seed must be an integer");
+  const grading = fields(p.grading, ["on_agent_budget_exhausted", "on_missing_submission", "infrastructure_retries"], "grading");
+  if (grading.on_agent_budget_exhausted !== "grade_final_state" || grading.on_missing_submission !== "error") unsupported("unsupported grading policy");
+  if (!Number.isSafeInteger(grading.infrastructure_retries) || Number(grading.infrastructure_retries) < 0) throw invalidInput("invalid grading retries");
+  return p as unknown as BenchmarkProfileV1;
+}
+
+export function parseTask(value: unknown, manifest: BenchmarkManifestV1): BenchmarkTaskV1 {
+  const t = fields(value, ["schema_version", "source_task_id", "driver", "requirements", "lifecycle", "submission", "grading", "extensions"], "task");
+  if (t.schema_version !== "1") unsupported("unsupported task extension version");
+  nonempty(t.source_task_id, "source_task_id"); strings(t.requirements, "requirements");
+  for (const cap of t.requirements) if (!BENCHMARK_CAPABILITIES.has(cap)) unsupported(`required capability unavailable: ${cap}`);
+  for (const cap of ["shell", "tool-server@1", "http-json-cli", "hitch-hook@1", "separate-verifier", "compose", "artifact-export"]) if (!t.requirements.includes(cap)) throw invalidInput(`tool-server driver requires capability ${cap}`);
+  const driver = fields(t.driver, ["kind", "protocol_version", "config"], "driver");
+  if (driver.kind !== "tool-server" || driver.protocol_version !== "1") unsupported("unsupported driver protocol");
+  const config = fields(driver.config, ["transport", "endpoint", "schema", "service"], "driver.config");
+  if (config.transport !== "http-json-cli") unsupported("unsupported tool-server transport");
+  nonempty(config.service, "tool service");
+  if (!/^[a-z][a-z0-9_-]*$/.test(config.service) || config.service === "main") throw invalidInput("tool service must be a sidecar");
+  nonempty(config.endpoint, "tool endpoint");
+  const url = new URL(config.endpoint);
+  if (url.protocol !== "http:" || url.hostname !== config.service || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw invalidInput("tool endpoint must target the declared isolated Compose service root");
+  relativePath(config.schema);
+  const lifecycle = fields(t.lifecycle, ["prepare", "quiesce", "snapshot", "cleanup"], "lifecycle");
+  for (const phase of ["prepare", "quiesce", "snapshot", "cleanup"]) {
+    const hook = fields(lifecycle[phase], ["protocol", "target", "argv", "timeout_ms"], `hook.${phase}`);
+    if (hook.protocol !== "hitch-hook@1" || hook.target !== `environment:${config.service}`) unsupported(`unsupported hook target/protocol: ${phase}`);
+    // Repeated argv values are valid, unlike membership lists.
+    if (!Array.isArray(hook.argv) || !hook.argv.length) throw invalidInput(`missing hook argv: ${phase}`);
+    hook.argv.forEach((arg) => nonempty(arg, "hook argv")); positive(hook.timeout_ms, "hook timeout");
+  }
+  const submission = fields(t.submission, ["kind", "paths", "max_bytes"], "submission");
+  if (submission.kind !== "artifacts") unsupported("unsupported submission");
+  strings(submission.paths, "submission.paths"); positive(submission.max_bytes, "submission.max_bytes");
+  if (!submission.paths.length || submission.paths.some((p) => !p.startsWith("/") || p.includes(".."))) throw invalidInput("submission paths must be absolute safe container paths");
+  const grading = fields(t.grading, ["kind", "entrypoint", "metric_map"], "grading");
+  if (grading.kind !== "command" || JSON.stringify(grading.entrypoint) !== '["bash","/tests/test.sh"]') unsupported("unsupported grader command");
+  const mapping = object(grading.metric_map, "metric_map");
+  if (Object.keys(mapping).sort().join("\0") !== Object.keys(manifest.metrics).sort().join("\0")) throw invalidInput("metric_map must cover exactly the declared metrics");
+  Object.values(mapping).forEach((v) => nonempty(v, "metric mapping"));
+  return t as unknown as BenchmarkTaskV1;
+}

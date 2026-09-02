@@ -1,5 +1,6 @@
 import type { AdapterDefinition } from "../contract.js";
 import { asString, codexSupportsEphemeral } from "./shared.js";
+import { codexContainerAuth } from "./codex-auth.js";
 
 export const codexAdapter: AdapterDefinition = {
     id: "codex",
@@ -40,7 +41,8 @@ export const codexAdapter: AdapterDefinition = {
       args.push("--skip-git-repo-check", "--color", "never", "-C", request.cwd);
       if (request.model) args.push("--model", request.model);
       args.push(...request.agent_args, "-");
-      return { executable, args, input: request.prompt };
+      const auth = codexContainerAuth();
+      return { executable, args, input: request.prompt, ...(auth ? { env: auth } : {}) };
     },
     translate(event) {
       if (event.type === "thread.started") {

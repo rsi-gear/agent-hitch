@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hitch.dev/schemas/benchmark-hook-v1.schema.json",
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "const": "hitch-hook@1"
+    },
+    "target": {
+      "type": "string",
+      "pattern": "^environment:[a-z][a-z0-9_-]*$"
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "protocol",
+    "target",
+    "argv",
+    "timeout_ms"
+  ],
+  "additionalProperties": false
+}

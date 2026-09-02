@@ -1,6 +1,6 @@
 import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "../../backends/index.js";
 import type { EvalExecutionPolicyV1, ResourceVectorV1 } from "../../domain/index.js";
-import { inspectEval, isControlPlaneEval, listEvals, parseEvalRerunType, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
+import { inspectEval, isControlPlaneEval, listEvals, parseEvalRerunType, rerunEval, runEval, runBenchmarkEval, validateEvalId } from "../../evals/index.js";
 import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput, positiveInteger } from "../../foundation/index.js";
 import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
@@ -135,16 +135,19 @@ async function evalDoctorCommand(args: string[], root: string): Promise<void> {
 }
 
 async function evalRunCommand(args: string[], root: string): Promise<void> {
+  const benchmark = takeOption(args, "--benchmark");
+  const benchmarkLock = takeOption(args, "--benchmark-lock");
   const useDaemon = takeFlag(args, "--daemon");
   const idempotencyKey = takeOption(args, "--idempotency-key");
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
   const requestedEvalId = takeOption(args, "--eval-id");
   const executionOptions = parseEvalExecutionOptions(args);
-  const request = parseEvalRequest(args);
+  const request = parseEvalRequest(args, Boolean(benchmark || benchmarkLock));
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
   if (useDaemon) {
+    if (benchmark || benchmarkLock) throw invalidInput("standard package runs currently require a local root without --daemon");
     if (requestedEvalId !== undefined) throw invalidInput("--eval-id is unavailable with --daemon; submission IDs are server-assigned");
     if (harborExecutable !== undefined) throw invalidInput("--harbor is unavailable with --daemon; configure Harbor for the daemon environment");
     const client = await daemonClient(root);
@@ -171,7 +174,10 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
-    const result = await runEval({
+    const run = benchmark || benchmarkLock ? runBenchmarkEval : runEval;
+    const result = await run({
+      ...(benchmark ? { benchmark } : {}),
+      ...(benchmarkLock ? { benchmarkLock } : {}),
       ...(requestedEvalId !== undefined ? { evalId: validateEvalId(requestedEvalId) } : {}),
       request,
       root,

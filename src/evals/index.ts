@@ -47,3 +47,4 @@ export { loadEvalResumeState } from "./resume-state.js";
 export { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, dockerResourceOwnership, validateDockerResourceOwnership } from "./docker-ownership.js";
 export { reapOwnedDockerResources } from "./docker-reaper.js";
 export type { DockerReaperOptions, DockerReaperReportV1, ReapableDockerResourceKind } from "./docker-reaper.js";
+export { runBenchmarkEval } from "./benchmark-run.js";

@@ -525,6 +525,11 @@ class HitchHarborAgent(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
+        if getattr(environment, "_hitch_benchmark", None):
+            from hitch_benchmark import candidate_instruction
+            instruction, task_timeout = candidate_instruction(instruction, environment)
+            if self.hitch_timeout_ms == 0 and task_timeout is not None:
+                self.hitch_timeout_ms = task_timeout
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         workdir = self._require_workdir()
         assigned_run_id = "run_" + uuid.uuid4().hex

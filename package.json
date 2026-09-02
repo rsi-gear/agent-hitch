@@ -22,6 +22,7 @@
     "./adapters": "./dist/src/adapters/index.js",
     "./artifacts": "./dist/src/artifacts/index.js",
     "./backends": "./dist/src/backends/index.js",
+    "./benchmarks": "./dist/src/benchmarks/index.js",
     "./controller-runtime": "./dist/src/controller-runtime/index.js",
     "./control-plane": "./dist/src/control-plane/index.js",
     "./workers": "./dist/src/workers/index.js",
@@ -50,7 +51,9 @@
     "integrations/harbor/hitch_harbor_agent.py",
     "integrations/harbor/hitch_harbor_environment.py",
     "integrations/harbor/hitch_harbor_task_resources.py",
-    "integrations/harbor/hitch_harbor_verifier.py"
+    "integrations/harbor/hitch_harbor_verifier.py",
+    "integrations/harbor/hitch_benchmark.py",
+    "integrations/harbor/hitch_tool_client.mjs"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

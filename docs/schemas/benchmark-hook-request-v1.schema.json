@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hitch.dev/schemas/benchmark-hook-request-v1.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "enum": [
+        "prepare",
+        "quiesce",
+        "snapshot",
+        "cleanup"
+      ]
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "logical_trial_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lease_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "profile_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "input_refs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "phase",
+    "task_id",
+    "logical_trial_id",
+    "execution_index",
+    "lease_id",
+    "epoch",
+    "profile_digest",
+    "input_refs"
+  ],
+  "additionalProperties": false
+}

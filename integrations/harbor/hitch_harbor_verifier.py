@@ -152,6 +152,10 @@ class HitchRetryingVerifier(Verifier):
                 if attempts:
                     self._write_history("recovered", attempts)
                 assert result is not None
+                directory = getattr(getattr(getattr(self, "task", None), "paths", None), "environment_dir", None)
+                if directory and (directory.parent / ".hitch-benchmark.json").is_file():
+                    from hitch_benchmark import normalize_rewards
+                    return normalize_rewards(self, result)
                 return result
 
             attempts.append(

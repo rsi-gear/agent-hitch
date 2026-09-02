@@ -78,6 +78,11 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 else:
                     positional[task_env_position] = updated
         super().__init__(*positional, **kwargs)
+        self._hitch_benchmark = None
+        directory = getattr(self, "environment_dir", None)
+        if directory and directory.name == "environment" and (directory.parent / ".hitch-benchmark.json").is_file():
+            from hitch_benchmark import BenchmarkSession, descriptor
+            self._hitch_benchmark = BenchmarkSession(self, descriptor(directory))
         if (
             self._hitch_ownership_labels
             or self._hitch_service_resource_limits
@@ -94,6 +99,40 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         if self._hitch_ownership_compose_path is not None:
             paths.append(self._hitch_ownership_compose_path)
         return paths
+
+    async def start(self, force_build: bool):
+        try:
+            await super().start(force_build)
+            if self._hitch_benchmark:
+                await self._hitch_benchmark.prepare()
+        except BaseException:
+            # Harbor may abort setup before entering its normal teardown path.
+            try:
+                await self.stop(delete=True)
+            except BaseException:
+                pass
+            raise
+
+    async def stop_service(self, service: str) -> None:
+        try:
+            await super().stop_service(service)
+            if service == MAIN_SERVICE_NAME and self._hitch_benchmark:
+                await self._hitch_benchmark.snapshot()
+        except BaseException as error:
+            if self._hitch_benchmark:
+                self._hitch_benchmark.failure = {"phase": "quiesce", "error": type(error).__name__}
+                self._hitch_benchmark.write_journal()
+            raise
+
+    async def stop(self, delete: bool):
+        try:
+            if self._hitch_benchmark and self._hitch_benchmark.started:
+                try:
+                    await super().stop_service(MAIN_SERVICE_NAME)
+                finally:
+                    await self._hitch_benchmark.cleanup()
+        finally:
+            await super().stop(delete)
 
     def _write_ownership_overlay(self) -> Path:
         services = {MAIN_SERVICE_NAME}
