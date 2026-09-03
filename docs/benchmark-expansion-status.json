@@ -2108,13 +2108,15 @@
         },
         "guest_readback_follow": {
           "record": ".hitch/benchmark-expansion/osworld-v6-task031-guest-file-readback-follow.json",
-          "state_observed": "waiting_for_native_prepare",
-          "result": ".hitch/benchmark-expansion/osworld-v6-task031-guest-file-readback.json"
+          "state_observed": "verified",
+          "result": ".hitch/benchmark-expansion/osworld-v6-task031-guest-file-readback.json",
+          "observed_at": "2026-09-03T10:01:08.525119+00:00"
         },
-        "native_task_and_grader_changed": false
+        "native_task_and_grader_changed": false,
+        "current_guest_files_verified": true
       },
       "phase_inspector_payload_fix": {
-        "status": "fixed_two_task_retry_running",
+        "status": "task031_candidate_running_task095_pending",
         "cause": "Host inspection resolved runtime-root/dist/src/runs/phase-bundle.js; the verified bundle stores it under runtime-root/payload/dist/src/runs/phase-bundle.js.",
         "fix": "Resolve the phase inspection module inside payload/. The orchestration regression now builds and uses a real controller runtime bundle rather than passing the source checkout as its runtime root.",
         "previous_actual_candidate_bundle_inspection_passed": true,
@@ -2159,6 +2161,23 @@
             "path": ".hitch/benchmark-expansion/osworld-task031-inspector-cancel-cleanup/receipt.json",
             "sha256": "sha256:cce20967326443ba904bc5ad60e73bcd4d2309eb46792779046e998b5d23f50b"
           }
+        },
+        "task031": {
+          "trial_id": "osworld-task-031__mKfN2bp",
+          "work_id": "work_405052800a3348d1ece6a695642a71cb",
+          "candidate_run_id": "run_e1bdf4ae966f4c5f90f4df9a16329340",
+          "supervision_started_at": "2026-09-03T10:01:26.666053+00:00",
+          "status": "candidate_running",
+          "actual_candidate_guide": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task031-actual-guide-verification.json",
+            "sha256": "sha256:329342845206ee5bc4e96b2bc256444c1028a79a187b80f99fe57d42159a5bc3"
+          },
+          "guest_file_readback": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task031-guest-file-readback.json",
+            "sha256": "sha256:8e0090fde922c92f1012ae33e450372aa7d0393c68a97a6345ace51ca4c66deb"
+          },
+          "verified_guest_report_files": 10,
+          "native_score_available": false
         }
       }
     },
@@ -2210,7 +2229,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-phase-inspection-payload-check.log"
   },
-  "updated_at": "2026-09-03T09:52:40.315566+00:00",
+  "updated_at": "2026-09-03T10:04:23.572657+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -2218,7 +2237,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Follow active eval_67debacbf31445ceba211881bfa18e54 (Task031 then Task095). Check the live Task031 guest report readback follower and collect native scores, sealed phase evidence and valid Hitch assessments. Preserve original sample membership, budgets and all prior invalid/cancelled receipts."
+      "requirement": "Follow active eval_67debacbf31445ceba211881bfa18e54 (Task031 then Task095). Task031 guest readback verified all ten original report hashes before candidate startup, and its actual prompt includes the v6 guide. Collect native scores, sealed phase evidence and valid Hitch assessments; preserve sample membership, budgets and prior invalid/cancelled receipts."
     },
     {
       "benchmark": "cursorbench",

@@ -1028,4 +1028,6 @@ Task095 v5 的实际候选 request 已核对包含锁定 guide。候选提交 `F
 
 Host 检查器已修复路径，回归 fixture 改为实际构建并使用包含 manifest 和 `payload/` 的 controller runtime，覆盖原生阶段完成、切换、超时收尾及 bundle 检查。完整回归 373 项通过、3 项跳过、0 失败。同旧运行时启动的 Task031 v6 子包在首次 prediction 前被中止，所属容器、网络和卷已确认清空；这次准备不计候选验证。
 
-当前运行使用 v6 完整包 `sha256:4793d55cf12d0834fd4b7653cd589708d22e9a7df5264e83acd4d542fa3cb2ea`、guide `sha256:926c11e3926098bbc65730246f7f277b22a19bc92b03893c0d9c41344166a3c1` 和修复后的 host runtime `sha256:fb9bd779e36e2044e47acb450180426fde6214e91590b4b32848050efff7971a`。`eval_67debacbf31445ceba211881bfa18e54` 顺序执行原始 Task031、Task095，保持每题 100 prediction / 7,200 秒、原生任务/评分器及 controller/VM 镜像。Task031 原生准备完成后，只读文件 getter 会核对桌面十份报告的 SHA256；该诊断不修改客体、不向候选传递内容、不充当任务得分。最终仍须原生评分、phase 封存和 Hitch assessment 全部有效。
+当前运行使用 v6 完整包 `sha256:4793d55cf12d0834fd4b7653cd589708d22e9a7df5264e83acd4d542fa3cb2ea`、guide `sha256:926c11e3926098bbc65730246f7f277b22a19bc92b03893c0d9c41344166a3c1` 和修复后的 host runtime `sha256:fb9bd779e36e2044e47acb450180426fde6214e91590b4b32848050efff7971a`。`eval_67debacbf31445ceba211881bfa18e54` 顺序执行原始 Task031、Task095，保持每题 100 prediction / 7,200 秒、原生任务/评分器及 controller/VM 镜像。Task031 原生准备完成后，只读文件 getter 已核对桌面十份报告的 SHA256；该诊断不修改客体、不向候选传递内容、不充当任务得分。最终仍须原生评分、phase 封存和 Hitch assessment 全部有效。
+
+10:01 UTC 的真实 Task031 VM 文件读回已全部通过：十份报告均返回 HTTP 200，字节数和 SHA256 与授权原始 ZIP 一致。检查约耗时 16 秒，在候选监督开始前完成；这证明本次输入文件已部署且可读取，不代表候选完成任务。随后实际候选 request 的 guide SHA256 也与 v6 锁定值相同，host runtime 文件与通过回归的源码一致；候选现已开始执行，原生评分仍待完成。
