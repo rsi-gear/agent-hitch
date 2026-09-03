@@ -23,6 +23,7 @@ import type { EvalTrialSlot } from "./rerun-slots.js";
 import { summarizeTrialRefs } from "./result-helpers.js";
 import { validateEvalTrialReferences } from "./trial-import.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult } from "./verifier-diagnostics.js";
+import { verifierRuntimeRepair } from "./verifier-runtime.js";
 
 interface Input extends RerunEvalOptions {
   evalDirectory: string; rerunId: string; rerunDirectory: string; startedAt: string;
@@ -58,6 +59,9 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
   const runtimeId = String(input.plan.controllerRuntime.runtime_id);
   const runtime = await useControllerRuntimeById(statePaths(input.root), runtimeId.replace(/^sha256:/, ""));
   if (runtime.runtime_id !== runtimeId || runtime.manifest_digest !== input.plan.controllerRuntime.manifest_digest) throw unavailable("controller runtime changed");
+  const verifierRuntime = input.verifierRuntimeId
+    ? await useControllerRuntimeById(statePaths(input.root), input.verifierRuntimeId.slice(7)) : runtime;
+  const runtimeRepair = verifierRuntimeRepair(runtime, verifierRuntime);
   let progress = input.progress;
   const repaired: EvalTrialSlot[] = [];
   const sources: NonNullable<EvalRerunResult["sources"]> = [];
@@ -84,8 +88,9 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     if (!sourceDirectory) throw unavailable("original Harbor trial outputs are missing");
     const sourceConfig = await readJSON<Record<string, unknown>>(path.join(sourceDirectory, "config.json"));
     const sourceResult = await readJSON<Record<string, unknown>>(path.join(sourceDirectory, "result.json"));
-    const agentResult = sourceResult.agent_result as { metadata?: { hitch_run_id?: string } } | undefined;
+    const agentResult = sourceResult.agent_result as { metadata?: { hitch_run_id?: string; controller_runtime_id?: string } } | undefined;
     if (agentResult?.metadata?.hitch_run_id !== original.run_id) throw unavailable("Harbor source candidate identity mismatch");
+    if (runtimeRepair && agentResult.metadata.controller_runtime_id !== runtimeId) throw unavailable("Harbor source controller runtime identity mismatch");
     const taskPath = path.join(benchmark.tasks, slot.task_id);
     if ((sourceConfig.task as { path?: string })?.path !== taskPath) throw unavailable("Harbor task identity mismatch");
     const task = parseTOML(await readFile(path.join(taskPath, "task.toml"), "utf8"));
@@ -104,10 +109,12 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     await cp(path.join(sourceDirectory, "artifacts"), artifactSnapshot, { recursive: true, force: false, errorOnExist: true });
     if (await regradeTreeDigest(artifactSnapshot) !== artifactsDigest) throw unavailable("source artifacts changed during capture");
     const source = { trial_id: original.trial_id, run_id: original.run_id, work_id: work.work_id,
+      controller_runtime_id: runtimeId,
       backend_directory: path.relative(input.evalDirectory, path.dirname(path.dirname(sourceDirectory))).split(path.sep).join("/"),
       bundle_index_digest: sha256JSON(bundleIndex), trial_tree_digest: sourceDigest, artifacts_digest: artifactsDigest, task_tree_digest: taskDigest,
       artifact_capture_at: new Date().toISOString() };
     await atomicWriteJSON(path.join(evidence, "source.json"), source);
+    if (runtimeRepair) await atomicWriteJSON(path.join(evidence, "runtime-repair.json"), runtimeRepair);
     sources.push({ source_trial_id: original.trial_id, source_run_id: original.run_id, source_work_id: work.work_id, source_backend_directory: source.backend_directory });
     const lease = await createExecutionLease({ evalDirectory: input.evalDirectory, evalId: input.evalId,
       workId: `work_${randomUUID().replaceAll("-", "")}`, worker: { workerId: "local-regrade", provider: "local-docker", collisionDomainId: "local-docker" },
@@ -127,7 +134,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     try {
       config = buildHarborRegradeConfig({ sourceConfig, sourceResult, sourceDirectory, outputDirectory: path.join(evidence, "trials"), trialName, ownershipLabels: dockerOwnershipLabelMap(ownership) });
       await lease.markRunning();
-      outcome = await runHarborRegrade({ root: input.root, directory: evidence, config, runtimeDirectory: runtime.directory, env,
+      outcome = await runHarborRegrade({ root: input.root, directory: evidence, config, runtimeDirectory: verifierRuntime.directory, env,
         ...(input.harborExecutable ? { harborExecutable: input.harborExecutable } : {}), signal });
     } finally {
       clearInterval(heartbeat);
@@ -147,7 +154,8 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
       verifierRef: result ? "evidence/verifier-result.json" : undefined,
       infrastructure: await detectVerifierInfrastructureFailure(trialDirectory, primaryVerifierReward(outcome.trial)) });
     const assessment = await sealRegradeAssessment(directory, { eval_id: input.evalId, task_id: slot.task_id, attempt: slot.attempt, rerun_id: input.rerunId,
-      source, controller_runtime_id: runtimeId, backend: outcome.backend, observation, completed_at: new Date().toISOString() });
+      source, controller_runtime_id: verifierRuntime.runtime_id, ...(runtimeRepair ? { runtime_repair: runtimeRepair } : {}),
+      backend: outcome.backend, observation, completed_at: new Date().toISOString() });
     if (observation.status === "valid") {
       const ref: EvalTrialRefV1 = { trial_id: original.trial_id, run_id: original.run_id, task_id: slot.task_id, attempt: slot.attempt,
         observation_status: "valid", reward: observation.reward!, verifier_result_ref: observation.verifier_result_ref!, assessment };

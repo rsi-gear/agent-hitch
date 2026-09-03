@@ -123,13 +123,16 @@ test("verifier-only admission reserves the original work limits and runs seriall
   const observed: RerunEvalOptions[] = [];
   const scheduler = new EvalRerunScheduler({ root, resources: ledger, trialResources: TRIAL, executor: async options => { observed.push(options); return completedResult(options); } });
   await scheduler.initialize(); t.after(() => scheduler.shutdown());
-  const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "verifier-only", selector: { mode: "invalid" } });
+  const verifierRuntime = `sha256:${"b".repeat(64)}`;
+  const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "verifier-only", verifier_runtime_id: verifierRuntime, selector: { mode: "invalid" } });
   assert.equal((await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status, "queued");
+  await assert.rejects(scheduler.submit(EVAL_ID, { rerun_id: accepted.rerunId, rerun_type: "verifier-only", verifier_runtime_id: `sha256:${"c".repeat(64)}`, selector: { mode: "invalid" } }), { code: "idempotency_conflict" });
   assert.equal(observed.length, 0);
   blocker.release();
   await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
   assert.deepEqual(observed[0]?.executionResources, heavy);
   assert.equal(observed[0]?.maxConcurrentOverride, 1);
+  assert.equal(observed[0]?.verifierRuntimeId, verifierRuntime);
 });
 
 test("daemon rerun API preserves requested semantics and rejects unavailable resume", async (t) => {

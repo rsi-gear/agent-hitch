@@ -25,6 +25,7 @@ export interface RerunEvalOptions {
   root: string;
   rerunId?: string;
   rerunType?: EvalRerunType;
+  verifierRuntimeId?: string;
   maxConcurrentOverride?: number;
   env?: NodeJS.ProcessEnv;
   harborExecutable?: string;

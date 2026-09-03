@@ -49,6 +49,18 @@ export async function readRegradeObservation(root: string, evalId: string, trial
     || record.eval_id !== evalId || record.task_id !== trial.task_id || record.attempt !== trial.attempt
     || source?.trial_id !== trial.trial_id || source.run_id !== trial.run_id) throw new Error("regrade assessment source identity mismatch");
   if (record.evidence_digest !== await regradeTreeDigest(path.join(directory, "evidence"))) throw new Error("regrade assessment evidence changed");
+  if (record.runtime_repair !== undefined) {
+    const repair = record.runtime_repair as Record<string, unknown>;
+    const receipt = JSON.parse(await readFile(path.join(directory, "evidence/runtime-repair.json"), "utf8"));
+    if (!repair || typeof repair !== "object" || repair.schema_version !== "1" || repair.kind !== "verifier-environment-runtime-repair"
+      || repair.path !== "integrations/harbor/hitch_harbor_environment.py"
+      || repair.source_runtime_id !== source.controller_runtime_id || repair.replacement_runtime_id !== record.controller_runtime_id
+      || ![repair.source_runtime_id, repair.replacement_runtime_id, repair.source_sha256, repair.replacement_sha256].every(value => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value))
+      || !Number.isSafeInteger(repair.unchanged_file_count) || Number(repair.unchanged_file_count) < 0
+      || sha256JSON(repair) !== sha256JSON(receipt)) throw new Error("verifier runtime repair provenance mismatch");
+  } else if (source.controller_runtime_id !== undefined && source.controller_runtime_id !== record.controller_runtime_id) {
+    throw new Error("verifier controller runtime changed without repair provenance");
+  }
   const sourceIndex = await verifyResultBundleIndex(path.join(statePaths(root).runs, trial.run_id));
   if (source.bundle_index_digest !== sha256JSON(sourceIndex)) throw new Error("regrade source run bundle changed");
   return validateRunObservation(record.observation);

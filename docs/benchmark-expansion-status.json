@@ -145,8 +145,8 @@
         "cmb-cross-inference"
       ],
       "package": ".hitch/benchmark-expansion/packages/science-v2",
-      "status": "two_trials_finished_no_valid_scores",
-      "blocker": "CMB has no terminal candidate bundle; rolling-shutter candidate succeeded but frozen verifier runtime rejects no-network. An explicit verifier runtime repair is required before artifact-only regrading.",
+      "status": "one_real_task_validated_cmb_retry_pending",
+      "blocker": "Original CMB has no complete terminal candidate bundle; the same preselected task requires a fresh execution with the fixed runtime.",
       "hardware_note": "memory_mb is a container limit, not a minimum launch requirement. Run on observed ~7.65 GiB Docker host without changing upstream limits; preserve any OOM/resource failure and do not treat this as an official leaderboard reproduction.",
       "eval_id": "eval_40a396a80f8441a2b7cf1baf2b88606b",
       "runtime_observation": {
@@ -213,7 +213,7 @@
         "candidate_model_in_canaries": false,
         "official_acceptance_added": false,
         "old_frozen_runtime_modified": false,
-        "limitations": "CMB remains invalid with missing terminal candidate evidence. The completed second trial used its original runtime and hit the original no-network error; no candidate was rerun."
+        "limitations": "The original CMB bundle remains missing. Rolling-shutter-oma now has an independent valid artifact-only assessment using the explicit environment-only runtime repair; the original candidate was not reexecuted."
       },
       "agent_timeout_remediation": {
         "implemented": true,
@@ -253,6 +253,29 @@
         "finished_at": "2026-09-03T01:22:17.553537Z",
         "evidence": ".hitch/benchmark-expansion/science-rolling-terminal-observation.json",
         "evidence_sha256": "sha256:0751860b1349c1a53ee6e7a13daa9ff44c3c8c337b318f741af7ff7fa5fa6381"
+      },
+      "repair_validation": {
+        "valid_tasks": 1,
+        "target_tasks": 2,
+        "rerun_id": "rerun_3239ac589e5f4cf09844855773b41161",
+        "task_id": "rolling-shutter-oma",
+        "candidate_run_id": "run_a8636028f6c0416892b461c3c071dd00",
+        "observation_status": "valid",
+        "reward": 0,
+        "assessment_id": "assessment_9d987c1a9fc64fe1ae5a74aa1c92752c",
+        "assessment_digest": "sha256:0eb87510f135f60403a65d7a77b5a3246db955ad280c3cc6ae1bbcdf0372c136",
+        "source_runtime_id": "sha256:7d59cde2f8c7132d2678c254295e01451a79506e5de412119809041614094a42",
+        "verifier_runtime_id": "sha256:8f296edf826a5d11f988896792e052a3e4f30c7ac9c765e4d0bc6d41b9a96174",
+        "changed_runtime_files": [
+          "integrations/harbor/hitch_harbor_environment.py"
+        ],
+        "unchanged_runtime_file_count": 528,
+        "candidate_reexecuted": false,
+        "graded_at": "2026-09-03T01:38:32.178Z",
+        "remaining_owned_containers": 0,
+        "remaining_owned_networks": 0,
+        "remaining_owned_volumes": 0,
+        "evidence": ".hitch/benchmark-expansion/science-rolling-regrade-result.json"
       }
     },
     {
@@ -1052,12 +1075,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 367,
-    "passed": 364,
+    "total": 369,
+    "passed": 366,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/agent-budget-check-v3.log",
-    "additional_verification": "Real Hitch CLI with a local synthetic model verified process retirement and terminal export on timeout, and no model launch after preparation exhausted the budget. Ordinary bridge checks cover capped budgets and bounded collection; native phase and regrade regressions passed. No additional official benchmark acceptance."
+    "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
+    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade passed with official reward 0, original candidate bundle unchanged, a separately identified environment-only repair runtime, and no remaining owned Docker resources."
   },
-  "updated_at": "2026-09-03T01:26:34.594799+00:00"
+  "updated_at": "2026-09-03T01:42:13.489185+00:00"
 }

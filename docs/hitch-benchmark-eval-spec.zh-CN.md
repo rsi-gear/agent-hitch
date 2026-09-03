@@ -922,7 +922,18 @@ P0/P1 的验收以第 12.1 节为准，包含最小合同与换包验证；上�
 
 `hitch eval rerun <eval_id> --invalid --type verifier-only` 已接入 Harbor 0.21.0 的 `RegradeTrial`，只运行独立 verifier。当前支持冻结的标准 benchmark 包、local Docker、单阶段任务；原候选必须成功且 bundle/trajectory 完整，原评分无效。共享环境 grader、多阶段任务、未收齐的 artifact 和缺失的 lifecycle 记录均不能据此恢复评分。
 
-实现入口为 `src/evals/verifier-only-rerun.ts`，后端为 `src/backends/harbor/regrade.ts`。执行时验证原 lock、源包字节、compiled task digest、候选 bundle 和 controller runtime；沿用原 agent provenance、任务、verifier、镜像引用及全部预算。Harbor 默认只复制 `agent/` 与 `artifacts/`，Hitch 额外逐字复制原 `benchmark-lifecycle.json`，不生成新的 prepare/snapshot 成功记录。
+实现入口为 `src/evals/verifier-only-rerun.ts`，后端为 `src/backends/harbor/regrade.ts`。执行时验证原 lock、源包字节、compiled task digest、候选 bundle 和 controller runtime；默认沿用原 runtime，保留原 agent provenance、任务、verifier、镜像引用及全部预算。Harbor 默认只复制 `agent/` 与 `artifacts/`，Hitch 额外逐字复制原 `benchmark-lifecycle.json`，不生成新的 prepare/snapshot 成功记录。
+
+环境 provider 修复通过显式 `--verifier-runtime sha256:<digest>` 选择，且仅允许 `verifier-only`。`prepareVerifierEnvironmentRuntime({root, sourceRuntimeId})` 从原 runtime 独立复制全部文件，只替换当前 Hitch 的 `integrations/harbor/hitch_harbor_environment.py`，再生成新的只读 CAS runtime。重评入口验证新旧 manifest 的完整文件清单、执行位、Node contract 和 entrypoint，要求差异恰好只有该 provider；不能直接指定任意新版 Hitch runtime，改变 grader、归一化、候选代码或增加文件均拒绝。复制不修改原 runtime。这个 API 从 `agent-hitch/evals` 导出；返回的 `runtime_id` 可用于：
+
+```sh
+hitch eval rerun <eval-id> --task <task-id> --type verifier-only \
+  --verifier-runtime sha256:<derived-runtime-digest>
+```
+
+该选项随直接请求或 daemon submission 持久化，参与幂等请求比较，队列恢复仍使用所选摘要。Assessment 的 `source.controller_runtime_id` 保留原执行身份，顶层 `controller_runtime_id` 表示实际评分运行身份；`runtime_repair` 与 `evidence/runtime-repair.json` 记录新旧 runtime、provider 文件摘要、唯一路径和未变文件数。读取时核对这些绑定及封存 evidence digest。这里只修复评分环境实现，不能据此修改原候选执行记录、扩大预算、替换任务或重跑模型。
+
+真实验证：Science 的 `rolling-shutter-oma` 已通过此入口完成重评，原候选 `run_a8636028f6c0416892b461c3c071dd00` 保持不变，官方 grader 返回有效 reward `0`。Assessment 为 `assessment_9d987c1a9fc64fe1ae5a74aa1c92752c`。评分 runtime `sha256:8f296edf826a5d11f988896792e052a3e4f30c7ac9c765e4d0bc6d41b9a96174` 与原 runtime 相比仅 provider 不同，其余 528 个文件一致；评分完成后 owned containers/networks/volumes 均为 0。原失败 observation 保留，eval slot 通过独立 assessment 变为 valid。Science 因 CMB 尚无有效结果仍为 1/2 覆盖，不能把整套 eval 报为成功。
 
 每次物理重评分在 `evals/<eval_id>/assessments/<assessment_id>/` 保存独立 assessment。`evidence/` 包含原 artifact 快照、Harbor config/result、verifier 输出、资源观测与清理报告；manifest 记录 source run/trial/work、原 bundle index digest、source/task/artifact digest、capture 时间及 evidence digest。旧 Harbor artifact manifest 没有内容 hash，因此这个 capture 时间表示重评分前的冻结时间，不倒签为候选完成时间。结构见 `docs/schemas/verifier-assessment.schema.json`。
 

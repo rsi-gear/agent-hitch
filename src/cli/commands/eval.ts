@@ -31,6 +31,8 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   let useDaemon = takeFlag(args, "--daemon");
   const taskNames = takeRepeatedOption(args, "--task");
   const rerunType = parseEvalRerunType(takeOption(args, "--type") || "candidate-restart");
+  const verifierRuntimeId = takeOption(args, "--verifier-runtime");
+  if (verifierRuntimeId !== undefined && (rerunType !== "verifier-only" || !/^sha256:[a-f0-9]{64}$/.test(verifierRuntimeId))) throw invalidInput("--verifier-runtime requires verifier-only and an exact runtime digest");
   const rerunId = takeOption(args, "--rerun-id");
   if (rerunId !== undefined && !/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
   const output = takeOption(args, "--output") || "json";
@@ -55,6 +57,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
       body: JSON.stringify({
         ...(rerunId === undefined ? {} : { rerun_id: rerunId }),
         rerun_type: rerunType,
+        ...(verifierRuntimeId ? { verifier_runtime_id: verifierRuntimeId } : {}),
         selector: invalid ? { mode: "invalid" } : { mode: "tasks", task_names: taskNames },
       }),
     });
@@ -71,6 +74,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
       evalId,
       root,
       rerunType,
+      ...(verifierRuntimeId ? { verifierRuntimeId } : {}),
       selector: invalid ? { mode: "invalid" } : { mode: "tasks", taskNames },
       ...(harborExecutable === undefined ? {} : { harborExecutable }),
       signal: controller.signal,

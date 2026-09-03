@@ -46,6 +46,9 @@ export async function rerunEval(options: RerunEvalOptions): Promise<EvalRerunRes
   if (!options.root) throw invalidInput("a Hitch state root is required for eval rerun");
   const rerunType = parseEvalRerunType(options.rerunType ?? "candidate-restart");
   assertEvalRerunTypeSupported(rerunType);
+  if (options.verifierRuntimeId !== undefined && (rerunType !== "verifier-only" || !/^sha256:[a-f0-9]{64}$/.test(options.verifierRuntimeId))) {
+    throw invalidInput("--verifier-runtime requires verifier-only and an exact runtime digest");
+  }
   const evalId = validateEvalId(options.evalId);
   const rerunId = options.rerunId ?? `rerun_${randomUUID().replaceAll("-", "")}`;
   if (!/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
@@ -90,6 +93,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     rerun_id: rerunId,
     eval_id: options.evalId,
     rerun_type: options.rerunType,
+    ...(options.verifierRuntimeId ? { verifier_runtime_id: options.verifierRuntimeId } : {}),
     semantics: evalRerunSemantics(options.rerunType),
     mode: options.selector.mode,
     tasks: selectedTasks,

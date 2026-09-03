@@ -48,3 +48,4 @@ export { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, dockerResourceOwnersh
 export { reapOwnedDockerResources } from "./docker-reaper.js";
 export type { DockerReaperOptions, DockerReaperReportV1, ReapableDockerResourceKind } from "./docker-reaper.js";
 export { runBenchmarkEval } from "./benchmark-run.js";
+export { prepareVerifierEnvironmentRuntime } from "./verifier-runtime.js";

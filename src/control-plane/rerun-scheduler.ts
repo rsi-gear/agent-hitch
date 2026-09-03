@@ -27,6 +27,7 @@ export type EvalRerunExecutor = (options: RerunEvalOptions) => Promise<EvalRerun
 export interface EvalRerunSubmissionInput {
   rerun_id?: string;
   rerun_type?: EvalRerunType;
+  verifier_runtime_id?: string;
   selector: RerunSelector;
 }
 
@@ -51,6 +52,7 @@ interface QueuedRerun {
   evalId: EvalId;
   rerunId: string;
   rerunType: EvalRerunType;
+  verifierRuntimeId?: string;
   selector: RerunSelector;
   request: EvalRequest;
   execution: EvalExecutionPolicyV1;
@@ -117,7 +119,7 @@ export class EvalRerunScheduler {
       const existing = await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null);
       if (existing) {
         const parsed = parsePersistedSubmission(existing, evalId, rerunId);
-        if (parsed.rerun_type !== input.rerun_type || JSON.stringify(parsed.selector) !== JSON.stringify(input.selector)) {
+        if (parsed.rerun_type !== input.rerun_type || parsed.verifier_runtime_id !== input.verifier_runtime_id || JSON.stringify(parsed.selector) !== JSON.stringify(input.selector)) {
           throw new HitchError("rerun identity already belongs to a different request", { code: "idempotency_conflict", exitCode: 12 });
         }
         return { evalId, rerunId, rerunType: input.rerun_type };
@@ -133,6 +135,7 @@ export class EvalRerunScheduler {
     }
     const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
     const entry = await this.queuedEntry(evalId, rerunId, input.rerun_type, input.selector, source.request, source.execution, directory);
+    if (input.verifier_runtime_id) entry.verifierRuntimeId = input.verifier_runtime_id;
     await ensureDir(path.dirname(directory));
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const submittedAt = new Date().toISOString();
@@ -142,6 +145,7 @@ export class EvalRerunScheduler {
         rerun_id: rerunId,
         eval_id: evalId,
         rerun_type: input.rerun_type,
+        ...(input.verifier_runtime_id ? { verifier_runtime_id: input.verifier_runtime_id } : {}),
         semantics: evalRerunSemantics(input.rerun_type),
         selector: serializedSelector(input.selector),
         submitted_at: submittedAt,
@@ -309,6 +313,7 @@ export class EvalRerunScheduler {
       evalId: entry.evalId,
       rerunId: entry.rerunId,
       rerunType: entry.rerunType,
+      ...(entry.verifierRuntimeId ? { verifierRuntimeId: entry.verifierRuntimeId } : {}),
       selector: entry.selector,
       root: this.root,
       maxConcurrentOverride: parallelism,
@@ -423,6 +428,7 @@ export class EvalRerunScheduler {
         }
         const source = await this.loadSource(evalEntry.name as EvalId, parsed.rerun_type);
         const queued = await this.queuedEntry(evalEntry.name as EvalId, entry.name, parsed.rerun_type, parsed.selector, source.request, source.execution, directory);
+        if (parsed.verifier_runtime_id) queued.verifierRuntimeId = parsed.verifier_runtime_id;
         if (state.status === "queued") this.queue.push(queued);
         else await this.fail(queued, "execution_state_ambiguous", "daemon restarted while rerun execution state was ambiguous");
       }
