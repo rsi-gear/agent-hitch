@@ -204,7 +204,7 @@ preserved, and an explicitly supplied bypass flag is not duplicated.
 
 The outer Harbor agent timeout is the Hitch timeout plus a 30-second cleanup
 window. Harbor's agent setup timeout is configured separately because a task
-image may need the exact pinned Node.js runtime installed before artifact use.
+image may need the exact pinned Node.js runtime unpacked before artifact use.
 
 Every eval prepares the selected immutable harness outside benchmark task
 containers. Hitch uses a dedicated Docker builder based on exact Node.js
@@ -214,6 +214,56 @@ entrypoint/content digests, source type, platform, and Node version; every trial
 receives the verified directory and runs it without contacting a package
 registry or invoking a package manager. The task container recomputes the
 uploaded artifact integrity before execution.
+
+Trial setup no longer downloads or installs nvm. A matching system Node is
+reused after checking its exact version and platform. Otherwise Hitch verifies
+and uploads an offline Node `v22.23.0` archive, extracts it into a private
+`/opt/hitch-node-runtime-<id>/ready` directory, and prepends that `bin` directory
+only for Hitch commands. The archive includes npm/npx but not the builder's
+pnpm. It never rewrites a system Node, shell profile, or benchmark image, and
+there is no GitHub, package-registry, or OS-package-manager fallback in setup.
+
+The archive is exported with networking disabled from the builder's inspected
+immutable Linux image ID (not from the controller host). A separate cache at
+`<HITCH_ROOT>/store/harbor-artifacts/node-runtimes` keys preparation by recipe,
+image ID, platform, exact Node version and libc family; its content identity
+also covers the archive SHA-256 and byte size. A file lock, staging directory,
+atomic rename and verified cache hits prevent duplicate/partial publication;
+corrupt entries are quarantined and rebuilt. Cold builder-image preparation
+still needs its normal registry/package access **before trial dispatch**.
+
+Each new harness artifact includes this bundle under `.hitch-node-runtime`,
+with a new artifact ID/content digest. Thus existing job pins, remote-worker
+transport and reruns carry the runtime without downloading it in each trial.
+Before bootstrapping Node, the Python bridge authenticates the host artifact
+against its job-pinned content digest and the trial rechecks the uploaded
+archive checksum before extraction. The runtime is activated only after its
+executable passes a version/platform probe. `hitch-node-runtime.json` records
+the selected source and runtime identity, or a specific setup failure.
+
+The offline runtime currently supports Linux x64/arm64 **glibc** images with
+`uname`, `getconf`, `sha256sum`, `tar`, `gzip`, and compatible Node shared
+libraries (including libstdc++). Musl/Alpine, missing loader libraries, missing
+tools, or architecture mismatch fail explicitly; setup does not try to repair
+the image online. A preinstalled matching Node can still be reused without
+these extraction prerequisites. New builds do not change old sealed artifacts
+or controller runtimes: to fix an old nvm-based job, launch a **new eval with
+the updated controller**. A rerun pinned to the old controller keeps its old
+behavior. An old artifact used with the new bridge and no matching system Node
+fails with `hitch_node_runtime_missing` instead of downloading nvm.
+
+The opt-in real-Docker regression uses an existing Linux/amd64
+`node:22.23.0-bookworm-slim` image and never pulls:
+
+```sh
+npm run build
+HITCH_NODE_RUNTIME_DOCKER_TEST=1 node --test dist/test/harbor-node-runtime.integration.test.js
+```
+
+`HITCH_NODE_RUNTIME_TEST_IMAGE` can select an already inspected image ID with
+the same Node version/platform. The test deletes Node only inside disposable
+containers with `--network none`, checks Hitch and npm/npx startup, verifies
+system-Node reuse, and rejects an intentionally corrupted upload.
 
 The builder platform comes from each task environment's planner-owned
 trial-runtime contract, never from the controller host. The task inspector

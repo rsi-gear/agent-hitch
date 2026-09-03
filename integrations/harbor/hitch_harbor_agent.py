@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import secrets
 import shlex
@@ -30,6 +31,50 @@ HITCH_RESULT_MISSING_EXIT = 44
 HITCH_RESULT_NOT_FILE_EXIT = 45
 PHASE_EXPORT_MODULE = "dist/src/runs/phase-bundle.js"
 PHASE_CONTROL_MODULE = "dist/src/runs/phase-cancellation.js"
+
+
+def artifact_directory_integrity(directory: Path, captured_files: dict[str, bytes] | None = None) -> str:
+    """Match artifacts/integrity.ts, including modes and internal symlinks."""
+    root = Path(os.path.abspath(directory))
+    digest = hashlib.sha256()
+
+    def visit(parent: Path) -> None:
+        # JS Array.sort compares UTF-16 code units, not Unicode code points.
+        for entry in sorted(parent.iterdir(), key=lambda item: item.name.encode("utf-16-be", "surrogatepass")):
+            if parent == root and entry.name == "artifact.json":
+                continue
+            relative = entry.relative_to(root).as_posix()
+            info = entry.lstat()
+            mode = info.st_mode & 0o7777
+            if stat_module.S_ISDIR(info.st_mode):
+                digest.update(f"d\0{relative}\0{mode}\0".encode())
+                visit(entry)
+            elif stat_module.S_ISREG(info.st_mode):
+                digest.update(f"f\0{relative}\0{mode}\0{info.st_size}\0".encode())
+                capture = captured_files is not None and relative in captured_files
+                if capture and info.st_size > 16_384:
+                    raise RuntimeError("captured artifact metadata exceeds its size limit")
+                content = bytearray()
+                with entry.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                        if capture:
+                            content.extend(chunk)
+                            if len(content) > 16_384:
+                                raise RuntimeError("captured artifact metadata exceeds its size limit")
+                if capture and captured_files is not None:
+                    captured_files[relative] = bytes(content)
+                digest.update(b"\0")
+            elif stat_module.S_ISLNK(info.st_mode):
+                target = os.readlink(entry)
+                if not Path(os.path.abspath(entry.parent / target)).is_relative_to(root):
+                    raise RuntimeError("artifact symlink escapes the artifact directory")
+                digest.update(f"l\0{relative}\0{target}\0".encode())
+            else:
+                raise RuntimeError("artifact contains a special file")
+
+    visit(root)
+    return "sha256:" + digest.hexdigest()
 
 
 class PreparedPhase(NamedTuple):
@@ -94,6 +139,7 @@ class HitchHarborAgent(BaseAgent):
         if not isinstance(node_version, str) or re.fullmatch(r"v\d+\.\d+\.\d+", node_version) is None:
             raise ValueError("node_version must be an exact stable Node.js version")
         self.required_node_version = node_version
+        self._node_bin_directory: str | None = None
         if local_source_transport is not None:
             raise ValueError("trial-side local source transports are no longer supported")
         self.candidate_id = candidate_id
@@ -1322,43 +1368,158 @@ process.stdout.write('sha256:' + hash.digest('hex'));
         return "sha256:" + hashlib.sha256(b"workspace-unavailable").hexdigest()
 
     async def _ensure_node(self, environment: BaseEnvironment) -> None:
-        probe = await environment.exec(
-            f"node -e 'process.exit(process.version === \"{self.required_node_version}\" ? 0 : 1)'"
-        )
-        if probe.return_code == 0:
-            return
-        prerequisites = """
-set -eu
-if command -v curl >/dev/null 2>&1; then exit 0; fi
-if command -v apt-get >/dev/null 2>&1; then
-  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates
-elif command -v apk >/dev/null 2>&1; then
-  apk add --no-cache curl ca-certificates bash
-elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y curl ca-certificates
-elif command -v yum >/dev/null 2>&1; then
-  yum install -y curl ca-certificates
-else
-  echo 'Hitch could not install the pinned Node.js runtime in this task image' >&2
-  exit 1
-fi
-"""
-        await self._exec(environment, prerequisites, user=0)
-        install = f"""
-set -eu
-export NVM_DIR=/opt/hitch-node
-mkdir -p "$NVM_DIR"
-curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-. "$NVM_DIR/nvm.sh"
-nvm install {self.required_node_version.removeprefix("v")}
-nvm alias default {self.required_node_version.removeprefix("v")}
-node -e 'process.exit(process.version === "{self.required_node_version}" ? 0 : 1)'
-"""
-        await self._exec(environment, install, user=0)
+        """Select a compatible system Node or an authenticated offline runtime.
 
-    @staticmethod
-    def _node_prefix() -> str:
-        return "if [ -s /opt/hitch-node/nvm.sh ]; then export NVM_DIR=/opt/hitch-node; . /opt/hitch-node/nvm.sh; fi;"
+        No network, package manager, shell profile, or existing system binary
+        is modified here. The archive travels inside the job-pinned artifact,
+        including on remote workers and reruns.
+        """
+        platform = str((self._artifact_manifest or {}).get("platform", ""))
+        self._node_bin_directory = None
+        check = (
+            f"process.exit(process.version === {json.dumps(self.required_node_version)} && "
+            f"process.platform + '-' + process.arch === {json.dumps(platform)} ? 0 : 1)"
+        )
+        staging: str | None = None
+        try:
+            probe = await asyncio.wait_for(environment.exec(f"node -e {shlex.quote(check)}"), timeout=30)
+            if probe.return_code == 0:
+                self._node_bin_directory = None
+                self._record_node_runtime({"source": "system", "node_version": self.required_node_version, "platform": platform})
+                return
+            archive, runtime = self._offline_node_runtime()
+            native = await self._node_setup_exec(environment, """set -eu
+test "$(uname -s)" = Linux
+case "$(uname -m)" in
+  x86_64|amd64) echo linux-x64 ;;
+  aarch64|arm64) echo linux-arm64 ;;
+  *) exit 1 ;;
+esac""", "hitch_node_runtime_incompatible")
+            if (native.stdout or "").strip() != runtime["platform"]:
+                raise self._node_runtime_error("hitch_node_runtime_incompatible", "offline Node architecture does not match the task container")
+            libc = await self._node_setup_exec(environment, "getconf GNU_LIBC_VERSION", "hitch_node_runtime_incompatible")
+            if not re.fullmatch(r"glibc \d+\.\d+", (libc.stdout or "").strip()):
+                raise self._node_runtime_error("hitch_node_runtime_incompatible", "offline Node requires a glibc task image; musl is not supported")
+            await self._node_setup_exec(
+                environment, "command -v sha256sum && command -v tar && command -v gzip", "hitch_node_runtime_prerequisite_missing",
+            )
+            # Unique per setup; never extract over a system Node or an old,
+            # partially installed runtime. The ready directory appears only
+            # after checksum, extraction and executable compatibility checks.
+            target = f"/opt/hitch-node-runtime-{uuid.uuid4().hex}"
+            await self._node_setup_exec(environment, f"mkdir -m 755 {target}", "hitch_node_runtime_install_failed")
+            staging = target
+            await asyncio.wait_for(environment.upload_file(archive, f"{staging}/node-runtime.tar.gz"), timeout=120)
+            checksum = runtime["archive_sha256"].removeprefix("sha256:")
+            await self._node_setup_exec(
+                environment,
+                f"cd {staging} && printf '%s\\n' '{checksum}  node-runtime.tar.gz' | sha256sum -c -",
+                "hitch_node_runtime_integrity_mismatch",
+            )
+            await self._node_setup_exec(
+                environment,
+                f"umask 022; mkdir -m 755 {staging}/unpacked && tar --no-same-owner -xzf {staging}/node-runtime.tar.gz -C {staging}/unpacked",
+                "hitch_node_runtime_install_failed",
+            )
+            await self._node_setup_exec(
+                environment, f"{staging}/unpacked/bin/node -e {shlex.quote(check)}", "hitch_node_runtime_incompatible",
+            )
+            await self._node_setup_exec(
+                environment, f"mv {staging}/unpacked {staging}/ready && rm {staging}/node-runtime.tar.gz", "hitch_node_runtime_install_failed",
+            )
+            self._node_bin_directory = f"{staging}/ready/bin"
+            self._record_node_runtime({"source": "offline-artifact", **runtime, "bin_directory": self._node_bin_directory})
+            staging = None
+        except Exception as error:
+            failure = error if isinstance(error, HitchBridgeError) else self._node_runtime_error(
+                "hitch_node_runtime_setup_failed", f"{type(error).__name__}: {error}",
+            )
+            self._record_node_runtime({"source": "failed", **failure.evidence})
+            try:
+                await self._write_bridge_error(environment, failure.evidence)
+            except Exception:
+                pass  # Preserve the original Node failure even if log export fails.
+            if failure is error:
+                raise
+            raise failure from error
+        finally:
+            if staging is not None:
+                # Only the random directory created by this setup is removed.
+                try:
+                    await asyncio.wait_for(environment.exec(f"rm -rf -- {staging}", user=0), timeout=30)
+                except Exception:
+                    pass
+
+    def _offline_node_runtime(self) -> tuple[Path, dict[str, Any]]:
+        directory = self._artifact_host_directory
+        if directory is None or not (directory / ".hitch-node-runtime").exists():
+            raise self._node_runtime_error(
+                "hitch_node_runtime_missing",
+                "task has no matching Node and the pinned artifact has no offline runtime; prepare a new eval with the updated controller (no online fallback)",
+            )
+        try:
+            # Authenticate the runtime metadata against the job's CONTENT pin,
+            # not a self-reported checksum in a mutable sidecar. This is needed
+            # before Node can run Hitch's normal in-container artifact check.
+            captured = {".hitch-node-runtime/node-runtime.json": b""}
+            if artifact_directory_integrity(directory, captured) != (self.harness_artifact or {}).get("artifact_integrity"):
+                raise RuntimeError("job-pinned harness content digest mismatch before Node bootstrap")
+            bundle = directory / ".hitch-node-runtime"
+            if bundle.is_symlink() or not bundle.is_dir():
+                raise RuntimeError("offline Node bundle must be a regular directory")
+            manifest_path = bundle / "node-runtime.json"
+            self._assert_regular_host_file(manifest_path, "offline Node manifest", 16_384)
+            # Parse exactly the bytes hashed above, not a second sidecar read
+            # which could race a cache mutation after content authentication.
+            runtime = json.loads(captured[".hitch-node-runtime/node-runtime.json"].decode("utf-8"))
+            fields = {"schema_version", "recipe_version", "runtime_id", "node_version", "platform", "libc", "builder_image_id", "archive_sha256", "archive_bytes"}
+            if not isinstance(runtime, dict) or set(runtime) != fields:
+                raise RuntimeError("offline Node manifest fields are invalid")
+            payload = {key: value for key, value in runtime.items() if key != "runtime_id"}
+            identity = "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if runtime["schema_version"] != "1" or runtime["recipe_version"] != "1" or runtime["runtime_id"] != identity:
+                raise RuntimeError("offline Node runtime identity is invalid")
+            if runtime["node_version"] != self.required_node_version or runtime["platform"] != (self._artifact_manifest or {}).get("platform") or runtime["libc"] != "glibc":
+                raise RuntimeError("offline Node manifest does not match the job runtime contract")
+            for field in ("archive_sha256", "builder_image_id"):
+                if not isinstance(runtime[field], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", runtime[field]):
+                    raise RuntimeError(f"offline Node {field} is invalid")
+            archive = bundle / "node-runtime.tar.gz"
+            info = self._assert_regular_host_file(archive, "offline Node archive", 128 * 1024 * 1024)
+            if type(runtime["archive_bytes"]) is not int or info.st_size != runtime["archive_bytes"] or info.st_size <= 0:
+                raise RuntimeError("offline Node archive size mismatch")
+            archive_digest = hashlib.sha256()
+            with archive.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    archive_digest.update(chunk)
+            if "sha256:" + archive_digest.hexdigest() != runtime["archive_sha256"]:
+                raise RuntimeError("offline Node archive checksum mismatch")
+            return archive, runtime
+        except Exception as error:
+            raise self._node_runtime_error("hitch_node_runtime_integrity_mismatch", str(error)) from error
+
+    async def _node_setup_exec(self, environment: BaseEnvironment, command: str, code: str) -> ExecResult:
+        result = await asyncio.wait_for(environment.exec(command, user=0), timeout=60)
+        if result.return_code != 0:
+            raise self._node_runtime_error(code, f"exit={result.return_code}: {self._exec_diagnostic(result)}")
+        return result
+
+    def _node_runtime_error(self, code: str, message: str) -> HitchBridgeError:
+        return HitchBridgeError(code, self._bounded_tail(message, 2048), {
+            "schema_version": "1", "code": code, "message": self._bounded_tail(message, 2048),
+            "eval_id": self.eval_id, "node_version": self.required_node_version,
+            "platform": (self._artifact_manifest or {}).get("platform"),
+            "artifact_id": (self.harness_artifact or {}).get("artifact_id"),
+        })
+
+    def _record_node_runtime(self, evidence: dict[str, Any]) -> None:
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        (self.logs_dir / "hitch-node-runtime.json").write_text(
+            json.dumps({"schema_version": "1", **evidence}, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
+
+    def _node_prefix(self) -> str:
+        return f"export PATH={shlex.quote(self._node_bin_directory)}:\"$PATH\";" if self._node_bin_directory else ""
 
     @staticmethod
     def _events(output: str) -> list[dict[str, Any]]:
