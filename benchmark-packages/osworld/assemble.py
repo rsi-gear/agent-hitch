@@ -68,6 +68,7 @@ def verified_file(root, name, expected, size=None):
 def assemble(args):
     if not 1 <= args.max_steps <= 100000 or not 60 <= args.agent_timeout_sec <= 86400:
         raise ValueError('explicit candidate budgets are outside supported bounds')
+    transport = module('osworld_screenshot_transport', HERE / 'runtime/screenshot_transport.py').transport_profile(args.screenshot_http_timeout_sec)
     for root, commit in [(args.sdk_root, SDK), (args.web_root, WEB), (Path(args.web_root) / 'teamchat_web', WEB_APP)]:
         clean_git(root, commit)
     hashes_raw = Path(args.task_hash_manifest).read_bytes()
@@ -83,6 +84,8 @@ def assemble(args):
     local = images['scope'] == 'host-local'
     if images['scope'] not in ('host-local', 'portable') or images['vm_acceleration'] not in ('tcg', 'kvm'):
         raise ValueError('explicit image portability and acceleration are required')
+    if args.screenshot_http_timeout_sec != 10 and images['vm_acceleration'] != 'tcg':
+        raise ValueError('extended screenshot HTTP waits require an explicit TCG profile')
     for name, value in images['images'].items():
         if set(value) != {'reference', 'platform'} or value['platform'] not in ('linux/amd64', 'linux/arm64'):
             raise ValueError('invalid service image identity')
@@ -103,7 +106,7 @@ def assemble(args):
             previous = asset_records.setdefault(item['file'], item)
             if previous['sha256'] != item['sha256'] or previous['size'] != item['size']: raise ValueError('conflicting asset receipts')
     model_profile = json.loads((HERE / 'deepseek-profile.json').read_bytes())
-    profile = {'schema_version': '1', 'id': 'osworld-v2-deepseek-graphical-' + ('host-local' if local else 'portable'),
+    profile = {'schema_version': '1', 'id': 'osworld-v2-deepseek-graphical-' + ('host-local' if local else 'portable') + (f'-tcg-http-{args.screenshot_http_timeout_sec}s' if args.screenshot_http_timeout_sec != 10 else ''),
         'track': 'custom', 'input_mode': 'instruction',
         'tool_policy': {'id': 'osworld-graphical-computer13', 'allowed': CAPS, 'network': 'open', 'enforcement': 'required'},
         'budget': {'agent_timeout': {'source': 'task'}, 'setup_timeout_ms': 1800000, 'collection_timeout_ms': 1800000, 'cleanup_grace_ms': 600000},
@@ -111,7 +114,8 @@ def assemble(args):
         'grading': {'on_agent_budget_exhausted': 'grade_final_state', 'on_missing_submission': 'error', 'infrastructure_retries': 0},
         'extensions': {'max_steps': args.max_steps, 'agent_timeout_sec': args.agent_timeout_sec, 'images': images,
             'model_profile': model_profile, 'sdk_commit': SDK, 'metric_semantics': 'native scalar; no derived strict success',
-            'screen_size': [1920, 1080], 'task_current_date': 'unchanged native SDK', 'leaderboard_comparable': False}}
+            'screen_size': [1920, 1080], 'screenshot_transport': transport,
+            'task_current_date': 'unchanged native SDK', 'leaderboard_comparable': False}}
     profile_digest = sha(json.dumps(profile, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode())
     output = Path(args.out).absolute()
     if output.exists() or output.is_symlink(): raise ValueError('assembly requires fresh output')
@@ -192,6 +196,7 @@ training_eligible = false
                 'evidence_directory': '/evidence', 'cache_directory': '/cache', 'max_steps': args.max_steps,
                 'max_actions_per_turn': 32, 'max_text_bytes': 65536, 'max_artifact_bytes': 2 * 1024**3,
                 'prepare_timeout_sec': 1500, 'shutdown_timeout_sec': 300, 'sleep_after_execution': 2,
+                'screenshot_http_timeout_sec': args.screenshot_http_timeout_sec,
                 'native_deadline': True, 'public_endpoint': 'http://controller:8765/', 'website_host_suffix': 'trial.hitch.test', 'client_password_file': None}
             write(environment / 'controller.json', config); shutil.copyfile(environment / 'controller.json', tests / 'controller.json')
             write(task / 'instruction.md', 'Use desktop.observe and desktop.submit to complete the native task. The original task instruction and screenshot are supplied by the native phase controller.\n')
@@ -280,4 +285,6 @@ if __name__ == '__main__':
     parser.add_argument('--asset-receipts', required=True, nargs='+')
     parser.add_argument('--max-steps', required=True, type=int)
     parser.add_argument('--agent-timeout-sec', required=True, type=int)
+    parser.add_argument('--screenshot-http-timeout-sec', default=10, type=int,
+                        help='Explicit TCG screenshot transport override (10..120); default keeps native SDK behavior')
     print(json.dumps(assemble(parser.parse_args()), indent=2))

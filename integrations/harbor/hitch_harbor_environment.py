@@ -211,6 +211,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         external_networks: set[str] = set()
         external_volumes: set[str] = set()
         build_services: set[str] = set()
+        declared_platforms: set[str] = set()
         image_overlays: dict[str, str] = {}
         sources = [self._environment_docker_compose_path, *self.extra_docker_compose_paths]
         for source in sources:
@@ -224,6 +225,11 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             services.update(_mapping_names(document.get("services"), "services", source))
             for name, config in (document.get("services") or {}).items():
                 if isinstance(config, dict):
+                    if 'platform' in config:
+                        if config['platform'] is not None:
+                            declared_platforms.add(name)
+                        else:
+                            declared_platforms.discard(name)
                     if "build" in config and config.get("build") is not None:
                         build_services.add(name)
                     reference = config.get("image")
@@ -239,7 +245,9 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         service_overlays: dict[str, dict[str, Any]] = {}
         for name in sorted(services):
             config: dict[str, Any] = {}
-            if getattr(self, "_hitch_benchmark_platform", None):
+            # The benchmark default must not replace explicit per-service
+            # architecture, e.g. an ARM QEMU sidecar beside an AMD64 candidate.
+            if getattr(self, "_hitch_benchmark_platform", None) and name not in declared_platforms:
                 config["platform"] = self._hitch_benchmark_platform
             if labels:
                 config["labels"] = labels

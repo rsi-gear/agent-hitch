@@ -992,3 +992,11 @@ OSWorld worker 在加载任务前安装 model audit：被任务捕获的 API 错
 后续 `VGA=std` 对照取得一张正常的 1920×1080 虚拟显示器截图：Ubuntu 桌面、面板和终端的 canary 文本均可见。较早的 API 截图仍黑，下一次 API 请求超过 15 秒诊断时限，故该组件运行未完成 reset；临时资源已清理。窗口注册早于实际绘制，不能据此判断桌面已就绪，也不能将稍后出现的正常画面忽略。原生 SDK 仍保留 10 秒截图时限，稳定截图与完整两题执行尚待验证；VM owner 的启动探测已改为最多 10 秒，并拒绝超过总启动 deadline 才返回的 PNG。
 
 Task095 的 11 个公开媒体文件已在候选环境之外按固定源站 commit 下载，共 45,241,017 字节，全部匹配原任务的 SHA256。这项检查验证源文件可取得，没有向候选预装文件或提供用户模拟器的隐藏知识；真实候选仍须按原任务交互发现并下载媒体。
+
+后续 5 GiB 容器取得正常的原生 API PNG，耗时 45.52 秒；同次诊断内存峰值 4,507,672,576 字节，未触发 OOM 或容器内存上限。原版 SDK 的一次 `get_screenshot()` 调用随后连续三次超过 10 秒时限，返回空值。这证明当前 TCG 环境存在截图请求超时，不能据此归因于永久黑屏或内存不足。
+
+新增可选 `--screenshot-http-timeout-sec 120`：仅显式 TCG profile 可选，profile ID 加 `-tcg-http-120s`，仍标为 custom、不可与官方榜单直接比较。默认 10 秒完全使用 SDK 原方法；扩展模式只替换当前 controller 实例的截图请求，并在 native reset 创建新 controller 后重新绑定。保留 3 次尝试、5 秒重试间隔、原图像校验与失败返回空值，其他 HTTP 调用、100 prediction / 7,200 秒候选预算、原题及评分逻辑不变。等待仍受原阶段和候选总 deadline 管理；不增加候选动作或隐藏重跑。
+
+该配置参与 profile/config 摘要，写入 native execution 与评分收据，评分器拒绝参数不一致。新任务包为 `.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v1`，摘要 `sha256:acbc4fac862928873ad6a9d040eb24e907d695ed6bc9f5bb2472986fb99e4607`；旧包原样保留。镜像源码、依赖清单、两题 Compose 与冻结编译均已校验，完整回归 373 passed / 3 skipped / 0 failed。完整两题结果以状态文件中的真实运行证据为准，组件通过不计为评分完成。
+
+首次实际运行还发现通用 ownership overlay 会把所有服务强制设为 AMD64，覆盖包中明确声明的 ARM64 VM，导致 Compose 错误尝试拉取本机镜像。`hitch_harbor_environment.py` 现保留每个服务在 Compose 中显式声明的 platform；未声明者仍沿用已有默认值。混合架构合并结果通过真实 Compose config 测试，修复以新 host controller runtime 封存，不修改原失败运行或冻结 benchmark 包。

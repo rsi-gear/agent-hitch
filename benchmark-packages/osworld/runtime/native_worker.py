@@ -17,6 +17,7 @@ from controller_server import ControllerServer
 from model_audit import install_model_audit
 from native_runner import run_native
 from runtime_config import load_config, read_bytes, read_json, write_json
+from screenshot_transport import transport_profile
 from vm_provider import create_desktop_env
 
 
@@ -54,12 +55,14 @@ def main():
         task = importlib.import_module('task_loader').load_task_from_file(config['task_path'])
         password = read_bytes(config['client_password_file'], 4096).decode().strip() if config['client_password_file'] else ''
         env = create_desktop_env(session, cache_dir=config['cache_directory'], screen_size=(1920, 1080),
+                                 screenshot_http_timeout_sec=config.get('screenshot_http_timeout_sec', 10),
                                  action_space='computer_13', headless=True, enable_proxy=False, client_password=password)
         native_args = types.SimpleNamespace(sleep_after_execution=config['sleep_after_execution'], result_dir=str(evidence / 'native'))
         metadata = run_native(channel, env, task, config['max_steps'], native_args,
                               evidence / 'native', finalize_on_budget=config['native_deadline'], model_audit=model_audit)
         write_json(evidence / 'native-execution.json', {'protocol': 'osworld-native-execution@1', 'config_digest': config_digest,
-                   'source_task_id': config['source_task_id'], 'task_sha256': config['task_sha256'], 'native': metadata})
+                   'source_task_id': config['source_task_id'], 'task_sha256': config['task_sha256'], 'native': metadata,
+                   'screenshot_transport': transport_profile(config.get('screenshot_http_timeout_sec', 10))})
         logging.shutdown()
         status = 'completed'
         write_json(status_file, {'state': status, 'config_digest': config_digest})

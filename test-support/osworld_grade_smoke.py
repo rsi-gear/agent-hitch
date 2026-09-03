@@ -14,10 +14,11 @@ def write(file, value):
     file.write_text(json.dumps(value, separators=(',', ':')) + '\n' if not isinstance(value, str) else value)
 
 
-def fixture(root):
+def fixture(root, screenshot_timeout=None, native_transport=None):
     config = {'protocol': 'osworld-controller@1', 'task_id': 'osworld-task-031', 'source_task_id': 'task_031',
         'profile_digest': 'sha256:' + 'a' * 64, 'sdk_commit': grade.SDK, 'task_sha256': grade.TASKS['task_031'],
         'max_steps': 100, 'max_artifact_bytes': 16 * 1024 * 1024}
+    if screenshot_timeout is not None: config['screenshot_http_timeout_sec'] = screenshot_timeout
     config_file = root / 'controller.json'; write(config_file, config)
     config_digest = grade.sha(config_file.read_bytes())
     evidence = root / 'evidence'; evidence.mkdir()
@@ -27,6 +28,7 @@ def fixture(root):
     native = {'protocol': 'osworld-native-execution@1', 'config_digest': config_digest, 'source_task_id': 'task_031',
         'task_sha256': grade.TASKS['task_031'], 'native': {'sdk_commit': grade.SDK, 'runner_sha256': grade.RUNNER,
         'prediction_step_limit': 100, 'scores': [0.25]}}
+    if native_transport is not None: native['screenshot_transport'] = native_transport
     write(evidence / 'native-execution.json', native); write(evidence / 'native/result.txt', '0.25\n')
     entries = []
     for file in sorted(evidence.rglob('*')):
@@ -68,6 +70,16 @@ def main():
         write(evidence / 'snapshot.json', snapshot)
         reward, receipt = grade.normalized_score(evidence, config)
         assert reward == {'native_score': 1.0} and receipt['strict_success'] is None
+    transport = {'protocol': 'osworld-screenshot-transport@1', 'mode': 'custom-http-timeout',
+                 'http_timeout_sec': 120, 'retry_times': 3, 'retry_interval_sec': 5}
+    with tempfile.TemporaryDirectory() as name:
+        evidence, config = fixture(Path(name), 120, transport)
+        assert grade.normalized_score(evidence, config)[1]['screenshot_transport'] == transport
+    for recorded in (None, {**transport, 'http_timeout_sec': 10}):
+        with tempfile.TemporaryDirectory() as name:
+            evidence, config = fixture(Path(name), 120, recorded)
+            try: grade.normalized_score(evidence, config); raise AssertionError('unrecorded transport accepted')
+            except ValueError as error: assert 'transport' in str(error)
     print('OSWorld offline scalar score and evidence gates passed')
 
 

@@ -7,6 +7,7 @@ import re
 import tempfile
 
 from controller_server import strict_json
+from screenshot_transport import validate_screenshot_timeout
 
 SDK_COMMIT = 'd578d2d4e0dc82b43e270fdaa7fa89d9708cd154'
 SDK_FILES = {
@@ -14,6 +15,7 @@ SDK_FILES = {
     'task_loader.py': 'f4d72e2651eb22d2589078d2a43462fa54c36e7adf06b0ec0c7fee2ffe92bf81',
     'desktop_env/task_base.py': 'd6546df21431aa329df90f1d2a9411e2add095e2ec3f76409bfa996ef5ca5cbc',
     'desktop_env/desktop_env.py': 'e51faa67be1a15b3bd35e620e4be1e97053175f9d8c02bba892ad0f17491ace6',
+    'desktop_env/controllers/python.py': '122c981aba46b8d3fcc8ebe2ec6b1d5a0d572e7b4aaf94f57f2a8c1c29b56556',
 }
 
 
@@ -55,8 +57,9 @@ def load_config(file):
               'private_root', 'session_directory', 'evidence_directory', 'cache_directory', 'max_steps', 'max_actions_per_turn',
               'max_text_bytes', 'max_artifact_bytes', 'prepare_timeout_sec', 'shutdown_timeout_sec', 'sleep_after_execution',
               'native_deadline', 'public_endpoint', 'website_host_suffix', 'client_password_file'}
-    if not isinstance(value, dict) or set(value) != fields or value['protocol'] != 'osworld-controller@1' or value['sdk_commit'] != SDK_COMMIT:
+    if not isinstance(value, dict) or set(value) - {'screenshot_http_timeout_sec'} != fields or value['protocol'] != 'osworld-controller@1' or value['sdk_commit'] != SDK_COMMIT:
         raise ValueError('invalid frozen controller configuration')
+    validate_screenshot_timeout(value.get('screenshot_http_timeout_sec', 10))
     for key in ['profile_digest', 'task_sha256']:
         if not isinstance(value[key], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', value[key]):
             raise ValueError('invalid controller source identity')

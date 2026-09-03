@@ -108,7 +108,7 @@ class ManagedVMProvider:
         raise NotImplementedError('persisted VM checkpoint export is not implemented')
 
 
-def create_desktop_env(session, **kwargs):
+def create_desktop_env(session, *, screenshot_http_timeout_sec=10, **kwargs):
     """Use the pinned upstream constructor without copying its setup/eval logic.
 
     The factory substitution is restricted to construction in a dedicated
@@ -116,9 +116,19 @@ def create_desktop_env(session, **kwargs):
     Explicit path_to_vm means DesktopEnv never calls a host VM manager.
     """
     import desktop_env.desktop_env as sdk
+    from screenshot_transport import configure_screenshot_transport, validate_screenshot_timeout
+    validate_screenshot_timeout(screenshot_http_timeout_sec)
     if any(k in kwargs for k in ['provider_name', 'path_to_vm', 'require_a11y_tree', 'require_terminal']):
         raise ValueError('caller cannot override the managed screenshot-only provider')
     provider = ManagedVMProvider(session)
+    environment_class = sdk.DesktopEnv
+    if screenshot_http_timeout_sec != 10:
+        class ScreenshotTransportEnv(sdk.DesktopEnv):
+            def _start_emulator(self):
+                super()._start_emulator()
+                # Upstream constructs a new PythonController on every reset.
+                configure_screenshot_transport(self.controller, screenshot_http_timeout_sec)
+        environment_class = ScreenshotTransportEnv
     with _factory_lock:
         original = sdk.create_vm_manager_and_provider
         def factory(provider_name, *_args, **_kwargs):
@@ -127,7 +137,7 @@ def create_desktop_env(session, **kwargs):
             return None, provider
         sdk.create_vm_manager_and_provider = factory
         try:
-            return sdk.DesktopEnv(provider_name='docker', path_to_vm='/System.qcow2',
+            return environment_class(provider_name='docker', path_to_vm='/System.qcow2',
                 require_a11y_tree=False, require_terminal=False, **kwargs)
         finally:
             sdk.create_vm_manager_and_provider = original

@@ -210,6 +210,10 @@ class LifecycleTests(unittest.TestCase):
             with patch('runtime_config.SDK_FILES', {'core.py': hashlib.sha256((self.root / 'sdk/core.py').read_bytes()).hexdigest()}):
                 return load_config(self.config_file)
         self.assertEqual(load(self.config)[0], self.config)
+        explicit = {**self.config, 'screenshot_http_timeout_sec': 120}
+        self.assertEqual(load(explicit), (explicit, digest(self.config_file.read_bytes())))
+        for timeout in (None, True, 9, 121, '120', 120.0):
+            with self.assertRaises(ValueError): load({**self.config, 'screenshot_http_timeout_sec': timeout})
         for change in [{'sdk_commit': '0' * 40}, {'task_sha256': 'sha256:' + 'b' * 64}, {'max_steps': True}, {'website_host_suffix': ''}, {'evidence_directory': self.config['sdk_root']}, {'assets_directory': str(self.root / 'missing')}, {'cache_directory': str(self.root / 'assets')}]:
             with self.assertRaises(ValueError): load({**self.config, **change})
         evidence = Path(self.config['evidence_directory']); evidence.mkdir()

@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "standard_package_assembled_guest_capture_stability_pending",
-      "blocker": "Fixed-sample standard package, controller startup, TeamChat/asset routing, native scalar grader and ARM64 VM boot/reset are implemented. Guest screenshots remain black despite active GNOME and a registered terminal. Guest namespace routing, task_095 runtime media and two real Hitch scored trials remain unvalidated.",
+      "status": "two_fixed_trials_running_after_platform_fix",
+      "blocker": "Explicit screenshot transport and mixed service architecture fixes are implemented and tested. Two new trials of the identical fixed package are running; task setup, candidate screenshots and native scoring still require real evidence.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1773,6 +1773,50 @@
           "networks": 0
         },
         "real_scored_tasks": 0
+      },
+      "screenshot_latency_review": {
+        "path": ".hitch/benchmark-expansion/osworld-screenshot-latency-review.json",
+        "sha256": "sha256:87464e87ae041d7fffb2bcd0e7ac638a96ffd2307b82da0d5c2743616e29c74e"
+      },
+      "tcg_http120_validation": {
+        "profile_id": "osworld-v2-deepseek-graphical-host-local-tcg-http-120s",
+        "package": ".hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v1",
+        "package_digest": "sha256:acbc4fac862928873ad6a9d040eb24e907d695ed6bc9f5bb2472986fb99e4607",
+        "profile_digest": "sha256:821166aa8a9122efc55bad686ff8080fdef3ec22a04cc248047a246bd029e46c",
+        "compiled_digest": "sha256:296ccf672f72b991c55789013572b45b358c8c42eb7cf27df64536ce735891da",
+        "assembly": {
+          "path": ".hitch/benchmark-expansion/osworld-http120-assembly-validation.json",
+          "sha256": "sha256:0381adbe3a7a5a37c54deeb663a65197bab2e12a1feb02b1adb46d08d689e38b"
+        },
+        "controller_image_check": {
+          "path": ".hitch/benchmark-expansion/controller-image-check-v8.json",
+          "sha256": "sha256:205918d4180b5c961f4ee19dd31a311f447914554a785fb46fcd8954929188cd"
+        },
+        "controller_image": "sha256:4228a338c09f2f4747d10b78429807b18029ed4c16115205e55c291a4553a516",
+        "vm_image": "sha256:2ae7505f7970cde716d06c72bbfced788ce9b00a5053673e108f8362db890dcc",
+        "screenshot_http_timeout_sec": 120,
+        "guest_cpus": 4,
+        "guest_memory_bytes": 4294967296,
+        "vm_container_memory_bytes": 5368709120,
+        "max_prediction_steps": 100,
+        "agent_timeout_sec": 7200,
+        "eval_id": "eval_601244d383ea479c8036657ca9db7022",
+        "log": ".hitch/benchmark-expansion/osworld-http120-eval.log",
+        "status": "infra_failed_before_candidate",
+        "real_scored_tasks": 0,
+        "leaderboard_comparable": false,
+        "result": ".hitch/benchmark-expansion/osworld-http120-eval-result.json",
+        "invalid_tasks": 2,
+        "failure": "Hitch ownership overlay replaced the explicit ARM64 VM platform with the AMD64 benchmark default. Compose attempted to pull the local ARM64 config ID as an AMD64 image."
+      },
+      "tcg_http120_platform_retry": {
+        "eval_id": "eval_7432ee6c6c3c4ed582baf67e4f5be0c2",
+        "status": "running",
+        "package_digest": "sha256:acbc4fac862928873ad6a9d040eb24e907d695ed6bc9f5bb2472986fb99e4607",
+        "log": ".hitch/benchmark-expansion/osworld-http120-platform-eval.log",
+        "real_scored_tasks": 0,
+        "prior_eval_id": "eval_601244d383ea479c8036657ca9db7022",
+        "reason": "Fix host controller platform overlay; prior candidate never executed. Preserve original package, images, tasks and budgets."
       }
     },
     {
@@ -1802,14 +1846,13 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 375,
-    "passed": 372,
+    "tests": 376,
+    "passed": 373,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/osworld-boot-probe-check.log",
-    "additional_verification": "HLE named DeepSeek schema-guided profile: both fixed real tasks have valid scores and verified sealed runs; one artifact-only regrade restores the original trusted response after matching sealed result fields. OSWorld installed-SDK model-error audit, live DeepSeek judge/user-simulator/truncation, authorized TeamChat state initialization and 35-file visible asset origin transformation passed their stated component scopes. No official OSWorld score is claimed."
+    "evidence": ".hitch/benchmark-expansion/osworld-mixed-platform-check.log"
   },
-  "updated_at": "2026-09-03T07:06:28.694086+00:00",
+  "updated_at": "2026-09-03T07:30:56.950343+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1817,7 +1860,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Gated inputs, declared DeepSeek access, fixed two-task package assembly and public media bytes are verified. A later direct QEMU capture shows a desktop in the explicit standard-VGA profile; stable native screenshots, task setup/runtime media interaction and two full scored Hitch trials remain incomplete."
+      "requirement": "Two fixed real Hitch trials are running under the explicit TCG / standard-VGA / 120-second screenshot profile. Preserve their inputs and budgets, collect native setup and scoring evidence, and keep infrastructure failures distinct from valid zero scores."
     },
     {
       "benchmark": "cursorbench",

@@ -46,6 +46,12 @@ test("OSWorld VM component fences leases and owns child processes without a host
   assert.match(result.stdout, /failed-boot receipts passed/);
 });
 
+test("OSWorld screenshot transport is explicit and survives SDK resets without changing other calls", () => {
+  const result = spawnSync("python3", ["test-support/osworld_screenshot_transport_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /OSWorld explicit screenshot timeout and reset isolation passed/);
+});
+
 test("OSWorld channel preserves native phase resets, gates and per-prediction budgets", () => {
   const result = spawnSync("python3", ["test-support/osworld_channel_smoke.py"], { encoding: "utf8", timeout: 20_000 });
   assert.equal(result.status, 0, result.stderr);

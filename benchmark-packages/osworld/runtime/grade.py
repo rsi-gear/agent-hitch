@@ -95,6 +95,14 @@ def normalized_score(root, config_file):
             or native['native']['sdk_commit'] != SDK or native['native']['runner_sha256'] != RUNNER
             or native['native']['prediction_step_limit'] != config['max_steps']):
         raise ValueError('native execution identity mismatch')
+    screenshot_timeout = config.get('screenshot_http_timeout_sec', 10)
+    if type(screenshot_timeout) is not int or not 10 <= screenshot_timeout <= 120:
+        raise ValueError('invalid screenshot transport configuration')
+    transport = {'protocol': 'osworld-screenshot-transport@1',
+        'mode': 'sdk-default' if screenshot_timeout == 10 else 'custom-http-timeout',
+        'http_timeout_sec': screenshot_timeout, 'retry_times': 3, 'retry_interval_sec': 5}
+    if ('screenshot_http_timeout_sec' in config or 'screenshot_transport' in native) and native.get('screenshot_transport') != transport:
+        raise ValueError('native screenshot transport differs from the frozen configuration')
     scores = native['native']['scores']
     if not isinstance(scores, list) or len(scores) != 1: raise ValueError('expected one native final score')
     score = scores[0]
@@ -124,6 +132,7 @@ def normalized_score(root, config_file):
         'metric': 'native_score', 'value': score, 'strict_success': None,
         'semantics': 'Unchanged scalar returned by the pinned task evaluator; task_095 rounds partial credit to two decimal places.',
         'model_calls': len(audit['calls']), 'candidate_executes': False,
+        'screenshot_transport': transport,
     }
 
 

@@ -205,3 +205,18 @@ that the VGA override alone caused the later rendering.
 It never changes the pinned SDK's ten-second screenshot timeout. Desktop
 receipts retain capture duration, so a long diagnostic allowance cannot be
 mistaken for proof that the native API meets its original timing contract.
+
+The later standard-VGA / 5 GiB container run returned a normal 1920 × 1080 PNG
+through the guest screenshot API in 45.52 seconds. Its peak cgroup memory was
+4,507,672,576 bytes, below the 5 GiB cap, with zero OOM or memory-limit events.
+A separate call to the unmodified SDK getter then exhausted all three native
+ten-second requests and returned `None`. A following 60-second diagnostic
+request overlapped those SDK retries and timed out; it is not a clean idle
+latency measurement. The VM and diagnostic containers were cleaned up.
+
+`assemble.py --screenshot-http-timeout-sec 120` now permits an explicit custom
+TCG transport profile. This changes the SDK instance's screenshot wait and is
+recorded separately from the unchanged default; it does not establish that
+the native ten-second contract passes. The original SDK files are hash checked,
+and no guest screenshot encoding, task source, guest resource requirement or
+scoring logic is replaced. Full two-task validation remains a separate gate.

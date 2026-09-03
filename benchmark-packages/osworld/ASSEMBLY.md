@@ -27,6 +27,19 @@ Task instructions, dates, screenshot dimensions, setup and evaluation use the
 pinned native SDK; the DeepSeek judge/user-simulator substitution is separately
 named. Candidate exhaustion uses the declared native deadline adapter.
 
+For an explicitly selected TCG image, `--screenshot-http-timeout-sec 120`
+creates a separately named `-tcg-http-120s` profile. The default is 10 seconds
+and uses the original SDK method. The custom transport replaces only the
+controller instance's screenshot request and is reapplied when native reset
+creates a new controller. It retains three attempts, five-second retry sleeps,
+the SDK image validator and `None` on exhaustion. It does not change action
+budgets, native setup/evaluation or the candidate's total time allowance.
+HTTP waits use Requests' timeout semantics, not a new overall trial deadline.
+Other HTTP methods and the nonblocking candidate tool channel are untouched.
+The setting is frozen in the profile and per-task config; native execution
+and offline score receipts must agree. Use new image/package identities when
+selecting this runtime; previously frozen packages retain their old behavior.
+
 ## Images and credentials
 
 The image JSON has exactly five top-level fields:
