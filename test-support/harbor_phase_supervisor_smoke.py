@@ -17,7 +17,9 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import types
+from unittest.mock import patch
 import zlib
 
 from bridge_smoke import AgentContext, ExecResult, install_harbor_stubs, load_bridge
@@ -104,12 +106,24 @@ class Task(dict):
                 dict(name="two", instruction="native second phase", setup=lambda *_a, **_k: self.guest.setups.append("two"), evaluate=lambda _: 0.5)]
 
 
+class SupervisorClock:
+    def __init__(self):
+        self.offset_ns = 0
+
+    def monotonic_ns(self):
+        return time.monotonic_ns() + self.offset_ns
+
+    def advance_ms(self, milliseconds):
+        self.offset_ns += milliseconds * 1_000_000
+
+
 class LocalEnvironment:
     def __init__(self, root, server, case):
         self.root, self.server, self.case = root, server, case
         self.trial_paths = types.SimpleNamespace(trial_dir=root)
         self._hitch_ownership_labels = {"io.hitch.lease-id": "synthetic-lease", "io.hitch.lease-epoch": "1"}
         self.events, self.tokens, self.binds = [], [], []
+        self.clock = SupervisorClock()
         self.number = 0
         self.fresh()
     def fresh(self):
@@ -182,7 +196,10 @@ class SyntheticAgent(bridge.HitchHarborAgent):
         self._setup_complete = self._phase_export_available = True
         self._phase_supervision_available = True
         if env.case == "finalize-between" and env.number == 1:
-            await asyncio.sleep(1.1)
+            # Expire only after the first candidate is archived and its fresh
+            # replacement is ready. A one-second wall clock could expire before
+            # recycling on a loaded CI host, exercising a different valid path.
+            env.clock.advance_ms(20_000)
     async def _run(self, instruction, env, context, *, prepared_phase):
         prepared = prepared_phase
         assert env.events[-1] == "bind"
@@ -223,6 +240,7 @@ class SyntheticAgent(bridge.HitchHarborAgent):
 
 async def run_case(root, case, executable, revision, controller_runtime):
     finalizing = case.startswith("finalize")
+    timeout_ms = 100 if case == "budget" else 1000 if finalizing and case != "finalize-between" else 20_000
     root.mkdir()
     (root / "lock.json").write_text(json.dumps({"schema_version": 2, "task": {"name": "synthetic-native-phases"}}))
     private = root / "private"; private.mkdir(mode=0o700)
@@ -240,7 +258,7 @@ async def run_case(root, case, executable, revision, controller_runtime):
     agent.executable = executable
     await agent.setup(env)
     supervisor = NativePhaseSupervisor(agent, env, controller={"service": "controller", "argv": [sys.executable, str(runtime / "controller_client.py"), "--socket", str(server.private_socket), "--session", str(session_file)]},
-                    binding={"endpoint": server.endpoint, "tools": server.tools}, task_digest=digest, timeout_ms=100 if case == "budget" else 1000 if finalizing else 20000, shutdown_timeout_ms=5000, poll_interval_ms=20, finalization_timeout_ms=5000 if finalizing else None)
+                    binding={"endpoint": server.endpoint, "tools": server.tools}, task_digest=digest, timeout_ms=timeout_ms, shutdown_timeout_ms=5000, poll_interval_ms=20, finalization_timeout_ms=5000 if finalizing else None)
     guest, scores, errors = Guest(), [], []
     results = root / "native-results"; results.mkdir()
     def sdk():
@@ -268,9 +286,12 @@ async def run_case(root, case, executable, revision, controller_runtime):
                 "task": {"driver": {"kind": "tool-server", "config": {"service": "controller", "endpoint": server.endpoint,
                     "native_phases": {"protocol": "hitch-native-phase-control@2" if finalizing else "hitch-native-phase-control@1", "argv": supervisor.controller["argv"], "audit_path": "/evidence/channel.jsonl", "shutdown_timeout_ms": 5000,
                                       **({"finalization_timeout_ms": 5000} if finalizing else {})}}}},
-                "tools": server.tools, "task_digest": digest, "agent_timeout_sec": 1 if finalizing else 20})
+                "tools": server.tools, "task_digest": digest, "agent_timeout_sec": timeout_ms / 1000})
             context = AgentContext()
-            await agent.run("outer task prompt\nPreserve this protocol guidance in every phase.", env, context)
+            # Only the supervisor sees this clock. The real CLI process,
+            # cancellation, RPC and evidence inspection keep their real clocks.
+            with patch("hitch_phase_supervisor.time", env.clock):
+                await agent.run("outer task prompt\nPreserve this protocol guidance in every phase.", env, context)
             result = json.loads((root / "hitch-native-phases/supervision.json").read_text())
             assert context.metadata["hitch_context_kind"] == "benchmark_phase_group"
             assert context.metadata["hitch_run_group_id"] == result["run_group_id"] and "hitch_run_id" not in context.metadata
@@ -284,10 +305,11 @@ async def run_case(root, case, executable, revision, controller_runtime):
             assert guest.setups == ([] if case in ["gated", "finalize-budget"] else ["two"])
             if finalizing:
                 assert result["budget_finalization"]["status"] == "completed"
-                assert result["budget_finalization"]["elapsed_ms"] >= 1000
+                assert result["budget_finalization"]["elapsed_ms"] >= timeout_ms
                 assert result["budget_finalization"]["receipt"]["run_id"] == (None if case == "finalize-between" else result["phases"][0]["run_id"])
                 if case == "finalize-budget": assert result["phases"][0]["evidence"]["process_status"] == "timed_out"
-            assert env.events == ["setup", "bind", "run", "export"] + (["retire", "setup", "bind", "run", "export"] if count == 2 else ["retire", "setup"] if case == "finalize-between" else []) + ["stop-main"]
+            expected_events = ["setup", "bind", "run", "export"] + (["retire", "setup", "bind", "run", "export"] if count == 2 else ["retire", "setup"] if case == "finalize-between" else []) + ["stop-main"]
+            assert env.events == expected_events, {"case": case, "expected": expected_events, "actual": env.events}
             for binding in env.tokens:
                 try: channel.observe(binding); raise AssertionError("retired binding accepted")
                 except PermissionError: pass
