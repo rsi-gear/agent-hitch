@@ -29,6 +29,11 @@ request identity. Repeated successful or failed requests do not start a second
 VM. Reusing an identity for a different operation fails. A closed owner cannot
 restart; another trial requires fresh Harbor-owned services and volumes.
 
+On each emulator launch the owner forces `MONITOR=none` and `SERIAL=stdio`,
+including when inherited environment variables request another value. This
+disables the upstream unauthenticated monitor and serial monitor multiplexer;
+the lease-bound HTTP service is the VM management entry point.
+
 Compose assembly must have two separate networks:
 
 | Service | Networks | Private mounts |
@@ -43,13 +48,19 @@ network. Place each website/database into the appropriate private namespace and
 reset it with the VM. A guest can reach its network gateway, so the private VM
 admin route also requires the secret; network placement alone is insufficient.
 
-`Dockerfile.vm` consumes the already verified and extracted `System.qcow2`.
+`Dockerfile.vm` consumes the release ZIP through a read-only BuildKit mount;
+`../vm_artifact.py` verifies the full archive SHA256 and exact ZIP/QCOW2
+structure before publishing `/System.qcow2`. The archive is excluded from final
+image layers. See `../VM-IMAGE.md` for the immutable historical source: the
+current dataset tag/original filename no longer matches the release digest.
 The official runtime image was resolved to
 `happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9`.
 This is the digest observed during implementation, not a claim that Anthropic
 used this historically. The upstream entrypoint creates `/boot.qcow2` with the
-base as its QCOW2 backing file. Its default VM configuration is 4 cores, 4 GiB
-RAM and a 32 GiB disk. Assembly must record all effective settings and allocate
+base as its QCOW2 backing file. Its default runtime settings are 4 cores, 4 GiB
+RAM and `DISK_SIZE=32G`; the existing source disk retains its own virtual size
+and is not shrunk to that setting. The build records its QCOW2 header and
+`qemu-img info`. Assembly must record all effective settings and allocate
 container overhead separately; these defaults do not replace task-specific
 resource requirements. KVM is required by default and unavailable KVM fails
 preflight. Software emulation needs a separately declared profile, never a

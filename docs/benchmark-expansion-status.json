@@ -168,7 +168,7 @@
         "candidate_process_name": "codex"
       },
       "latest_session_check": {
-        "observed_at": "2026-09-02T22:55:07.552449+00:00",
+        "observed_at": "2026-09-03T00:12:34.811892+00:00",
         "exec_session_id": 26799,
         "candidate_process_alive": true,
         "candidate_process_name": "codex",
@@ -792,6 +792,93 @@
             "application_canary": ".hitch/benchmark-expansion/osworld-budgetwise-canary-v4.json"
           },
           "limitation": "Static deployment component and one real public application only. No authorized task initialization, official VM/guest browser or official task score. Collaborative Overleaf requires private CA trust in both controller and guest; interfacinglinux has a floating main build asset that must be bound to authorized release bytes. Application source, final images, networks, state volumes, assets and resource limits still require complete task assembly."
+        },
+        "vm_image": {
+          "implemented": true,
+          "build_status": "built_controlled_guest_canary_running",
+          "built_locally": true,
+          "official_guest_boot_verified": false,
+          "real_scored_tasks": 0,
+          "source_commit": "8213366932c553e5fe758d0f2c8c8b81ffc3be8c",
+          "source_url": "https://huggingface.co/datasets/xlangai/v2-image/resolve/8213366932c553e5fe758d0f2c8c8b81ffc3be8c/osworld-v2-ubuntu-x86.qcow2.zip",
+          "archive_bytes": 14189763267,
+          "archive_sha256": "sha256:eb737ae70b49849e24af407de6a518439a23de05a8497096a948334ce0a909aa",
+          "archive_downloaded_and_verified": true,
+          "zip_member": "osworld-v2-ubuntu-x86.qcow2",
+          "expanded_file_bytes": 27402633216,
+          "tag_drift": {
+            "requested_tag": "v2026.06.24",
+            "observed_commit": "555126d3180e5e4605150cc916638e57883fed4a",
+            "original_filename_current_sha256": "sha256:f53ac2da4f40578def348c45d02c9f3209e3deedd451d194c46c94be585a1bb5",
+            "original_filename_current_bytes": 13995873636,
+            "historical_commit_retains_matching_original_filename": true
+          },
+          "host_temporary_archive_released_after_build_verification": true,
+          "runtime_base_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9",
+          "tests": [
+            "python3 test-support/osworld_vm_artifact_smoke.py"
+          ],
+          "evidence": {
+            "source_resolution": ".hitch/benchmark-expansion/osworld-vm-source-resolution.json",
+            "historical_metadata": ".hitch/benchmark-expansion/osworld-vm-historical-source.json",
+            "download": ".hitch/benchmark-expansion/osworld-vm-build/download-receipt.json",
+            "source_retention": ".hitch/benchmark-expansion/osworld-vm-build/build-source-retention.json",
+            "build": ".hitch/benchmark-expansion/osworld-vm-image-build.log",
+            "image_check": ".hitch/benchmark-expansion/osworld-vm-image-check.json",
+            "runtime_source": ".hitch/benchmark-expansion/osworld-vm-build/runtime-source.json",
+            "canary_log": ".hitch/benchmark-expansion/osworld-real-vm-egress-canary.log",
+            "controlled_image_check": ".hitch/benchmark-expansion/osworld-vm-controlled-check.json",
+            "controlled_image_build": ".hitch/benchmark-expansion/osworld-vm-settings-build-v2.log",
+            "controlled_runtime_source": ".hitch/benchmark-expansion/osworld-vm-settings/source.json",
+            "monitor_check": ".hitch/benchmark-expansion/osworld-vm-monitor-check.json",
+            "initial_canary": ".hitch/benchmark-expansion/osworld-real-vm-canary.json",
+            "initial_boot_probe": ".hitch/benchmark-expansion/osworld-vm-boot-probe.png"
+          },
+          "limitation": "Archive and local image assembly are verified. The initial TCG/isolated-network boot failed its 900-second readiness deadline and cleaned all owned resources. The controlled image fixes an observed extra monitor endpoint and has a separate TCG/egress attempt running. No successful guest boot/reset, authorized task/assets, website trust or official task scoring has yet been established. More than network policy changed between these attempts, so they do not isolate a root cause.",
+          "image_id": "sha256:f359a29043d6eaa94321371ab77eb0fd482599b1edc48fe8973d06615c02f88c",
+          "image_id_kind": "local Docker configuration SHA256; not a registry pull reference",
+          "platform": "linux/amd64",
+          "image_size_bytes": 27707268274,
+          "extracted_image_sha256": "sha256:3d632f031459583cf936e0c4c5bb939122df0fec85aecb0d044ef2d3e5863335",
+          "virtual_disk_bytes": 53687091200,
+          "qemu_info_verified": true,
+          "canary": {
+            "state": "running",
+            "acceleration": "tcg",
+            "guest_cpus": 4,
+            "guest_memory_bytes": 4294967296,
+            "container_memory_bytes": 5368709120,
+            "boot_timeout_sec": 900,
+            "official_task": false,
+            "real_scored_tasks": 0,
+            "image_id": "sha256:f359a29043d6eaa94321371ab77eb0fd482599b1edc48fe8973d06615c02f88c",
+            "network_policy": "egress",
+            "changed_since_initial": [
+              "VM owner forces monitor disabled",
+              "serial stdio instead of monitor multiplexer",
+              "dedicated network permits outbound traffic"
+            ]
+          },
+          "archive_assembly_image_id": "sha256:e41d2fa40bc0f34ef3a6113e08c3a422c28ace7ed71667c125855ef07b82ab36",
+          "controlled_vm_owner_sha256": "sha256:5c508db3fa3e2454d632f91ba4d502c0d15a371f2115eaaa1c99e4980692c0e7",
+          "unmanaged_monitor_forcibly_disabled": true,
+          "effective_qemu_monitor_flags_verified": true,
+          "archive_excluded_from_runtime": true,
+          "initial_canary": {
+            "image_id": "sha256:e41d2fa40bc0f34ef3a6113e08c3a422c28ace7ed71667c125855ef07b82ab36",
+            "state": "failed",
+            "network_policy": "isolated",
+            "acceleration": "tcg",
+            "boot_timeout_sec": 900,
+            "guest_boot_verified": false,
+            "cleanup_passed": true,
+            "remaining_owned_resources": {
+              "containers": 0,
+              "volumes": 0,
+              "networks": 0
+            },
+            "observation": "Guest screenshot service did not become ready within the original 900-second window. A separate 20-second screenshot probe also timed out; a debug framebuffer was black. DNS requests were observed; root cause is not established."
+          }
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -823,12 +910,12 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 363,
-    "passed": 360,
+    "total": 364,
+    "passed": 361,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/web-router-check.log",
-    "additional_verification": "All 24 pinned website compose definitions compiled and the real Caddy image validated their configuration. Budgetwise frontend/backend built from frozen Git source and resolved base images; isolated container canary verified static assets, API state/cookie/reset semantics, MCP backend routing and cleanup. Three pure routing regression cases added. No new official benchmark acceptance."
+    "evidence": ".hitch/benchmark-expansion/vm-controlled-check.log",
+    "additional_verification": "Five archive/QCOW2 extraction tests and an actual child-process environment test passed. The full archive and assembled disk were verified; the controlled image contains the current VM owner, and actual QEMU flags show the extra monitor disabled. The isolated-network real guest attempt failed and cleaned all owned resources; the separate egress attempt is still running. No new official benchmark acceptance."
   },
-  "updated_at": "2026-09-02T23:20:22.894802+00:00"
+  "updated_at": "2026-09-03T00:12:34.811892+00:00"
 }

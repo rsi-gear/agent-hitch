@@ -69,3 +69,9 @@ test("OSWorld static website routes preserve ordered paths and HTTPS without a D
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /routing and private topology gates passed/);
 });
+
+test("OSWorld VM extraction verifies release bytes and refuses external disk dependencies", () => {
+  const result = spawnSync("python3", ["test-support/osworld_vm_artifact_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /archive identity and bounded extraction gates passed/);
+});

@@ -684,6 +684,8 @@ Finalization allowance 覆盖截止后的停止、封存、原生评分与最终
 
 `runtime_config.py` 校验 `osworld-controller@1` 的冻结配置、互不重叠的源文件/可写目录、任务文件摘要及四个 SDK 核心文件摘要；worker 在 SDK import 前设置私有网站 namespace，并通过原生 loader/provider/runner 执行。固定核心文件与单任务摘要不能代替授权 release manifest、完整依赖树和镜像验证。字段、CLI、超时关系和 artifact 路径详见 `benchmark-packages/osworld/runtime/README.md` 的 Controller process and Harbor lifecycle。10 个真实子进程/Unix/HTTP/标准 Harbor hook 合成用例，以及 Linux PID 1 回收脱离原进程组的 helper 测试已通过；官方任务、VM、网站和 grader 仍未在这些测试中执行。
 
+VM 制品必须按 release 的 archive SHA256 校验，而不能只依赖 tag 与文件名。实际核对发现 `v2026.06.24` 当前解析到的原文件名已换成另一份镜像；匹配 release 摘要的原文件可从历史 commit `8213366932c553e5fe758d0f2c8c8b81ffc3be8c` 获取。`vm_artifact.py` 在 BuildKit 只读挂载 ZIP 上验证整包摘要、唯一成员与磁盘自包含性，输出只读 System.qcow2、解压文件摘要和原始 qemu-img 信息。ZIP 不进入最终镜像层。VM owner 对真实 QEMU 子进程强制 `MONITOR=none`、`SERIAL=stdio`，关闭上游额外 monitor 通道；对外管理继续使用 lease 认证的入口。镜像构建成功不等于 guest boot 或官方两题完成；来源、构建合同及 tag 偏移详情见 `benchmark-packages/osworld/VM-IMAGE.md`。
+
 Controller 镜像由 `benchmark-packages/osworld/prepare-controller.py` 从固定 Git tree 导出，逐文件校验 Git blob 并记录 SHA256、大小和权限，复制包内 runtime，不携带 checkout 的未提交文件、凭据或 Git 配置。`Dockerfile.controller` 固定 Python/uv 基础镜像摘要，按未修改的上游 `uv.lock` 安装 base 依赖，保留 Python/Debian 包清单；最终镜像摘要必须进入冻结 package。当前构建产物是本地 Docker image ID，跨 worker 分发还须固定 OCI artifact 或 registry manifest 引用，不能将该 ID 当作可 pull 的 `repo@digest`。Image entrypoint 在进入 PID 1 生命周期前核对全部 SDK/runtime 文件及 Python 版本清单。配置现在必须给出 `assets_directory`，worker 显式设置 `OSWORLD_FILE_BASE_URL`，禁止默用上游可变化的线上 main 资产。完整授权资产的版本与内容仍由 producer 验证。
 
 生产 worker 同时向原生 runner/result logger 提供动作间隔与 `result_dir`，原始 summary 随 `native/` 收集。镜像级 canary 用真实安装的 SDK、生产 entrypoint/worker、合成任务与模拟桌面服务，保留原生 60 秒准备等待，检查评分、summary、快照和关闭。该测试不使用真实 VM、模型或官方抽样任务，不能增加真实 benchmark 验收数。

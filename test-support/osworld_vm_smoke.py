@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 from unittest.mock import patch
 
 
@@ -16,7 +17,7 @@ def load(name):
 
 
 vm = load('vm_owner'); provider = load('vm_provider')
-with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KVM': 'N', 'VM_BOOT_TIMEOUT_SEC': '2'}):
+with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KVM': 'N', 'VM_BOOT_TIMEOUT_SEC': '2', 'MONITOR': 'telnet:0.0.0.0:7100,server,nowait', 'SERIAL': 'mon:stdio'}):
     root = Path(directory)
     hook = {'lease_id': 'lease-test', 'epoch': 1, 'logical_trial_id': 'trial-test'}
     session = provider.create_private_session(root / 'control', hook)
@@ -27,7 +28,8 @@ with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KVM': 
     except ValueError:
         pass
     base = root / 'base.qcow2'; base.write_bytes(b'synthetic base; not a bootable VM')
-    command = (sys.executable, '-c', 'import time; time.sleep(60)')
+    witness = root / 'launch-environment.json'
+    command = (sys.executable, '-c', 'import json,os,sys,time; temporary=sys.argv[1]+".tmp"; open(temporary, "w").write(json.dumps({key:os.environ.get(key) for key in ["MONITOR","SERIAL"]})); os.replace(temporary,sys.argv[1]); time.sleep(60)', str(witness))
     owner = vm.VMOwner(root / 'control/session.json', root / 'storage', base, root / 'overlay', command)
     request = {'request_id': 'start-one', 'operation': 'start', 'lease_id': hook['lease_id'], 'epoch': 1}
     class Ready:
@@ -40,6 +42,9 @@ with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KVM': 
             assert owner.control(session['token'], request)['ready']
             process = owner.process
             assert process.poll() is None
+            deadline = time.monotonic() + 5
+            while not witness.exists() and time.monotonic() < deadline: time.sleep(.01)
+            assert json.loads(witness.read_text()) == {'MONITOR': 'none', 'SERIAL': 'stdio'}
             assert owner.control(session['token'], request)['generation'] == 1
             assert owner.process.pid == process.pid
             for token, value in [('wrong-token', request), (session['token'], {**request, 'epoch': 2})]:

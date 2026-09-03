@@ -135,7 +135,10 @@ class VMOwner:
         if not 1 <= timeout <= 1800:
             raise ValueError('invalid VM boot timeout')
         self.generation += 1
-        self.process = subprocess.Popen(self.command, start_new_session=True)
+        # The upstream image otherwise opens an unauthenticated monitor on
+        # loopback. Guest user-mode networking must not bypass the leased API.
+        launch_environment = {**os.environ, 'MONITOR': 'none', 'SERIAL': 'stdio'}
+        self.process = subprocess.Popen(self.command, start_new_session=True, env=launch_environment)
         if self.closed:
             self.stop()
             raise RuntimeError('VM owner closed during startup')
