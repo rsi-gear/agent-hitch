@@ -1,12 +1,11 @@
 import type { SessionEvent } from "../domain/index.js";
-import { HitchError, sha256JSON } from "../foundation/index.js";
+import { HitchError, isSensitiveFieldName, sha256JSON } from "../foundation/index.js";
 import { DEFAULT_INLINE_CONTENT_BYTES, serializeBoundedJson } from "./analysis.js";
 import {
   BoundedTextAccumulator,
   defaultCredentialValues,
   fieldSegmentForKey,
   isPublicEventType,
-  isSensitiveFieldName,
   mergeRedactionCounts,
   projectBoundedJson,
   redactionEntries,
@@ -15,6 +14,7 @@ import {
 } from "./content-projection.js";
 import type { ContentProjectionContext } from "./content-projection.js";
 import { canonicalRequestHeader } from "./dsh-contract.js";
+import { IncrementalRequestAttemptTracker } from "./request-attempt.js";
 import { scanCanonicalTrajectory } from "./stream-reader.js";
 import type { CanonicalTrajectorySource } from "./stream-reader.js";
 
@@ -22,6 +22,9 @@ export const DEFAULT_EVENTS_MAX_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_EVENTS_LIMIT = 100;
 export const MAX_EVENTS_LIMIT = 1_000;
 export const MAX_INLINE_EVENT_BYTES = 256 * 1024;
+const STREAM_DELTA_OMITTED = "[STREAM_DELTA_OMITTED]";
+
+type ChunkDeltaField = "data.chunk.delta" | "data.chunk.text" | "data.chunk.argumentsDelta";
 
 export interface TrajectoryEventsFilter {
   types?: string[];
@@ -99,8 +102,10 @@ export async function pageTrajectoryEvents(
   let chunkDrill: {
     turn: number;
     step: number;
+    attempt: number;
     firstSeq: number;
-    field: "data.chunk.delta" | "data.chunk.text" | "data.chunk.argumentsDelta";
+    field: string;
+    deltaField: ChunkDeltaField;
     callIdentity?: string;
     accumulator: BoundedTextAccumulator;
     sourceCount: number;
@@ -111,9 +116,8 @@ export async function pageTrajectoryEvents(
   const perEventBytes = filter.field === undefined
     ? Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, Math.floor(maxBytes / (limit + 4))))
     : Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, maxBytes - 4 * 1024));
-  const chunkDeltaDrill = filter.field === "data.chunk.delta"
-    || filter.field === "data.chunk.text"
-    || filter.field === "data.chunk.argumentsDelta";
+  const chunkDeltaDrill = canonicalChunkDeltaField(filter.field);
+  const requestAttempts = new IncrementalRequestAttemptTracker();
 
   const scan = await scanCanonicalTrajectory(source, (event) => {
     if (!isPublicEventType(event.type, credentialValues, pathValues)) {
@@ -122,6 +126,7 @@ export async function pageTrajectoryEvents(
         exitCode: 3,
       });
     }
+    const requestAttempt = requestAttempts.accept(event);
     if (chunkDeltaDrill) {
       if (!chunkDrill && event.seq === filter.seq_start && (!filter.types || filter.types.includes(event.type))) {
         const data = event.data as Record<string, unknown>;
@@ -131,9 +136,11 @@ export async function pageTrajectoryEvents(
         chunkDrill = {
           turn: data.turn as number,
           step: data.step as number,
+          attempt: requestAttempt?.attempt ?? requestAttempts.current(data.turn as number, data.step as number).attempt,
           firstSeq: event.seq,
-          field: filter.field as "data.chunk.delta" | "data.chunk.text" | "data.chunk.argumentsDelta",
-          ...(filter.field === "data.chunk.argumentsDelta"
+          field: filter.field as string,
+          deltaField: chunkDeltaDrill,
+          ...(chunkDeltaDrill === "data.chunk.argumentsDelta"
             ? { callIdentity: toolCallIdentity(data.chunk as Record<string, unknown>) }
             : {}),
           accumulator: new BoundedTextAccumulator(
@@ -148,16 +155,17 @@ export async function pageTrajectoryEvents(
       }
       if (chunkDrill && event.type === "assistant/chunk") {
         const data = event.data as Record<string, unknown>;
-        if (data.turn === chunkDrill.turn && data.step === chunkDrill.step) {
+        if (data.turn === chunkDrill.turn && data.step === chunkDrill.step
+          && requestAttempt?.attempt === chunkDrill.attempt) {
           const chunk = data.chunk as Record<string, unknown>;
           let accepted = false;
-          if ((chunkDrill.field === "data.chunk.delta" || chunkDrill.field === "data.chunk.text")
+          if ((chunkDrill.deltaField === "data.chunk.delta" || chunkDrill.deltaField === "data.chunk.text")
             && typeof chunk.text === "string") {
             chunkDrill.accumulator.append(chunk.text);
             accepted = true;
           }
-          if ((chunkDrill.field === "data.chunk.delta"
-            || (chunkDrill.field === "data.chunk.argumentsDelta"
+          if ((chunkDrill.deltaField === "data.chunk.delta"
+            || (chunkDrill.deltaField === "data.chunk.argumentsDelta"
               && toolCallIdentity(chunk) === chunkDrill.callIdentity))
             && typeof chunk.argumentsDelta === "string") {
             chunkDrill.accumulator.append(chunk.argumentsDelta);
@@ -184,6 +192,7 @@ export async function pageTrajectoryEvents(
     events.push({
       type: "assistant/chunk-group",
       seq: chunkDrill.firstSeq,
+      attempt: chunkDrill.attempt,
       field: chunkDrill.field,
       value: chunkDrill.accumulator.excerpt({
         runId: source.runId,
@@ -225,6 +234,15 @@ function toolCallIdentity(chunk: Record<string, unknown>): string {
   return Number.isSafeInteger(chunk.index) ? `index:${String(chunk.index)}` : "unknown";
 }
 
+function canonicalChunkDeltaField(field: string | undefined): ChunkDeltaField | undefined {
+  const canonical = field?.startsWith("event.") ? field.slice("event.".length) : field;
+  return canonical === "data.chunk.delta"
+    || canonical === "data.chunk.text"
+    || canonical === "data.chunk.argumentsDelta"
+    ? canonical
+    : undefined;
+}
+
 function projectRawEvent(
   event: SessionEvent,
   runId: string,
@@ -234,6 +252,7 @@ function projectRawEvent(
   redactions: Map<string, number>,
   field?: string,
 ): unknown {
+  const publicEvent = omitUnprocessedStreamDelta(event, redactions);
   const baseContext: ContentProjectionContext = {
     runId,
     seq: event.seq,
@@ -245,8 +264,8 @@ function projectRawEvent(
     redactions,
   };
   const selected = field === undefined || field === "event"
-    ? event
-    : readEventField(event, field, credentialValues, pathValues);
+    ? publicEvent
+    : readEventField(publicEvent, field, credentialValues, pathValues);
   const projected = projectBoundedJson(selected, baseContext, field ?? "event");
   if ((field === undefined || field === "event") && isContentExcerpt(projected)) {
     return { type: event.type, seq: event.seq, time: event.time, event_excerpt: projected };
@@ -269,6 +288,27 @@ function projectRawEvent(
     seq: event.seq,
     time: event.time,
     event_excerpt: evidence,
+  };
+}
+
+function omitUnprocessedStreamDelta(event: SessionEvent, redactions: Map<string, number>): SessionEvent {
+  if (event.type !== "assistant/chunk" || !event.data || typeof event.data !== "object" || Array.isArray(event.data)) return event;
+  const data = event.data as Record<string, unknown>;
+  if (!data.chunk || typeof data.chunk !== "object" || Array.isArray(data.chunk)) return event;
+  const chunk = data.chunk as Record<string, unknown>;
+  const deltaField = (chunk.type === "text-delta" || chunk.type === "reasoning-delta") && typeof chunk.text === "string"
+    ? "text"
+    : chunk.type === "tool-call-delta" && typeof chunk.argumentsDelta === "string"
+      ? "argumentsDelta"
+      : null;
+  if (!deltaField) return event;
+  redactions.set("stream-delta-omitted-v1", (redactions.get("stream-delta-omitted-v1") ?? 0) + 1);
+  return {
+    ...event,
+    data: {
+      ...data,
+      chunk: { ...chunk, [deltaField]: STREAM_DELTA_OMITTED },
+    },
   };
 }
 

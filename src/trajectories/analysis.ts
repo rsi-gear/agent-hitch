@@ -17,6 +17,8 @@ import {
 } from "./content-projection.js";
 import type { ContentExcerpt, ContentProjectionContext } from "./content-projection.js";
 import { canonicalRequestHeader } from "./dsh-contract.js";
+import { IncrementalRequestAttemptTracker } from "./request-attempt.js";
+import type { RequestAttempt } from "./request-attempt.js";
 import { scanCanonicalTrajectory } from "./stream-reader.js";
 import type { CanonicalTrajectorySource } from "./stream-reader.js";
 import { deriveSurfaceMessage, IncrementalSurfaceFold, isSurfaceEvent } from "./surface-fold.js";
@@ -93,12 +95,6 @@ export interface TrajectoryAnalysisOptions {
   credentialValues?: readonly string[];
 }
 
-interface RequestAttempt {
-  attempt: number;
-  retryId?: string;
-  retrySeq?: number;
-}
-
 /** Build the bounded trajectory analysis schema v1 surface and diagnostic projection in one scan. */
 export async function projectTrajectoryAnalysis(
   source: CanonicalTrajectorySource,
@@ -118,7 +114,7 @@ export async function projectTrajectoryAnalysis(
   const requestBoundaries: RequestBoundaryV1[] = [];
   const boundaryKeys = new Set<string>();
   const chunkGroups = new Map<string, ChunkGroup>();
-  const requestAttempts = new Map<string, RequestAttempt>();
+  const requestAttempts = new IncrementalRequestAttemptTracker();
   const omitted = new Map<string, number>();
   let latestHeader: unknown = null;
   let latestHeaderSeq: number | undefined;
@@ -162,18 +158,7 @@ export async function projectTrajectoryAnalysis(
       });
     }
     const step = eventStep(event);
-    if (event.type === "step/start" && step) {
-      requestAttempts.set(stepKey(step.turn, step.step), { attempt: 0 });
-    } else if (event.type === "llm/retry-started" && step) {
-      const data = event.data as Record<string, unknown>;
-      const current = requestAttemptFor(requestAttempts, step.turn, step.step);
-      requestAttempts.set(stepKey(step.turn, step.step), {
-        attempt: current.attempt + 1,
-        retryId: data.retryId as string,
-        retrySeq: event.seq,
-      });
-    }
-    const requestAttempt = step ? requestAttemptFor(requestAttempts, step.turn, step.step) : null;
+    const requestAttempt = requestAttempts.accept(event);
     if ((event.type === "assistant/message" || event.type === "llm/retry") && step && requestAttempt) {
       recordBoundary(event, step.turn, step.step, requestAttempt);
     }
@@ -198,7 +183,7 @@ export async function projectTrajectoryAnalysis(
     }
     if (event.type === "assistant/chunk") {
       const { turn, step, chunk } = chunkData(event);
-      const attempt = requestAttemptFor(requestAttempts, turn, step);
+      const attempt = requestAttempt ?? requestAttempts.current(turn, step);
       recordBoundary(event, turn, step, attempt);
       acceptChunk(
         chunkGroups,
@@ -235,7 +220,6 @@ export async function projectTrajectoryAnalysis(
       requestHeaders.push({ seq: event.seq, header: latestHeader });
     }
     diagnostics.push(projectDiagnosticEvent(event, contextFor(event.seq)));
-    if (event.type === "step/end" && step) requestAttempts.delete(stepKey(step.turn, step.step));
   });
 
   const chunkSummaries = [...chunkGroups.values()]
@@ -332,19 +316,6 @@ function chunkData(event: SessionEvent): { turn: number; step: number; chunk: Re
 function eventStep(event: SessionEvent): { turn: number; step: number } | null {
   const data = event.data as Record<string, unknown>;
   return isNonNegativeInteger(data.turn) && isNonNegativeInteger(data.step) ? { turn: data.turn, step: data.step } : null;
-}
-
-function stepKey(turn: number, step: number): string {
-  return `${turn}:${step}`;
-}
-
-function requestAttemptFor(attempts: Map<string, RequestAttempt>, turn: number, step: number): RequestAttempt {
-  const key = stepKey(turn, step);
-  const current = attempts.get(key);
-  if (current) return current;
-  const initial = { attempt: 0 };
-  attempts.set(key, initial);
-  return initial;
 }
 
 function projectDiagnosticEvent(event: SessionEvent, context: ContentProjectionContext): unknown {

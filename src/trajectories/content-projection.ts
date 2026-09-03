@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { PROVIDER_ENVIRONMENT_NAMES, credentialValuesFromEnv, redactCredentialText } from "../foundation/index.js";
+import {
+  PROVIDER_ENVIRONMENT_NAMES,
+  credentialValuesFromEnv,
+  isSensitiveFieldName,
+  redactCredentialText,
+} from "../foundation/index.js";
 
 const REDACTION_OVERLAP_BYTES = 64 * 1024;
 const UNIX_HOST_PATH = /(^|[\s"'`=:([\]{}<>])\/(?!\/)[A-Za-z0-9._~!$&()+,;@%:-]+(?:\/[A-Za-z0-9._~!$&()+,;=@%:-]+)*/gm;
@@ -8,16 +13,6 @@ const UNC_HOST_PATH = /\\\\[^\\\s"'\`<>|]+\\[^\\\s"'\`<>|]+(?:\\[^\\\s"'\`<>|]+)
 const WINDOWS_FORWARD_PATH = /\b[A-Za-z]:\/(?:[^/\s"'`<>|]+\/)*[^/\s"'`<>|]*/g;
 const FORWARD_UNC_PATH = /(^|[\s"'`=([\]{}<>])\/\/[A-Za-z0-9._~!$&()+,;=@%:-]+(?:\/[A-Za-z0-9._~!$&()+,;=@%:-]+)+/gm;
 const FILE_URI_PATH = /\bfile:\/\/(?:\/(?:[A-Za-z]:\/)?|[A-Za-z0-9._~-]+\/)[^\s"'`<>]+/gi;
-
-export function isSensitiveFieldName(value: string): boolean {
-  const normalized = value
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_");
-  const parts = normalized.split("_").filter(Boolean);
-  return parts.includes("token") || parts.includes("auth")
-    || /authorization|cookie|api_key|client_secret|private_key|password|credential|(?:^|_)secret(?:_|$)/.test(normalized);
-}
 
 /** Return the public field-path segment for a key, or null when the key itself must be redacted. */
 export function fieldSegmentForKey(

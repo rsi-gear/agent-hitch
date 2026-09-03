@@ -1,5 +1,5 @@
 import type { JsonValue } from "../domain/index.js";
-import { redactCredentialText } from "../foundation/index.js";
+import { isSensitiveFieldName, redactCredentialText } from "../foundation/index.js";
 
 const FILE_URL = /file:\/\/\/[^\s"'<>]+/g;
 const POSIX_ABSOLUTE_PATH = /(?<![A-Za-z0-9:+/])\/(?:[^\s"'<>:,;{}\[\]()]+\/?)+/g;
@@ -47,7 +47,12 @@ export function sanitizeVerifierJson(
         let uniqueKey = safeKey.text;
         for (let suffix = 2; keys.has(uniqueKey); suffix += 1) uniqueKey = `${safeKey.text}#${suffix}`;
         keys.add(uniqueKey);
-        result.push([uniqueKey, visit(child)]);
+        if (isSensitiveFieldName(key)) {
+          redactions.set("sensitive-field-v1", (redactions.get("sensitive-field-v1") ?? 0) + 1);
+          result.push([uniqueKey, "[REDACTED]"]);
+        } else {
+          result.push([uniqueKey, visit(child)]);
+        }
       }
       return Object.fromEntries(result);
     }

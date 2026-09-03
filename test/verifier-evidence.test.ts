@@ -105,10 +105,30 @@ test("verifier evidence distinguishes result-only, missing, corrupt, and legacy 
   const resultOnly = await writeRun(root, resultOnlyId, {
     status: "valid", reward: 1, verifier_result_ref: "verifier/result.json",
   });
-  await atomicWriteJSON(path.join(resultOnly, "verifier", "result.json"), { rewards: { reward: 1 } });
+  const retiredSecret = "retired-secret-no-longer-in-the-environment";
+  await atomicWriteJSON(path.join(resultOnly, "verifier", "result.json"), {
+    rewards: { reward: 1 },
+    api_key: retiredSecret,
+    nested: {
+      password: retiredSecret,
+      authorization: retiredSecret,
+      entries: [{ clientSecret: retiredSecret }],
+    },
+  });
   await atomicWriteJSON(path.join(resultOnly, "verifier", "infrastructure-error.json"), { code: "transient", path: path.join(root, "harbor", "job") });
-  const resultOnlyEvidence = await loadVerifierEvidence(root, resultOnlyId);
+  const resultOnlyEvidence = await loadVerifierEvidence(root, resultOnlyId, { env: {} });
   assert.equal(resultOnlyEvidence.verifier.status, "result_only");
+  assert.deepEqual(resultOnlyEvidence.verifier.result, {
+    rewards: { reward: 1 },
+    api_key: "[REDACTED]",
+    nested: {
+      password: "[REDACTED]",
+      authorization: "[REDACTED]",
+      entries: [{ clientSecret: "[REDACTED]" }],
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(resultOnlyEvidence), new RegExp(retiredSecret));
+  assert.ok(resultOnlyEvidence.redactions?.some((entry) => entry.rule_id === "sensitive-field-v1" && entry.count === 4));
   assert.deepEqual(resultOnlyEvidence.verifier.diagnostics?.infrastructure_error, { code: "transient", path: "[path]" });
   assert.deepEqual(validateVerifierEvidence(resultOnlyEvidence), resultOnlyEvidence);
 

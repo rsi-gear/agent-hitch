@@ -359,6 +359,45 @@ test("analysis redacts sensitive keys, JSON keys, host paths, and split chunk cr
   const drilled = drill.events[0] as { value: { sha256: string }; source_seq_count: number };
   assert.equal(drilled.value.sha256, partial.sha256);
   assert.equal(drilled.source_seq_count, 2);
+  const prefixedDrill = await pageTrajectoryEvents(source, {
+    filter: { seq_start: 4, seq_end: 4, field: "event.data.chunk.text" },
+    canonicalSha256: source.expectedSha256,
+    limit: 1,
+    maxBytes: 32 * 1024,
+    credentialValues: ["known credential"],
+  });
+  const prefixedText = JSON.stringify(prefixedDrill.events[0]);
+  assert.match(prefixedText, /\[REDACTED\]/);
+  assert.doesNotMatch(prefixedText, /known credential/);
+
+  const firstDeltaPage = await pageTrajectoryEvents(source, {
+    filter: { types: ["assistant/chunk"], seq_start: 4, seq_end: 5 },
+    limit: 1,
+    credentialValues: ["known credential"],
+  });
+  assert.equal(firstDeltaPage.eof, false);
+  assert.ok(firstDeltaPage.next_cursor);
+  assert.match(JSON.stringify(firstDeltaPage.events), /STREAM_DELTA_OMITTED/);
+  assert.doesNotMatch(JSON.stringify(firstDeltaPage.events), /known /);
+  const secondDeltaPage = await pageTrajectoryEvents(source, {
+    cursor: firstDeltaPage.next_cursor,
+    limit: 1,
+    credentialValues: ["known credential"],
+  });
+  assert.match(JSON.stringify(secondDeltaPage.events), /STREAM_DELTA_OMITTED/);
+  assert.doesNotMatch(JSON.stringify(secondDeltaPage.events), /credential/);
+  assert.ok([...firstDeltaPage.redactions ?? [], ...secondDeltaPage.redactions ?? []]
+    .some((entry) => entry.rule_id === "stream-delta-omitted-v1"));
+
+  for (const seq of [4, 5]) {
+    const exact = await pageTrajectoryEvents(source, {
+      filter: { seq_start: seq, seq_end: seq },
+      credentialValues: ["known credential"],
+    });
+    const exactJson = JSON.stringify(exact.events);
+    assert.match(exactJson, /STREAM_DELTA_OMITTED/);
+    assert.doesNotMatch(exactJson, seq === 4 ? /known / : /credential/);
+  }
   await assert.rejects(
     pageTrajectoryEvents(source, {
       filter: { seq_start: 1, seq_end: 1, field: "event.data.token" },
@@ -603,6 +642,86 @@ test("chunk projection keeps retry request attempts separate", async (t) => {
     projectTrajectoryAnalysis(forged, { credentialValues: [] }),
     (error: unknown) => error instanceof HitchError && error.code === "trajectory_integrity_mismatch",
   );
+});
+
+test("chunk field drill-down never crosses a retry attempt boundary", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-retry-drill-"));
+  t.after(() => forceRemove(root));
+  const failedArguments = '{"attempt":"failed"}';
+  const recoveredArguments = '{"attempt":"recovered"}';
+  const source = await writeRun(root, RUN_ID, [
+    event(0, "turn/start", { turn: 1 }),
+    event(1, "step/start", { turn: 1, step: 1 }),
+    event(2, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } }),
+    event(3, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "failed-text" } }),
+    event(4, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-end", index: 0, block: { type: "text", text: "failed-text" } } }),
+    event(5, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 1, blockType: "tool-call" } }),
+    event(6, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "failed-call", name: "bash", argumentsDelta: failedArguments },
+    }),
+    event(7, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "block-end", index: 1, block: { type: "tool-call", id: "failed-call", name: "bash", arguments: failedArguments } },
+    }),
+    event(8, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "finish", reason: { kind: "error", failure: { message: "retry", code: "SERVER" } } },
+    }),
+    event(9, "llm/retry", {
+      retryId: "retry-1", turn: 1, step: 1, provider: "test", mode: "normal", policyKey: "test-normal",
+      retry: 1, maxRetries: 1, delayMs: 0, failure: { message: "retry", code: "SERVER" },
+    }),
+    event(10, "llm/retry-started", { retryId: "retry-1", turn: 1, step: 1, retry: 1 }),
+    event(11, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } }),
+    event(12, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "recovered-text" } }),
+    event(13, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-end", index: 0, block: { type: "text", text: "recovered-text" } } }),
+    event(14, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 1, blockType: "tool-call" } }),
+    event(15, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "retry-call", name: "bash", argumentsDelta: recoveredArguments },
+    }),
+    event(16, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "block-end", index: 1, block: { type: "tool-call", id: "retry-call", name: "bash", arguments: recoveredArguments } },
+    }),
+    event(17, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "finish", reason: { kind: "stop" } } }),
+    surfaceEvent(18, "assistant/message", {
+      turn: 1,
+      step: 1,
+      message: {
+        id: "retry-answer",
+        role: "assistant",
+        content: [
+          { type: "text", text: "recovered-text" },
+          { type: "tool-call", id: "retry-call", name: "bash", arguments: recoveredArguments },
+        ],
+        source: { kind: "model", provider: "test", model: "model" },
+      },
+    }, "append", [11, 12, 13, 14, 15, 16, 17]),
+  ]);
+  assert.ok(source.expectedSha256);
+
+  for (const selection of [
+    { seq: 3, field: "data.chunk.text", expected: "failed-text" },
+    { seq: 3, field: "event.data.chunk.delta", expected: "failed-text" },
+    { seq: 6, field: "data.chunk.argumentsDelta", expected: failedArguments },
+  ]) {
+    const page = await pageTrajectoryEvents(source, {
+      filter: { seq_start: selection.seq, seq_end: selection.seq, field: selection.field },
+      canonicalSha256: source.expectedSha256,
+      credentialValues: [],
+    });
+    const drilled = page.events[0] as { attempt: number; value: { preview: string } };
+    assert.equal(drilled.attempt, 0);
+    assert.match(drilled.value.preview, new RegExp(selection.expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(JSON.stringify(drilled), /recovered/);
+  }
 });
 
 test("unknown ignorable event names remain forward compatible", async (t) => {
