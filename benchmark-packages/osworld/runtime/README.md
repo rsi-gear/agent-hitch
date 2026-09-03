@@ -93,6 +93,26 @@ in the frozen execution profile and validate desktop readiness independently.
 See the [upstream CPU identification report](https://lists.nongnu.org/archive/html/qemu-devel/2021-05/msg02060.html)
 and [pinned SDK's KVM guidance](https://github.com/xlang-ai/OSWorld-V2/blob/d578d2d4e0dc82b43e270fdaa7fa89d9708cd154/desktop_env/providers/docker/DOCKER_GUIDELINE.md).
 
+For a bounded startup diagnostic using an already built, pinned local image:
+
+```sh
+python3 test-support/osworld_desktop_ready_canary.py \
+  --image "$OSWORLD_VM_IMAGE" \
+  --output .hitch/osworld-desktop-ready.json \
+  --acceleration tcg --cpu-model Nehalem \
+  --desktop-timeout 600 --terminal-timeout 90
+```
+
+This waits for the first boot's GNOME service to become active, then sends a
+graphical terminal shortcut and checks window-manager registration. It retains
+the original screenshots, service/window observations and GNOME journal; window
+registration alone does not prove that the window rendered. After window
+registration succeeds, the VM canary also checks a clean reset without repeating
+the desktop probe on the second boot. A failed probe still cleans up its owned
+resources. The first actual run reached an active GNOME service but timed out
+waiting for the terminal window; the terminal shortcut configuration was not
+verified. These are component diagnostics, not official task validations.
+
 ## Native runner and candidate channel
 
 `native_runner.run_native()` delegates to the unmodified

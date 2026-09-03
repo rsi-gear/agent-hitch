@@ -1258,6 +1258,30 @@
             "official_task": false,
             "real_scored_tasks": 0,
             "limitation": "Nehalem corrected the observed LLVM CPU name in both generations, and the retained journals contain no LLVM target error. The second journal records GNOME startup completion, but the sampled screen still shows only a dark gray background/cursor; no desktop panel, visible terminal or official task outcome was validated. The later desktop state was not observed. This configuration remains diagnostic and was not promoted to a production default."
+          },
+          "desktop_ready_canary": {
+            "status": "failed_terminal_window_wait",
+            "command": "python3 test-support/osworld_desktop_ready_canary.py --image sha256:f359a29043d6eaa94321371ab77eb0fd482599b1edc48fe8973d06615c02f88c --output .hitch/benchmark-expansion/osworld-desktop-ready-canary.json --acceleration tcg --cpu-model Nehalem --boot-timeout 900 --desktop-timeout 600 --terminal-timeout 90",
+            "observation_file": ".hitch/benchmark-expansion/osworld-desktop-ready-observation.json",
+            "observation_sha256": "sha256:665a7851129a25f9eea270fec443e249434bbdb2ef9cd107ed079f969554c2c3",
+            "gnome_service_ready_sec": 84.7,
+            "probe_duration_sec": 248.39,
+            "gnome_service_ready": true,
+            "terminal_window_registered": false,
+            "shortcut_binding_verified": false,
+            "desktop_readiness_verified": false,
+            "reset_attempted": false,
+            "source_sha256": "sha256:f672cbd1ef33e29d92f75e1dac6a1fe04c24364529f3e5d44e7bbbab7e0d61b8",
+            "base_canary_runtime_sha256": "sha256:dbe78b65072efcaf12b94210aa2db0f918cd2dee0769b7b1146351599742b952",
+            "parent_partial_boot_receipt_fix": "Subsequent screenshot failure no longer discards already verified API/clean-reset fields. This change was compiled; the historical failed receipt was not rewritten, and this run predates the change.",
+            "cleanup_passed": true,
+            "remaining_owned_resources": {
+              "containers": 0,
+              "volumes": 0,
+              "networks": 0
+            },
+            "real_scored_tasks": 0,
+            "limitation": "An active GNOME service did not suffice to validate a terminal window in this declared TCG profile. This does not isolate rendering, shortcut configuration, startup timing or resource pressure as the cause. Authorized task setup and scoring remain untested."
           }
         }
       },
@@ -1295,7 +1319,7 @@
     "skipped": 3,
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
-    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Two subsequent OSWorld public-VM diagnostics completed API boot/reset/base-hash/cleanup checks; CPU recognition and visual limitations are recorded separately and add no official task validation. Latest changes remain documentation/evidence only."
+    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Two subsequent OSWorld public-VM diagnostics completed API boot/reset/base-hash/cleanup checks; CPU recognition and visual limitations are recorded separately and add no official task validation. Latest changes remain documentation/evidence only. A later GNOME-readiness canary failed its terminal-window wait and cleaned up all owned resources. Its new standalone driver was exercised against the pinned VM; the subsequent parent receipt-ordering fix was compile-checked only."
   },
-  "updated_at": "2026-09-03T04:13:46.508205+00:00"
+  "updated_at": "2026-09-03T04:32:32.529644+00:00"
 }

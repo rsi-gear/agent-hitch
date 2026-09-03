@@ -704,6 +704,8 @@ VM 制品必须按 release 的 archive SHA256 校验，而不能只依赖 tag �
 
 随后在相同镜像、资源和显示设置下显式使用 `CPU_MODEL=Nehalem`，API 启动与 reset 均约 235 秒，两代 LLVM 13、15 均正确识别为 `nehalem`；保留的日志片段中没有上述 LLVM 错误，第二代还记录了 GNOME 启动完成。但输入检查后的截图第一代仍黑、第二代只有深灰背景和光标，没有桌面面板或终端窗口。完整底盘摘要、reset 和清理通过；CPU 识别修正只是一项已验证的局部结果，后续桌面状态未观察，不能宣称整个桌面问题已修复。该配置未提升为生产默认值，也不增加 OSWorld 正式任务验收数。两轮原始回执、逐文件摘要与截图复核索引均在状态文件中。
 
+另一个可重复运行的诊断入口 `test-support/osworld_desktop_ready_canary.py` 等待 GNOME 服务进入 `active/running` 后才发送终端快捷键，并在独立的 90 秒窗口预算内检查窗口管理器和原始截图。本机实测约 85 秒达到服务状态，但窗口等待仍超时，最后画面仍黑；本轮在 reset 前失败并完成清理。快捷键设置未取得，因此失败不能直接归因为图形渲染，也不能把服务状态作为桌面验收证据。父 canary 后续改为先记录已确认的 API/reset 阶段，再执行扩展截图检查，避免后续失败丢失先前阶段记录；该小改动仅做编译检查，历史失败回执及其运行源码摘要保持原样。
+
 生产配置仍默认要求 KVM，TCG 仅能作为明确声明、单独记录有效 CPU 型号的执行配置。上游 Docker 指南推荐 KVM，并指出 macOS 通常不支持 KVM；本机组件结果不能代替合适 worker 上的正式任务验收。[固定 SDK 的 Docker 指南](https://github.com/xlang-ai/OSWorld-V2/blob/d578d2d4e0dc82b43e270fdaa7fa89d9708cd154/desktop_env/providers/docker/DOCKER_GUIDELINE.md)
 
 Controller 镜像由 `benchmark-packages/osworld/prepare-controller.py` 从固定 Git tree 导出，逐文件校验 Git blob 并记录 SHA256、大小和权限，复制包内 runtime，不携带 checkout 的未提交文件、凭据或 Git 配置。`Dockerfile.controller` 固定 Python/uv 基础镜像摘要，按未修改的上游 `uv.lock` 安装 base 依赖，保留 Python/Debian 包清单；最终镜像摘要必须进入冻结 package。当前构建产物是本地 Docker image ID，跨 worker 分发还须固定 OCI artifact 或 registry manifest 引用，不能将该 ID 当作可 pull 的 `repo@digest`。Image entrypoint 在进入 PID 1 生命周期前核对全部 SDK/runtime 文件及 Python 版本清单。配置现在必须给出 `assets_directory`，worker 显式设置 `OSWORLD_FILE_BASE_URL`，禁止默用上游可变化的线上 main 资产。完整授权资产的版本与内容仍由 producer 验证。

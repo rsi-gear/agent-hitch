@@ -142,8 +142,9 @@ with socket.socket() as client:
     assert client.connect_ex(('127.0.0.1',7100)) != 0, 'unmanaged QEMU monitor is listening'
 print('monitor disabled')'''
             run(['docker', 'exec', name, '/usr/bin/python3', '-c', check_monitor])
-            receipt.update(guest_boot_verified=True, initial_boot_sec=round(time.monotonic() - started, 2), first_boot=first, first_screenshot=screenshot('first'))
+            receipt.update(guest_boot_verified=True, initial_boot_sec=round(time.monotonic() - started, 2), first_boot=first)
             print(json.dumps({'phase': 'guest_booted', 'seconds': receipt['initial_boot_sec']}), flush=True)
+            receipt['first_screenshot'] = screenshot('first')
             marker = '/tmp/' + name
             changed = json.loads(request('execute', script='from pathlib import Path; Path(' + repr(marker) + ').write_text("owned canary marker")'))
             if changed.get('returncode') != 0: raise ValueError('guest marker write failed')
@@ -151,7 +152,8 @@ print('monitor disabled')'''
             if reset.get('ready') is not True or reset.get('generation') != 2: raise ValueError('reset did not create another guest generation')
             clean = json.loads(request('execute', script='from pathlib import Path; assert not Path(' + repr(marker) + ').exists()'))
             if clean.get('returncode') != 0: raise ValueError('guest mutable state survived reset')
-            receipt.update(reset_verified=True, reset_sec=round(time.monotonic() - started, 2), reset=reset, reset_screenshot=screenshot('reset'))
+            receipt.update(reset_verified=True, reset_sec=round(time.monotonic() - started, 2), reset=reset)
+            receipt['reset_screenshot'] = screenshot('reset')
             receipt['close'] = control('close')
             if receipt['close'].get('closed') is not True: raise ValueError('VM owner did not confirm closure')
             overlay = json.loads(run(['docker', 'exec', name, 'qemu-img', 'info', '--output=json', '/boot.qcow2']).stdout)
