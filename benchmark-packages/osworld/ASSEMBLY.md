@@ -27,6 +27,12 @@ Task instructions, dates, screenshot dimensions, setup and evaluation use the
 pinned native SDK; the DeepSeek judge/user-simulator substitution is separately
 named. Candidate exhaustion uses the declared native deadline adapter.
 
+The Harbor environment start guard is explicitly 1,800 seconds, matching the
+profile's setup allowance. Harbor includes the native prepare hook inside
+`environment.start()`; its default 600-second guard would cancel a legitimate
+1,500-second native preparation before the candidate starts. This outer guard
+does not extend the candidate's 7,200-second budget or add preparation retries.
+
 For an explicitly selected TCG image, `--screenshot-http-timeout-sec 120`
 creates a separately named `-tcg-http-120s` profile. The default is 10 seconds
 and uses the original SDK method. The custom transport replaces only the

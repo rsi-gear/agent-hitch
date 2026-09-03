@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "two_fixed_trials_running_private_ip_provider",
-      "blocker": "Screenshot, mixed-platform and empty-volume fixes are verified. Live A/B probe confirmed Chrome Host-header failure and numeric-IP success; the corrected provider is now running both fixed trials. Native setup, candidate execution and scoring are still pending.",
+      "status": "task095_candidate_running_task031_start_guard_repaired",
+      "blocker": "Task095 is executing real candidate actions and completed two DeepSeek user-simulator calls. Task031 v3 failed before candidate because Harbor default environment start guard was 600 seconds; new v4 explicitly aligns it to the existing 1800-second setup allowance. No OSWorld native score yet.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1853,7 +1853,7 @@
         "fix": "Resolve one private Compose IPv4 for native SDK endpoints; no Chrome flags or task changes."
       },
       "tcg_http120_cdp_fix": {
-        "status": "two_fixed_trials_running",
+        "status": "task031_start_timeout_task095_candidate_running",
         "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v3",
         "package_digest": "sha256:7ac2d756fb3a1b2b82e25e2ff65d08403911e8970f03d9c3c2fffc13efb936ec",
         "profile_digest": "sha256:addce93c6684704517d5d090377bf8aed234df45488c7bad543af32cac25f55e",
@@ -1862,7 +1862,73 @@
         "vm_image": "sha256:2ae7505f7970cde716d06c72bbfced788ce9b00a5053673e108f8362db890dcc",
         "eval_id": "eval_2a322d75c6bd457b9a0a26c752443225",
         "log": ".hitch/benchmark-expansion/osworld-http120-v3-eval.log",
-        "real_scored_tasks": 0
+        "real_scored_tasks": 0,
+        "live_progress": {
+          "path": ".hitch/benchmark-expansion/osworld-v3-candidate-progress-20260903T0820/receipt.json",
+          "sha256": "sha256:16e543ca44a4c6bac176552834f2b10f40c63bd345f7517a1877e47d6358eabd"
+        },
+        "task031": {
+          "trial_id": "osworld-task-031__SpzxCbK",
+          "status": "infrastructure_failure_before_candidate",
+          "harbor_result": ".hitch/benchmark-expansion/state/evals/eval_2a322d75c6bd457b9a0a26c752443225/harbor/work-items/work_4c8e0f73b15fac1a9988ac8d8f06a0a9/epoch-000001/job/osworld-task-031__SpzxCbK/result.json",
+          "harbor_result_sha256": "sha256:771bc74eba700a6d79bd284b536af344b39579d1b51591ea0167da8e33d58643",
+          "exception": {
+            "type": "EnvironmentStartTimeoutError",
+            "message": "Environment start timed out after 600.0 seconds"
+          }
+        },
+        "task095": {
+          "trial_id": "osworld-task-095__u2RLsEt",
+          "run_id": "run_5b80b0f3d2c649e99160e3a59a49ef6a",
+          "status": "candidate_running",
+          "predictions": 9,
+          "submitted_action_batches": 9,
+          "latest_screenshot_sha256": "sha256:d71a5a0f67123ddbe16a878804e30b618249b544dbd367811856194fd9c9f00c",
+          "model_calls": 2,
+          "model_calls_completed": 2,
+          "model_audit_persistence_failed": false
+        },
+        "visual_observation": {
+          "observed_sequence": 9,
+          "png": {
+            "path": ".hitch/benchmark-expansion/osworld-v3-candidate-progress-20260903T0820/latest-observation.png",
+            "sha256": "sha256:d71a5a0f67123ddbe16a878804e30b618249b544dbd367811856194fd9c9f00c"
+          },
+          "review": "Native screenshot shows Ubuntu application grid and responsive desktop. Earlier Shotcut splash and partially rendered window are preserved. This is candidate progress, not completed editing or a score."
+        }
+      },
+      "tcg_http120_environment_start_fix": {
+        "status": "assembled_and_validated_execution_pending",
+        "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v4",
+        "package_digest": "sha256:a80990afe8a725d185d3299dc132c2429b97e757821fa682fefdb22dc3738d65",
+        "profile_digest": "sha256:addce93c6684704517d5d090377bf8aed234df45488c7bad543af32cac25f55e",
+        "compiled_digest": "sha256:f82cfe2e95a0b06b30695ccddf5133d70d498e33e757173a4f26753748ee2e9c",
+        "assembly_validation": {
+          "path": ".hitch/benchmark-expansion/osworld-http120-v4-assembly-validation.json",
+          "sha256": "sha256:d0087deb334906a37738b5897e5b16318221f586746ca204b3a3e5a1564596ba"
+        },
+        "harbor_timeout_validation": {
+          "path": ".hitch/benchmark-expansion/osworld-http120-v4-start-timeout-validation.json",
+          "sha256": "sha256:1328cb9a2005118cf742ba8c120cf49b3dbd24707aa2d90c8e619f17907aac3b"
+        },
+        "previous_environment_start_timeout_sec": 600,
+        "environment_start_timeout_sec": 1800,
+        "native_prepare_timeout_sec": 1500,
+        "candidate_timeout_sec": 7200,
+        "candidate_max_predictions": 100,
+        "same_controller_and_vm_images_as_v3": true,
+        "real_scored_tasks": 0,
+        "next_action": "Retry original Task031 after active Task095 finishes; preserve Task095 if its assessment is valid."
+      },
+      "guest_dns_observation": {
+        "evidence": {
+          "path": ".hitch/benchmark-expansion/osworld-v3-task095-dns-queries/stdout.json",
+          "sha256": "sha256:b7a17b06bb1aaa9de4030c90f95a991dabea91ec28af4c6819b7d27a0e145ec6"
+        },
+        "public_dns_via_system_stub": true,
+        "private_service_dns_via_qemu": true,
+        "dns_configuration_changed": false,
+        "scope": "Read-only Task095 guest diagnostic. Does not establish Task031 TeamChat or PDF HTTP reachability."
       }
     },
     {
@@ -1898,7 +1964,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-cdp-provider-check.log"
   },
-  "updated_at": "2026-09-03T07:55:13.144567+00:00",
+  "updated_at": "2026-09-03T08:21:10.474767+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1906,7 +1972,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Collect v3 package trials using the corrected private-IP provider. Task095 native prepare passed previously; validate Task031 browser/guest website routing and both full candidate/scoring flows. Preserve fixed membership, budgets and prior invalid receipts."
+      "requirement": "Finish active Task095 native candidate/scoring flow in v3. Retry the original Task031 using the v4 1800-second environment start guard; diagnose Task031 routing only if native preparation still fails. Preserve fixed membership, candidate budgets and all prior invalid receipts."
     },
     {
       "benchmark": "cursorbench",

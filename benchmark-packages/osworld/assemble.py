@@ -214,6 +214,7 @@ artifacts = [{{source = "/evidence", service = "controller"}}]
 [agent]
 timeout_sec = {args.agent_timeout_sec}
 [environment]
+build_timeout_sec = 1800
 cpus = 1
 memory_mb = 1024
 workdir = "/app"
