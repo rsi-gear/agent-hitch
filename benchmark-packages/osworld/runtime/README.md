@@ -81,6 +81,18 @@ boot/reset and cleanup using the official image, but retained black screenshots;
 usable desktop readiness and official task reset/evaluate remain unverified.
 The evidence is indexed in `docs/benchmark-expansion-status.json`.
 
+TCG diagnostics found that the pinned QEMU runtime's default `max` CPU reports
+AMD family 6/model 6, which the guest's LLVM 13/15 identify as `athlon-xp`.
+The guest journal recorded a 64-bit target rejection and GNOME crash. An explicit
+`CPU_MODEL=Nehalem` on the same image corrected LLVM's CPU identity in two boots;
+their retained journal excerpts contain no such LLVM error. API/reset/base-hash
+and cleanup checks passed, but the observed frames still showed only a black or
+dark gray background and cursor. Desktop readiness remains unverified, and this
+diagnostic override is not a production default. Preserve effective CPU settings
+in the frozen execution profile and validate desktop readiness independently.
+See the [upstream CPU identification report](https://lists.nongnu.org/archive/html/qemu-devel/2021-05/msg02060.html)
+and [pinned SDK's KVM guidance](https://github.com/xlang-ai/OSWorld-V2/blob/d578d2d4e0dc82b43e270fdaa7fa89d9708cd154/desktop_env/providers/docker/DOCKER_GUIDELINE.md).
+
 ## Native runner and candidate channel
 
 `native_runner.run_native()` delegates to the unmodified

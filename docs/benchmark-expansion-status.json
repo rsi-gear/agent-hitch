@@ -1163,7 +1163,101 @@
             "container_state_and_cgroup_counters_before_cleanup": true,
             "actual_cgroup_observer_check": ".hitch/benchmark-expansion/vm-cgroup-observer-check.json",
             "check_started_guest_vm": false,
-            "previous_canaries_have_cgroup_counters": false
+            "previous_canaries_have_cgroup_counters": false,
+            "latest_cgroup_evidence": [
+              ".hitch/benchmark-expansion/osworld-desktop-idle-observation.json",
+              ".hitch/benchmark-expansion/osworld-desktop-cpu-nehalem-observation.json"
+            ]
+          },
+          "desktop_idle_diagnostic": {
+            "state": "guest_api_lifecycle_passed_desktop_failed",
+            "observation_file": ".hitch/benchmark-expansion/osworld-desktop-idle-observation.json",
+            "observation_sha256": "sha256:44aa9ab95d1961e1872b0e06bad166b59a93091eb73b7b8058e73877a1f66318",
+            "initial_boot_sec": 176.55,
+            "reset_sec": 435.89,
+            "explicit_additional_wait_sec": 180,
+            "host_initially_idle": true,
+            "display_settings_modified": false,
+            "desktop_readiness_verified": false,
+            "gnome_crash": "LLVM rejected a 64-bit target; GNOME Shell crashed with signal 6 and restarted.",
+            "guest_cpu": {
+              "vendor_id": "AuthenticAMD",
+              "family": 6,
+              "model": 6,
+              "stepping": 3,
+              "machine": "x86_64",
+              "long_mode_flag_present": true
+            },
+            "llvm_host_cpu_names": {
+              "libLLVM-15.so.1": "athlon-xp",
+              "libLLVM-13.so.1": "athlon-xp"
+            },
+            "generation_1_input_requests_returned_zero": true,
+            "generation_1_wake_and_terminal_shortcut_changed_screenshot": false,
+            "cgroup_memory_before_cleanup": {
+              "memory.current": 5349351424,
+              "memory.peak": 5369159680,
+              "memory.max": 5368709120,
+              "memory.events": {
+                "low": 0,
+                "high": 0,
+                "max": 18495,
+                "oom": 0,
+                "oom_kill": 0,
+                "oom_group_kill": 0
+              }
+            },
+            "cleanup_passed": true,
+            "real_scored_tasks": 0,
+            "limitation": "Both generations retained black desktop screenshots. Container OOM-kill count is zero, but memory.max events occurred; this does not rule out memory pressure. This baseline did not evaluate a CPU-model repair; see the separate Nehalem experiment.",
+            "upstream_cpu_issue": "https://lists.nongnu.org/archive/html/qemu-devel/2021-05/msg02060.html"
+          },
+          "cpu_model_experiment": {
+            "status": "guest_api_lifecycle_passed_cpu_recognition_corrected_desktop_unverified",
+            "cpu_model": "Nehalem",
+            "acceleration": "tcg",
+            "image_id": "sha256:f359a29043d6eaa94321371ab77eb0fd482599b1edc48fe8973d06615c02f88c",
+            "observation_file": ".hitch/benchmark-expansion/osworld-desktop-cpu-nehalem-observation.json",
+            "observation_sha256": "sha256:10fa27cbe94dc52e4ea32bd96c21f7481ab325e74e9178161b12d1c3613bcc57",
+            "initial_boot_sec": 235.47,
+            "reset_sec": 234.98,
+            "cpu_recognition_corrected_in_both_generations": true,
+            "llvm_host_cpu_names": {
+              "1": {
+                "libLLVM-15.so.1": "nehalem",
+                "libLLVM-13.so.1": "nehalem"
+              },
+              "2": {
+                "libLLVM-15.so.1": "nehalem",
+                "libLLVM-13.so.1": "nehalem"
+              }
+            },
+            "llvm_target_error_in_retained_journals": false,
+            "visual_review_file": ".hitch/benchmark-expansion/osworld-desktop-cpu-nehalem-visual-review.json",
+            "visual_review_sha256": "sha256:1a4cd73005226d5a5638605c8065b4a8ede7647b72d601877562373ab713b02a",
+            "desktop_readiness_verified": false,
+            "cgroup_memory_before_cleanup": {
+              "memory.current": 5349003264,
+              "memory.peak": 5368717312,
+              "memory.max": 5368709120,
+              "memory.events": {
+                "low": 0,
+                "high": 0,
+                "max": 16523,
+                "oom": 0,
+                "oom_kill": 0,
+                "oom_group_kill": 0
+              }
+            },
+            "cleanup_passed": true,
+            "remaining_owned_resources": {
+              "containers": 0,
+              "volumes": 0,
+              "networks": 0
+            },
+            "official_task": false,
+            "real_scored_tasks": 0,
+            "limitation": "Nehalem corrected the observed LLVM CPU name in both generations, and the retained journals contain no LLVM target error. The second journal records GNOME startup completion, but the sampled screen still shows only a dark gray background/cursor; no desktop panel, visible terminal or official task outcome was validated. The later desktop state was not observed. This configuration remains diagnostic and was not promoted to a production default."
           }
         }
       },
@@ -1201,7 +1295,7 @@
     "skipped": 3,
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
-    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Latest changes are documentation/evidence only."
+    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Two subsequent OSWorld public-VM diagnostics completed API boot/reset/base-hash/cleanup checks; CPU recognition and visual limitations are recorded separately and add no official task validation. Latest changes remain documentation/evidence only."
   },
-  "updated_at": "2026-09-03T03:29:05.648895+00:00"
+  "updated_at": "2026-09-03T04:13:46.508205+00:00"
 }

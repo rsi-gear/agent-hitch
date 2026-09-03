@@ -700,6 +700,12 @@ VM 制品必须按 release 的 archive SHA256 校验，而不能只依赖 tag �
 
 后续独立诊断在 API 就绪后加入只读查询和 60 秒等待，观察到 GNOME Shell 启动、分辨率自行变为 1920×1080；没有修改 guest 显示设置。但截图仍黑屏，随后 guest 请求超过 20 秒 HTTP 时限，该次验证在 reset 前失败并完成资源清理。它证明桌面初始化晚于 API 就绪，不能证明完整桌面可用或确定超时原因。后续 canary 在清理前补采容器状态及 cgroup 内存计数，以区分 QEMU 子进程受内存限制的情况；已有失败运行不能补造这些计数。
 
+在 Docker 无其他运行容器时再次验证，API 初次启动约 177 秒、reset 约 436 秒，两代都额外等待 180 秒；唤醒和终端快捷键请求成功返回，但画面仍黑。GNOME 日志记录 LLVM 拒绝 64 位目标、进程因 signal 6 崩溃后重启。guest 虽是 x86_64 且有 `lm` 标志，CPU 标识却是 `AuthenticAMD / family 6 / model 6`，其 LLVM 13、15 均将主机识别成 `athlon-xp`。这与 QEMU 上游记录的通用 CPU 标识问题一致。该轮 API/reset/底盘摘要/清理通过，容器 `oom_kill=0`，但出现内存上限事件，不能据此排除内存压力。[QEMU CPU 标识问题](https://lists.nongnu.org/archive/html/qemu-devel/2021-05/msg02060.html)
+
+随后在相同镜像、资源和显示设置下显式使用 `CPU_MODEL=Nehalem`，API 启动与 reset 均约 235 秒，两代 LLVM 13、15 均正确识别为 `nehalem`；保留的日志片段中没有上述 LLVM 错误，第二代还记录了 GNOME 启动完成。但输入检查后的截图第一代仍黑、第二代只有深灰背景和光标，没有桌面面板或终端窗口。完整底盘摘要、reset 和清理通过；CPU 识别修正只是一项已验证的局部结果，后续桌面状态未观察，不能宣称整个桌面问题已修复。该配置未提升为生产默认值，也不增加 OSWorld 正式任务验收数。两轮原始回执、逐文件摘要与截图复核索引均在状态文件中。
+
+生产配置仍默认要求 KVM，TCG 仅能作为明确声明、单独记录有效 CPU 型号的执行配置。上游 Docker 指南推荐 KVM，并指出 macOS 通常不支持 KVM；本机组件结果不能代替合适 worker 上的正式任务验收。[固定 SDK 的 Docker 指南](https://github.com/xlang-ai/OSWorld-V2/blob/d578d2d4e0dc82b43e270fdaa7fa89d9708cd154/desktop_env/providers/docker/DOCKER_GUIDELINE.md)
+
 Controller 镜像由 `benchmark-packages/osworld/prepare-controller.py` 从固定 Git tree 导出，逐文件校验 Git blob 并记录 SHA256、大小和权限，复制包内 runtime，不携带 checkout 的未提交文件、凭据或 Git 配置。`Dockerfile.controller` 固定 Python/uv 基础镜像摘要，按未修改的上游 `uv.lock` 安装 base 依赖，保留 Python/Debian 包清单；最终镜像摘要必须进入冻结 package。当前构建产物是本地 Docker image ID，跨 worker 分发还须固定 OCI artifact 或 registry manifest 引用，不能将该 ID 当作可 pull 的 `repo@digest`。Image entrypoint 在进入 PID 1 生命周期前核对全部 SDK/runtime 文件及 Python 版本清单。配置现在必须给出 `assets_directory`，worker 显式设置 `OSWORLD_FILE_BASE_URL`，禁止默用上游可变化的线上 main 资产。完整授权资产的版本与内容仍由 producer 验证。
 
 生产 worker 同时向原生 runner/result logger 提供动作间隔与 `result_dir`，原始 summary 随 `native/` 收集。镜像级 canary 用真实安装的 SDK、生产 entrypoint/worker、合成任务与模拟桌面服务，保留原生 60 秒准备等待，检查评分、summary、快照和关闭。该测试不使用真实 VM、模型或官方抽样任务，不能增加真实 benchmark 验收数。
