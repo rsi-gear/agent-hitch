@@ -204,6 +204,35 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(receipt, {'sdk_stopped': True, 'vm_closed': False, 'error_types': ['RuntimeError']})
         self.assertNotIn(runtime.session['token'], runtime.journal.read_text())
 
+    def test_prepare_accepts_empty_volume_mount_points(self):
+        for key in ('evidence_directory', 'cache_directory'):
+            Path(self.config[key]).mkdir(mode=0o755)
+        runtime, server = self.start()
+        self.assertEqual(self.call(server, 'prepare')['status'], 'ok')
+        for key in ('evidence_directory', 'cache_directory'):
+            self.assertEqual(Path(self.config[key]).stat().st_mode & 0o777, 0o700)
+        self.submit(runtime)
+        self.assertEqual(self.call(server, 'quiesce')['status'], 'ok')
+        self.assertEqual(self.call(server, 'snapshot')['status'], 'ok')
+
+    def test_prepare_rejects_prior_volume_evidence_before_spawning_worker(self):
+        directory = Path(self.config['evidence_directory']); directory.mkdir()
+        stale = directory / 'prior-result'; stale.write_text('previous task evidence')
+        runtime, server = self.start()
+        result = self.call(server, 'prepare')
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['output']['error_code'], 'native_runtime_directory_not_empty')
+        self.assertIsNone(runtime.worker)
+        self.assertEqual(stale.read_text(), 'previous task evidence')
+
+    def test_prepare_rejects_linked_cache_mount(self):
+        target = self.root / 'unrelated-cache'; target.mkdir()
+        Path(self.config['cache_directory']).symlink_to(target)
+        runtime, server = self.start()
+        self.assertEqual(self.call(server, 'prepare')['status'], 'error')
+        self.assertIsNone(runtime.worker)
+        self.assertEqual(list(target.iterdir()), [])
+
     def test_config_pins_and_paths_and_bounded_inventory(self):
         def load(value):
             write_json(self.config_file, value)

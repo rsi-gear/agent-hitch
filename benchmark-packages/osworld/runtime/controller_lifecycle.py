@@ -115,8 +115,14 @@ class NativeLifecycle:
             if self.closed:
                 raise LifecycleFailure('controller_closed')
             self.session = create_private_session(self.config['session_directory'], request)
-            self.evidence.mkdir(parents=True, mode=0o700, exist_ok=False)
-            Path(self.config['cache_directory']).mkdir(parents=True, mode=0o700, exist_ok=False)
+            for directory in (self.evidence, Path(self.config['cache_directory'])):
+                # Docker creates an empty named-volume mount point before the
+                # controller starts. Accept that empty directory, never prior
+                # task state or a link, then make controller-owned data private.
+                directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+                if directory.is_symlink() or not directory.is_dir() or any(directory.iterdir()):
+                    raise LifecycleFailure('native_runtime_directory_not_empty')
+                directory.chmod(0o700)
             with (self.private / 'worker.stdout.log').open('xb') as stdout, (self.private / 'worker.stderr.log').open('xb') as stderr:
                 self.worker = subprocess.Popen(self.command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
             self._save()

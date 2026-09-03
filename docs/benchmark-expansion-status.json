@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "two_fixed_trials_running_after_platform_fix",
-      "blocker": "Explicit screenshot transport and mixed service architecture fixes are implemented and tested. Two new trials of the identical fixed package are running; task setup, candidate screenshots and native scoring still require real evidence.",
+      "status": "empty_volume_prepare_fix_validating",
+      "blocker": "Native prepare directory creation is repaired to accept fresh empty Docker mount points while rejecting links and stale contents. A new controller image and native prepare diagnostic are being validated before further fixed candidate trials.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1811,12 +1811,27 @@
       },
       "tcg_http120_platform_retry": {
         "eval_id": "eval_7432ee6c6c3c4ed582baf67e4f5be0c2",
-        "status": "running",
+        "status": "infra_failed_before_candidate",
         "package_digest": "sha256:acbc4fac862928873ad6a9d040eb24e907d695ed6bc9f5bb2472986fb99e4607",
         "log": ".hitch/benchmark-expansion/osworld-http120-platform-eval.log",
         "real_scored_tasks": 0,
         "prior_eval_id": "eval_601244d383ea479c8036657ca9db7022",
-        "reason": "Fix host controller platform overlay; prior candidate never executed. Preserve original package, images, tasks and budgets."
+        "reason": "Fix host controller platform overlay; prior candidate never executed. Preserve original package, images, tasks and budgets.",
+        "invalid_tasks": 2,
+        "result": ".hitch/benchmark-expansion/osworld-http120-platform-eval-result.json",
+        "failure": "Native prepare rejected pre-existing empty Docker volume mount directories with FileExistsError; no worker or guest boot occurred."
+      },
+      "native_prepare_failure_receipt": ".hitch/benchmark-expansion/osworld-native-prepare-v1/result.json",
+      "tcg_http120_volume_fix": {
+        "status": "native_prepare_diagnostic_running",
+        "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v2",
+        "package_digest": "sha256:67c91641c61593017cd79a9e12ff07032f503fec11d4b9d282fda24fb29ae56d",
+        "profile_digest": "sha256:92e90f115fdb3461c28475430162fa3289bb9265d21783e519eb5b162db9d98a",
+        "compiled_digest": "sha256:6118eac9030291877a1ca8c82d337320d6b587e953a0b3edc2824bda8a46aff8",
+        "controller_image": "sha256:0fba979c2ed78b621d716c18e4617d437f42fb3500baeeee488105cae5a94178",
+        "vm_image": "sha256:2ae7505f7970cde716d06c72bbfced788ce9b00a5053673e108f8362db890dcc",
+        "native_prepare_diagnostic": ".hitch/benchmark-expansion/osworld-native-prepare-v2",
+        "real_scored_tasks": 0
       }
     },
     {
@@ -1850,9 +1865,9 @@
     "passed": 373,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/osworld-mixed-platform-check.log"
+    "evidence": ".hitch/benchmark-expansion/osworld-volume-prepare-check.log"
   },
-  "updated_at": "2026-09-03T07:30:56.950343+00:00",
+  "updated_at": "2026-09-03T07:36:11.244002+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",

@@ -81,6 +81,11 @@ Private control credentials and mutable state use per-project named volumes.
 Main waits for controller readiness; the controller waits for the VM owner's
 control API. Guest boot occurs during prepare.
 
+Prepare accepts an already existing **empty** evidence/cache directory because
+Docker creates named-volume mount points before process startup. It rejects
+linked directories and any previous contents, applies private permissions,
+then starts the worker. A populated volume is never silently reused or cleared.
+
 Task 031 state asset URLs are rebased to `http://assets.trial.hitch.test`.
 Original/transformed state, acquisition hashes and a transformation manifest
 are retained. HTTP serves only `state-mirror/public`; private state and task

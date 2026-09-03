@@ -1000,3 +1000,5 @@ Task095 的 11 个公开媒体文件已在候选环境之外按固定源站 comm
 该配置参与 profile/config 摘要，写入 native execution 与评分收据，评分器拒绝参数不一致。新任务包为 `.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v1`，摘要 `sha256:acbc4fac862928873ad6a9d040eb24e907d695ed6bc9f5bb2472986fb99e4607`；旧包原样保留。镜像源码、依赖清单、两题 Compose 与冻结编译均已校验，完整回归 373 passed / 3 skipped / 0 failed。完整两题结果以状态文件中的真实运行证据为准，组件通过不计为评分完成。
 
 首次实际运行还发现通用 ownership overlay 会把所有服务强制设为 AMD64，覆盖包中明确声明的 ARM64 VM，导致 Compose 错误尝试拉取本机镜像。`hitch_harbor_environment.py` 现保留每个服务在 Compose 中显式声明的 platform；未声明者仍沿用已有默认值。混合架构合并结果通过真实 Compose config 测试，修复以新 host controller runtime 封存，不修改原失败运行或冻结 benchmark 包。
+
+随后 prepare 诊断确认 `FileExistsError`：Docker 预先创建 `/evidence`、`/cache` 空卷挂载点，原代码的 `exist_ok=False` 在启动 worker 前就失败。初始化现接受空目录并设为私有权限，仍拒绝符号链接和任何旧内容；不清空或复用旧题目状态。空挂载点完整 lifecycle、旧文件拒绝和链接拒绝均有测试。真实运行与诊断失败保持独立收据，不计为有效零分。
