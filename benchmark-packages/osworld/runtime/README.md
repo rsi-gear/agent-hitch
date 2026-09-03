@@ -113,6 +113,15 @@ resources. The first actual run reached an active GNOME service but timed out
 waiting for the terminal window; the terminal shortcut configuration was not
 verified. These are component diagnostics, not official task validations.
 
+A later diagnostic requested `--terminal-launch direct` to distinguish a
+missing shortcut from a broken desktop. With the same explicit Nehalem/TCG
+profile, that run timed out at the 900-second guest boot boundary before any
+desktop observation or terminal launch. The container recorded no cgroup OOM
+kill; all owned containers, networks and volumes were removed. This failure
+does not establish the terminal-launch behavior or a root cause, and does not
+overwrite earlier API boot successes. Its separate receipt is
+`.hitch/benchmark-expansion/osworld-desktop-direct-canary.json`.
+
 ## Native runner and candidate channel
 
 `native_runner.run_native()` delegates to the unmodified

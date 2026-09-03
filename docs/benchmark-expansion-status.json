@@ -1579,6 +1579,38 @@
           "mirror_origin": "http://assets.trial.hitch.test",
           "private_state_excluded_from_public_files": true,
           "guest_network_assembly_verified": false
+        },
+        "latest_desktop_diagnostic": {
+          "passed": false,
+          "official_scored_tasks": 0,
+          "image_id": "sha256:f359a29043d6eaa94321371ab77eb0fd482599b1edc48fe8973d06615c02f88c",
+          "acceleration": "tcg",
+          "cpu_model": "Nehalem",
+          "guest_cpus": 4,
+          "guest_memory_bytes": 4294967296,
+          "container_memory_bytes": 5368709120,
+          "boot_timeout_sec": 900,
+          "guest_boot_verified": false,
+          "terminal_launch_requested": "direct",
+          "terminal_launch_reached": false,
+          "failure": "Owner returned TimeoutError before the first guest screenshot. No GNOME/window/desktop assertion ran.",
+          "cgroup_oom_kill": 0,
+          "memory_peak_bytes": 5368766464,
+          "cleanup_passed": true,
+          "remaining_owned_resources": {
+            "containers": 0,
+            "volumes": 0,
+            "networks": 0
+          },
+          "receipt": {
+            "path": ".hitch/benchmark-expansion/osworld-desktop-direct-canary.json",
+            "sha256": "sha256:91180c36627130e94be1b7a4ead72ba222307a11f6d41e1ca700ae2f678120c4"
+          },
+          "desktop_receipt": {
+            "path": ".hitch/benchmark-expansion/osworld-desktop-direct-canary-desktop/result.json",
+            "sha256": "sha256:bd34622887e1e824d27fe146c7103d825c0fabc06d1859dc188eae38bfa18065"
+          },
+          "scope": "New failed diagnostic is preserved separately from the earlier successful API boots; root cause is not established."
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9",
@@ -1660,7 +1692,7 @@
     "evidence": ".hitch/benchmark-expansion/deepseek-complete-check.log",
     "additional_verification": "HLE named DeepSeek schema-guided profile: both fixed real tasks have valid scores and verified sealed runs; one artifact-only regrade restores the original trusted response after matching sealed result fields. OSWorld installed-SDK model-error audit, live DeepSeek judge/user-simulator/truncation, authorized TeamChat state initialization and 35-file visible asset origin transformation passed their stated component scopes. No official OSWorld score is claimed."
   },
-  "updated_at": "2026-09-03T05:49:38.679383+00:00",
+  "updated_at": "2026-09-03T05:54:12.020187+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1738,6 +1770,7 @@
       "path": ".hitch/benchmark-expansion/hle-deepseek-strict-tool-probe.json",
       "sha256": "sha256:c84427e81f9ea8a90a9970d01a0a45378c59d4ecc197d9d1a086dfce43ec5b3a"
     },
-    "strict_tool_probe_note": "Exploratory capability probe only; not used by the HLE scoring profile."
+    "strict_tool_probe_note": "Exploratory capability probe only; not used by the HLE scoring profile.",
+    "owned_docker_resources_after_cleanup": 0
   }
 }
