@@ -1918,7 +1918,37 @@
         "candidate_max_predictions": 100,
         "same_controller_and_vm_images_as_v3": true,
         "real_scored_tasks": 0,
-        "next_action": "Retry original Task031 after active Task095 finishes; preserve Task095 if its assessment is valid."
+        "next_action": "Already queued: after v3 evaluation completes and its owned resources are absent, launch Task031 subset once. Preserve Task095 if its assessment is valid; inspect sequential continuation record before launching anything manually.",
+        "task031_execution_subset": {
+          "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v4-task031-retry",
+          "parent_package_digest": "sha256:a80990afe8a725d185d3299dc132c2429b97e757821fa682fefdb22dc3738d65",
+          "package_digest": "sha256:966152c33939626739b3ec0c4593ec506b6dab331092e463b4b82b8c00921c20",
+          "profile_digest": "sha256:addce93c6684704517d5d090377bf8aed234df45488c7bad543af32cac25f55e",
+          "execution_subset": {
+            "task_ids": [
+              "osworld-task-031"
+            ],
+            "selection_unchanged": true,
+            "reason": "Retry the original Task031 after aligning Harbor environment start guard with the existing setup allowance. Task095 is already running in its preserved v3 evaluation.",
+            "parent_package_digest": "sha256:a80990afe8a725d185d3299dc132c2429b97e757821fa682fefdb22dc3738d65",
+            "derivation_script": "adapter/derive-selected-retry.mjs"
+          },
+          "task_digest_matches_parent": true,
+          "compiled_digest": "sha256:58416e3e2153f05769432a9d4195c0bd016d882469c335d67cdc9e995bec0e17",
+          "receipt": {
+            "path": ".hitch/benchmark-expansion/osworld-task031-start-guard-retry-package.json",
+            "sha256": "sha256:c2ff506ed68758bccfb09bed60aaa7f0ed5ec5185bf638b141a0d45530db045a"
+          }
+        },
+        "sequential_continuation": {
+          "state_observed": "waiting_for_active_eval_cleanup",
+          "pid": 18320,
+          "record": ".hitch/benchmark-expansion/osworld-task031-sequential-run.json",
+          "waiting_for_eval": "eval_2a322d75c6bd457b9a0a26c752443225",
+          "log": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/osworld-task031-start-guard-retry-eval.log",
+          "result": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/osworld-task031-start-guard-retry-eval-result.json",
+          "requires_previous_owned_resources_zero": true
+        }
       },
       "guest_dns_observation": {
         "evidence": {
@@ -1964,7 +1994,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-cdp-provider-check.log"
   },
-  "updated_at": "2026-09-03T08:21:10.474767+00:00",
+  "updated_at": "2026-09-03T08:26:24.044188+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1972,7 +2002,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Finish active Task095 native candidate/scoring flow in v3. Retry the original Task031 using the v4 1800-second environment start guard; diagnose Task031 routing only if native preparation still fails. Preserve fixed membership, candidate budgets and all prior invalid receipts."
+      "requirement": "Inspect active Task095 v3 trial and the already running sequential continuation record before starting another eval. It will launch original Task031 from v4 subset after v3 cleanup. Collect both native scoring flows; preserve membership, budgets and prior invalid receipts."
     },
     {
       "benchmark": "cursorbench",
