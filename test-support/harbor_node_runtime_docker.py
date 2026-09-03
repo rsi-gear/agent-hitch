@@ -80,6 +80,7 @@ async def main() -> None:
                     assert error.code == "hitch_node_runtime_integrity_mismatch", error
                 assert not any("tar --no-same-owner" in command for command in env.commands)
                 assert not agent._setup_complete
+                assert agent.version() is None
                 print("corrupt-upload: rejected OK", flush=True)
                 continue
             await agent.setup(env)
