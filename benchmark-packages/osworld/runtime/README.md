@@ -2,9 +2,10 @@
 
 These components are assembled into an executable fixed-sample package by
 [`../assemble.py`](../assemble.py); deployment inputs and commands are in
-[ASSEMBLY.md](../ASSEMBLY.md). The Task031 real trial has completed native grading,
-snapshot export, phase sealing and a valid Hitch assessment. Task095 is running;
-two-task acceptance remains incomplete. Component tests and real-trial evidence
+[ASSEMBLY.md](../ASSEMBLY.md). Both fixed real tasks have completed native grading,
+snapshot export, phase sealing and valid Hitch assessments: Task031 scored
+`0.14285714285714285`, Task095 scored `0`. Two-task acceptance is **2/2** for the
+named DeepSeek and TCG/screenshot-HTTP120 profile. Component tests and real-trial evidence
 are recorded separately in [the status file](../../../docs/benchmark-expansion-status.json).
 
 `vm_owner.py` is PID 1 in a dedicated Harbor Compose VM service. It launches the
@@ -633,9 +634,12 @@ RPC, expiry during candidate replacement, and native evaluator failure. Import
 tests keep zero reward and the original timed-out bundle, accept the archived
 last candidate with an unbound native tail, and reject altered deadline evidence.
 These tests use synthetic environments, harness output and graders. The separate
-Task031 real run validates the assembled VM, authorized inputs, website lifecycle
-and native scoring. Two-task acceptance still requires Task095's valid result;
-synthetic coverage does not count as an additional real task.
+Task031 and Task095 real runs validate the assembled VM, native scoring and
+whole-task import; Task031 also verifies the authorized report inputs and website
+lifecycle. Both real tasks used one candidate phase, so multi-phase replacement
+remains synthetic coverage. Task095's native input failure and screenshots are
+retained as an action-level limitation with unresolved cause; its final native
+score and assessment remain valid under the unchanged custom profile.
 
 ## Controller process and Harbor lifecycle
 

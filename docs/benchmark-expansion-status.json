@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "goal": "Support all remaining benchmarks and validate two randomly sampled real tasks per benchmark",
-  "status": "in_progress_with_external_prerequisites",
+  "status": "blocked_on_external_prerequisites",
   "sampling": {
     "algorithm": "sha256-rank-v1",
     "seed": 20260902,
@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "one_fixed_real_task_validated_second_candidate_running",
-      "blocker": "Task031 has a valid native score and sealed Hitch assessment. The original Task095 is running in the same fixed v6 evaluation; its native score and final assessment remain pending.",
+      "status": "two_fixed_real_tasks_validated",
+      "blocker": null,
       "population": 108,
       "tasks": [
         "task_031",
@@ -1657,8 +1657,8 @@
           "sha256": "sha256:5e6476064c6f9b929720eb91c0e2e9ba5723a60e0c7aaefd0a72a05261d705ef"
         }
       },
-      "package": ".hitch/benchmark-expansion/packages/osworld-v2-native-score-v1",
-      "valid_sample_count": 0,
+      "package": ".hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v6",
+      "valid_sample_count": 2,
       "required_sample_count": 2,
       "package_assembly_validation": {
         "producer": "benchmark-packages/osworld/assemble.py",
@@ -1683,7 +1683,8 @@
         "startup_receipts": [
           ".hitch/benchmark-expansion/osworld-assembly-startup-v2.json",
           ".hitch/benchmark-expansion/osworld-assembly-startup-task095.json"
-        ]
+        ],
+        "package": ".hitch/benchmark-expansion/packages/osworld-v2-native-score-v1"
       },
       "arm64_vm_diagnostic": {
         "profile": "arm64-host-qemu-7.2.22-tcg-single-nehalem",
@@ -2116,7 +2117,7 @@
         "current_guest_files_verified": true
       },
       "phase_inspector_payload_fix": {
-        "status": "task031_validated_task095_candidate_running",
+        "status": "two_fixed_real_tasks_validated",
         "cause": "Host inspection resolved runtime-root/dist/src/runs/phase-bundle.js; the verified bundle stores it under runtime-root/payload/dist/src/runs/phase-bundle.js.",
         "fix": "Resolve the phase inspection module inside payload/. The orchestration regression now builds and uses a real controller runtime bundle rather than passing the source checkout as its runtime root.",
         "previous_actual_candidate_bundle_inspection_passed": true,
@@ -2144,7 +2145,7 @@
         "resample_on_failure": false,
         "candidate_max_predictions": 100,
         "candidate_timeout_sec": 7200,
-        "real_scored_tasks": 1,
+        "real_scored_tasks": 2,
         "cancelled_same_runtime_preparation": {
           "eval_id": "eval_5fec8fd13cef4c058d7dfb1604be9962",
           "trial_id": "osworld-task-031__2NrVAco",
@@ -2206,20 +2207,66 @@
           "candidate_run_id": "run_e1b4b12eb65840c4a786d5d9e7444950",
           "run_group_id": "run_group_a59c731cd36b4228845cfa49d71b0b11",
           "supervision_started_at": "2026-09-03T10:53:02.265277+00:00",
-          "status": "candidate_running",
-          "native_score_available": false,
+          "status": "completed_valid",
+          "native_score_available": true,
           "native_input_observation": {
             "path": ".hitch/benchmark-expansion/osworld-v6-task095-native-input-observation.json",
             "sha256": "sha256:7a8fcf0164bf82f8c238ef453775cbc968641fa46890cfbef50bb23336d85f56"
           },
-          "native_input_observation_scope": "One native SDK command failure was logged about 90 seconds after a 1944-character TYPING action. Existing screenshots show repeated characters; the exact cause is not established. The candidate continued. This is retained action-level evidence, not a terminal eval status or a score override.",
+          "native_input_observation_scope": "One native SDK command failure was logged about 90 seconds after a 1944-character TYPING action. Existing screenshots show repeated characters; the exact cause is not established. The candidate continued, submitted FAIL and completed native grading. This retained action-level evidence limits interpretation but is not a terminal infrastructure failure or a score override.",
           "candidate_visible_media_and_app_observation": {
             "path": ".hitch/benchmark-expansion/osworld-v6-task095-observation-000017/receipt.json",
             "sha256": "sha256:e4f30d118f1e91667a042cde565b453da6f66a1bea3eae63795e742ba1d262a8"
+          },
+          "native_score": 0,
+          "strict_success": null,
+          "completed_at": "2026-09-03T11:55:42.242360Z",
+          "predictions": 20,
+          "submitted_action_batches": 20,
+          "last_submitted_actions": [
+            "FAIL"
+          ],
+          "model_calls": 2,
+          "canonical_assessment": {
+            "id": "assessment_753e947654909faefb85c2aaa6f6387d",
+            "digest": "sha256:10b0c0ed69602353588663f338ff5a502768eaf341003e2624b2452e8ac7938f"
+          },
+          "validation": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task095-scored-validation.json",
+            "sha256": "sha256:cce3121f013180b6523acc98b40a424f3c2e857f98be96302918e0c62c66f9af"
+          },
+          "cleanup": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task095-final-cleanup.json",
+            "sha256": "sha256:2c2f07b6f98ae0abdb9a5821038d9b21471a8ce1e02a9eaa533cf6f751fa3d71"
           }
-        }
+        },
+        "completed_at": "2026-09-03T11:55:44.993Z",
+        "validation": {
+          "path": ".hitch/benchmark-expansion/osworld-v6-two-task-validation.json",
+          "sha256": "sha256:5fc87a5b509ae4331697a2dcd6b8b8351aa709419c0bbc38c72029bea905e846"
+        },
+        "summary": {
+          "n_trials": 2,
+          "n_completed": 2,
+          "n_invalid": 0,
+          "primary_reward": 0.07142857142857142,
+          "rewards": {
+            "reward": {
+              "count": 2,
+              "mean": 0.07142857142857142,
+              "min": 0,
+              "max": 0.14285714285714285
+            }
+          }
+        },
+        "result_sha256": "sha256:e9ee7cd239f6a7da0904000ecacae16f770d223525d6d3aaf19d2f625f70126b"
       },
-      "real_scored_tasks": 1
+      "real_scored_tasks": 2,
+      "validation": {
+        "path": ".hitch/benchmark-expansion/osworld-v6-two-task-validation.json",
+        "sha256": "sha256:5fc87a5b509ae4331697a2dcd6b8b8351aa709419c0bbc38c72029bea905e846"
+      },
+      "comparison": "Two fixed real tasks with the named DeepSeek judge/user-simulator and TCG/screenshot-HTTP120 profile. Candidate: Codex 0.145.0, requested gpt-5.4; effective model snapshot is unresolved. Valid native scores establish integration acceptance, not task success or reproduction of Anthropic benchmark scores. Both real tasks used one candidate phase; multi-phase replacement has synthetic coverage only."
     },
     {
       "id": "cursorbench",
@@ -2244,11 +2291,12 @@
     "note": "live-database-cutover needs 16 CPUs/16 GiB; Docker provides 10 CPUs/~7.65 GiB. Suitable remote worker requested; no answer yet. Requirements were not reduced.",
     "docker_cpus": 10,
     "existing_worker_check": {
-      "path": ".hitch/benchmark-expansion/worker-availability-20260903T110745.json",
-      "sha256": "sha256:c57c0dfb8d8922c3f281414467d4fd342dc9588ee4039318392b48ed2d848ac4",
+      "path": ".hitch/benchmark-expansion/worker-availability-20260903T1207.json",
+      "sha256": "sha256:395b3cd66de57d19437c06d7cdb8ebc7c7c652f9248e8e37be3fd805dacaec08",
+      "observed_at": "2026-09-03T12:05:15.892Z",
       "registered_workers_found": 0,
       "live_daemons_found": 0,
-      "scope": "Current benchmark state and default ~/.hitch state only; no remote capacity provisioned."
+      "scope": "Read existing benchmark/default Hitch registry paths and live daemon health plus Docker capacity only. No daemon started, worker registered, or remote capacity provisioned."
     }
   },
   "completion": {
@@ -2259,6 +2307,12 @@
       "upstream or explicitly named public rubric grading returns valid scores",
       "raw evidence and identities recorded",
       "regression tests pass"
+    ],
+    "validated_expansion_samples": 9,
+    "required_expansion_samples": 12,
+    "remaining_benchmarks": [
+      "terminal-bench",
+      "cursorbench"
     ]
   },
   "regression": {
@@ -2269,15 +2323,11 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-phase-inspection-payload-check.log"
   },
-  "updated_at": "2026-09-03T11:44:37.299064+00:00",
+  "updated_at": "2026-09-03T12:08:39.744230+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
       "requirement": "A worker that can honor the unchanged live-database-cutover profile: 16 CPUs and a 16384 MiB container memory limit. Current Docker exposes 10 CPUs and about 7.65 GiB; no replacement sample or reduced profile."
-    },
-    {
-      "benchmark": "osworld-v2",
-      "requirement": "Follow the existing eval_67debacbf31445ceba211881bfa18e54, now running original Task095 (trial osworld-task-095__hhy53Dn). Task031 is validated with native_score=0.14285714285714285, sealed phase and canonical assessment; its owned resources are cleared. Collect and verify Task095 native score, sealed phases and Hitch assessment without resampling or changing the frozen v6 profile."
     },
     {
       "benchmark": "cursorbench",

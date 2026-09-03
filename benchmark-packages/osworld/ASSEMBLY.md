@@ -138,8 +138,13 @@ Assembly, API probes and boot canaries do not count as scored tasks. Acceptance
 requires both original samples to finish through Hitch with sealed candidate
 evidence and a valid assessment. Valid zero counts; infrastructure failure does
 not. Task031 completed this path on 2026-09-03 with
-`native_score=0.14285714285714285`; its canonical assessment and exported snapshot
-were independently verified. The original Task095 is running under the same
-v6 profile, so acceptance is currently **1/2**. See
+`native_score=0.14285714285714285`; Task095 completed in the same v6 evaluation
+with `native_score=0`. Both canonical assessments, exported snapshots and sealed
+candidate bundles were independently verified, so acceptance is **2/2**. The
+original samples and budgets were unchanged. Each real task used one candidate
+phase; synthetic tests cover multi-phase replacement. The named DeepSeek and
+TCG/screenshot-HTTP120 profile is not an Anthropic score reproduction. Task095's
+native input failure is preserved with its unresolved cause. All owned trial
+containers, networks and volumes were cleared after verification. See
 [the status file](../../docs/benchmark-expansion-status.json) for identities,
-receipts and subsequent results.
+receipts and limitations.

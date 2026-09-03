@@ -3,10 +3,13 @@
 The fixed-sample producer is now available as `assemble.py`; see
 [ASSEMBLY.md](ASSEMBLY.md) for inputs, image identities, service isolation,
 DeepSeek configuration and offline scalar grading. The executable package has
-completed one real scored task: Task031 returned `native_score=0.14285714285714285`
-with a verified snapshot, sealed candidate and valid Hitch assessment. Task095
-is running in the same v6 evaluation. Current receipts and acceptance counts are
+completed **2/2** fixed real scored tasks in one v6 evaluation: Task031 returned
+`native_score=0.14285714285714285` and Task095 returned `0`. Both have verified
+snapshots, sealed candidates and valid Hitch assessments. Current receipts and acceptance counts are
 in [the status file](../../docs/benchmark-expansion-status.json).
+This is the named DeepSeek and TCG/screenshot-HTTP120 profile, not an Anthropic
+score reproduction. A native input failure during Task095 remains in the evidence;
+its exact cause is unresolved. Both trials' owned resources have been cleared.
 
 `resolve-release.py` prepares the exact release components and a fixed random
 sample from the official **public file inventory**. It uses Python 3.9+ and the
@@ -65,7 +68,8 @@ prediction-step accounting in a synthetic parity test. A separate canary initial
 verified only guest screenshot-API boot/reset; its black screenshots did not
 establish a usable desktop. The later Task031 evaluation completed the assembled
 VM/controller/website path and native scoring. Its 45 predictions and accepted
-`FAIL` action produced a valid partial score; a failure action does not bypass the
+`FAIL` action produced a valid partial score; Task095 completed 20 predictions
+and accepted `FAIL` with a valid zero. A failure action does not bypass the
 native evaluator. See the status file for both historical diagnostics and
 scored-trial evidence. The generic fresh-conversation supervisor and whole-task
 assessment importer are connected through the standard native-phase package entry.
@@ -146,7 +150,7 @@ requirements for the executor:
   runner, and the channel parity test covers its multi-phase behavior. The
   supervisor creates a fresh candidate conversation on each native reset and
   requires retired-container receipts; different run IDs alone do not establish
-  this. The validated Task031 run contains one candidate phase; the synthetic
+  this. Each validated real task contains one candidate phase; the synthetic
   multi-phase tests remain separate evidence for reset and replacement behavior.
 - The stock Docker provider launches its own container and allocates host ports.
   Calling it unchanged would bypass Hitch's resource ownership. The managed
