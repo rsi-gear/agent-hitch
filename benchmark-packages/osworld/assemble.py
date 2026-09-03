@@ -115,6 +115,7 @@ def assemble(args):
         'extensions': {'max_steps': args.max_steps, 'agent_timeout_sec': args.agent_timeout_sec, 'images': images,
             'model_profile': model_profile, 'sdk_commit': SDK, 'metric_semantics': 'native scalar; no derived strict success',
             'screen_size': [1920, 1080], 'screenshot_transport': transport,
+            'candidate_guide_sha256': sha((HERE / 'candidate-guide.md').read_bytes()),
             'task_current_date': 'unchanged native SDK', 'leaderboard_comparable': False}}
     profile_digest = sha(json.dumps(profile, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode())
     output = Path(args.out).absolute()
@@ -123,7 +124,7 @@ def assemble(args):
     staging = Path(tempfile.mkdtemp(prefix='.osworld-package-', dir=output.parent))
     try:
         (staging / 'adapter').mkdir()
-        for name in ('assemble.py', 'prepare-state-assets.py', 'web_routes.py', 'deepseek-profile.json'):
+        for name in ('assemble.py', 'prepare-state-assets.py', 'web_routes.py', 'deepseek-profile.json', 'candidate-guide.md'):
             shutil.copyfile(HERE / name, staging / 'adapter' / name)
         runtime = staging / 'runtime'; runtime.mkdir()
         for file in (HERE / 'runtime').glob('*.py'): shutil.copyfile(file, runtime / file.name)
@@ -199,7 +200,7 @@ training_eligible = false
                 'screenshot_http_timeout_sec': args.screenshot_http_timeout_sec,
                 'native_deadline': True, 'public_endpoint': 'http://controller:8765/', 'website_host_suffix': 'trial.hitch.test', 'client_password_file': None}
             write(environment / 'controller.json', config); shutil.copyfile(environment / 'controller.json', tests / 'controller.json')
-            write(task / 'instruction.md', 'Use desktop.observe and desktop.submit to complete the native task. The original task instruction and screenshot are supplied by the native phase controller.\n')
+            shutil.copyfile(HERE / 'candidate-guide.md', task / 'instruction.md')
             phases = {'protocol': 'hitch-native-phase-control@2', 'argv': ['/opt/venv/bin/python', '/opt/osworld/controller_client.py', '--socket', '/private/runtime/phase.sock', '--session', '/control/session.json'],
                       'audit_path': '/evidence/channel/channel.jsonl', 'shutdown_timeout_ms': 300000, 'finalization_timeout_ms': 1800000}
             write(task / 'task.hitch.json', {'schema_version': '1', 'source_task_id': source,

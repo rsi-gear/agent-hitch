@@ -27,6 +27,17 @@ Task instructions, dates, screenshot dimensions, setup and evaluation use the
 pinned native SDK; the DeepSeek judge/user-simulator substitution is separately
 named. Candidate exhaustion uses the declared native deadline adapter.
 
+The candidate guide is copied into each task instruction and hashed in the
+profile. It requires an accepted native `DONE` or `FAIL` submission before the
+candidate ends its final response. A plain conversational exit leaves the native
+episode open and remains a protocol failure, without a score. The guide also
+explains that typing sends keystrokes and that an accepted action is only queued;
+it does not change the upstream action, command timeout or task budgets.
+The native phase supervisor passes these locked task instructions into every
+fresh candidate alongside the current native instruction and date. Use a host
+controller runtime that includes this forwarding fix; older frozen runtimes
+discarded the static task instructions when starting native phases.
+
 The Harbor environment start guard is explicitly 1,800 seconds, matching the
 profile's setup allowance. Harbor includes the native prepare hook inside
 `environment.start()`; its default 600-second guard would cancel a legitimate

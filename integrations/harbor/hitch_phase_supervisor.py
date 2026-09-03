@@ -64,7 +64,7 @@ def _write(path, value):
 class NativePhaseSupervisor:
     def __init__(self, agent, environment, *, controller, binding, task_digest,
                  timeout_ms, shutdown_timeout_ms=30_000, poll_interval_ms=250,
-                 run_group_id=None, finalization_timeout_ms=None):
+                 run_group_id=None, finalization_timeout_ms=None, task_instruction=""):
         """controller={service, argv}; binding={endpoint, tools}, both locked.
 
         timeout_ms is the remaining *whole task* allowance, not a phase budget.
@@ -97,6 +97,9 @@ class NativePhaseSupervisor:
             raise ValueError("native phase supervision requires a leased environment and immutable harness")
         self.controller, self.binding = _json(json.dumps(controller)), _json(json.dumps(binding))
         self.task_digest, self.timeout_ms = task_digest, timeout_ms
+        if not isinstance(task_instruction, str):
+            raise ValueError("invalid locked task instruction")
+        self.task_instruction = task_instruction
         self.shutdown_timeout_ms, self.poll_interval_ms = shutdown_timeout_ms, poll_interval_ms
         if finalization_timeout_ms is not None and not _positive(finalization_timeout_ms, 9007199254740991):
             raise ValueError("invalid native finalization allowance")
@@ -189,13 +192,15 @@ class NativePhaseSupervisor:
 
     async def _start(self, state):
         prediction = state["prediction"]
-        # Preserve even an empty native instruction and its date verbatim. The
-        # wrapper only describes the existing transport, not benchmark actions.
+        # Keep the locked task guidance on every fresh candidate, alongside the
+        # current native instruction/date. Never carry a prior phase's prompt.
         instruction = ("Complete this native task using the locked tool bridge. "
                        "Run `node /tmp/hitch-tools.mjs list` for schemas and invoke "
                        "`node /tmp/hitch-tools.mjs TOOL_NAME 'JSON_ARGUMENTS'`. "
                        "Open returned image paths with your native image viewing tool.\n"
-                       + json.dumps({"instruction": prediction["instruction"], "task_current_date": state["task_current_date"]}, ensure_ascii=False))
+                       + json.dumps({"task_instructions": self.task_instruction,
+                                     "instruction": prediction["instruction"],
+                                     "task_current_date": state["task_current_date"]}, ensure_ascii=False))
         self.phase_index += 1
         self.prepared = self.agent.prepare_phase(instruction=instruction, run_group_id=self.group, phase_index=self.phase_index,
                                                   task_digest=self.task_digest, remaining_timeout_ms=self._remaining_ms())

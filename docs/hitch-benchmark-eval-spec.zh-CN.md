@@ -4,7 +4,7 @@
 
 本文定义 Harbor 兼容的 Hitch 包协议、执行和评分边界；第 3 节是设计基线的差距分析，第 9、14、15 节说明已落地的实现与验证。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型。逐题执行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，设计条目不能视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
 
-当前扩展目标是 AutomationBench 以外的六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric、Science、HLE 的具名 DeepSeek no-tools profile 均为 **2/2**，Terminal-Bench 为 **1/2**，OSWorld 与 CursorBench 为 **0/2**；有效评分允许任务得分为零，HLE with-tools 尚无真实评分。Hugging Face 授权、固定 HLE/OSWorld 数据访问和用户指定的 `.env` DeepSeek 配置均已验证。OSWorld 两题标准包已组装，Task095 已进入真实桌面操作和 DeepSeek 用户模拟器交互；完整候选评分仍在运行，Task031 的启动时限修复已排队重试。外部阻塞是 CursorBench 授权任务/评分包，以及满足 Terminal-Bench 原始 16 CPU / 16 GiB 要求的 worker。原始两题选择和任务资源要求保持不变。下文的 AutomationBench MVP 表示已完成的首阶段范围，后续扩展以此段及状态文件为准。
+当前扩展目标是 AutomationBench 以外的六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric、Science、HLE 的具名 DeepSeek no-tools profile 均为 **2/2**，Terminal-Bench 为 **1/2**，OSWorld 与 CursorBench 为 **0/2**；有效评分允许任务得分为零，HLE with-tools 尚无真实评分。Hugging Face 授权、固定 HLE/OSWorld 数据访问和用户指定的 `.env` DeepSeek 配置均已验证。OSWorld Task031 的重试已完成原生准备并开始候选操作；Task095 上次因候选未提交原生结束动作而无效，任务说明传递修复已通过回归并排队重试。外部阻塞是 CursorBench 授权任务/评分包，以及满足 Terminal-Bench 原始 16 CPU / 16 GiB 要求的 worker。原始两题选择和任务资源要求保持不变。下文的 AutomationBench MVP 表示已完成的首阶段范围，后续扩展以此段及状态文件为准。
 
 ## 1. 设计决定
 
@@ -682,6 +682,8 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 标准 Harbor bridge 在锁定 task 的 `driver.config.native_phases` 存在时选择 `NativePhaseSupervisor(...).run()`：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传当前 binding → 启动模型 → 原生边界停止并封存该 run → 回收容器后验证证据 → 再执行下一阶段。Prepare 必须返回 `native_phases_ready: true` 且没有静态 binding，task/profile 同时声明 `native-phases@1`、原生图片输入和工具图片输出能力。除 run ID 外，它记录不同 native session ID、各阶段 bundle 和不重叠的运行时间；隔离仍须由真实容器回收保证。绑定回执含 token，不进入生命周期 journal 或评分证据。固定两题的 producer 与完整 Compose 装配已完成，离线 grader 保留原生 scalar，并将没有独立证据的 strict success 留空；实现见第 15 节。实际任务 reset 和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
+每个新阶段的提示同时携带锁定的 `instruction.md`（`task_instructions` 字段）、当前原生 `instruction` 和 `task_current_date`。静态操作说明必须在所有新会话中保留；原生问题即使为空也原样传递，不把前一阶段的问题或历史会话带入下一阶段。该合同由真实 bridge → supervisor → candidate request 的多阶段测试验证。
+
 Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial/task digest、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。多阶段 importer 单独校验完整 controller audit、全部 prediction 截图摘要、run 绑定、最终 completed 事件和候选容器替换链，再将独立 verifier 的整题评分保存为 assessment。Trial 引用 `run_group + assessment`，每个 task/attempt 只计一次；不伪造代表 run_id，不回写各 phase 的分数。不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
 
 通用 Harbor environment 现提供 `recycle_candidate_phase(phase_index)`：由持有 lease 的 host supervisor 在撤销旧 token、结束并导出旧 run 后调用。它只移除 `main` 容器，确认旧容器消失，将原日志目录移到候选不可见的 `trial/hitch-candidate-phases/phase-NNNN/`，新建空日志目录，再用原镜像 content ID 重建 `main`；禁止构建、拉取或重启依赖。检查前后资源/配置摘要、挂载、ownership 以及全部 sidecar 的容器 ID、image 和 start timestamp 一致。只支持原生 Harbor 日志路径的 writable bind、fresh tmpfs 和与日志/归档不相交的 read-only bind；其他持久卷、额外 writable host path 或共享日志路径在销毁前拒绝。回执只证明环境操作，失败或中断后禁止隐式重试，应由 supervisor 清理 trial。真实 Docker 两次切换 canary 已验证日志和 writable layer 不可见、后台写入进程终止、sidecar 保留与 cleanup；未使用模型、VM 或 OSWorld 官方题目。Supervisor 现于中间阶段调用该 API，再完成 host bundle 校验、runtime setup、新 run/token 绑定后才启动下一候选；最后阶段只停止 main 并执行最终 snapshot。
@@ -1007,6 +1009,12 @@ Task095 的 11 个公开媒体文件已在候选环境之外按固定源站 comm
 
 Task031 随后暴露 Chrome DevTools 的 Host 检查：实际对照中 `http://vm:9222/json/version` 返回 500，提示 Host 必须是 IP 或 localhost；同一容器的私网 IP 返回 200。Provider 现先通过 Compose DNS 解析唯一 RFC1918 IPv4，再把数字 IP 返回给 SDK，并在复位后重新解析；控制 API 仍按服务名访问。该修复不改变 Chrome 启动参数或安全设置。原运行在候选启动前被中止并保留基础设施错误收据；v3 包摘要为 `sha256:7ac2d756fb3a1b2b82e25e2ff65d08403911e8970f03d9c3c2fffc13efb936ec`，两题以此新包继续验证。
 
-Task031 的 v3 运行在候选开始前被 Harbor 默认的 600 秒环境启动保护中止。Harbor 把原生 prepare hook 包在 `environment.start()` 内，而任务声明的原生准备时限为 1,500 秒、profile setup 为 1,800 秒。组装器现显式写入 `[environment].build_timeout_sec = 1800`，对齐已有准备预算；候选仍为 100 次 prediction / 7,200 秒。v4 包摘要为 `sha256:a80990afe8a725d185d3299dc132c2429b97e757821fa682fefdb22dc3738d65`。实际 Harbor 0.21.0 配置解析及冻结编译确认两题只改变外层环境启动时限，原 profile 和 controller/VM 镜像保持一致；该修复尚待 Task031 实跑验证。
+Task031 的 v3 运行在候选开始前被 Harbor 默认的 600 秒环境启动保护中止。Harbor 把原生 prepare hook 包在 `environment.start()` 内，而任务声明的原生准备时限为 1,500 秒、profile setup 为 1,800 秒。组装器现显式写入 `[environment].build_timeout_sec = 1800`，对齐已有准备预算；候选仍为 100 次 prediction / 7,200 秒。v4 包摘要为 `sha256:a80990afe8a725d185d3299dc132c2429b97e757821fa682fefdb22dc3738d65`。实际 Harbor 0.21.0 配置解析及冻结编译确认两题只改变外层环境启动时限，原 profile 和 controller/VM 镜像保持一致。固定 Task031 的 v4 子包重试已于 2026-09-03 09:01:59 UTC 完成原生准备并启动候选，首图显示 TeamChat 和十个团队频道；候选执行与完整评分仍在进行。
 
 截至 2026-09-03 08:20 UTC，v3 的 Task095 已产生 9 次候选交互和两次成功的 DeepSeek 用户模拟器调用，后续原生截图显示正常的 Ubuntu 应用列表。早期 Shotcut 加载画面与动作序列均保留。此时候选仍在执行，尚未得到原生评分，OSWorld 验收仍为 0/2。只读 DNS 探测确认该客体可解析公网域名及私有 `vm` 服务名，但不据此宣称 Task031 网站或素材 HTTP 可达。
+
+Task095 的 v3 候选随后于 08:51:19 UTC 正常退出进程，但只返回最终文字，未提交原生 `DONE` / `FAIL`；supervisor 因 `native_candidate_exited_before_boundary` 终止，独立 verifier 未运行，不能记为有效零分。已验证候选 bundle 完整性并保留该无效运行。期间长串 `TYPING` 后出现一次 SDK command failure，截图可见未完整输入的 heredoc；没有客体命令退出跟踪，不能据此断言 HTTP 超时是最终根因。
+
+实际候选 request 还证明旧 supervisor 漏传 Harbor task instruction。修复后每个原生阶段均携带锁定说明，OSWorld producer 将 `candidate-guide.md` 复制到各题 `instruction.md`，并把其 SHA256 纳入 profile。说明要求先提交并获准接受 `DONE` / `FAIL` 再返回最终文字，同时解释 action acknowledgement、观察序号和键盘逐字输入。不会自动伪造结束动作，也不改变上游动作实现、评分器或候选预算。回归为 373 项通过、3 项跳过、0 失败，覆盖原生空问题和跨阶段静态说明保留。
+
+v5 完整包摘要为 `sha256:6ddaef1972148a5e3fbedc463f3a53c515f3c728868b6c87ba1e1a03334be5af`，guide 摘要为 `sha256:6b8d265a9b357b7761846763fbcf39d72c26df1513c0d3ad71addbd80beedb1e`。Task095 重试子包保持原抽样成员及任务身份，已排队等待当前 Task031 完成和全部所属资源清理；启动前核对测试过的 bridge 文件摘要及冻结包摘要。当前 Task031 的已冻结运行不被追溯修改。不同包与 profile 的验证结果分别记录，不混合声称为同一官方配置的 benchmark 分数。

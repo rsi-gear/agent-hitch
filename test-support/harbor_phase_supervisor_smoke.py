@@ -188,6 +188,8 @@ class SyntheticAgent(bridge.HitchHarborAgent):
         assert env.events[-1] == "bind"
         env.events.append("run")
         parsed_prompt = json.loads(instruction.split("\n", 1)[1])
+        expected_guidance = "outer task prompt\nPreserve this protocol guidance in every phase." if env.case in ["complete", "gated", "finalize-budget", "finalize-between"] else ""
+        assert parsed_prompt["task_instructions"] == expected_guidance
         assert parsed_prompt["task_current_date"] == "2026-08-08"
         assert parsed_prompt["instruction"] == ("" if env.number == 0 else "native second phase")
         run_context = json.loads(prepared.context_json)
@@ -267,7 +269,7 @@ async def run_case(root, case, executable, revision):
                                       **({"finalization_timeout_ms": 5000} if finalizing else {})}}}},
                 "tools": server.tools, "task_digest": digest, "agent_timeout_sec": 1 if finalizing else 20})
             context = AgentContext()
-            await agent.run("outer task prompt", env, context)
+            await agent.run("outer task prompt\nPreserve this protocol guidance in every phase.", env, context)
             result = json.loads((root / "hitch-native-phases/supervision.json").read_text())
             assert context.metadata["hitch_context_kind"] == "benchmark_phase_group"
             assert context.metadata["hitch_run_group_id"] == result["run_group_id"] and "hitch_run_id" not in context.metadata
