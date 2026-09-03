@@ -82,12 +82,7 @@ class LifecycleTests(unittest.TestCase):
             'lease_id': 'lease_synthetic', 'epoch': 1, 'profile_digest': self.config['profile_digest'], 'input_refs': [], **overrides}
 
     def call(self, server, phase, **overrides):
-        result = hook(server.path, self.request(phase, **overrides), 8)
-        if result['status'] != 'ok':
-            log = server.runtime.private / 'worker.stderr.log'
-            if log.exists():
-                sys.stderr.write(log.read_text())
-        return result
+        return hook(server.path, self.request(phase, **overrides), 8)
 
     def submit(self, runtime):
         binding = control(runtime.private / 'phase.sock', runtime.session, {'request_id': 'bind_candidate', 'operation': 'bind', 'parameters': {'generation': 1, 'run_id': 'run_' + '1' * 32}})['binding']

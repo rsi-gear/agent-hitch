@@ -1,6 +1,5 @@
 """Actual HTTP/Unix/Node transport test, with synthetic observations and actions."""
 import base64
-import faulthandler
 import hashlib
 import importlib.util
 import json
@@ -12,9 +11,8 @@ import tempfile
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 import zlib
-
-faulthandler.dump_traceback_later(10, repeat=True)
 
 
 def module(name, file):
@@ -74,7 +72,11 @@ def run_case(root, cancel):
     private = root / 'private'; private.mkdir(mode=0o700)
     session_file = private / 'session.json'; session_file.write_text(json.dumps(session)); session_file.chmod(0o600)
     channel = channel_module.AgentChannel(root / 'evidence', (1920, 1080), policy, max_actions_per_turn=2, max_text_bytes=16384)
-    server = server_module.ControllerServer(channel, session, policy, private / 'control.sock', public_address=('127.0.0.1', 0), public_endpoint='http://127.0.0.1:0/')
+    # Binding a private listener must not wait for the runner's reverse DNS.
+    with patch('socket.getfqdn', side_effect=AssertionError('controller startup must not resolve reverse DNS')):
+        server = server_module.ControllerServer(channel, session, policy, private / 'control.sock', public_address=('127.0.0.1', 0), public_endpoint='http://127.0.0.1:0/')
+    assert server.public.server_name == '127.0.0.1'
+    assert server.endpoint == f'http://127.0.0.1:{server.public.server_port}/'
     assert server.private_socket.stat().st_mode & 0o777 == 0o600
     server.start()
     counter = 0

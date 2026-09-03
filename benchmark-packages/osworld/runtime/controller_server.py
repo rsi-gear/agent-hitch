@@ -37,6 +37,13 @@ class _PublicServer(ThreadingHTTPServer):
         self.slots = threading.BoundedSemaphore(16)
         super().__init__(*args)
 
+    def server_bind(self):
+        # HTTPServer resolves the bound address with getfqdn(), which can stall
+        # before the controller becomes ready. Our advertised endpoint is
+        # configured explicitly; keep the listener identity without reverse DNS.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
             self.shutdown_request(request)

@@ -1,6 +1,5 @@
 """Synthetic SDK child for lifecycle tests; uses the actual channel/transports."""
 import importlib.util
-import faulthandler
 import json
 import os
 from pathlib import Path
@@ -18,7 +17,6 @@ from runtime_config import read_json, write_json
 
 
 def main():
-    faulthandler.dump_traceback_later(1, repeat=True)
     config_file, config_digest, mode = sys.argv[1:]
     config = read_json(config_file)
     root, evidence = Path(config['private_root']), Path(config['evidence_directory'])
