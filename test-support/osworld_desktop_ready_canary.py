@@ -52,6 +52,23 @@ except Exception as e:result={'error_type':type(e).__name__}
 print(json.dumps(result))
 '''
 
+DISPLAY_PROBE = r'''
+import json,os,subprocess
+result={'environment':{k:os.environ.get(k) for k in ('DISPLAY','XAUTHORITY','XDG_SESSION_TYPE','XDG_SESSION_ID')}}
+commands={
+ 'dpms':['xset','-q'],
+ 'screensaver':['gdbus','call','--session','--dest','org.gnome.ScreenSaver','--object-path','/org/gnome/ScreenSaver','--method','org.gnome.ScreenSaver.GetActive'],
+ 'outputs':['xrandr','--current'],
+ 'window_geometry':['wmctrl','-lGxp'],
+}
+for key,command in commands.items():
+ try:
+  p=subprocess.run(command,capture_output=True,timeout=10)
+  result[key]={'returncode':p.returncode,'stdout':p.stdout.decode(errors='replace')[:8192],'stderr':p.stderr.decode(errors='replace')[:1024]}
+ except Exception as e:result[key]={'error_type':type(e).__name__}
+print(json.dumps(result))
+'''
+
 
 def main(args):
     output = Path(args.output).resolve()
@@ -68,6 +85,9 @@ def main(args):
         'desktop_timeout_sec': args.desktop_timeout,
         'terminal_timeout_sec': args.terminal_timeout,
         'terminal_launch': args.terminal_launch,
+        'wake_desktop': args.wake_desktop,
+        'render_settle_sec': getattr(args, 'render_settle_sec', 0),
+        'screenshot_timeout_sec': getattr(args, 'screenshot_timeout', 15),
         'gnome_service_ready': False, 'terminal_window_registered': False,
         'desktop_readiness_verified': False,
         'scope': 'First-boot GNOME service and graphical terminal-window registration; original PNGs need visual review. Second boot checks VM reset only.',
@@ -115,13 +135,17 @@ def main(args):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('desktop diagnostic wait budget expired before screenshot')
+            capture_timeout = min(getattr(args, 'screenshot_timeout', 15), remaining)
+            capture_started = time.monotonic()
             png = original_run(['docker', 'exec', '-i', name, '/usr/bin/python3', '-c', vm.CLIENT],
-                               timeout=min(30, remaining), input=b'{"kind":"screenshot"}').stdout
+                               timeout=min(capture_timeout + 10, remaining),
+                               input=json.dumps({'kind': 'screenshot', 'timeout': capture_timeout}).encode()).stdout
             if png[:8] != b'\x89PNG\r\n\x1a\n':
                 raise ValueError('desktop probe did not return a PNG')
             (directory / (label + '.png')).write_bytes(png)
             (directory / (label + '.json')).write_text(json.dumps(value, indent=2) + '\n')
             entry = {'label': label, 'elapsed_sec': round(time.monotonic() - started, 2),
+                     'capture_elapsed_sec': round(time.monotonic() - capture_started, 2),
                      'screenshot_sha256': 'sha256:' + hashlib.sha256(png).hexdigest(),
                      'shell': probe['shell'], 'windows': probe['windows']}
             receipt['observations'].append(entry)
@@ -147,6 +171,11 @@ def main(args):
                     raise TimeoutError('GNOME did not become active within the desktop wait budget')
                 time.sleep(min(15, max(0, deadline - time.monotonic())))
                 index += 1
+            before = execute(DISPLAY_PROBE, 60)
+            (directory / 'display-before.json').write_text(json.dumps(before, indent=2) + '\n')
+            if args.wake_desktop:
+                wake = execute("import pyautogui; pyautogui.FAILSAFE=False; pyautogui.moveTo(960,540,duration=0.2); pyautogui.press('shift')", 60)
+                (directory / 'wake.json').write_text(json.dumps(wake, indent=2) + '\n')
             if args.terminal_launch == 'direct':
                 action = execute("import subprocess,json; p=subprocess.run(['gnome-terminal','--','bash','-lc','printf \\\"OSWORLD DESKTOP CANARY\\\\n\\\"; exec bash'],capture_output=True,text=True,timeout=60); print(json.dumps({'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr}))", 90)
             else:
@@ -166,6 +195,19 @@ def main(args):
                 if time.monotonic() >= deadline:
                     raise TimeoutError('graphical shortcut did not produce a terminal window')
                 index += 1
+            after = execute(DISPLAY_PROBE, 60)
+            (directory / 'display-after.json').write_text(json.dumps(after, indent=2) + '\n')
+            # Window registration can precede a rendered desktop under TCG.
+            # Retain later original frames without changing the display or
+            # asserting that a registered window proves visual readiness.
+            settle = getattr(args, 'render_settle_sec', 0)
+            if settle:
+                deadline = time.monotonic() + settle
+                index = 0
+                while deadline - time.monotonic() > 45:
+                    time.sleep(min(30, deadline - time.monotonic() - 30))
+                    sample('render-' + str(index).zfill(3), deadline)
+                    index += 1
         except Exception as error:
             receipt['error_type'] = type(error).__name__
             raise
@@ -195,9 +237,13 @@ if __name__ == '__main__':
     parser.add_argument('--cpu-model')
     parser.add_argument('--boot-timeout', type=int, default=900)
     parser.add_argument('--network-policy', choices=['isolated', 'egress'], default='egress')
+    parser.add_argument('--container-memory-mb', type=int, default=5120)
+    parser.add_argument('--screenshot-timeout', type=int, default=15, help='Diagnostic HTTP timeout; the pinned SDK still uses its original timeout')
     parser.add_argument('--desktop-timeout', type=int, default=600)
     parser.add_argument('--terminal-timeout', type=int, default=90)
     parser.add_argument('--terminal-launch', choices=['shortcut', 'direct'], default='shortcut')
+    parser.add_argument('--wake-desktop', action='store_true', help='Send a mouse movement and Shift before launching the terminal; do not change guest display settings')
+    parser.add_argument('--render-settle-sec', type=int, default=0, help='Retain later original screenshots after window registration, within this additional diagnostic budget')
     args = parser.parse_args()
     if args.cpu_model and not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', args.cpu_model):
         parser.error('CPU model must be a simple QEMU model name')
@@ -205,4 +251,6 @@ if __name__ == '__main__':
         parser.error('TCG diagnostic requires an explicit CPU model')
     if not 30 <= args.desktop_timeout <= 900 or not 10 <= args.terminal_timeout <= 120:
         parser.error('desktop/terminal wait budget is out of range')
+    if not 0 <= args.render_settle_sec <= 600:
+        parser.error('render settle budget is out of range')
     main(args)

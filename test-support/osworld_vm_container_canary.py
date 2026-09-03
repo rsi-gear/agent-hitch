@@ -40,7 +40,7 @@ if args['kind']=='control':
             if time.monotonic()>=deadline: raise
             time.sleep(.2)
 elif args['kind']=='screenshot':
-    response=urllib.request.urlopen('http://127.0.0.1:5000/screenshot',timeout=15)
+    response=urllib.request.urlopen('http://127.0.0.1:5000/screenshot',timeout=args.get('timeout',15))
 else:
     payload={'command':['python3','-c',args['script']],'shell':False,'timeout':15}
     request=urllib.request.Request('http://127.0.0.1:5000/setup/execute',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
@@ -77,6 +77,8 @@ def main(args):
     images = output.with_name(output.stem + '-screenshots')
     if output.exists() or images.exists(): raise ValueError('canary requires fresh output paths')
     if not 30 <= args.boot_timeout <= 1800: raise ValueError('invalid VM boot deadline')
+    screenshot_timeout = getattr(args, 'screenshot_timeout', 15)
+    if not 1 <= screenshot_timeout <= 60: raise ValueError('invalid screenshot diagnostic timeout')
     image_id = json.loads(run(['docker', 'image', 'inspect', args.image, '--format', '{{json .Id}}']).stdout)
     architecture = run(['docker', 'image', 'inspect', image_id, '--format', '{{.Architecture}}']).stdout.decode().strip()
     if architecture not in ('amd64', 'arm64'):
@@ -84,7 +86,10 @@ def main(args):
     if architecture != 'amd64' and args.acceleration != 'tcg':
         raise ValueError('an x86 guest on an ARM host requires explicit TCG')
     capacity = json.loads(run(['docker', 'info', '--format', '{"memory":{{.MemTotal}},"cpus":{{.NCPU}}}']).stdout)
-    if capacity['memory'] < 6 * 1024**3 or capacity['cpus'] < 4:
+    container_memory_mb = getattr(args, 'container_memory_mb', 5120)
+    if type(container_memory_mb) is not int or not 5120 <= container_memory_mb <= 65536:
+        raise ValueError('invalid VM container memory allowance')
+    if capacity['memory'] < (container_memory_mb + 1024) * 1024**2 or capacity['cpus'] < 4:
         raise ValueError('VM component canary needs host headroom for a 4 GiB guest and controller processes')
     name = 'hitch-oswvm-' + uuid.uuid4().hex[:12]
     network, storage = name + '-net', name + '-storage'
@@ -95,7 +100,8 @@ def main(args):
                'desktop_readiness_verified': False,
                'desktop_readiness_note': 'PNG transport alone does not prove a usable desktop; inspect retained images and validate task setup separately.',
                'acceleration': args.acceleration, 'guest_cpus': 4, 'guest_memory_bytes': 4 * 1024**3,
-               'container_memory_bytes': 5 * 1024**3, 'boot_timeout_sec': args.boot_timeout,
+               'container_memory_bytes': container_memory_mb * 1024**2, 'boot_timeout_sec': args.boot_timeout,
+               'screenshot_timeout_sec': screenshot_timeout,
                'host_capacity': capacity, 'resource_prefix': name, 'network_policy': args.network_policy}
     output.parent.mkdir(parents=True, exist_ok=True)
     images.mkdir()
@@ -105,8 +111,9 @@ def main(args):
         session_file.write_text(json.dumps(session)); session_file.chmod(0o600)
         def request(kind, **fields):
             payload = {'kind': kind, **fields}
+            if kind == 'screenshot': payload['timeout'] = screenshot_timeout
             return run(['docker', 'exec', '-i', name, '/usr/bin/python3', '-c', CLIENT],
-                       timeout=args.boot_timeout + 30 if kind == 'control' else 30,
+                       timeout=args.boot_timeout + 30 if kind == 'control' else max(30, screenshot_timeout + 10),
                        input=json.dumps(payload).encode()).stdout
         def control(operation):
             return json.loads(request('control', operation=operation, request_id=uuid.uuid4().hex, timeout=args.boot_timeout + 15))
@@ -126,7 +133,7 @@ def main(args):
             run(['docker', 'volume', 'create', '--label', 'org.agent-hitch.canary=' + name, storage]); created.append('volume')
             receipt['runtime_platform'] = 'linux/' + architecture
             command = ['docker', 'run', '-d', '--name', name, '--platform', 'linux/' + architecture, '--network', network,
-                       '--label', 'org.agent-hitch.canary=' + name, '--cpus', '4', '--memory', '5g', '--pids-limit', '256',
+                       '--label', 'org.agent-hitch.canary=' + name, '--cpus', '4', '--memory', str(container_memory_mb) + 'm', '--pids-limit', '256',
                        '--mount', 'type=bind,src=' + private + ',dst=/control,readonly',
                        '--mount', 'type=volume,src=' + storage + ',dst=/storage',
                        '-e', 'KVM=' + ('Y' if args.acceleration == 'kvm' else 'N'),
@@ -134,6 +141,11 @@ def main(args):
             if args.acceleration == 'kvm': command += ['--device', '/dev/kvm']
             command.append(image_id)
             created.append('container'); run(command)
+            launch_env = json.loads(run(['docker', 'inspect', name, '--format', '{{json .Config.Env}}']).stdout)
+            recorded_keys = {'KVM', 'CPU_CORES', 'CPU_MODEL', 'RAM_SIZE', 'VM_BOOT_TIMEOUT_SEC',
+                             'DISPLAY', 'VGA', 'ARGUMENTS', 'MONITOR', 'SERIAL'}
+            receipt['container_environment'] = {key: value for key, value in
+                (entry.split('=', 1) for entry in launch_env) if key in recorded_keys}
             bindings = json.loads(run(['docker', 'inspect', name, '--format', '{{json .HostConfig.PortBindings}}']).stdout)
             mounts = json.loads(run(['docker', 'inspect', name, '--format', '{{json .Mounts}}']).stdout)
             if bindings or any('docker.sock' in m['Source'] for m in mounts): raise ValueError('unexpected host exposure')
@@ -227,4 +239,6 @@ if __name__ == '__main__':
     parser.add_argument('--acceleration', required=True, choices=['kvm', 'tcg'])
     parser.add_argument('--boot-timeout', type=int, default=900)
     parser.add_argument('--network-policy', choices=['isolated', 'egress'], default='isolated')
+    parser.add_argument('--container-memory-mb', type=int, default=5120, help='Container allowance including QEMU overhead; guest RAM remains 4 GiB')
+    parser.add_argument('--screenshot-timeout', type=int, default=15, help='Diagnostic screenshot request timeout; does not modify the SDK or task profile')
     main(parser.parse_args())

@@ -702,7 +702,7 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "standard_package_assembled_desktop_visibility_blocked",
+      "status": "standard_package_assembled_guest_capture_stability_pending",
       "blocker": "Fixed-sample standard package, controller startup, TeamChat/asset routing, native scalar grader and ARM64 VM boot/reset are implemented. Guest screenshots remain black despite active GNOME and a registered terminal. Guest namespace routing, task_095 runtime media and two real Hitch scored trials remain unvalidated.",
       "population": 108,
       "tasks": [
@@ -1714,7 +1714,65 @@
         "passed": 372,
         "skipped": 3,
         "failed": 0,
-        "log": ".hitch/benchmark-expansion/osworld-assembly-check.log"
+        "log": ".hitch/benchmark-expansion/osworld-boot-probe-check.log",
+        "additional_checks": "Python compilation passed after diagnostic-only render-settle and launch-environment recording additions."
+      },
+      "web_console_diagnostic": {
+        "profile": "arm64-qemu-7.2.22-tcg-single-nehalem-web-6g",
+        "runtime_image": "sha256:8d684b31f23d4c26b3db69c8c9f4dbe48dee47ccd8818ef700ea834c7874e423",
+        "guest_vcpus": 4,
+        "guest_ram_bytes": 4294967296,
+        "container_ram_bytes": 6442450944,
+        "initial_boot_sec": 165.62,
+        "reset_sec": 147.76,
+        "component_canary_passed": true,
+        "usable_desktop_verified": false,
+        "monitor_on": true,
+        "screensaver_active_after_wake": false,
+        "visual_observation": "Direct QEMU console and guest API images remain black; terminal registered but contents invisible.",
+        "receipt": ".hitch/benchmark-expansion/osworld-desktop-web-console-canary.json",
+        "visual_review": {
+          "path": ".hitch/benchmark-expansion/osworld-web-console-visual-review.json",
+          "sha256": "sha256:58a89e7d180575cd2c703dc8ccdbe278bcbb8c46dc4bd07322e23cea11340b64"
+        },
+        "remaining_owned_resources": {
+          "containers": 0,
+          "volumes": 0,
+          "networks": 0
+        },
+        "real_scored_tasks": 0
+      },
+      "task095_media_origin_validation": {
+        "revision": "5bff56b8c918a4812d22ee1fb26b03c6de82ed62",
+        "files": 11,
+        "total_bytes": 45241017,
+        "all_expected_match": true,
+        "receipt": {
+          "path": ".hitch/benchmark-expansion/osworld-task095-media-bytes-preflight.json",
+          "sha256": "sha256:922559a2f882d6aee79056b40ca2e88e52eae72946dfa1d6ec3e2cb3629e022a"
+        },
+        "scope": "Public origin bytes verified outside the candidate VM. Files are not injected into the task; the candidate must still obtain them through native user-simulator interaction.",
+        "real_scored_tasks": 0
+      },
+      "standard_vga_diagnostic": {
+        "profile": "arm64-qemu-7.2.22-tcg-single-nehalem-web-standard-vga-6g",
+        "runtime_image": "sha256:8d684b31f23d4c26b3db69c8c9f4dbe48dee47ccd8818ef700ea834c7874e423",
+        "graphical_frame_verified": true,
+        "native_screenshot_stability_verified": false,
+        "initial_boot_sec": 156.38,
+        "component_canary_passed": false,
+        "failure": "15-second screenshot request timeout during post-terminal rendering observation",
+        "visual_review": {
+          "path": ".hitch/benchmark-expansion/osworld-std-console-visual-review.json",
+          "sha256": "sha256:93836593803612fce76602ff18132d44b21ff9798262d903761063bacd2a8f52"
+        },
+        "receipt": ".hitch/benchmark-expansion/osworld-desktop-std-console-canary.json",
+        "remaining_owned_resources": {
+          "containers": 0,
+          "volumes": 0,
+          "networks": 0
+        },
+        "real_scored_tasks": 0
       }
     },
     {
@@ -1744,14 +1802,14 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 374,
-    "passed": 371,
+    "total": 375,
+    "passed": 372,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/deepseek-complete-check.log",
+    "evidence": ".hitch/benchmark-expansion/osworld-boot-probe-check.log",
     "additional_verification": "HLE named DeepSeek schema-guided profile: both fixed real tasks have valid scores and verified sealed runs; one artifact-only regrade restores the original trusted response after matching sealed result fields. OSWorld installed-SDK model-error audit, live DeepSeek judge/user-simulator/truncation, authorized TeamChat state initialization and 35-file visible asset origin transformation passed their stated component scopes. No official OSWorld score is claimed."
   },
-  "updated_at": "2026-09-03T05:54:12.020187+00:00",
+  "updated_at": "2026-09-03T07:06:28.694086+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1759,7 +1817,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Gated inputs and declared DeepSeek judge/user-simulator access are verified. Complete controller/VM/website assembly, usable desktop, task_095 runtime media and two official scored trials remain incomplete."
+      "requirement": "Gated inputs, declared DeepSeek access, fixed two-task package assembly and public media bytes are verified. A later direct QEMU capture shows a desktop in the explicit standard-VGA profile; stable native screenshots, task setup/runtime media interaction and two full scored Hitch trials remain incomplete."
     },
     {
       "benchmark": "cursorbench",

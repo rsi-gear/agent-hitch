@@ -92,9 +92,13 @@ python3 test-support/osworld_vm_container_canary.py \
 
 Select `kvm` on a worker with the appropriate device; select `tcg` explicitly
 for software emulation. The canary uses a 4 CPU / 4 GiB guest in a container
-limited to 4 CPUs / 5 GiB, with a fresh private network, lease volume and
+limited by default to 4 CPUs / 5 GiB, with a fresh private network, lease volume and
 writable storage. Ensure available memory and CPU headroom for other running
 workloads. It publishes no host ports and mounts no Docker socket.
+`--container-memory-mb` can explicitly reserve more memory for QEMU overhead;
+it never changes the 4 GiB guest. The receipt records the actual allowance and
+selected container launch variables. This component check reserves host
+headroom, but does not establish that all services of a full task fit together.
 `isolated` creates an internal network with no external egress; `egress` uses a
 dedicated bridge with outbound access. The policy and actual network setting
 are recorded. Results from different network policies must stay separate.
@@ -107,6 +111,12 @@ the entire immutable base again, and verifies QEMU has exited. Cleanup attempts
 all owned resources even if diagnostic collection fails, then checks that no
 containers, volumes or networks remain under the canary's unique label.
 The canary also checks that the upstream monitor port is closed.
+
+The owner permits ten seconds per screenshot socket operation, following the
+pinned Docker provider's allowance, and bounds each request by the remaining
+overall boot budget. A PNG received after that deadline cannot mark the guest
+ready. The default total boot budget is unchanged; a longer diagnostic budget
+must be selected explicitly. Failed startup still stops the owned processes.
 
 The receipt records actual image identity, resource/acceleration settings,
 boot/reset timings, raw screenshot dimensions/digests, base preservation and
@@ -164,3 +174,34 @@ guest memory ordering than the ARM host; that diagnostic was stopped and its
 resources removed. The supported single-thread profile preserves guest CPU
 count and disk bytes while avoiding that forced optimization. Graphical
 readiness and full task acceptance remain separate checks.
+
+For desktop diagnosis, `test-support/osworld_desktop_ready_canary.py` records
+GNOME state, DPMS, screen-saver state, output resolution and window geometry.
+`--wake-desktop` sends mouse movement and Shift before the terminal probe;
+`--render-settle-sec 300` retains later original frames after window
+registration. These are bounded component observations, not candidate actions
+or a replacement for native task setup. Retained screenshots require visual
+review; a registered terminal must not automatically pass graphical readiness.
+
+The 2026-09-03 `DISPLAY=web` / 6 GiB container diagnostic booted the same guest
+in 165.62 seconds and reset it in 147.76 seconds. After wake input, DPMS reported
+the monitor on and GNOME reported the screen saver inactive. Both a direct
+QEMU console capture and the guest API image were still black; only the API
+image included the cursor. A terminal had registered within the 1920 × 1080
+screen. Thus those changes did not establish a usable desktop. The diagnostic
+used a private QMP Unix socket for capture, no published ports, and cleaned all
+owned resources. Its simultaneous changes do not identify which change caused
+the faster API boot. See the status file's linked visual review and receipts.
+
+A subsequent `VGA=std` diagnostic produced a later direct QEMU frame showing
+the full Ubuntu desktop and the terminal's canary text. Its earlier API image
+had still been black, and the next API capture exceeded its 15-second timeout.
+The component check failed before reset and cleaned its resources. This proves
+that a graphical frame can render in that explicit profile, while stable native
+screenshots and full task execution remain unverified. It does not establish
+that the VGA override alone caused the later rendering.
+
+`--screenshot-timeout` can lengthen a diagnostic request to observe slow startup.
+It never changes the pinned SDK's ten-second screenshot timeout. Desktop
+receipts retain capture duration, so a long diagnostic allowance cannot be
+mistaken for proof that the native API meets its original timing contract.

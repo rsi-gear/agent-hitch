@@ -150,13 +150,20 @@ class VMOwner:
                 if self.process.poll() is not None:
                     raise RuntimeError('emulator exited before guest readiness')
                 try:
-                    with urlopen('http://127.0.0.1:5000/screenshot', timeout=2) as response:
+                    # The pinned Docker provider permits ten seconds for a
+                    # screenshot. A shorter timeout can enqueue expensive
+                    # captures during a slow guest boot. Keep its allowance,
+                    # bounded by the remaining overall boot deadline.
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    with urlopen('http://127.0.0.1:5000/screenshot', timeout=min(10, remaining)) as response:
                         # Check actual screenshot bytes, not merely HTTP 200.
-                        if response.status == 200 and response.read(8) == b'\x89PNG\r\n\x1a\n':
+                        if response.status == 200 and response.read(8) == b'\x89PNG\r\n\x1a\n' and time.monotonic() <= deadline:
                             return {'ready': True, 'generation': self.generation}
                 except OSError:
                     pass
-                time.sleep(0.5)
+                time.sleep(min(1, max(0, deadline - time.monotonic())))
             raise TimeoutError('guest screenshot endpoint did not become ready')
         except BaseException:
             self.stop()

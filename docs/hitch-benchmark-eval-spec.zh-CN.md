@@ -1,10 +1,10 @@
 # Hitch Benchmark 接入协议与 Eval 实现 Spec
 
-状态：Proposed；调研日期：2026-09-02。代码基线：`65982cb059ae21d84dc0bc1916eb4fff60809e4b`，Hitch 0.2.7，仓库默认 Harbor 0.21.0。
+状态：部分实现并验证；调研日期：2026-09-02，进度更新：2026-09-03。设计代码基线：`65982cb059ae21d84dc0bc1916eb4fff60809e4b`，Hitch 0.2.7，仓库默认 Harbor 0.21.0。
 
-本文保留最初的实现设计，并在第 9 节补充接入进度。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型；后续实现、真实运行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，不能将设计条目视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
+本文定义 Harbor 兼容的 Hitch 包协议、执行和评分边界；第 3 节是设计基线的差距分析，第 9、14、15 节说明已落地的实现与验证。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型。逐题执行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，设计条目不能视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
 
-当前扩展目标是其余六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric 为 2/2、Science 为 2/2、Terminal-Bench 为 1/2，其余三项为 0/2；有效评分允许任务得分为零。用户已完成 Hugging Face 授权，本机 OAuth 登录和 HLE/OSWorld 三个 gated 仓库的实际文件读取均已验证；HLE 两种 profile 的真实两题包已锁定，OSWorld 两题源码已通过官方哈希校验。整体目标仍缺 CursorBench 授权包、HLE API 凭据及 16 CPU worker，OSWorld 完整运行环境也尚未验收。状态文件列出了逐项恢复条件；原始两题选择、任务资源和完整验收范围保持不变。下面的 MVP 描述保留最初阶段的设计范围。
+当前扩展目标是 AutomationBench 以外的六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric、Science、HLE 的具名 DeepSeek no-tools profile 均为 **2/2**，Terminal-Bench 为 **1/2**，OSWorld 与 CursorBench 为 **0/2**；有效评分允许任务得分为零，HLE with-tools 尚无真实评分。Hugging Face 授权、固定 HLE/OSWorld 数据访问和用户指定的 `.env` DeepSeek 配置均已验证。OSWorld 两题标准包已组装并通过 controller/网站启动检查，仍缺可用桌面和完整候选评分。外部阻塞是 CursorBench 授权任务/评分包，以及满足 Terminal-Bench 原始 16 CPU / 16 GiB 要求的 worker。原始两题选择和任务资源要求保持不变。下文的 AutomationBench MVP 表示已完成的首阶段范围，后续扩展以此段及状态文件为准。
 
 ## 1. 设计决定
 
@@ -632,7 +632,7 @@ With-tools 首期用 shared agent image + 每题可见材料；最终回复由�
 
 Judge 只看必要题面、gold 与 final response；judge credentials 不进入 agent image/env。准确率为逐题 binary correctness；confidence/calibration 作为独立可选指标，缺 confidence 不记成 0% confidence。
 
-授权与导入更新（2026-09-03）：固定 revision 的完整 Parquet 已下载，SHA256 与上游 LFS 标识一致。按照既定 seed `20260902` 从全部 2,500 题抽出同样两题，生成 `hle-real-no-tools`、`hle-real-with-tools` 私有包；两者均通过 Hitch lock/validate。原始数据、题面、答案和生成包仅保存在忽略的 `.hitch/benchmark-expansion/` 下，Git 只记录任务 id、版本和摘要。候选 `OPENAI_API_KEY` 与独立 verifier 的 `HLE_JUDGE_API_KEY` 仍缺失，因此真实评分数保持 0/2。
+授权与导入更新（2026-09-03）：固定 revision 的完整 Parquet 已下载，SHA256 与上游 LFS 标识一致。按照既定 seed `20260902` 从全部 2,500 题抽出同样两题，生成 `hle-real-no-tools`、`hle-real-with-tools` 私有包；两者均通过 Hitch lock/validate。原始数据、题面、答案和生成包仅保存在忽略的 `.hitch/benchmark-expansion/` 下，Git 只记录任务 id、版本和摘要。实际验证采用第 15 节的 `hle-public-no-tools-deepseek-schema-guided` 配置，从用户指定的 `.env` 注入 DeepSeek 凭据，已完成原两题有效评分；不再以 OpenAI 密钥缺失作为该 profile 的阻塞。with-tools 包已锁定，尚未完成真实评分。
 
 ### 9.3 AutomationBench-public
 
@@ -660,7 +660,7 @@ Phase 1 使用 public rubric 的可解释本地评分并命名 `gdpval-public-ru
 
 ### 9.5 OSWorld 2.0
 
-由 OSWorld 包内组件包装官方 DesktopEnv/task loader 的 `reset/step/evaluate`，通过通用 desktop driver 与受管 `external` executor 接入；不增加按 `osworld` 名称分发的核心 executor。公开 runner 就是通过这些接口执行和取分；保留原始 evaluator dict，不假设唯一的 `score` 字段已经包含 strict 与 partial 两种分数。[官方 runner](https://github.com/xlang-ai/OSWorld-V2/blob/main/lib_run_single.py)
+由 OSWorld 包内组件包装官方 DesktopEnv/task loader 的 `reset/step/evaluate`，通过通用 desktop driver 与受管 `external` executor 接入；不增加按 `osworld` 名称分发的核心 executor。公开 runner 就是通过这些接口执行和取分；保留原始 evaluator 输出类型及字段，不假设单个 scalar 或 `score` 字段已经包含 strict 与 partial 两种分数。[官方 runner](https://github.com/xlang-ai/OSWorld-V2/blob/main/lib_run_single.py)
 
 一个 trial 的边界包含 guest VM、浏览器 profile、用户文件与模拟网站/应用状态。VM 基础镜像、task Python、assets、mocked websites 必须来自同一个 release；任务代码/评分器只在 worker 管理侧可见。Candidate 可在独立 harness container 中运行，通过受限 CUA bridge 获得观察和发送动作。
 
@@ -672,7 +672,7 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 实施更新：官方现已发布 `osworld-v2-2026.08.08`，直接以该 release 为目标。必须拿到其可授权 task/assets，并按官方 release manifest 锁定代码、任务、assets、网站与 VM 镜像；全部组件一致才运行。拿不到时该目标明确是 `blocked_on_dataset`，不能换成 6 月任务。参见[官方版本清单](https://github.com/xlang-ai/OSWorld-V2/blob/main/benchmark_releases/osworld-v2-2026.08.08.json)。
 
-授权更新（2026-09-03）：现已取得固定版本的 task/hash manifest 与素材访问权。官方清单 SHA256、108 题 membership、`task_031`/`task_095` 源码摘要校验通过；`task_031` 素材目录及其 state 内直接引用的素材已按固定 asset commit 下载。`task_095` 还使用上游配置的 `gpt-4o` LLM user simulator 和运行中的远程媒体发现，需要 controller 专用凭据与相应运行配置。授权解除不代表完整 Compose、网站 reset、可用桌面及两题评分已完成；这些仍保留为待验收项。
+授权更新（2026-09-03）：现已取得固定版本的 task/hash manifest 与素材访问权。官方清单 SHA256、108 题 membership、`task_031`/`task_095` 源码摘要校验通过；`task_031` 素材目录及其 state 内直接引用的素材已按固定 asset commit 下载。`task_095` 使用原生 LLM user simulator 与运行中的远程媒体发现；当前 controller 采用第 15 节明确命名的 DeepSeek 替换配置。固定两题的完整 Compose、私有 TeamChat 初始化和 controller 启动已验证；可用桌面、实际任务 reset 和两题完整评分仍待验收。
 
 当前组件：`benchmark-packages/osworld/runtime/` 已包含受管 VM owner/provider、原生 `Agent.reset/predict` channel、动作校验和固定 SHA256 的 runner wrapper。多阶段流程委托给 `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` 的原始 `lib_run_single.run_single_example`，保留同一 VM 的 phase setup、gate 和评分文件；synthetic 对照已覆盖这些语义。每次 reset 撤销旧 token，并要求 supervisor 绑定新的 Hitch run。候选启动、取消与封存现已接入标准包入口，整题 assessment 导入也已接通；**这些合同测试尚不代表 OSWorld VM 与官方两题验收完成**。Run ID 检查只能防止复用标识，不能替代清空模型会话的证据。
 
@@ -680,7 +680,7 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 `controller_server.py` 已实现候选 HTTP `POST /call`（仅 `desktop.observe` / `desktop.submit`）与 controller 私有 Unix socket 管理接口；后者校验 token、lease、epoch，支持 `state/bind/cancel`。Socket 0600、所在目录 0700；管理接口不监听 TCP。公开工具 schema 从实际动作校验器生成。原生 reset 后旧阶段 token 失效；管理变更与动作提交各自保留幂等回执。`controller_client.py` 从文件读取私有凭据，以 stdin JSON 发起管理调用，凭据不进入 argv。实际 HTTP/Unix/Node 工具客户端的两阶段 synthetic 测试已通过。
 
-标准 Harbor bridge 在锁定 task 的 `driver.config.native_phases` 存在时选择 `NativePhaseSupervisor(...).run()`：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传当前 binding → 启动模型 → 原生边界停止并封存该 run → 回收容器后验证证据 → 再执行下一阶段。Prepare 必须返回 `native_phases_ready: true` 且没有静态 binding，task/profile 同时声明 `native-phases@1`、原生图片输入和工具图片输出能力。除 run ID 外，它记录不同 native session ID、各阶段 bundle 和不重叠的运行时间；隔离仍须由真实容器回收保证。绑定回执含 token，不进入生命周期 journal 或评分证据。授权任务 producer、完整 Compose 装配、网站 reset、固定 release 的 partial/strict 映射和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
+标准 Harbor bridge 在锁定 task 的 `driver.config.native_phases` 存在时选择 `NativePhaseSupervisor(...).run()`：获得待执行阶段 → 准备新 Hitch run 及独立 candidate workspace/runtime → 私有 bind → 上传当前 binding → 启动模型 → 原生边界停止并封存该 run → 回收容器后验证证据 → 再执行下一阶段。Prepare 必须返回 `native_phases_ready: true` 且没有静态 binding，task/profile 同时声明 `native-phases@1`、原生图片输入和工具图片输出能力。除 run ID 外，它记录不同 native session ID、各阶段 bundle 和不重叠的运行时间；隔离仍须由真实容器回收保证。绑定回执含 token，不进入生命周期 journal 或评分证据。固定两题的 producer 与完整 Compose 装配已完成，离线 grader 保留原生 scalar，并将没有独立证据的 strict success 留空；实现见第 15 节。实际任务 reset 和真实 VM 两题验收仍待完成。状态和证据索引见 `docs/benchmark-expansion-status.json`。
 
 Hitch 已增加不单独计分的 `benchmark_phase` context，以及只引用原 run bundle 的不可变 phase group。完整性检查覆盖连续阶段号、相同候选/trial/task digest、不同 native session ID、执行顺序和全部 bundle；group 明确为 `candidate-evidence-only`。多阶段 importer 单独校验完整 controller audit、全部 prediction 截图摘要、run 绑定、最终 completed 事件和候选容器替换链，再将独立 verifier 的整题评分保存为 assessment。Trial 引用 `run_group + assessment`，每个 task/attempt 只计一次；不伪造代表 run_id，不回写各 phase 的分数。不同 session ID 不能单独充当“无历史上下文”证明。详见 `docs/provider-native-trajectory-comparison-spec.zh-CN.md` 第 18 节。
 
@@ -723,6 +723,8 @@ Controller 镜像由 `benchmark-packages/osworld/prepare-controller.py` 从固�
 整题导入测试保留真实零分语义，验证 phase bundle 原始字节、整题去重、幂等重放与 assessment 已封存但 publication 未写入的恢复。读取结果时重新核对 assessment digest、证据树和全部 group 成员；截断 audit、错误 run 绑定、指标/证据篡改均拒绝。`collect-only` 已识别 group 引用；多阶段 verifier-only regrade 和远程单 bundle 传输仍显式拒绝，不能声称已支持。
 
 ### 9.6 CursorBench 与其他私有集
+
+授权边界：用户已完成的 Hugging Face 授权覆盖 HLE/OSWorld 的相应 gated 仓库。Cursor 将 CursorBench 定义为内部评测；本次核对的[官方方法页](https://cursor.com/blog/cursorbench)与[榜单页](https://cursor.com/cursorbench)没有提供任务/评分包的自助下载授权入口。要接入 3.2.0，需要 Cursor 另行提供该版本任务、工作区和 grader 的授权包；Cursor 产品登录或其他平台的 API key 不能作为已取得这些数据的证据。
 
 授权数据的独立适配器输出标准包：repo/workspace 初始快照、任务说明、只向 grader 提供的参考变更/criteria、测试依赖、任务版本和合法使用范围。多 repo 根目录按 manifest 映射；答案补丁不能出现在 candidate 的 Git history 或对象包内。
 
@@ -986,3 +988,7 @@ OSWorld worker 在加载任务前安装 model audit：被任务捕获的 API 错
 本机生成包为 `.hitch/benchmark-expansion/packages/osworld-v2-native-score-v1`，package digest `sha256:b62d0150e6ba9a01865674ad3ee116cc33a4001da931f106dbf9d8ae93b4fb57`。两题均通过 Hitch 校验、冻结编译、Compose 校验及实际 controller 启动检查；Task031 的私有 TeamChat 路由与可见素材字节校验通过。该 profile 使用显式 100 个 prediction / 7,200 秒候选预算和 host-local 镜像，仅为 Hitch 验证配置。
 
 新增 ARM64 host QEMU 实验保留客体、固件与 4 vCPU / 4 GiB 配置，避免通过 AMD64 模拟再运行 QEMU。支持的单线程 TCG 镜像 `sha256:405166c7f220d0e1d6df5463b2e3234419a7beca683231c3e2a23db384957152` 首次启动约 228 秒、重置约 167 秒；客体基盘 SHA256、进程退出及资源清理均通过。但 GNOME active、终端窗口已注册时截图仍为黑屏，尚不满足视觉评测条件。这些组件证据不计作真实样本验收，OSWorld 仍为 **0/2**。证据与剩余工作见 `docs/benchmark-expansion-status.json`。
+
+后续 `VGA=std` 对照取得一张正常的 1920×1080 虚拟显示器截图：Ubuntu 桌面、面板和终端的 canary 文本均可见。较早的 API 截图仍黑，下一次 API 请求超过 15 秒诊断时限，故该组件运行未完成 reset；临时资源已清理。窗口注册早于实际绘制，不能据此判断桌面已就绪，也不能将稍后出现的正常画面忽略。原生 SDK 仍保留 10 秒截图时限，稳定截图与完整两题执行尚待验证；VM owner 的启动探测已改为最多 10 秒，并拒绝超过总启动 deadline 才返回的 PNG。
+
+Task095 的 11 个公开媒体文件已在候选环境之外按固定源站 commit 下载，共 45,241,017 字节，全部匹配原任务的 SHA256。这项检查验证源文件可取得，没有向候选预装文件或提供用户模拟器的隐藏知识；真实候选仍须按原任务交互发现并下载媒体。

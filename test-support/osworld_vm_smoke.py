@@ -71,4 +71,18 @@ with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'KVM': 
             except RuntimeError:
                 pass
         assert failed.generation == 1 and failed.process is None
+    late = vm.VMOwner(root / 'control/session.json', root / 'late-storage', base, root / 'late-overlay', command)
+    clock = [0.0]
+    class LateReady(Ready):
+        def read(self, size):
+            clock[0] = 21.0
+            return super().read(size)
+    with patch.dict(os.environ, {'VM_BOOT_TIMEOUT_SEC': '20'}), patch.object(vm.time, 'monotonic', side_effect=lambda: clock[0]), patch.object(vm, 'urlopen', return_value=LateReady()) as opened:
+        try:
+            late.control(session['token'], request)
+            raise AssertionError('late PNG bypassed the overall boot deadline')
+        except TimeoutError:
+            pass
+        assert opened.call_args.kwargs['timeout'] == 10
+        assert late.process is None
     print('OSWorld VM ownership, stale lease, idempotent reset and failed-boot receipts passed (synthetic only)')
