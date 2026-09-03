@@ -283,7 +283,7 @@
         "exec_session_id": 19340,
         "work_id": "work_79c5b7fd19346fe856c41f2bc380bc06",
         "container": "cmb-cross-inference__yd5veuh__env-main-1",
-        "status": "backend_running",
+        "status": "candidate_running",
         "started_at": "2026-09-03T01:43:49.383Z",
         "controller_runtime_id": "sha256:ee3c002ce43f6d9e3f23a8189f94d97202615eeb233d2f0f0cfc6d266c153989",
         "compiler": "harbor-package@5",
@@ -295,7 +295,19 @@
         "original_task_grader_profile_unchanged": true,
         "evidence": ".hitch/benchmark-expansion/science-cmb-retry-package.json",
         "result_pending": ".hitch/benchmark-expansion/science-cmb-retry-result.json",
-        "runtime_frozen": true
+        "runtime_frozen": true,
+        "candidate_run_id": "run_79f50d577a6b4a78afc1beabf9ec631f",
+        "candidate_started_at": "2026-09-03T01:47:24.367Z",
+        "candidate_pid_in_container": 6393,
+        "candidate_process_name": "codex",
+        "preparation_ms": 8669,
+        "effective_hitch_timeout_ms": 28791331,
+        "collection_timeout_ms": 600000,
+        "budget_receipt": ".hitch/benchmark-expansion/state/evals/eval_3118e52b515a45da96408579c7aed9e6/harbor/work-items/work_79c5b7fd19346fe856c41f2bc380bc06/epoch-000001/job/cmb-cross-inference__Yd5veUH/agent/hitch-agent-budget.json",
+        "budget_receipt_sha256": "sha256:68c08575f5ec1fbd08a158b8750d5714875f0a93bb22870ce1dad52d9bdf6494",
+        "last_native_event_at": "2026-09-03T01:50:21.216Z",
+        "last_native_event_type": "tool.completed",
+        "candidate_events_bytes": 118373
       }
     },
     {
@@ -1102,5 +1114,5 @@
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
     "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade passed with official reward 0, original candidate bundle unchanged, a separately identified environment-only repair runtime, and no remaining owned Docker resources."
   },
-  "updated_at": "2026-09-03T01:46:11.569947+00:00"
+  "updated_at": "2026-09-03T01:51:09.025912+00:00"
 }
