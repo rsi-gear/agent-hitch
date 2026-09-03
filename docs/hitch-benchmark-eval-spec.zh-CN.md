@@ -609,7 +609,7 @@ GDPval 后续阶段的初版输出 win/tie/loss rate（tie=0.5）和 task bootst
 
 Bridge 用单调时钟扣除输入准备耗时，记录 `hitch-agent-budget.json`，剩余时间传给 Hitch CLI。CLI 从本次命令入口建立进程内单调时钟 deadline，解析、artifact handoff 和 executor 准备均不能重置该预算；启动前已耗尽则记录 `timed_out`，不启动模型。运行中的模型使用剩余时限，进程退出后，bridge 在独立 collection 时限内复制真实 result、events 和 run bundle。收集超时生成明确的失败回执，不能补造完成标记或成功状态。容器启动、CLI 进入前的传输与进程退出/收集仍受 Harbor 外层 guard 约束；这不是跨主机共享单调时钟的协议。
 
-`test/harbor-agent-budget.test.ts` 覆盖编译预算、显式上限、准备耗尽、收集阻塞及真实 CLI 的超时导出。本地假模型验证了“运行中超时后进程消失且结果导出”和“CLI 准备耗尽时没有模型进程”两种情况；该测试替换 Harbor 容器 I/O，不代表官方 task 验收。普通任务的 `timed_out` 仍按当前 importer 记为 invalid；按 profile 对终态产物计分还需独立、完整的截止与评分证据支持。该修复不会修补已结束 CMB 的缺失 bundle，也不改变两个已完成 trial 的冻结 runtime。第二题 `rolling-shutter-oma` 的候选于 2026-09-03 01:22 UTC 成功结束，终态 bundle/trajectory 校验通过，但旧 runtime 的相同网络错误使 verifier 未启动；其后已按第 14 节完成独立重评并得到有效 reward `0`。CMB 正在使用修复后的 runtime 重试原抽样题；重试包只缩小执行范围，已核对原 task、grader 和 profile 摘要不变。
+`test/harbor-agent-budget.test.ts` 覆盖编译预算、显式上限、准备耗尽、收集阻塞及真实 CLI 的超时导出。本地假模型验证了“运行中超时后进程消失且结果导出”和“CLI 准备耗尽时没有模型进程”两种情况；该测试替换 Harbor 容器 I/O，不代表官方 task 验收。普通任务的 `timed_out` 仍按当前 importer 记为 invalid；按 profile 对终态产物计分还需独立、完整的截止与评分证据支持。该修复不会修补已结束 CMB 的缺失 bundle，也不改变两个已完成 trial 的冻结 runtime。第二题 `rolling-shutter-oma` 的候选于 2026-09-03 01:22 UTC 成功结束，终态 bundle/trajectory 校验通过，但旧 runtime 的相同网络错误使 verifier 未启动；其后已按第 14 节完成独立重评并得到有效 reward `0`。CMB 使用修复后的 runtime 重试同一抽样题，已于 03:20 UTC 完成有效评分 `0`；重试包只缩小执行范围，原 task、grader 和 profile 摘要均已重新核对不变。两题验收证据见第 14 节及 `docs/benchmark-expansion-status.json`。
 
 ### 9.2 HLE
 
@@ -933,7 +933,11 @@ hitch eval rerun <eval-id> --task <task-id> --type verifier-only \
 
 该选项随直接请求或 daemon submission 持久化，参与幂等请求比较，队列恢复仍使用所选摘要。Assessment 的 `source.controller_runtime_id` 保留原执行身份，顶层 `controller_runtime_id` 表示实际评分运行身份；`runtime_repair` 与 `evidence/runtime-repair.json` 记录新旧 runtime、provider 文件摘要、唯一路径和未变文件数。读取时核对这些绑定及封存 evidence digest。这里只修复评分环境实现，不能据此修改原候选执行记录、扩大预算、替换任务或重跑模型。
 
-真实验证：Science 的 `rolling-shutter-oma` 已通过此入口完成重评，原候选 `run_a8636028f6c0416892b461c3c071dd00` 保持不变，官方 grader 返回有效 reward `0`。Assessment 为 `assessment_9d987c1a9fc64fe1ae5a74aa1c92752c`。评分 runtime `sha256:8f296edf826a5d11f988896792e052a3e4f30c7ac9c765e4d0bc6d41b9a96174` 与原 runtime 相比仅 provider 不同，其余 528 个文件一致；评分完成后 owned containers/networks/volumes 均为 0。原失败 observation 保留，eval slot 通过独立 assessment 变为 valid。Science 因 CMB 尚无有效结果仍为 1/2 覆盖，不能把整套 eval 报为成功。
+真实验证：Science 的 `rolling-shutter-oma` 已通过此入口完成重评，原候选 `run_a8636028f6c0416892b461c3c071dd00` 保持不变，官方 grader 返回有效 reward `0`。Assessment 为 `assessment_9d987c1a9fc64fe1ae5a74aa1c92752c`。评分 runtime `sha256:8f296edf826a5d11f988896792e052a3e4f30c7ac9c765e4d0bc6d41b9a96174` 与原 runtime 相比仅 provider 不同，其余 528 个文件一致；评分完成后 owned containers/networks/volumes 均为 0。原失败 observation 保留，eval slot 通过独立 assessment 变为 valid。
+
+`cmb-cross-inference` 的同样本重试 `eval_3118e52b515a45da96408579c7aed9e6` 于 2026-09-03 03:20:20 UTC 成功导入，候选 `run_79f50d577a6b4a78afc1beabf9ec631f` 正常结束，官方 reward 为有效 `0`。上游 125 项测试实际执行，112 项通过、13 项失败，涉及后验链收敛/有效样本量、偏差约束和图表呈现。14 个提交文件（12,109,832 字节）、run record、trajectory、verifier 和 sealed bundle 均已核对；bundle digest 为 `sha256:a8323a9696168787daa85f41d9fa52251e144176cb068647a79defabbc81aae2`。冻结 controller runtime `sha256:ee3c002ce43f6d9e3f23a8189f94d97202615eeb233d2f0f0cfc6d266c153989` 的 553 个文件通过校验，原 task/grader/profile 摘要与第一批包一致。过程中发生一次计算子进程 OOM，模型在同一候选会话内调整脚本后完成；该事件保留在证据中。评分后 owned containers/networks/volumes 均为 0。独立 Docker 网络快照未及时取得，verifier 已在检查前清理；隔离证据仍以 provider 检查和此前的真实网络 canary 为准。
+
+Science 当前 **2/2 固定抽样题均完成有效评分，二者均为 0 分**；覆盖由 OMA 的独立 assessment 与 CMB 的定向重试构成，原始失败 trial 保留可审计。证据总索引为 `.hitch/benchmark-expansion/science-two-task-validation.json`，提交到仓库的摘要见 `docs/benchmark-expansion-status.json`。
 
 每次物理重评分在 `evals/<eval_id>/assessments/<assessment_id>/` 保存独立 assessment。`evidence/` 包含原 artifact 快照、Harbor config/result、verifier 输出、资源观测与清理报告；manifest 记录 source run/trial/work、原 bundle index digest、source/task/artifact digest、capture 时间及 evidence digest。旧 Harbor artifact manifest 没有内容 hash，因此这个 capture 时间表示重评分前的冻结时间，不倒签为候选完成时间。结构见 `docs/schemas/verifier-assessment.schema.json`。
 

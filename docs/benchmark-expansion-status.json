@@ -145,7 +145,7 @@
         "cmb-cross-inference"
       ],
       "package": ".hitch/benchmark-expansion/packages/science-v2",
-      "status": "one_real_task_validated_cmb_retry_running",
+      "status": "two_fixed_real_tasks_validated",
       "blocker": null,
       "hardware_note": "memory_mb is a container limit, not a minimum launch requirement. Run on observed ~7.65 GiB Docker host without changing upstream limits; preserve any OOM/resource failure and do not treat this as an official leaderboard reproduction.",
       "eval_id": "eval_40a396a80f8441a2b7cf1baf2b88606b",
@@ -283,7 +283,7 @@
         "exec_session_id": 19340,
         "work_id": "work_79c5b7fd19346fe856c41f2bc380bc06",
         "container": "cmb-cross-inference__yd5veuh__env-main-1",
-        "status": "candidate_running",
+        "status": "completed_valid",
         "started_at": "2026-09-03T01:43:49.383Z",
         "controller_runtime_id": "sha256:ee3c002ce43f6d9e3f23a8189f94d97202615eeb233d2f0f0cfc6d266c153989",
         "compiler": "harbor-package@5",
@@ -294,7 +294,6 @@
         "selection": "same originally sampled task; targeted retry only",
         "original_task_grader_profile_unchanged": true,
         "evidence": ".hitch/benchmark-expansion/science-cmb-retry-package.json",
-        "result_pending": ".hitch/benchmark-expansion/science-cmb-retry-result.json",
         "runtime_frozen": true,
         "candidate_run_id": "run_79f50d577a6b4a78afc1beabf9ec631f",
         "candidate_started_at": "2026-09-03T01:47:24.367Z",
@@ -305,9 +304,9 @@
         "collection_timeout_ms": 600000,
         "budget_receipt": ".hitch/benchmark-expansion/state/evals/eval_3118e52b515a45da96408579c7aed9e6/harbor/work-items/work_79c5b7fd19346fe856c41f2bc380bc06/epoch-000001/job/cmb-cross-inference__Yd5veUH/agent/hitch-agent-budget.json",
         "budget_receipt_sha256": "sha256:68c08575f5ec1fbd08a158b8750d5714875f0a93bb22870ce1dad52d9bdf6494",
-        "last_native_event_at": "2026-09-03T02:19:59.558Z",
-        "last_native_event_type": "tool.completed",
-        "candidate_events_bytes": 235238,
+        "last_native_event_at": "2026-09-03T03:18:50.617Z",
+        "last_native_event_type": "trajectory.recorded",
+        "candidate_events_bytes": 315293,
         "runtime_observation": {
           "observed_at": "2026-09-03T02:19:58.535916+00:00",
           "oom_kill_count": 1,
@@ -319,8 +318,79 @@
           "evidence": ".hitch/benchmark-expansion/science-cmb-retry-oom-observation.json",
           "evidence_sha256": "sha256:38de24c3a5d5632fbed121e35e3ce2de20abf21d00706a779cce6f0eb8c5948b",
           "ongoing_resource_log": ".hitch/benchmark-expansion/science-cmb-retry-resource-observations.jsonl",
-          "note": "The model adjusted its own script after the compute process was killed; the fixed task, candidate run, upstream budgets and resource limits were not changed. Final scoring is still pending."
+          "note": "The model adjusted its own script after the compute process was killed; the fixed task, candidate run, upstream budgets and resource limits were not changed. Final scoring is still pending.",
+          "historical": true
+        },
+        "completed_at": "2026-09-03T03:20:20.763Z",
+        "exec_session_status": "exited",
+        "exit_code": 0,
+        "result": ".hitch/benchmark-expansion/science-cmb-retry-result.json",
+        "validation": {
+          "eval_id": "eval_3118e52b515a45da96408579c7aed9e6",
+          "trial_id": "cmb-cross-inference__Yd5veUH",
+          "run_id": "run_79f50d577a6b4a78afc1beabf9ec631f",
+          "observation_status": "valid",
+          "reward": 0,
+          "candidate_completed_at": "2026-09-03T03:18:50.499Z",
+          "completed_at": "2026-09-03T03:20:20.763Z",
+          "upstream_tests": {
+            "total": 125,
+            "passed": 112,
+            "failed": 13,
+            "warnings": 566,
+            "duration_sec": 31.18
+          },
+          "submission_files": 14,
+          "submission_bytes": 12109832,
+          "bundle_digest": "sha256:a8323a9696168787daa85f41d9fa52251e144176cb068647a79defabbc81aae2",
+          "bundle_file_count": 14,
+          "controller_runtime_id": "sha256:ee3c002ce43f6d9e3f23a8189f94d97202615eeb233d2f0f0cfc6d266c153989",
+          "original_task_grader_profile_unchanged": true,
+          "oom_kill_count": 1,
+          "candidate_program_retried_in_same_run": true,
+          "original_failed_attempt_preserved": true,
+          "remaining_owned_containers": 0,
+          "remaining_owned_networks": 0,
+          "remaining_owned_volumes": 0,
+          "independent_verifier_network_snapshot": "not_captured_container_removed_before_inspect"
+        },
+        "bundle_validation": {
+          "path": ".hitch/benchmark-expansion/science-cmb-retry-bundle-validation.json",
+          "sha256": "sha256:910ad3d88ca19768da68baac924ed154092ae7ce5a665b9845c7653a0e5a4519"
+        },
+        "artifact_validation": {
+          "path": ".hitch/benchmark-expansion/science-cmb-retry-artifact-validation.json",
+          "sha256": "sha256:b8c40d1a545d64976d152839d8fbb1d3a2f8c51e995a5b5a2a2f85014cf310a4"
+        },
+        "provenance_validation": {
+          "path": ".hitch/benchmark-expansion/science-final-provenance-validation.json",
+          "sha256": "sha256:abc8e36ac4cd5c1cf4110fd0120d830321e504e3de8d4f5c4c90580492d1b874"
         }
+      },
+      "valid_sample_count": 2,
+      "required_sample_count": 2,
+      "sample_validation": {
+        "valid_sample_count": 2,
+        "required_sample_count": 2,
+        "evidence": ".hitch/benchmark-expansion/science-two-task-validation.json",
+        "evidence_sha256": "sha256:ebf94139d740946444ccea9f38f8ea5eb45f756ae4ee17f2cf08b9e4eeefe1fc",
+        "tasks": [
+          {
+            "task_id": "rolling-shutter-oma",
+            "observation_status": "valid",
+            "reward": 0,
+            "run_id": "run_a8636028f6c0416892b461c3c071dd00",
+            "assessment_id": "assessment_9d987c1a9fc64fe1ae5a74aa1c92752c"
+          },
+          {
+            "task_id": "cmb-cross-inference",
+            "observation_status": "valid",
+            "reward": 0,
+            "run_id": "run_79f50d577a6b4a78afc1beabf9ec631f",
+            "eval_id": "eval_3118e52b515a45da96408579c7aed9e6"
+          }
+        ],
+        "scope": "Two fixed sampled tasks across the preserved original eval/assessment and targeted retry. The original failed CMB observation is not rewritten."
       }
     },
     {
@@ -410,6 +480,12 @@
         "single_request_no_tools": true,
         "untrusted_runner_rejected": true,
         "official_grader_revision": "73ae974b1844c3ffa64c3f4343d9f1f259575700"
+      },
+      "browser_access_observation": {
+        "evidence": ".hitch/benchmark-expansion/hle-browser-access-observation.json",
+        "usable_authenticated_access_observed": false,
+        "scope": "Selected in-app browser only",
+        "existing_authorized_data_or_login_requested": true
       }
     },
     {
@@ -1125,7 +1201,7 @@
     "skipped": 3,
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
-    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade passed with official reward 0, original candidate bundle unchanged, a separately identified environment-only repair runtime, and no remaining owned Docker resources."
+    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Latest changes are documentation/evidence only."
   },
-  "updated_at": "2026-09-03T02:20:30.001915+00:00"
+  "updated_at": "2026-09-03T03:29:05.648895+00:00"
 }
