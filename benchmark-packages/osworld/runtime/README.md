@@ -13,6 +13,9 @@ resets only the per-lease writable overlay/storage, and stops emulator children
 and daemonized helpers. It uses no Docker socket or host-side VM allocator.
 Harbor owns the service, named volumes and networks for its entire lifetime.
 Container teardown remains the final cleanup mechanism if a hook crashes.
+Here `ready` means the guest screenshot API responds with PNG bytes. It does
+not prove that a desktop session, application or declared screen resolution is
+ready; the task setup and first-observation checks must establish those.
 
 `vm_provider.py` supplies the `DesktopEnv` provider interface against that
 service. It delegates task setup, observations and grading to the pinned

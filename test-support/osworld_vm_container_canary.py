@@ -70,6 +70,9 @@ def main(args):
     created = []
     receipt = {'protocol': 'osworld-vm-component-canary@1', 'image_id': image_id, 'passed': False,
                'official_task': False, 'real_scored_tasks': 0, 'guest_boot_verified': False,
+               'validation_scope': 'guest API boot/reset, immutable base and process/resource ownership',
+               'desktop_readiness_verified': False,
+               'desktop_readiness_note': 'PNG transport alone does not prove a usable desktop; inspect retained images and validate task setup separately.',
                'acceleration': args.acceleration, 'guest_cpus': 4, 'guest_memory_bytes': 4 * 1024**3,
                'container_memory_bytes': 5 * 1024**3, 'boot_timeout_sec': args.boot_timeout,
                'host_capacity': capacity, 'resource_prefix': name, 'network_policy': args.network_policy}

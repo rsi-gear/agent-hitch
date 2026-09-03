@@ -362,8 +362,10 @@
           "implemented": true,
           "local_synthetic_test_passed": true,
           "linux_container_pid1_synthetic_test_passed": true,
-          "official_vm_boot_verified": false,
-          "task_and_website_assembly_complete": false
+          "official_vm_boot_verified": true,
+          "task_and_website_assembly_complete": false,
+          "boot_verification_scope": "Guest API and owner lifecycle only; desktop readiness remains unverified",
+          "real_component_receipt": ".hitch/benchmark-expansion/osworld-real-vm-egress-canary.json"
         },
         "native_agent_channel": {
           "implemented": true,
@@ -795,9 +797,9 @@
         },
         "vm_image": {
           "implemented": true,
-          "build_status": "built_controlled_guest_canary_running",
+          "build_status": "built_guest_api_lifecycle_verified_desktop_unverified",
           "built_locally": true,
-          "official_guest_boot_verified": false,
+          "official_guest_boot_verified": true,
           "real_scored_tasks": 0,
           "source_commit": "8213366932c553e5fe758d0f2c8c8b81ffc3be8c",
           "source_url": "https://huggingface.co/datasets/xlangai/v2-image/resolve/8213366932c553e5fe758d0f2c8c8b81ffc3be8c/osworld-v2-ubuntu-x86.qcow2.zip",
@@ -832,9 +834,13 @@
             "controlled_runtime_source": ".hitch/benchmark-expansion/osworld-vm-settings/source.json",
             "monitor_check": ".hitch/benchmark-expansion/osworld-vm-monitor-check.json",
             "initial_canary": ".hitch/benchmark-expansion/osworld-real-vm-canary.json",
-            "initial_boot_probe": ".hitch/benchmark-expansion/osworld-vm-boot-probe.png"
+            "initial_boot_probe": ".hitch/benchmark-expansion/osworld-vm-boot-probe.png",
+            "canary_receipt": ".hitch/benchmark-expansion/osworld-real-vm-egress-canary.json",
+            "canary_receipt_sha256": "sha256:cff662dad1e145323297775ee645fa9331ea71c9b2b31d970e56693ca0b2ede3",
+            "visual_review": ".hitch/benchmark-expansion/osworld-real-vm-egress-visual-review.json",
+            "visual_review_sha256": "sha256:b14b160fd921710c41b10df7b2c90483a07950f64010b87b648d6fa8b3510cbb"
           },
-          "limitation": "Archive and local image assembly are verified. The initial TCG/isolated-network boot failed its 900-second readiness deadline and cleaned all owned resources. The controlled image fixes an observed extra monitor endpoint and has a separate TCG/egress attempt running. No successful guest boot/reset, authorized task/assets, website trust or official task scoring has yet been established. More than network policy changed between these attempts, so they do not isolate a root cause.",
+          "limitation": "The controlled image passed TCG/egress guest API boot, reset, full immutable-base verification and resource cleanup. Both retained 1280x800 screenshots were visually inspected and remain black (first with an X-shaped cursor); no usable desktop or required 1920x1080 task setup is proven. Authorized task/assets, website trust and official scoring remain unverified. The initial isolated-network attempt failed its readiness deadline; more than network policy changed between attempts, so root cause is not isolated.",
           "image_id": "sha256:f359a29043d6eaa94321371ab77eb0fd482599b1edc48fe8973d06615c02f88c",
           "image_id_kind": "local Docker configuration SHA256; not a registry pull reference",
           "platform": "linux/amd64",
@@ -843,7 +849,7 @@
           "virtual_disk_bytes": 53687091200,
           "qemu_info_verified": true,
           "canary": {
-            "state": "running",
+            "state": "completed",
             "acceleration": "tcg",
             "guest_cpus": 4,
             "guest_memory_bytes": 4294967296,
@@ -857,7 +863,40 @@
               "VM owner forces monitor disabled",
               "serial stdio instead of monitor multiplexer",
               "dedicated network permits outbound traffic"
-            ]
+            ],
+            "passed": true,
+            "guest_boot_verified": true,
+            "initial_boot_sec": 211.95,
+            "reset_verified": true,
+            "reset_sec": 207.48,
+            "first_screenshot": {
+              "file": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/osworld-real-vm-egress-canary-screenshots/first.png",
+              "bytes": 3156,
+              "sha256": "sha256:8de170d9b278a4194d681c95214df9762ec8ca82d13917ed47d2b15019677aa6",
+              "width": 1280,
+              "height": 800
+            },
+            "reset_screenshot": {
+              "file": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/osworld-real-vm-egress-canary-screenshots/reset.png",
+              "bytes": 3057,
+              "sha256": "sha256:d4cacf4c183194915c8ba5701a5314b6a0186ea4d9be756362a46df3bba0a8b3",
+              "width": 1280,
+              "height": 800
+            },
+            "after_close": {
+              "base_sha256": "sha256:3d632f031459583cf936e0c4c5bb939122df0fec85aecb0d044ef2d3e5863335",
+              "qemu_processes": []
+            },
+            "no_host_ports_or_docker_socket_verified": true,
+            "remaining_owned_resources": {
+              "containers": 0,
+              "volumes": 0,
+              "networks": 0
+            },
+            "cleanup_passed": true,
+            "validation_scope": "guest API boot/reset, immutable base and process/resource ownership",
+            "desktop_readiness_verified": false,
+            "visual_review": "API boot and clean reset passed. These screenshots do not prove a usable desktop or the required 1920x1080 task profile; task setup and graphical interaction remain unverified."
           },
           "archive_assembly_image_id": "sha256:e41d2fa40bc0f34ef3a6113e08c3a422c28ace7ed71667c125855ef07b82ab36",
           "controlled_vm_owner_sha256": "sha256:5c508db3fa3e2454d632f91ba4d502c0d15a371f2115eaaa1c99e4980692c0e7",
@@ -878,7 +917,9 @@
               "networks": 0
             },
             "observation": "Guest screenshot service did not become ready within the original 900-second window. A separate 20-second screenshot probe also timed out; a debug framebuffer was black. DNS requests were observed; root cause is not established."
-          }
+          },
+          "boot_verification_scope": "osworld-vm-component-canary@1: screenshot API and guest setup/execute, not desktop readiness",
+          "desktop_readiness_verified": false
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -915,7 +956,7 @@
     "skipped": 3,
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/vm-controlled-check.log",
-    "additional_verification": "Five archive/QCOW2 extraction tests and an actual child-process environment test passed. The full archive and assembled disk were verified; the controlled image contains the current VM owner, and actual QEMU flags show the extra monitor disabled. The isolated-network real guest attempt failed and cleaned all owned resources; the separate egress attempt is still running. No new official benchmark acceptance."
+    "additional_verification": "Five archive/QCOW2 extraction tests and an actual child-process environment test passed. The controlled image passed real TCG/egress guest API boot/reset, full base SHA256 preservation, monitor closure, QEMU exit and zero remaining owned resources. Visual inspection found black 1280x800 screenshots, so desktop readiness remains unverified. No new official benchmark acceptance."
   },
-  "updated_at": "2026-09-03T00:12:34.811892+00:00"
+  "updated_at": "2026-09-03T00:21:38.219538+00:00"
 }

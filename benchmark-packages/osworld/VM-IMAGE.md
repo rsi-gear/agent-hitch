@@ -114,3 +114,19 @@ cleanup. TCG timing is not a claim about hardware-accelerated benchmark speed.
 This has no candidate, authorized task or official evaluator; its real scored
 task count remains zero. Initial guest resolution is recorded as observed;
 the complete SDK/task setup must still satisfy the declared screenshot profile.
+`passed` covers guest API boot/reset and resource ownership. It does not assert
+that a desktop session or application is usable. `desktop_readiness_verified`
+remains false: retain and inspect the PNGs, and verify the actual task's setup
+and graphical interaction separately. Do not resize a screenshot to satisfy
+the declared coordinate profile.
+
+The local controlled-image canary completed on 2026-09-03 with TCG and the
+`egress` policy. Initial API boot took 211.95 seconds and reset took 207.48
+seconds. The guest marker disappeared after reset, the full base SHA256 was
+unchanged, QEMU exited, and all owned containers/volumes/networks were removed.
+The two retained 1280 × 800 screenshots were visually inspected: the first
+shows a black display with an X-shaped cursor, and the reset image is black.
+These images do not establish a usable 1920 × 1080 task desktop. The original
+receipt is preserved; a separate visual-review record links its digest and
+both screenshot digests. See `docs/benchmark-expansion-status.json` for the
+local evidence paths and exact image identity.
