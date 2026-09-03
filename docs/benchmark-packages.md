@@ -12,10 +12,12 @@ Independent producers are available under `benchmark-packages/automationbench`,
 rubric), and `hle` (authorized public data, separate no-tools/with-tools profiles).
 Implementation and real execution coverage are separate: see
 `benchmark-expansion-status.json` for fixed samples, attempts and blockers.
-OSWorld 2.0 requires its matching gated tasks/assets and VM integration;
-CursorBench requires its authorized task/grader package. Neither has a validated
-integration. Full Eval V2, report/regrade and remote package execution remain
-later work.
+OSWorld 2.0 requires its matching gated tasks/assets and full task assembly;
+CursorBench requires its authorized task/grader package. Neither has two
+validated real tasks. Generic native-phase execution and artifact-only regrading
+are implemented; remote standard-package execution remains unsupported. The
+[implementation spec](hitch-benchmark-eval-spec.zh-CN.md) records the current
+boundaries and verified regrades.
 
 ## Commands
 
@@ -35,22 +37,31 @@ producer; adding a producer does not change core dispatch or package allowlists.
 
 The package requires `benchmark.toml`, `source-manifest.json`, its selected
 profile, and the explicit `tasks/` membership. Each task requires original
-instruction, Harbor configuration, `task.hitch.json`, Compose environment and
-separate verifier. Shared runtime files and tool schemas use package-relative
-paths. Schemas are published under `docs/schemas/benchmark-*.schema.json`.
+instruction, Harbor configuration and `task.hitch.json`. Tool-server tasks use
+a Compose environment and separate verifier; terminal tasks retain their
+upstream environment and shared/separate verifier configuration. Trusted
+model-call tasks use a canonical input and final-response export. Shared runtime
+files and tool schemas use package-relative paths. Schemas are published under
+`docs/schemas/benchmark-*.schema.json`.
 
 Validation rejects unknown required fields/capabilities, missing hooks, missing
 metrics, duplicate IDs, mismatched membership, floating Docker base images,
 special files and symlinks. The bounded TOML reader accepts strings, numbers,
 booleans, arrays, inline tables and table headers; unsupported TOML syntax fails
-explicitly. The execution subset is Linux/amd64, single-step Harbor 1.4, a
-Compose tool sidecar and a separate verifier. Harbor's existing task inspector
-also validates environment resources before the candidate starts.
+explicitly. Execution targets Linux/amd64, with terminal, tool-server and
+trusted model-call drivers. Tool-server tasks use Harbor task schema 1.4 and
+can declare native-phase execution with fresh candidate conversations. Harbor's
+existing task inspector also validates environment resources before the
+candidate starts.
 
 The profile declares open network access (`network: "open"`, Harbor `public`).
-Model-only network enforcement, desktop/no-tools profiles, other transports,
-daemon and remote package scheduling fail rather than silently degrade. Budget
+Model-only network enforcement, undeclared transports, daemon and remote package
+scheduling fail rather than silently degrade. No-tools execution requires the
+trusted `model-call` harness without agent overrides. Native-image agent tasks,
+including the desktop transport, currently require the Codex harness. These
+driver capabilities do not establish official OSWorld task coverage. Budget
 defaults come from each task; an explicit `--timeout` is recorded as an override.
+Candidate time and bounded evidence collection are accounted separately.
 Sampling and concurrency defaults come from the profile and serial MVP path.
 
 ## Lock, execution and evidence

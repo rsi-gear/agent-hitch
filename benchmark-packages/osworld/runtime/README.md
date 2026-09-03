@@ -76,8 +76,10 @@ full OSWorld support.
 Validation: `python3 test-support/osworld_vm_smoke.py` exercises real child
 process start/stop, stale credentials/epochs, storage reset, base preservation,
 and failure receipt idempotence with a synthetic readiness endpoint. This proves
-process/lease behavior only. A booted official OSWorld guest and official task
-reset/evaluate remain unverified until the matching inputs and worker exist.
+process/lease behavior only. A later VM component canary verified guest API
+boot/reset and cleanup using the official image, but retained black screenshots;
+usable desktop readiness and official task reset/evaluate remain unverified.
+The evidence is indexed in `docs/benchmark-expansion-status.json`.
 
 ## Native runner and candidate channel
 

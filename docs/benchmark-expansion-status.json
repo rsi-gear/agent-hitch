@@ -305,9 +305,22 @@
         "collection_timeout_ms": 600000,
         "budget_receipt": ".hitch/benchmark-expansion/state/evals/eval_3118e52b515a45da96408579c7aed9e6/harbor/work-items/work_79c5b7fd19346fe856c41f2bc380bc06/epoch-000001/job/cmb-cross-inference__Yd5veUH/agent/hitch-agent-budget.json",
         "budget_receipt_sha256": "sha256:68c08575f5ec1fbd08a158b8750d5714875f0a93bb22870ce1dad52d9bdf6494",
-        "last_native_event_at": "2026-09-03T01:50:21.216Z",
+        "last_native_event_at": "2026-09-03T02:19:59.558Z",
         "last_native_event_type": "tool.completed",
-        "candidate_events_bytes": 118373
+        "candidate_events_bytes": 235238,
+        "runtime_observation": {
+          "observed_at": "2026-09-03T02:19:58.535916+00:00",
+          "oom_kill_count": 1,
+          "first_observed_oom_at": "2026-09-03T02:17:48.607100+00:00",
+          "candidate_run_preserved": true,
+          "candidate_program_retried_in_same_run": true,
+          "status": "candidate_running_after_compute_oom",
+          "official_score": null,
+          "evidence": ".hitch/benchmark-expansion/science-cmb-retry-oom-observation.json",
+          "evidence_sha256": "sha256:38de24c3a5d5632fbed121e35e3ce2de20abf21d00706a779cce6f0eb8c5948b",
+          "ongoing_resource_log": ".hitch/benchmark-expansion/science-cmb-retry-resource-observations.jsonl",
+          "note": "The model adjusted its own script after the compute process was killed; the fixed task, candidate run, upstream budgets and resource limits were not changed. Final scoring is still pending."
+        }
       }
     },
     {
@@ -1114,5 +1127,5 @@
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
     "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade passed with official reward 0, original candidate bundle unchanged, a separately identified environment-only repair runtime, and no remaining owned Docker resources."
   },
-  "updated_at": "2026-09-03T01:51:09.025912+00:00"
+  "updated_at": "2026-09-03T02:20:30.001915+00:00"
 }

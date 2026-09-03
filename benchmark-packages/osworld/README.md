@@ -40,9 +40,12 @@ The [managed VM components](runtime/README.md) now provide process ownership,
 private lease-bound control, writable-state reset and an upstream DesktopEnv
 provider. Synthetic process tests pass both locally and as PID 1 in a Linux
 container. The SDK agent channel now preserves native phase resets, gates and
-prediction-step accounting in a synthetic parity test. Official guest boot,
-complete task/controller/web assembly and the two selected task evaluations remain
-unverified or incomplete. The generic fresh-conversation supervisor and whole-task
+prediction-step accounting in a synthetic parity test. A separate canary using
+the official VM image verified guest screenshot-API boot/reset and resource
+cleanup, but the retained screenshots stayed black. A usable desktop, complete
+task/controller/web assembly and the two selected task evaluations remain
+unverified or incomplete. See `docs/benchmark-expansion-status.json` for those
+component receipts. The generic fresh-conversation supervisor and whole-task
 assessment importer are connected through the standard native-phase package entry.
 
 The controller transport component exposes only `desktop.observe` and
