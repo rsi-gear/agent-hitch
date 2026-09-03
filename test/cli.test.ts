@@ -25,6 +25,16 @@ test("CLI version matches the package version", () => {
   assert.equal(result.stdout, `hitch ${version}\n`);
 });
 
+test("CLI advertises bounded trajectory capabilities", () => {
+  const result = spawnSync(process.execPath, [executable, "capabilities", "--json"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || undefined);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    schema_version: "1",
+    trajectory_analysis: "1",
+    trajectory_events_page: "1",
+  });
+});
+
 test("CLI preserves typed exit code for invalid commands", () => {
   const result = spawnSync(process.execPath, [executable, "not-a-command"], { encoding: "utf8" });
   assert.equal(result.status, 2);
@@ -185,6 +195,9 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /--eval-memory-mib <n>/);
   assert.match(help.stdout, /hitch worker register --server <url>/);
   assert.match(help.stdout, /hitch worker run --server <url>/);
+  assert.match(help.stdout, /hitch trajectory project <run-id>/);
+  assert.match(help.stdout, /hitch trajectory events <run-id>/);
+  assert.match(help.stdout, /hitch capabilities \[--json\]/);
 
   const result = spawnSync(process.execPath, [
     executable,

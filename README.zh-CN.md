@@ -59,12 +59,19 @@ hitch run \
   --output jsonl
 ```
 
-输出中包含 run ID，可以用它查看保存的轨迹或以 run 为中心的 verifier 证据：
+输出中包含 run ID。自动化消费者应使用有界的轨迹和 verifier 视图，完整轨迹
+inspect 仅用于显式审计：
 
 ```bash
+hitch trajectory project RUN_ID --profile analysis-v1 --json
+hitch trajectory events RUN_ID --types tool/call,tool/result --limit 100 --json
 hitch trajectory inspect RUN_ID
 hitch verifier inspect RUN_ID --json
 ```
+
+`project` 会重建 DSH surface 并合并流式 chunk；`events` 在源端完成过滤和分页。
+使用 `--field` 钻取字段时，还必须传入任一有界视图返回的 `canonical_sha256`。
+对于没有固定 canonical SHA-256 的旧版 trajectory ref，流式视图会 fail closed。
 
 每次运行的 manifest、结果、事件、日志和轨迹都会保存在
 `~/.hitch/runs/RUN_ID` 下。

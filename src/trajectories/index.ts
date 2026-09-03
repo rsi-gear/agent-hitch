@@ -9,3 +9,9 @@ export type { ProviderCaptureOptions, RedactionResult } from "./provider-capture
 export { TrajectoryWriter, canonicalTrajectoryFileRef, finalizeInterruptedTrajectory, listTrajectorySessions, loadTrajectoryRef, readTrajectory, removeTrajectory, trajectoryFileSha256, trajectoryLogPath, trajectoryRef, trajectoryRefPath, trajectoryRefV2, validateTrajectoryInvariants } from "./store.js";
 export type { LoadedTrajectoryRef, TrajectoryReadResult, TrajectoryWriterOptions } from "./store.js";
 export { importDeepseekNativeSession } from "./providers/deepseek.js";
+export { DEFAULT_ANALYSIS_MAX_BYTES, DEFAULT_INLINE_CONTENT_BYTES, projectTrajectoryAnalysis, serializeBoundedJson } from "./analysis.js";
+export type { ContentExcerpt, HitchTrajectoryAnalysisV1, TrajectoryAnalysisOptions } from "./analysis.js";
+export { DEFAULT_EVENTS_LIMIT, DEFAULT_EVENTS_MAX_BYTES, MAX_EVENTS_LIMIT, pageTrajectoryEvents } from "./events-page.js";
+export type { HitchTrajectoryEventsPageV1, TrajectoryEventsFilter, TrajectoryEventsPageOptions } from "./events-page.js";
+export { loadCanonicalTrajectorySource, scanCanonicalTrajectory } from "./stream-reader.js";
+export type { CanonicalTrajectoryScan, CanonicalTrajectorySource } from "./stream-reader.js";

@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/trajectory-analysis.schema.json",
+  "title": "Hitch bounded trajectory analysis",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "run_id", "source", "header", "surface", "events", "chunk_summaries", "omitted_event_types", "coverage"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "trajectory-analysis" },
+    "run_id": { "$ref": "#/$defs/run_id" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fidelity", "session_id", "canonical_sha256", "canonical_bytes", "event_count", "event_types"],
+      "properties": {
+        "fidelity": { "enum": ["provider_native", "normalized", "minimal"] },
+        "provider": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "canonical_sha256": { "$ref": "#/$defs/sha256" },
+        "canonical_bytes": { "type": "integer", "minimum": 0 },
+        "event_count": { "type": "integer", "minimum": 0 },
+        "event_types": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "header": true,
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fidelity", "nodes", "current_node_seqs", "replacements", "request_boundaries", "request_headers"],
+      "properties": {
+        "fidelity": { "enum": ["exact", "normalized", "partial"] },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["seq", "event_type", "surface_op", "message"],
+            "properties": {
+              "seq": { "$ref": "#/$defs/seq" },
+              "event_type": { "enum": ["user/message", "assistant/message", "tool/result"] },
+              "surface_op": {
+                "oneOf": [
+                  { "const": "append" },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["op", "start", "end"],
+                    "properties": {
+                      "op": { "const": "replace" },
+                      "start": { "$ref": "#/$defs/seq" },
+                      "end": { "$ref": "#/$defs/seq" }
+                    }
+                  }
+                ]
+              },
+              "message": true
+            }
+          }
+        },
+        "current_node_seqs": { "type": "array", "items": { "$ref": "#/$defs/seq" } },
+        "replacements": { "type": "array", "items": { "type": "object" } },
+        "request_boundaries": { "type": "array", "items": { "type": "object" } },
+        "request_headers": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "events": { "type": "array" },
+    "chunk_summaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["turn", "step", "first_seq", "last_seq", "count", "types", "model_boundary_seq"],
+        "properties": {
+          "turn": { "$ref": "#/$defs/seq" },
+          "step": { "$ref": "#/$defs/seq" },
+          "first_seq": { "$ref": "#/$defs/seq" },
+          "last_seq": { "$ref": "#/$defs/seq" },
+          "count": { "type": "integer", "minimum": 1 },
+          "types": { "$ref": "#/$defs/counts" },
+          "model_boundary_seq": { "$ref": "#/$defs/seq" },
+          "usage": true,
+          "finish_reason": true,
+          "partial": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status", "content", "source_seq_count"],
+            "properties": {
+              "status": { "const": "incomplete" },
+              "content": { "$ref": "#/$defs/content_excerpt" },
+              "source_seq_count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "omitted_event_types": { "$ref": "#/$defs/counts" },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "chunks", "content", "child_sessions"],
+      "properties": {
+        "surface": { "enum": ["complete", "partial"] },
+        "chunks": { "enum": ["coalesced", "omitted", "partial"] },
+        "content": { "enum": ["complete", "excerpted", "partial"] },
+        "child_sessions": { "enum": ["complete", "partial", "none", "unavailable"] }
+      }
+    },
+    "redactions": { "$ref": "#/$defs/redactions" }
+  },
+  "$defs": {
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "content_excerpt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview", "bytes", "sha256", "truncated", "source"],
+      "properties": {
+        "preview": { "type": "string" },
+        "tail": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "truncated": { "type": "boolean" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_id", "seq", "field"],
+          "properties": {
+            "run_id": { "$ref": "#/$defs/run_id" },
+            "seq": { "$ref": "#/$defs/seq" },
+            "field": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          }
+        }
+      }
+    },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "count"],
+        "properties": {
+          "rule_id": { "type": "string", "minLength": 1 },
+          "count": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

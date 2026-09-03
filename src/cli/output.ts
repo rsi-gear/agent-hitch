@@ -108,6 +108,9 @@ Usage:
   hitch images unpin <sha256:image-id>
   hitch trajectory inspect <run-id> [--json]
   hitch verifier inspect <run-id> [--json]
+  hitch trajectory project <run-id> [--profile analysis-v1] [--max-bytes <bytes>] [--json]
+  hitch trajectory events <run-id> [--types <a,b>] [--seq-start <n>] [--seq-end <n>] [--field <path>] [--canonical-sha256 <digest>] [--limit <n>] [--cursor <opaque>] [--max-bytes <bytes>] [--json]
+  hitch capabilities [--json]
   hitch feedback list <run-id> [--json]
   hitch feedback put <run-id> --message <id> --rating positive|negative [--note <text>] [--if-version <v>] [--json]
   hitch feedback delete <run-id> --message <id> [--if-version <v>] [--json]
@@ -142,6 +145,9 @@ Trajectory, verifier evidence, and feedback:
   Structured adapters preserve provider-native events plus a DSH-compatible canonical view
   under runs/<run>/trajectory/, bound by trajectory.ref.json V2 checksums.
   Verifier inspection returns bounded, redacted, run-centered result and diagnostic evidence.
+  Bounded analysis reconstructs the DSH surface, coalesces raw chunks, and exposes
+  source-filtered cursor pages without loading or printing the complete event array.
+  Field drill-down requires an exact seq window and the canonical SHA-256 from a prior view.
   Message feedback is a lifecycle-bound sidecar.
 
 Workspace modes:
