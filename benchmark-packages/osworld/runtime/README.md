@@ -1,11 +1,11 @@
-# OSWorld runtime components — integration in progress
+# OSWorld runtime components
 
-These are OSWorld package components, not a standalone runnable benchmark.
-The authorized-task producer, full Compose assembly, website
-provisioning, release-specific metric mapping and two real OSWorld evaluations
-are still incomplete. Harbor hooks and the fresh Hitch conversation supervisor
-have component tests. The components below are separately tested;
-they do not yet constitute an executable standard package.
+These components are assembled into an executable fixed-sample package by
+[`../assemble.py`](../assemble.py); deployment inputs and commands are in
+[ASSEMBLY.md](../ASSEMBLY.md). The Task031 real trial has completed native grading,
+snapshot export, phase sealing and a valid Hitch assessment. Task095 is running;
+two-task acceptance remains incomplete. Component tests and real-trial evidence
+are recorded separately in [the status file](../../../docs/benchmark-expansion-status.json).
 
 `vm_owner.py` is PID 1 in a dedicated Harbor Compose VM service. It launches the
 official QEMU entrypoint, waits for a real PNG from the guest screenshot server,
@@ -131,8 +131,9 @@ before import. Preflight and execution failures close the channel and wake a
 waiting prediction. The caller must supply the explicit upstream prediction-step
 budget and own VM cleanup and the trial deadline. Native result files, including
 `result.txt`, optional `result.json`, `phase_results.json`, trajectory and
-recording, remain intact. Release-specific partial/strict normalization is still
-pending; a rounded partial score is not sufficient evidence of strict success.
+recording, remain intact. `grade.py` validates and exports the native scalar for
+the two selected, pinned task classes. It records `strict_success: null`; a
+rounded partial score is not sufficient evidence of strict success.
 
 The production worker installs `model_audit.py` before loading the task. The
 pinned SDK model facade's shared configuration/backend boundaries are observed
@@ -452,9 +453,9 @@ evidence = await NativePhaseSupervisor(
 
 The standard Harbor `run()` path selects this API only for a locked native-phase
 tool-server task. A compatible frozen controller runtime and a lease are required.
-The OSWorld authorized task producer, full VM/website lifecycle assembly and real
-task validation remain incomplete; this example alone is not a runnable OSWorld
-package.
+The executable OSWorld producer wires this API to the managed VM/website
+lifecycle and scoring contract. This API example alone does not supply the
+required images, authorized task inputs or controller configuration.
 
 The controller command accepts `{request_id, operation, parameters}` on stdin and
 prints just its JSON output; `controller_client.py` authenticates privately.
@@ -631,9 +632,10 @@ second-phase expiry, raw single-task results, real Hitch CLI timeout and private
 RPC, expiry during candidate replacement, and native evaluator failure. Import
 tests keep zero reward and the original timed-out bundle, accept the archived
 last candidate with an unbound native tail, and reject altered deadline evidence.
-These tests use synthetic environments, harness output and graders. Official VM,
-authorized task/assets, website lifecycle and real two-task validation remain
-outstanding.
+These tests use synthetic environments, harness output and graders. The separate
+Task031 real run validates the assembled VM, authorized inputs, website lifecycle
+and native scoring. Two-task acceptance still requires Task095's valid result;
+synthetic coverage does not count as an additional real task.
 
 ## Controller process and Harbor lifecycle
 

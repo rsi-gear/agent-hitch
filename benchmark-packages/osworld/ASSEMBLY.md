@@ -137,4 +137,9 @@ not converted into a derived strict-success claim. `native-score.json` records
 Assembly, API probes and boot canaries do not count as scored tasks. Acceptance
 requires both original samples to finish through Hitch with sealed candidate
 evidence and a valid assessment. Valid zero counts; infrastructure failure does
-not. Full OSWorld acceptance remains pending.
+not. Task031 completed this path on 2026-09-03 with
+`native_score=0.14285714285714285`; its canonical assessment and exported snapshot
+were independently verified. The original Task095 is running under the same
+v6 profile, so acceptance is currently **1/2**. See
+[the status file](../../docs/benchmark-expansion-status.json) for identities,
+receipts and subsequent results.

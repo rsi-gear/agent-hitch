@@ -1,14 +1,18 @@
-# OSWorld release and sample resolution
+# OSWorld fixed-sample benchmark package
 
 The fixed-sample producer is now available as `assemble.py`; see
 [ASSEMBLY.md](ASSEMBLY.md) for inputs, image identities, service isolation,
-DeepSeek configuration and offline scalar grading. A validated/compiled
-package does not yet establish two real scored trials.
+DeepSeek configuration and offline scalar grading. The executable package has
+completed one real scored task: Task031 returned `native_score=0.14285714285714285`
+with a verified snapshot, sealed candidate and valid Hitch assessment. Task095
+is running in the same v6 evaluation. Current receipts and acceptance counts are
+in [the status file](../../docs/benchmark-expansion-status.json).
 
 `resolve-release.py` prepares the exact release components and a fixed random
 sample from the official **public file inventory**. It uses Python 3.9+ and the
-standard library. This is provenance preparation; the desktop/VM executor and
-the two real scored trials remain incomplete.
+standard library. This command prepares provenance; `assemble.py` supplies the
+desktop/VM execution package. Resolving or compiling inputs alone does not count
+as a scored trial.
 
 ```sh
 python benchmark-packages/osworld/resolve-release.py \
@@ -37,14 +41,16 @@ not attest to task contents and is not execution evidence.
 Authorized access was established on 2026-09-03. The pinned hash manifest and
 both selected task classes now pass the official release/hash checks. The
 `task_031` asset subtree and its literal state-file asset references were acquired
-from the pinned asset revision. This does not establish a runnable package:
-website/VM assembly, a usable desktop, and official task execution remain pending.
+from the pinned asset revision. The assembled package's Task031 run has since
+verified a usable desktop, the original task inputs, native grading and Hitch
+result publication.
 The selected `task_095` also declares an LLM user simulator (`gpt-4o`) and remote
 media discovery; its controller credentials and runtime dependencies must be
-configured without altering the original task. Private inputs and receipts stay
+configured through the declared DeepSeek substitution profile without changing
+the original task definition. Private inputs and receipts stay
 under `.hitch/benchmark-expansion/`; only identities/status belong in Git.
 
-Remaining execution work follows section 9.5 of
+The execution contract follows section 9.5 of
 `docs/hitch-benchmark-eval-spec.zh-CN.md`: a managed VM and website namespace,
 lease/fencing and cleanup, native screenshot/action bridge, official task
 reset/evaluate, and release-specific partial/strict metrics. Candidate access
@@ -55,12 +61,13 @@ The [managed VM components](runtime/README.md) now provide process ownership,
 private lease-bound control, writable-state reset and an upstream DesktopEnv
 provider. Synthetic process tests pass both locally and as PID 1 in a Linux
 container. The SDK agent channel now preserves native phase resets, gates and
-prediction-step accounting in a synthetic parity test. A separate canary using
-the official VM image verified guest screenshot-API boot/reset and resource
-cleanup, but the retained screenshots stayed black. A usable desktop, complete
-task/controller/web assembly and the two selected task evaluations remain
-unverified or incomplete. See `docs/benchmark-expansion-status.json` for those
-component receipts. The generic fresh-conversation supervisor and whole-task
+prediction-step accounting in a synthetic parity test. A separate canary initially
+verified only guest screenshot-API boot/reset; its black screenshots did not
+establish a usable desktop. The later Task031 evaluation completed the assembled
+VM/controller/website path and native scoring. Its 45 predictions and accepted
+`FAIL` action produced a valid partial score; a failure action does not bypass the
+native evaluator. See the status file for both historical diagnostics and
+scored-trial evidence. The generic fresh-conversation supervisor and whole-task
 assessment importer are connected through the standard native-phase package entry.
 
 The controller transport component exposes only `desktop.observe` and
@@ -120,7 +127,7 @@ observation of the model's image-reading call. See
 ## Pinned SDK integration constraints
 
 Code review of `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` identified these
-requirements for the remaining executor:
+requirements for the executor:
 
 - Load authorized classes through `task_loader.load_task_from_file()` on the
   controller, then `DesktopEnv.reset(task_config=task)`. The candidate must never
@@ -139,7 +146,8 @@ requirements for the remaining executor:
   runner, and the channel parity test covers its multi-phase behavior. The
   supervisor creates a fresh candidate conversation on each native reset and
   requires retired-container receipts; different run IDs alone do not establish
-  this. Full VM integration remains to be validated.
+  this. The validated Task031 run contains one candidate phase; the synthetic
+  multi-phase tests remain separate evidence for reset and replacement behavior.
 - The stock Docker provider launches its own container and allocates host ports.
   Calling it unchanged would bypass Hitch's resource ownership. The managed
   provider must own the VM and website namespace under the trial lease, fence
