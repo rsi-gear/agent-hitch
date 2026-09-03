@@ -35,6 +35,8 @@ function runCLI(args: string[]): Promise<RunCLIResult> {
 }
 
 test("daemon authenticates mutations, executes a queued run, and reports health", async (t) => {
+  const diagnose = (stage: string) => process.stderr.write(`daemon integration: ${stage}\n`);
+  diagnose("setup");
   const root = await mkdtemp(path.join(tmpdir(), "hitch-daemon-"));
   const executable = await writeFakeCodex(root);
   const previous = process.env.HITCH_CODEX_PATH;
@@ -52,13 +54,18 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
     runResources,
     evalTrialResources,
   });
+  diagnose("start");
   await server.start();
+  diagnose("started");
   t.after(async () => {
+    diagnose("close");
     await server.close();
+    diagnose("closed");
     if (previous === undefined) delete process.env.HITCH_CODEX_PATH;
     else process.env.HITCH_CODEX_PATH = previous;
   });
 
+  diagnose("health");
   const healthResponse = await fetch(`http://127.0.0.1:${server.port}/health`);
   const health = await healthResponse.json() as {
     status: string;
@@ -83,12 +90,14 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   const daemonState = await readJSON<{ resource_policy: typeof health.resource_policy }>(statePaths(root).daemon);
   assert.deepEqual(daemonState.resource_policy, health.resource_policy);
 
+  diagnose("unauthorized");
   const unauthorized = await fetch(`http://127.0.0.1:${server.port}/v1/runs`, {
     method: "POST",
     body: "{}",
   });
   assert.equal(unauthorized.status, 401);
 
+  diagnose("invalid requests");
   const client = await daemonClient(root);
   await assert.rejects(
     client.request("/v1/runs", { method: "POST", body: JSON.stringify({ agent: "codex" }) }),
@@ -104,6 +113,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
       return typed.status === 400 && typed.code === "invalid_input" && typed.exitCode === 2;
     },
   );
+  diagnose("CLI failure");
   const cliFailure = await runCLI([
     "--root", root,
     "run", "--daemon",
@@ -113,6 +123,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   ]);
   assert.equal(cliFailure.code, 2);
   assert.match(cliFailure.stderr, /workspace does not exist/);
+  diagnose("submit run");
   const accepted = await client.request("/v1/runs", {
     method: "POST",
     body: JSON.stringify({ agent: "codex", cwd: root, prompt: "daemon", timeout_ms: 5_000 }),
@@ -134,6 +145,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   assert.equal(manifest.resolved_revision.source.type, "installed");
   assert.match(manifest.artifact_id, /^sha256:/);
 
+  diagnose("events");
   const firstEventRead = await client.requestWithMetadata(`/v1/runs/${accepted.run_id as string}/events?offset=0`);
   const rawEvents = firstEventRead.payload;
   assert.equal(typeof rawEvents, "string");
@@ -168,6 +180,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   assert.equal(completedEventRead.payload, `${appendedEvent}\n`);
   assert.ok(Number(completedEventRead.headers.get("x-hitch-next-offset")) > nextOffset);
 
+  diagnose("isolated run");
   const isolatedSource = await mkdtemp(path.join(tmpdir(), "hitch-daemon-copy-source-"));
   t.after(() => rm(isolatedSource, { recursive: true, force: true }));
   const isolatedAccepted = await client.request("/v1/runs", {
@@ -194,6 +207,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   assert.equal(isolatedManifest.workspace, isolatedSource);
   assert.notEqual(isolatedManifest.execution_workspace, isolatedSource);
   await removeWorkspace({ root, runId: isolatedAccepted.run_id as RunId });
+  diagnose("body complete");
 });
 
 test("daemon root lock rejects a second instance and cleanup is owner-scoped", async (t) => {
