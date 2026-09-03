@@ -105,6 +105,9 @@ test("candidate rerun inherits the source execution policy", async (t) => {
   await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
   assert.equal(observed?.maxConcurrentOverride, 2);
   assert.deepEqual(observed?.executionResources, sourceTrial);
+  assert.equal(observed?.executionResourceSource, "submission-default");
+  assert.equal(observed?.executionStrategy, "local-task-slots-v1");
+  assert.equal(observed?.environmentBuildMode, "backend");
 });
 
 test("daemon rerun API preserves requested semantics and rejects unavailable resume", async (t) => {

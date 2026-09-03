@@ -1,5 +1,6 @@
 import type { RerunSelector } from "./rerun-slots.js";
 import type { ResourceVectorV1 } from "../domain/index.js";
+import type { EvalHarborArtifactBuilder } from "./harbor-artifact-builder.js";
 import { HitchError, invalidInput } from "../foundation/index.js";
 
 export const EVAL_RERUN_TYPES = [
@@ -31,6 +32,10 @@ export interface RerunEvalOptions {
   signal?: AbortSignal;
   trialBundleGraceMs?: number;
   executionResources?: ResourceVectorV1;
+  executionResourceSource?: "submission-default" | "operator-default";
+  executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
+  environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
+  harborArtifactBuilder?: EvalHarborArtifactBuilder;
 }
 
 export interface EvalRerunResult {

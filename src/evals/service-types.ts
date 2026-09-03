@@ -22,6 +22,8 @@ export interface RunEvalOptions {
   onEvent?: (event: Record<string, unknown>) => void;
   trialBundleGraceMs?: number;
   precreated?: boolean;
+  /** Replace a terminal result in-place while preserving the eval identity. Internal rerun recovery only. */
+  replaceTerminal?: boolean;
   normalizedRequest?: EvalRequest;
   maxConcurrentOverride?: number;
   executionResources?: ResourceVectorV1;

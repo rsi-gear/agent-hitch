@@ -29,6 +29,7 @@ import { loadRerunLocalTransport, loadRerunPreparedArtifacts, loadRerunResolvedR
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
+import { restartIncompleteEval } from "./preparation-rerun.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 interface RerunPlan {
@@ -72,6 +73,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     || options.maxConcurrentOverride < 1 || options.maxConcurrentOverride > request.max_concurrent)) {
     throw invalidInput("eval rerun concurrency override is invalid");
   }
+  const restarted = await restartIncompleteEval(options, request, startedAt, rerunDirectory, statePath); if (restarted) return restarted;
   const plan = parseRerunPlan(await readJSON<unknown>(path.join(options.evalDirectory, "plan.json")), options.evalId, request);
   const initialProgress = await readEvalProgress(options.evalDirectory);
   if (initialProgress === null) throw unavailable("eval has no task-level progress");
@@ -310,11 +312,9 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     await captureRuntime?.close().catch(() => undefined);
   }
 }
-
 function defaultModelCapturePlan(): ModelCapturePlanV1 {
   return { requested_mode: "native", effective_mode: "native", required: false };
 }
-
 export function groupRerunSlotsByArtifact(
   selected: readonly EvalTrialSlot[],
   plan: EvalExecutionPlanV1,

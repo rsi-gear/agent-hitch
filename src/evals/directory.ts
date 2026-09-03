@@ -8,6 +8,7 @@ export async function prepareEvalDirectory(input: {
   evalId: EvalId;
   request: EvalRequest;
   precreated: boolean;
+  replaceTerminal?: boolean;
 }): Promise<string> {
   const directory = path.join(input.evalsDirectory, input.evalId);
   if (input.precreated) {
@@ -16,7 +17,7 @@ export async function prepareEvalDirectory(input: {
     if (JSON.stringify(existingRequest) !== JSON.stringify(input.request)) {
       throw new HitchError(`precreated eval request does not match: ${input.evalId}`, { code: "eval_request_conflict", exitCode: 2 });
     }
-    if (await readJSON(path.join(directory, "result.json"), null)) {
+    if (!input.replaceTerminal && await readJSON(path.join(directory, "result.json"), null)) {
       throw new HitchError(`eval is already terminal: ${input.evalId}`, { code: "eval_id_conflict", exitCode: 2 });
     }
     return directory;
@@ -32,4 +33,3 @@ export async function prepareEvalDirectory(input: {
   await atomicWriteJSON(path.join(directory, "request.json"), input.request);
   return directory;
 }
-

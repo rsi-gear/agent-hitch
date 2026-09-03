@@ -312,6 +312,9 @@ export class EvalRerunScheduler {
       root: this.root,
       maxConcurrentOverride: parallelism,
       executionResources: rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial),
+      executionResourceSource: "submission-default",
+      executionStrategy: "local-task-slots-v1",
+      environmentBuildMode: entry.execution.build.mode,
       env: this.credentialEnv,
       signal: controller.signal,
     });
