@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -64,7 +65,14 @@ class ImageTests(unittest.TestCase):
             data = b'# synthetic source\n'; (target / 'core.py').write_bytes(data); (target / 'core.py').chmod(0o644)
             manifest[field] = [builder.record('core.py', data, 0o644)]
         (root / 'osworld-source-manifest.json').write_text(json.dumps(manifest))
-        packages = [{'name': p.metadata['Name'], 'version': p.version} for p in importlib.metadata.distributions()]
+        # Runner images may expose duplicate/system distributions. This fixture
+        # models the isolated image environment instead of snapshotting the host.
+        packages = [{'name': 'Example-Package', 'version': '1.2.3'}, {'name': 'other-dependency', 'version': '4.5.6'}]
+        distributions = patch.object(importlib.metadata, 'distributions', return_value=[
+            SimpleNamespace(metadata={'Name': 'example_package'}, version='1.2.3'),
+            SimpleNamespace(metadata={'Name': 'other.dependency'}, version='4.5.6'),
+        ])
+        distributions.start(); self.addCleanup(distributions.stop)
         package_file = root / 'osworld-python-packages.json'; package_file.write_text(json.dumps(packages))
         receipt = verify_image(root)
         self.assertEqual(receipt['sdk']['files'], 1)
@@ -80,6 +88,10 @@ class ImageTests(unittest.TestCase):
         with self.assertRaises(ValueError): verify_image(root)
         source.chmod(0o644)
         package_file.write_text(json.dumps([*packages, {'name': 'unexpected-fixture-package', 'version': '0'}]))
+        with self.assertRaises(ValueError): verify_image(root)
+        package_file.write_text(json.dumps([*packages, {'name': 'example.package', 'version': '1.2.3'}]))
+        with self.assertRaises(ValueError): verify_image(root)
+        package_file.write_text(json.dumps([{**packages[0], 'version': '9.9.9'}, packages[1]]))
         with self.assertRaises(ValueError): verify_image(root)
 
 

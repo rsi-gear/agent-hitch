@@ -1,5 +1,6 @@
 """Actual HTTP/Unix/Node transport test, with synthetic observations and actions."""
 import base64
+import faulthandler
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,8 @@ import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import zlib
+
+faulthandler.dump_traceback_later(10, repeat=True)
 
 
 def module(name, file):
