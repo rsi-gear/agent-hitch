@@ -1,5 +1,5 @@
 import type { RerunSelector } from "./rerun-slots.js";
-import type { ResourceVectorV1 } from "../domain/index.js";
+import type { ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import type { EvalHarborArtifactBuilder } from "./harbor-artifact-builder.js";
 import { HitchError, invalidInput } from "../foundation/index.js";
 
@@ -35,6 +35,7 @@ export interface RerunEvalOptions {
   executionResourceSource?: "submission-default" | "operator-default";
   executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
   environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
+  modelCapturePlan?: ModelCapturePlanV1;
   harborArtifactBuilder?: EvalHarborArtifactBuilder;
 }
 

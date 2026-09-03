@@ -1,10 +1,10 @@
 import { cp, lstat, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import type { EvalRequest } from "../domain/index.js";
+import type { EvalRequest, ModelCapturePlanV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON } from "../foundation/index.js";
 import { logicalPlanModelCapture, readEvalLogicalPlan } from "./eval-logical-plan.js";
 import { readEvalProgress } from "./progress.js";
-import { validateEvalId } from "./request.js";
+import { resolveLocalDatasetTaskIds, validateEvalId } from "./request.js";
 import { evalRerunSemantics } from "./rerun-types.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions } from "./rerun-types.js";
 import { invalidTrialSlots, slotKey, sortSlots, uniqueTasks, validateProgressPlan } from "./rerun-slots.js";
@@ -39,16 +39,26 @@ export async function restartIncompleteEval(
   if (failedResult?.status !== "failed" || !Array.isArray(failedResult.trials) || failedResult.trials.length !== 0) {
     throw unavailable("eval preparation is incomplete but the source is not a failed pre-execution attempt");
   }
+  const taskIds = await resolveLocalDatasetTaskIds(request.dataset);
+  if (taskIds === null || taskIds.length === 0) {
+    throw unavailable("incomplete preparation recovery requires an enumerable local task plan");
+  }
 
   const logicalPlan = await readEvalLogicalPlan(options.evalDirectory, options.evalId, request).catch((error) => {
     throw unavailable((error as Error).message);
   });
+  let modelCapturePlan = logicalPlanModelCapture(logicalPlan) ?? options.modelCapturePlan;
+  if (!modelCapturePlan && !await exists(path.join(options.evalDirectory, "submission.json"))) {
+    modelCapturePlan = defaultModelCapturePlan();
+  }
+  if (!modelCapturePlan) {
+    throw unavailable("incomplete preparation recovery requires the original model capture plan");
+  }
   await writeRequest(rerunDirectory, options, startedAt, [], []);
   await writeState(statePath, options, startedAt, "running", [], [], [], []);
   await archiveIncompleteAttempt(options, rerunDirectory, failedResult);
 
   try {
-    const modelCapturePlan = logicalPlanModelCapture(logicalPlan);
     const restarted = await runEval({
       evalId: validateEvalId(options.evalId),
       root: options.root,
@@ -66,7 +76,7 @@ export async function restartIncompleteEval(
       executionStrategy: options.executionStrategy
         ?? (logicalPlan?.attempt_execution === "harbor-task-slots-v1" ? "local-task-slots-v1" : "legacy-attempt-shards"),
       ...(options.environmentBuildMode ? { environmentBuildMode: options.environmentBuildMode } : {}),
-      ...(modelCapturePlan ? { modelCapturePlan } : {}),
+      modelCapturePlan,
       ...(options.harborArtifactBuilder ? { harborArtifactBuilder: options.harborArtifactBuilder } : {}),
     });
     if (restarted.status === "cancelled") {
@@ -254,4 +264,8 @@ async function exists(file: string): Promise<boolean> {
 
 function unavailable(message: string): HitchError {
   return new HitchError(message, { code: "eval_rerun_unavailable", exitCode: 2 });
+}
+
+function defaultModelCapturePlan(): ModelCapturePlanV1 {
+  return { requested_mode: "native", effective_mode: "native", required: false };
 }

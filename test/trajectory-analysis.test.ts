@@ -408,6 +408,64 @@ test("analysis redacts sensitive keys, JSON keys, host paths, and split chunk cr
   );
 });
 
+test("chunk field drill-down redacts credentials using context before the selected seq", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-drill-prefix-redaction-"));
+  t.after(() => forceRemove(root));
+  const textCredential = "sk-demoCredentialValue123456";
+  const argumentCredential = "sk-toolCredentialValue123456";
+  const source = await writeRun(root, RUN_ID, [
+    event(0, "turn/start", { turn: 1 }),
+    event(1, "step/start", { turn: 1, step: 1 }),
+    event(2, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 0, blockType: "text" } }),
+    event(3, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "text-delta", index: 0, text: "sk-" } }),
+    event(4, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "text-delta", index: 0, text: "demoCredentialValue123456" },
+    }),
+    event(5, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "block-end", index: 0, block: { type: "text", text: textCredential } },
+    }),
+    event(6, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 1, blockType: "tool-call" } }),
+    event(7, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "call-1", name: "bash", argumentsDelta: "sk-" },
+    }),
+    event(8, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "call-1", argumentsDelta: "toolCredentialValue123456" },
+    }),
+    event(9, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "block-end", index: 1, block: { type: "tool-call", id: "call-1", name: "bash", arguments: argumentCredential } },
+    }),
+  ]);
+  assert.ok(source.expectedSha256);
+
+  for (const selection of [
+    { seq: 4, field: "data.chunk.text", suffix: "demoCredentialValue123456" },
+    { seq: 4, field: "data.chunk.delta", suffix: "demoCredentialValue123456" },
+    { seq: 4, field: "event.data.chunk.text", suffix: "demoCredentialValue123456" },
+    { seq: 4, field: "event.data.chunk.delta", suffix: "demoCredentialValue123456" },
+    { seq: 8, field: "data.chunk.argumentsDelta", suffix: "toolCredentialValue123456" },
+    { seq: 8, field: "event.data.chunk.argumentsDelta", suffix: "toolCredentialValue123456" },
+  ]) {
+    const page = await pageTrajectoryEvents(source, {
+      filter: { seq_start: selection.seq, seq_end: selection.seq, field: selection.field },
+      canonicalSha256: source.expectedSha256,
+      credentialValues: [textCredential, argumentCredential],
+    });
+    const json = JSON.stringify(page.events[0]);
+    assert.match(json, /\[REDACTED\]/, selection.field);
+    assert.doesNotMatch(json, new RegExp(selection.suffix), selection.field);
+  }
+});
+
 test("analysis canonicalizes request headers and suppresses sparse-index deltas after assembly", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-canonical-header-"));
   t.after(() => forceRemove(root));

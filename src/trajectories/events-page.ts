@@ -14,6 +14,8 @@ import {
 } from "./content-projection.js";
 import type { ContentProjectionContext } from "./content-projection.js";
 import { canonicalRequestHeader } from "./dsh-contract.js";
+import { canonicalChunkDeltaField, locateChunkDrillTarget, toolCallIdentity } from "./events-chunk-drill.js";
+import type { ChunkDeltaField } from "./events-chunk-drill.js";
 import { IncrementalRequestAttemptTracker } from "./request-attempt.js";
 import { scanCanonicalTrajectory } from "./stream-reader.js";
 import type { CanonicalTrajectorySource } from "./stream-reader.js";
@@ -23,8 +25,6 @@ export const DEFAULT_EVENTS_LIMIT = 100;
 export const MAX_EVENTS_LIMIT = 1_000;
 export const MAX_INLINE_EVENT_BYTES = 256 * 1024;
 const STREAM_DELTA_OMITTED = "[STREAM_DELTA_OMITTED]";
-
-type ChunkDeltaField = "data.chunk.delta" | "data.chunk.text" | "data.chunk.argumentsDelta";
 
 export interface TrajectoryEventsFilter {
   types?: string[];
@@ -99,7 +99,14 @@ export async function pageTrajectoryEvents(
     throw new HitchError("trajectory events --types contains an unsafe public event type", { code: "invalid_input", exitCode: 2 });
   }
   const events: unknown[] = [];
-  let chunkDrill: {
+  const perEventBytes = filter.field === undefined
+    ? Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, Math.floor(maxBytes / (limit + 4))))
+    : Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, maxBytes - 4 * 1024));
+  const chunkDeltaDrill = canonicalChunkDeltaField(filter.field);
+  const chunkDrillTarget = chunkDeltaDrill
+    ? await locateChunkDrillTarget(source, filter, chunkDeltaDrill)
+    : undefined;
+  const chunkDrill: {
     turn: number;
     step: number;
     attempt: number;
@@ -109,14 +116,20 @@ export async function pageTrajectoryEvents(
     callIdentity?: string;
     accumulator: BoundedTextAccumulator;
     sourceCount: number;
-  } | undefined;
+  } | undefined = chunkDrillTarget ? {
+    ...chunkDrillTarget,
+    accumulator: new BoundedTextAccumulator(
+      Math.floor(perEventBytes / 3),
+      Math.floor(perEventBytes / 6),
+      credentialValues,
+      pathValues,
+      redactions,
+    ),
+    sourceCount: 0,
+  } : undefined;
   let totalMatches = 0;
   let hasMore = false;
   let lastSelectedSeq: number | undefined;
-  const perEventBytes = filter.field === undefined
-    ? Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, Math.floor(maxBytes / (limit + 4))))
-    : Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, maxBytes - 4 * 1024));
-  const chunkDeltaDrill = canonicalChunkDeltaField(filter.field);
   const requestAttempts = new IncrementalRequestAttemptTracker();
 
   const scan = await scanCanonicalTrajectory(source, (event) => {
@@ -128,31 +141,6 @@ export async function pageTrajectoryEvents(
     }
     const requestAttempt = requestAttempts.accept(event);
     if (chunkDeltaDrill) {
-      if (!chunkDrill && event.seq === filter.seq_start && (!filter.types || filter.types.includes(event.type))) {
-        const data = event.data as Record<string, unknown>;
-        if (event.type !== "assistant/chunk" || !Number.isSafeInteger(data.turn) || !Number.isSafeInteger(data.step)) {
-          throw new HitchError(`trajectory event ${event.seq} is not an assistant chunk`, { code: "trajectory_field_not_found", exitCode: 3 });
-        }
-        chunkDrill = {
-          turn: data.turn as number,
-          step: data.step as number,
-          attempt: requestAttempt?.attempt ?? requestAttempts.current(data.turn as number, data.step as number).attempt,
-          firstSeq: event.seq,
-          field: filter.field as string,
-          deltaField: chunkDeltaDrill,
-          ...(chunkDeltaDrill === "data.chunk.argumentsDelta"
-            ? { callIdentity: toolCallIdentity(data.chunk as Record<string, unknown>) }
-            : {}),
-          accumulator: new BoundedTextAccumulator(
-            Math.floor(perEventBytes / 3),
-            Math.floor(perEventBytes / 6),
-            credentialValues,
-            pathValues,
-            redactions,
-          ),
-          sourceCount: 0,
-        };
-      }
       if (chunkDrill && event.type === "assistant/chunk") {
         const data = event.data as Record<string, unknown>;
         if (data.turn === chunkDrill.turn && data.step === chunkDrill.step
@@ -227,20 +215,6 @@ export async function pageTrajectoryEvents(
   };
   serializeBoundedJson(result, maxBytes, "trajectory_events_page_overflow");
   return result;
-}
-
-function toolCallIdentity(chunk: Record<string, unknown>): string {
-  if (typeof chunk.id === "string" && chunk.id.length > 0) return chunk.id;
-  return Number.isSafeInteger(chunk.index) ? `index:${String(chunk.index)}` : "unknown";
-}
-
-function canonicalChunkDeltaField(field: string | undefined): ChunkDeltaField | undefined {
-  const canonical = field?.startsWith("event.") ? field.slice("event.".length) : field;
-  return canonical === "data.chunk.delta"
-    || canonical === "data.chunk.text"
-    || canonical === "data.chunk.argumentsDelta"
-    ? canonical
-    : undefined;
 }
 
 function projectRawEvent(
