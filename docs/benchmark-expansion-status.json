@@ -1992,6 +1992,19 @@
             "path": ".hitch/benchmark-expansion/osworld-v4-task031-first-observation/result.json",
             "sha256": "sha256:7020054f3d0a76c7500e310ff721202d5241f21e118abb5ae173f83e5b7d71e2"
           }
+        },
+        "task031_candidate_progress": {
+          "observed_at": "2026-09-03T09:15:23.607377+00:00",
+          "receipt": {
+            "path": ".hitch/benchmark-expansion/osworld-v4-task031-progress-20260903T0915/receipt.json",
+            "sha256": "sha256:5606e3f419d1ce5c46ba971a8880803bb03d7cbe4541ce1913cdfee089dac67f"
+          },
+          "predictions": 6,
+          "submitted_action_batches": 6,
+          "model_calls": 0,
+          "native_score_available": false,
+          "visual_observation": "The original native screenshot shows Chrome rendering page 1 of the two-page requirement PDF at assets.trial.hitch.test/task_031/requirement.pdf. This demonstrates candidate-visible HTTP access and rendering of this selected asset; other task artifacts and final grading are not yet verified.",
+          "guest_api_called_by_diagnostic": false
         }
       },
       "guest_dns_observation": {
@@ -2096,7 +2109,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-native-guide-forwarding-check.log"
   },
-  "updated_at": "2026-09-03T09:13:37.908625+00:00",
+  "updated_at": "2026-09-03T09:18:51.436134+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",

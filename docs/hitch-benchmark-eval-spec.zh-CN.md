@@ -1018,3 +1018,5 @@ Task095 的 v3 候选随后于 08:51:19 UTC 正常退出进程，但只返回最
 实际候选 request 还证明旧 supervisor 漏传 Harbor task instruction。修复后每个原生阶段均携带锁定说明，OSWorld producer 将 `candidate-guide.md` 复制到各题 `instruction.md`，并把其 SHA256 纳入 profile。说明要求先提交并获准接受 `DONE` / `FAIL` 再返回最终文字，同时解释 action acknowledgement、观察序号和键盘逐字输入。不会自动伪造结束动作，也不改变上游动作实现、评分器或候选预算。回归为 373 项通过、3 项跳过、0 失败，覆盖原生空问题和跨阶段静态说明保留。
 
 v5 完整包摘要为 `sha256:6ddaef1972148a5e3fbedc463f3a53c515f3c728868b6c87ba1e1a03334be5af`，guide 摘要为 `sha256:6b8d265a9b357b7761846763fbcf39d72c26df1513c0d3ad71addbd80beedb1e`。Task095 重试子包保持原抽样成员及任务身份，已排队等待当前 Task031 完成和全部所属资源清理；启动前核对测试过的 bridge 文件摘要及冻结包摘要。当前 Task031 的已冻结运行不被追溯修改。不同包与 profile 的验证结果分别记录，不混合声称为同一官方配置的 benchmark 分数。
+
+09:15 UTC 的 Task031 原生第 6 张观察图显示 Chrome 已在 `assets.trial.hitch.test/task_031/requirement.pdf` 渲染要求说明 PDF 的第一页，证明候选可读取这一经重映射的任务素材。诊断只复制已记录的原生截图，没有额外调用客体 API。此时共 6 次 prediction / 6 次提交，尚无评分调用或原生分数；其余素材和最终评分仍待验证。
