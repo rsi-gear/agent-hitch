@@ -1002,3 +1002,5 @@ Task095 的 11 个公开媒体文件已在候选环境之外按固定源站 comm
 首次实际运行还发现通用 ownership overlay 会把所有服务强制设为 AMD64，覆盖包中明确声明的 ARM64 VM，导致 Compose 错误尝试拉取本机镜像。`hitch_harbor_environment.py` 现保留每个服务在 Compose 中显式声明的 platform；未声明者仍沿用已有默认值。混合架构合并结果通过真实 Compose config 测试，修复以新 host controller runtime 封存，不修改原失败运行或冻结 benchmark 包。
 
 随后 prepare 诊断确认 `FileExistsError`：Docker 预先创建 `/evidence`、`/cache` 空卷挂载点，原代码的 `exist_ok=False` 在启动 worker 前就失败。初始化现接受空目录并设为私有权限，仍拒绝符号链接和任何旧内容；不清空或复用旧题目状态。空挂载点完整 lifecycle、旧文件拒绝和链接拒绝均有测试。真实运行与诊断失败保持独立收据，不计为有效零分。
+
+修复后的 v2 包摘要为 `sha256:67c91641c61593017cd79a9e12ff07032f503fec11d4b9d282fda24fb29ae56d`。固定 Task095 的原生 prepare 诊断已返回 `ready`、`native_phases_ready`、`native_deadline_ready`，并清理全部临时资源。这证明原生 SDK 已产生候选观察，尚不等于完成真实候选执行或评分。完整两题正在通过该冻结包验证，进度与最终收据见状态文件。

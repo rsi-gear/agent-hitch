@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "empty_volume_prepare_fix_validating",
-      "blocker": "Native prepare directory creation is repaired to accept fresh empty Docker mount points while rejecting links and stale contents. A new controller image and native prepare diagnostic are being validated before further fixed candidate trials.",
+      "status": "two_fixed_trials_running_after_native_prepare_pass",
+      "blocker": "Fixed task_095 native prepare now returns ready/native_phases_ready/native_deadline_ready and all diagnostic resources are cleaned. The two fixed Hitch candidate trials are running; valid scored sample count remains zero until native scoring and sealed evidence finish.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1823,7 +1823,7 @@
       },
       "native_prepare_failure_receipt": ".hitch/benchmark-expansion/osworld-native-prepare-v1/result.json",
       "tcg_http120_volume_fix": {
-        "status": "native_prepare_diagnostic_running",
+        "status": "native_prepare_passed_real_trials_running",
         "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v2",
         "package_digest": "sha256:67c91641c61593017cd79a9e12ff07032f503fec11d4b9d282fda24fb29ae56d",
         "profile_digest": "sha256:92e90f115fdb3461c28475430162fa3289bb9265d21783e519eb5b162db9d98a",
@@ -1831,7 +1831,15 @@
         "controller_image": "sha256:0fba979c2ed78b621d716c18e4617d437f42fb3500baeeee488105cae5a94178",
         "vm_image": "sha256:2ae7505f7970cde716d06c72bbfced788ce9b00a5053673e108f8362db890dcc",
         "native_prepare_diagnostic": ".hitch/benchmark-expansion/osworld-native-prepare-v2",
-        "real_scored_tasks": 0
+        "real_scored_tasks": 0,
+        "native_prepare_receipt": {
+          "path": ".hitch/benchmark-expansion/osworld-native-prepare-v2/result.json",
+          "sha256": "sha256:1205c03bd721aa511a64aa60f0c13d0e692eed23ae881f608d7b808fb52dd7e3"
+        },
+        "eval_id": "eval_d9420c05cf3a4e658744579a5e835837",
+        "log": ".hitch/benchmark-expansion/osworld-http120-v2-eval.log",
+        "candidate_model": "gpt-5.4",
+        "judge_and_user_simulator": "declared DeepSeek profile"
       }
     },
     {
@@ -1867,7 +1875,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-volume-prepare-check.log"
   },
-  "updated_at": "2026-09-03T07:36:11.244002+00:00",
+  "updated_at": "2026-09-03T07:42:10.849656+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1875,7 +1883,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Two fixed real Hitch trials are running under the explicit TCG / standard-VGA / 120-second screenshot profile. Preserve their inputs and budgets, collect native setup and scoring evidence, and keep infrastructure failures distinct from valid zero scores."
+      "requirement": "Collect the running v2 package trials after native prepare passed. Do not count component readiness as task scoring; preserve task membership, budgets, screenshot profile and DeepSeek judge/simulator identity."
     },
     {
       "benchmark": "cursorbench",
