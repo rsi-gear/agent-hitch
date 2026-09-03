@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "two_fixed_tasks_retry_running_after_native_phase_inspector_fix",
-      "blocker": "No OSWorld score has completed Hitch validation yet. Task031 v4 ended without a native terminal action. Task095 v5 reached native completion but host inspection used the wrong runtime payload path, and native scoring artifacts were not collected. The fixed v6 full package is running the original two tasks sequentially.",
+      "status": "one_fixed_real_task_validated_second_candidate_running",
+      "blocker": "Task031 has a valid native score and sealed Hitch assessment. The original Task095 is running in the same fixed v6 evaluation; its native score and final assessment remain pending.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -2116,7 +2116,7 @@
         "current_guest_files_verified": true
       },
       "phase_inspector_payload_fix": {
-        "status": "task031_candidate_running_task095_pending",
+        "status": "task031_validated_task095_candidate_running",
         "cause": "Host inspection resolved runtime-root/dist/src/runs/phase-bundle.js; the verified bundle stores it under runtime-root/payload/dist/src/runs/phase-bundle.js.",
         "fix": "Resolve the phase inspection module inside payload/. The orchestration regression now builds and uses a real controller runtime bundle rather than passing the source checkout as its runtime root.",
         "previous_actual_candidate_bundle_inspection_passed": true,
@@ -2144,7 +2144,7 @@
         "resample_on_failure": false,
         "candidate_max_predictions": 100,
         "candidate_timeout_sec": 7200,
-        "real_scored_tasks": 0,
+        "real_scored_tasks": 1,
         "cancelled_same_runtime_preparation": {
           "eval_id": "eval_5fec8fd13cef4c058d7dfb1604be9962",
           "trial_id": "osworld-task-031__2NrVAco",
@@ -2167,7 +2167,7 @@
           "work_id": "work_405052800a3348d1ece6a695642a71cb",
           "candidate_run_id": "run_e1bdf4ae966f4c5f90f4df9a16329340",
           "supervision_started_at": "2026-09-03T10:01:26.666053+00:00",
-          "status": "candidate_running",
+          "status": "completed_valid",
           "actual_candidate_guide": {
             "path": ".hitch/benchmark-expansion/osworld-v6-task031-actual-guide-verification.json",
             "sha256": "sha256:329342845206ee5bc4e96b2bc256444c1028a79a187b80f99fe57d42159a5bc3"
@@ -2177,9 +2177,40 @@
             "sha256": "sha256:8e0090fde922c92f1012ae33e450372aa7d0393c68a97a6345ace51ca4c66deb"
           },
           "verified_guest_report_files": 10,
+          "native_score_available": true,
+          "native_score": 0.14285714285714285,
+          "strict_success": null,
+          "completed_at": "2026-09-03T10:48:24.296017Z",
+          "predictions": 45,
+          "submitted_action_batches": 45,
+          "last_submitted_actions": [
+            "FAIL"
+          ],
+          "model_calls": 2,
+          "canonical_assessment": {
+            "id": "assessment_6af2b7f4055049dc3b5416068a05f1bc",
+            "digest": "sha256:171426406c5ae500867baca93ba01ccaba047360e2b85d9a8465960592c8932c"
+          },
+          "validation": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task031-scored-validation.json",
+            "sha256": "sha256:7f3303d84a10e932b811b97fb0342ae8f198af0ada07f93d6093cca8e4b70173"
+          },
+          "cleanup": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task031-final-cleanup.json",
+            "sha256": "sha256:b1bcd3f4c40476436658482f725ef009fc36068c9fb309e2c4a0319c1cc8a8e9"
+          }
+        },
+        "task095": {
+          "trial_id": "osworld-task-095__hhy53Dn",
+          "work_id": "work_a5d3888b034ed3775746f24e2ad1c19e",
+          "candidate_run_id": "run_e1b4b12eb65840c4a786d5d9e7444950",
+          "run_group_id": "run_group_a59c731cd36b4228845cfa49d71b0b11",
+          "supervision_started_at": "2026-09-03T10:53:02.265277+00:00",
+          "status": "candidate_running",
           "native_score_available": false
         }
-      }
+      },
+      "real_scored_tasks": 1
     },
     {
       "id": "cursorbench",
@@ -2229,7 +2260,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-phase-inspection-payload-check.log"
   },
-  "updated_at": "2026-09-03T10:04:23.572657+00:00",
+  "updated_at": "2026-09-03T10:56:12.694722+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -2237,7 +2268,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Follow active eval_67debacbf31445ceba211881bfa18e54 (Task031 then Task095). Task031 guest readback verified all ten original report hashes before candidate startup, and its actual prompt includes the v6 guide. Collect native scores, sealed phase evidence and valid Hitch assessments; preserve sample membership, budgets and prior invalid/cancelled receipts."
+      "requirement": "Follow the existing eval_67debacbf31445ceba211881bfa18e54, now running original Task095 (trial osworld-task-095__hhy53Dn). Task031 is validated with native_score=0.14285714285714285, sealed phase and canonical assessment; its owned resources are cleared. Collect and verify Task095 native score, sealed phases and Hitch assessment without resampling or changing the frozen v6 profile."
     },
     {
       "benchmark": "cursorbench",

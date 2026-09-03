@@ -4,7 +4,7 @@
 
 本文定义 Harbor 兼容的 Hitch 包协议、执行和评分边界；第 3 节是设计基线的差距分析，第 9、14、15 节说明已落地的实现与验证。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型。逐题执行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，设计条目不能视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
 
-当前扩展目标是 AutomationBench 以外的六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric、Science、HLE 的具名 DeepSeek no-tools profile 均为 **2/2**，Terminal-Bench 为 **1/2**，OSWorld 与 CursorBench 为 **0/2**；有效评分允许任务得分为零，HLE with-tools 尚无真实评分。Hugging Face 授权、固定 HLE/OSWorld 数据访问和用户指定的 `.env` DeepSeek 配置均已验证。OSWorld 已验证任务说明确实传入候选，Task095 也已到达原生完成边界；随后发现 host 封存检查器的运行时路径错误，尚无有效整题评分。该路径和工具容器/桌面 VM 的边界说明均已修复，固定两题正在以新运行时顺序重试。外部阻塞是 CursorBench 授权任务/评分包，以及满足 Terminal-Bench 原始 16 CPU / 16 GiB 要求的 worker。原始两题选择和任务资源要求保持不变。下文的 AutomationBench MVP 表示已完成的首阶段范围，后续扩展以此段及状态文件为准。
+当前扩展目标是 AutomationBench 以外的六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric、Science、HLE 的具名 DeepSeek no-tools profile 均为 **2/2**，Terminal-Bench 与 OSWorld 为 **1/2**，CursorBench 为 **0/2**；有效评分允许任务得分为零，HLE with-tools 尚无真实评分。Hugging Face 授权、固定 HLE/OSWorld 数据访问和用户指定的 `.env` DeepSeek 配置均已验证。OSWorld Task031 已完成原生评分、证据导出和 Hitch assessment，得分为 `0.14285714285714285`；Task095 正在同一 v6 配置下执行。外部阻塞是 CursorBench 授权任务/评分包，以及满足 Terminal-Bench 原始 16 CPU / 16 GiB 要求的 worker。原始两题选择和任务资源要求保持不变。下文的 AutomationBench MVP 表示已完成的首阶段范围，后续扩展以此段及状态文件为准。
 
 ## 1. 设计决定
 
@@ -672,7 +672,7 @@ Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服
 
 实施更新：官方现已发布 `osworld-v2-2026.08.08`，直接以该 release 为目标。必须拿到其可授权 task/assets，并按官方 release manifest 锁定代码、任务、assets、网站与 VM 镜像；全部组件一致才运行。拿不到时该目标明确是 `blocked_on_dataset`，不能换成 6 月任务。参见[官方版本清单](https://github.com/xlang-ai/OSWorld-V2/blob/main/benchmark_releases/osworld-v2-2026.08.08.json)。
 
-授权更新（2026-09-03）：现已取得固定版本的 task/hash manifest 与素材访问权。官方清单 SHA256、108 题 membership、`task_031`/`task_095` 源码摘要校验通过；`task_031` 素材目录及其 state 内直接引用的素材已按固定 asset commit 下载。`task_095` 使用原生 LLM user simulator 与运行中的远程媒体发现；当前 controller 采用第 15 节明确命名的 DeepSeek 替换配置。固定两题的完整 Compose、私有 TeamChat 初始化和 controller 启动已验证；可用桌面、实际任务 reset 和两题完整评分仍待验收。
+授权更新（2026-09-03）：现已取得固定版本的 task/hash manifest 与素材访问权。官方清单 SHA256、108 题 membership、`task_031`/`task_095` 源码摘要校验通过；`task_031` 素材目录及其 state 内直接引用的素材已按固定 asset commit 下载。`task_095` 使用原生 LLM user simulator 与运行中的远程媒体发现；当前 controller 采用第 15 节明确命名的 DeepSeek 替换配置。固定两题的完整 Compose 与 controller 启动已验证。Task031 已完成真实桌面操作、原生评分和 Hitch assessment；Task095 正在执行，仍待完整评分验收。
 
 当前组件：`benchmark-packages/osworld/runtime/` 已包含受管 VM owner/provider、原生 `Agent.reset/predict` channel、动作校验和固定 SHA256 的 runner wrapper。多阶段流程委托给 `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` 的原始 `lib_run_single.run_single_example`，保留同一 VM 的 phase setup、gate 和评分文件；synthetic 对照已覆盖这些语义。每次 reset 撤销旧 token，并要求 supervisor 绑定新的 Hitch run。候选启动、取消与封存现已接入标准包入口，整题 assessment 导入也已接通；**这些合同测试尚不代表 OSWorld VM 与官方两题验收完成**。Run ID 检查只能防止复用标识，不能替代清空模型会话的证据。
 
@@ -1031,3 +1031,5 @@ Host 检查器已修复路径，回归 fixture 改为实际构建并使用包含
 当前运行使用 v6 完整包 `sha256:4793d55cf12d0834fd4b7653cd589708d22e9a7df5264e83acd4d542fa3cb2ea`、guide `sha256:926c11e3926098bbc65730246f7f277b22a19bc92b03893c0d9c41344166a3c1` 和修复后的 host runtime `sha256:fb9bd779e36e2044e47acb450180426fde6214e91590b4b32848050efff7971a`。`eval_67debacbf31445ceba211881bfa18e54` 顺序执行原始 Task031、Task095，保持每题 100 prediction / 7,200 秒、原生任务/评分器及 controller/VM 镜像。Task031 原生准备完成后，只读文件 getter 已核对桌面十份报告的 SHA256；该诊断不修改客体、不向候选传递内容、不充当任务得分。最终仍须原生评分、phase 封存和 Hitch assessment 全部有效。
 
 10:01 UTC 的真实 Task031 VM 文件读回已全部通过：十份报告均返回 HTTP 200，字节数和 SHA256 与授权原始 ZIP 一致。检查约耗时 16 秒，在候选监督开始前完成；这证明本次输入文件已部署且可读取，不代表候选完成任务。随后实际候选 request 的 guide SHA256 也与 v6 锁定值相同，host runtime 文件与通过回归的源码一致；候选现已开始执行，原生评分仍待完成。
+
+10:48 UTC 的 Task031 v6 已通过首题真实验收：45 次 prediction / 45 次动作提交，候选以原生 `FAIL` 结束，评分器返回部分得分 `0.14285714285714285`。两次 DeepSeek 评分调用均完成；完整 snapshot、原生分数、候选 bundle 索引及 canonical assessment 引用已独立复核。Assessment 为 `assessment_6af2b7f4055049dc3b5416068a05f1bc`，收据为 `.hitch/benchmark-expansion/osworld-v6-task031-scored-validation.json`。这验证了修复后的 host 检查器、原生评分、独立 verifier 和结果发布链路；部分分数不转换为 strict success。原 trial 保留，所属容器、网络及残留卷已清空。原始 Task095 随后自动启动，候选监督开始于 10:53 UTC，整项 OSWorld 验收进度为 1/2。
