@@ -1004,3 +1004,5 @@ Task095 的 11 个公开媒体文件已在候选环境之外按固定源站 comm
 随后 prepare 诊断确认 `FileExistsError`：Docker 预先创建 `/evidence`、`/cache` 空卷挂载点，原代码的 `exist_ok=False` 在启动 worker 前就失败。初始化现接受空目录并设为私有权限，仍拒绝符号链接和任何旧内容；不清空或复用旧题目状态。空挂载点完整 lifecycle、旧文件拒绝和链接拒绝均有测试。真实运行与诊断失败保持独立收据，不计为有效零分。
 
 修复后的 v2 包摘要为 `sha256:67c91641c61593017cd79a9e12ff07032f503fec11d4b9d282fda24fb29ae56d`。固定 Task095 的原生 prepare 诊断已返回 `ready`、`native_phases_ready`、`native_deadline_ready`，并清理全部临时资源。这证明原生 SDK 已产生候选观察，尚不等于完成真实候选执行或评分。完整两题正在通过该冻结包验证，进度与最终收据见状态文件。
+
+Task031 随后暴露 Chrome DevTools 的 Host 检查：实际对照中 `http://vm:9222/json/version` 返回 500，提示 Host 必须是 IP 或 localhost；同一容器的私网 IP 返回 200。Provider 现先通过 Compose DNS 解析唯一 RFC1918 IPv4，再把数字 IP 返回给 SDK，并在复位后重新解析；控制 API 仍按服务名访问。该修复不改变 Chrome 启动参数或安全设置。原运行在候选启动前被中止并保留基础设施错误收据；v3 包摘要为 `sha256:7ac2d756fb3a1b2b82e25e2ff65d08403911e8970f03d9c3c2fffc13efb936ec`，两题以此新包继续验证。

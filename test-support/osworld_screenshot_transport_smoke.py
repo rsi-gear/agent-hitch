@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmark-packages/osworld/runtime'))
 from screenshot_transport import configure_screenshot_transport, transport_profile
-from vm_provider import create_desktop_env
+from vm_provider import ManagedVMProvider, create_desktop_env
 
 PNG = b'\x89PNG\r\n\x1a\nimage'
 
@@ -22,6 +22,20 @@ class Controller:
 
 
 class TransportTests(unittest.TestCase):
+    def test_native_sdk_receives_private_ip_for_chrome_host_validation(self):
+        provider = ManagedVMProvider({})
+        def answers(*addresses):
+            return [(2, 1, 6, '', (address, 0)) for address in addresses]
+        with patch('vm_provider.socket.getaddrinfo', return_value=answers('172.26.0.3')) as lookup:
+            self.assertEqual(provider.get_ip_address('/System.qcow2'), '172.26.0.3:5000:9222:8006:8080')
+            self.assertEqual(lookup.call_args.args[0], 'vm')
+            # A new DNS result after a container replacement is used next time.
+            lookup.return_value = answers('172.26.0.4')
+            self.assertEqual(provider.get_ip_address('/System.qcow2'), '172.26.0.4:5000:9222:8006:8080')
+        for addresses in ((), ('172.26.0.3', '172.26.0.4'), ('127.0.0.1',), ('169.254.1.1',), ('8.8.8.8',)):
+            with patch('vm_provider.socket.getaddrinfo', return_value=answers(*addresses)):
+                with self.assertRaises(ValueError): provider.get_ip_address('/System.qcow2')
+
     def response(self, content=PNG, status=200):
         return types.SimpleNamespace(status_code=status, headers={'Content-Type': 'image/png'}, content=content)
 

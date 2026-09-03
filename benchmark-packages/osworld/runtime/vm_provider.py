@@ -1,9 +1,11 @@
 """OSWorld DesktopEnv provider for an already Harbor-owned VM service."""
 import json
+import ipaddress
 import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import tempfile
 import threading
 from urllib.error import HTTPError
@@ -85,7 +87,18 @@ class ManagedVMProvider:
             raise RuntimeError('VM owner did not confirm guest readiness')
 
     def get_ip_address(self, path_to_vm):
-        return f'{self.guest_host}:5000:9222:8006:8080'
+        # Chrome DevTools rejects a DNS name in the HTTP Host header. Resolve
+        # the private Compose service for native SDK traffic; keep lifecycle
+        # control addressed by the fenced service name. Re-resolve after reset.
+        addresses = {item[4][0] for item in socket.getaddrinfo(
+            self.guest_host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)}
+        if len(addresses) != 1:
+            raise ValueError('VM service must resolve to one private IPv4 address')
+        address = ipaddress.IPv4Address(addresses.pop())
+        private_ranges = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
+        if not any(address in ipaddress.IPv4Network(network) for network in private_ranges):
+            raise ValueError('VM service must resolve inside its private Compose network')
+        return f'{address}:5000:9222:8006:8080'
 
     def revert_to_snapshot(self, path_to_vm, snapshot_name):
         result = self.request('reset')

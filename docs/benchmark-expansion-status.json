@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "two_fixed_trials_running_after_native_prepare_pass",
-      "blocker": "Fixed task_095 native prepare now returns ready/native_phases_ready/native_deadline_ready and all diagnostic resources are cleaned. The two fixed Hitch candidate trials are running; valid scored sample count remains zero until native scoring and sealed evidence finish.",
+      "status": "two_fixed_trials_running_private_ip_provider",
+      "blocker": "Screenshot, mixed-platform and empty-volume fixes are verified. Live A/B probe confirmed Chrome Host-header failure and numeric-IP success; the corrected provider is now running both fixed trials. Native setup, candidate execution and scoring are still pending.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1823,7 +1823,7 @@
       },
       "native_prepare_failure_receipt": ".hitch/benchmark-expansion/osworld-native-prepare-v1/result.json",
       "tcg_http120_volume_fix": {
-        "status": "native_prepare_passed_real_trials_running",
+        "status": "task031_infrastructure_interruption_before_candidate",
         "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v2",
         "package_digest": "sha256:67c91641c61593017cd79a9e12ff07032f503fec11d4b9d282fda24fb29ae56d",
         "profile_digest": "sha256:92e90f115fdb3461c28475430162fa3289bb9265d21783e519eb5b162db9d98a",
@@ -1839,7 +1839,30 @@
         "eval_id": "eval_d9420c05cf3a4e658744579a5e835837",
         "log": ".hitch/benchmark-expansion/osworld-http120-v2-eval.log",
         "candidate_model": "gpt-5.4",
-        "judge_and_user_simulator": "declared DeepSeek profile"
+        "judge_and_user_simulator": "declared DeepSeek profile",
+        "result": ".hitch/benchmark-expansion/osworld-http120-v2-eval-result.json",
+        "interruption_receipt": ".hitch/benchmark-expansion/osworld-cdp-infrastructure-interruption.json",
+        "reason": "Chrome DevTools rejects vm service-name Host header. Confirmed same private IP returns 200; task095 did not run in this eval."
+      },
+      "cdp_address_diagnostic": {
+        "receipt": ".hitch/benchmark-expansion/osworld-task031-cdp-address-series.json",
+        "sha256": "sha256:e5b04eee8844546dfe44f5d3af4635049d116f44696dc8fd04dcc48d0d9fdf95",
+        "service_name_http_status": 500,
+        "private_ip_http_status": 200,
+        "browser": "Chrome/130.0.6723.58",
+        "fix": "Resolve one private Compose IPv4 for native SDK endpoints; no Chrome flags or task changes."
+      },
+      "tcg_http120_cdp_fix": {
+        "status": "two_fixed_trials_running",
+        "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v3",
+        "package_digest": "sha256:7ac2d756fb3a1b2b82e25e2ff65d08403911e8970f03d9c3c2fffc13efb936ec",
+        "profile_digest": "sha256:addce93c6684704517d5d090377bf8aed234df45488c7bad543af32cac25f55e",
+        "compiled_digest": "sha256:4d93bd26886add3416783cd368ba12299e0ffbf239906b9632b4913d4ac80cb6",
+        "controller_image": "sha256:ad5ce290602d44e59167a15c731ee9dbcbaac36595df4dd32781a92157468d29",
+        "vm_image": "sha256:2ae7505f7970cde716d06c72bbfced788ce9b00a5053673e108f8362db890dcc",
+        "eval_id": "eval_2a322d75c6bd457b9a0a26c752443225",
+        "log": ".hitch/benchmark-expansion/osworld-http120-v3-eval.log",
+        "real_scored_tasks": 0
       }
     },
     {
@@ -1873,9 +1896,9 @@
     "passed": 373,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/osworld-volume-prepare-check.log"
+    "evidence": ".hitch/benchmark-expansion/osworld-cdp-provider-check.log"
   },
-  "updated_at": "2026-09-03T07:42:10.849656+00:00",
+  "updated_at": "2026-09-03T07:55:13.144567+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1883,7 +1906,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Collect the running v2 package trials after native prepare passed. Do not count component readiness as task scoring; preserve task membership, budgets, screenshot profile and DeepSeek judge/simulator identity."
+      "requirement": "Collect v3 package trials using the corrected private-IP provider. Task095 native prepare passed previously; validate Task031 browser/guest website routing and both full candidate/scoring flows. Preserve fixed membership, budgets and prior invalid receipts."
     },
     {
       "benchmark": "cursorbench",

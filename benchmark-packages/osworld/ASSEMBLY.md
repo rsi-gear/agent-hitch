@@ -81,6 +81,13 @@ Private control credentials and mutable state use per-project named volumes.
 Main waits for controller readiness; the controller waits for the VM owner's
 control API. Guest boot occurs during prepare.
 
+The managed VM provider resolves `vm` to a single private IPv4 address before
+returning the SDK's guest endpoints. Chrome DevTools rejects DNS service names
+in its HTTP Host header, even when the same service IP works. Resolution is
+repeated after reset; ambiguous, loopback, link-local and public addresses are
+rejected. The control endpoint remains the private named service. No Chrome
+security flags or native task launch commands are changed.
+
 Prepare accepts an already existing **empty** evidence/cache directory because
 Docker creates named-volume mount points before process startup. It rejects
 linked directories and any previous contents, applies private permissions,
