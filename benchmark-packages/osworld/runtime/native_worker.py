@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from action_policy import load_graphical_policy
 from agent_channel import AgentChannel
 from controller_server import ControllerServer
+from model_audit import install_model_audit
 from native_runner import run_native
 from runtime_config import load_config, read_bytes, read_json, write_json
 from vm_provider import create_desktop_env
@@ -29,7 +30,7 @@ def main():
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    channel = server = None
+    channel = server = model_audit = None
     status = 'failed'
     try:
         session = read_json(Path(config['session_directory']) / 'session.json')
@@ -37,6 +38,11 @@ def main():
         # This is set before importing the SDK; never inherit its hosted default.
         os.environ['WEBSITE_HOST_SUFFIX'] = config['website_host_suffix']
         os.environ['OSWORLD_FILE_BASE_URL'] = config['assets_directory']
+        model_audit = install_model_audit(config['sdk_root'], evidence / 'model-calls.json')
+        # A package opts in through its frozen controller environment. Register
+        # the named transport without changing the SDK's default providers.
+        if any(os.environ.get(name) == 'hitch_deepseek_chat_v1' for name in ('OSWORLD_EVAL_MODEL_PROVIDER', 'OSWORLD_USER_SIM_PROVIDER')):
+            importlib.import_module('deepseek_backend')
         policy = load_graphical_policy()
         channel = AgentChannel(evidence / 'channel', (1920, 1080), policy,
                                max_actions_per_turn=config['max_actions_per_turn'], max_text_bytes=config['max_text_bytes'])
@@ -51,7 +57,7 @@ def main():
                                  action_space='computer_13', headless=True, enable_proxy=False, client_password=password)
         native_args = types.SimpleNamespace(sleep_after_execution=config['sleep_after_execution'], result_dir=str(evidence / 'native'))
         metadata = run_native(channel, env, task, config['max_steps'], native_args,
-                              evidence / 'native', finalize_on_budget=config['native_deadline'])
+                              evidence / 'native', finalize_on_budget=config['native_deadline'], model_audit=model_audit)
         write_json(evidence / 'native-execution.json', {'protocol': 'osworld-native-execution@1', 'config_digest': config_digest,
                    'source_task_id': config['source_task_id'], 'task_sha256': config['task_sha256'], 'native': metadata})
         logging.shutdown()
@@ -69,6 +75,7 @@ def main():
         # process-group teardown, not by pretending the task completed.
         if status == 'completed': stop.wait()
         if server: server.close()
+        if model_audit: model_audit.close()
         logging.shutdown()
     return 0 if status == 'completed' else 1
 

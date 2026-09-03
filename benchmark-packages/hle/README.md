@@ -29,6 +29,34 @@ provider response records model identity, usage and termination. API access uses
 An optional `OPENAI_BASE_URL` changes the candidate endpoint and must be included
 in the effective runtime environment evidence.
 
+For the authorized DeepSeek API configuration, map the local `.env` value into
+the child worker's `OPENAI_API_KEY` and `HLE_JUDGE_API_KEY` environment variables;
+set `OPENAI_BASE_URL=https://api.deepseek.com/`. Do not print, commit or put the
+key into profile files. Generate a new named package with:
+
+```sh
+# Add these flags to import.py; keep the original Parquet, seed and task count.
+--judge-model deepseek-v4-flash --judge-api responses \
+--judge-base-url https://api.deepseek.com/ --judge-schema-message \
+--profile-name hle-public-no-tools-deepseek-schema-guided
+```
+
+Run it with `--model deepseek-v4-flash --pass-env OPENAI_API_KEY
+--pass-env OPENAI_BASE_URL`. Only the candidate key/base URL are passed to the
+candidate. The separate verifier resolves `HLE_JUDGE_API_KEY`. Both transports
+keep the original judge prompt and extraction schema; the Responses variant
+sends that schema in `text.format`. The endpoint, API and model are locked in
+the package, and the profile marks a substituted judge. Redirects, incomplete
+judge outputs, refusal/actions and wrong field types are errors, never scores.
+Do not assume a provider enforces the declared schema: a real DeepSeek response
+returned JSON null where the upstream schema requires a string, which local
+validation correctly rejected. `--judge-schema-message` explicitly adds the
+format-only `system-json-schema@1` instruction; it repeats the same schema and
+requires strings to remain strings. The original user judge prompt stays byte
+identical. This is a separate locked profile, never a coercion of returned nulls
+or an in-place change to an earlier package. Provider model aliases are mutable; retain
+returned model and usage as observations, without claiming a snapshot revision.
+
 The worker preserves the final answer from Hitch's result, outside candidate
 storage, and restores it into the separate verifier after artifact transfer.
 Gold answers only enter `tests/`. The producer extracts the original system
@@ -56,10 +84,12 @@ its SHA256 matches the upstream LFS identity. Both profiles were imported from
 the complete 2,500-row membership using the same fixed two-task selection, and
 both passed `hitch benchmark lock` and `hitch benchmark validate`. Their private
 packages and acquisition receipts remain under `.hitch/benchmark-expansion/`.
-Real candidate/judge execution still needs `OPENAI_API_KEY` and
-`HLE_JUDGE_API_KEY`. Package validation and the earlier synthetic contracts add
-no scored HLE trials. See `docs/benchmark-expansion-status.json` for identities.
+DeepSeek credentials have since been supplied through the local environment,
+and the same two tasks have real candidate/judge execution evidence. Consult
+`docs/benchmark-expansion-status.json` for final validity and regrade records;
+package validation and synthetic contracts alone add no scored HLE trials.
 
 Sources: [dataset](https://huggingface.co/datasets/cais/hle),
 [official evaluation code](https://github.com/centerforaisafety/hle),
-[Responses image inputs](https://developers.openai.com/api/docs/guides/images-vision).
+[Responses image inputs](https://developers.openai.com/api/docs/guides/images-vision),
+[DeepSeek Responses compatibility](https://api-docs.deepseek.com/guides/responses_api/).

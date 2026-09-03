@@ -34,6 +34,12 @@ test("GDPval public rubric handles partial credit, penalties and invalid judge o
   assert.match(result.stdout,/public rubric contract passed/);
 });
 
+test("HLE provider substitution preserves the judge schema and fails closed", () => {
+  const result = spawnSync("python3", ["test-support/hle_judge_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /HLE provider schema and failure gates passed/);
+});
+
 test("OSWorld VM component fences leases and owns child processes without a host Docker socket", () => {
   const result = spawnSync("python3", ["test-support/osworld_vm_smoke.py"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -44,6 +50,24 @@ test("OSWorld channel preserves native phase resets, gates and per-prediction bu
   const result = spawnSync("python3", ["test-support/osworld_channel_smoke.py"], { encoding: "utf8", timeout: 20_000 });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /batch-budget channel parity passed/);
+});
+
+test("OSWorld swallowed evaluator model errors cannot become valid native scores", () => {
+  const result = spawnSync("python3", ["test-support/osworld_model_audit_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /swallowed model errors invalidate native completion/);
+});
+
+test("OSWorld DeepSeek preserves token limits and rejects unusable model replies", () => {
+  const result = spawnSync("python3", ["test-support/osworld_deepseek_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /OSWorld DeepSeek token and response contracts passed/);
+});
+
+test("OSWorld state asset mirror preserves bytes and rejects unverified inputs", () => {
+  const result = spawnSync("python3", ["test-support/osworld_state_assets_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /OSWorld pinned visible asset mirror contract passed/);
 });
 
 test("OSWorld controller separates candidate HTTP tools from lease-fenced Unix management", () => {

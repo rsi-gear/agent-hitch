@@ -42,7 +42,7 @@ export function buildHarborRegradeConfig(input: {
 /** Harbor copies agent/ and artifacts/ only. The Hitch lifecycle journal is
  * collected control evidence needed by the frozen metric normalizer as well.
  * Copy it verbatim; never manufacture prepare/snapshot success for a regrade. */
-export async function seedHarborRegradeTrial(sourceDirectory: string, trialDirectory: string): Promise<void> {
+export async function seedHarborRegradeTrial(sourceDirectory: string, trialDirectory: string, trustedResult?: Record<string, unknown>): Promise<void> {
   const file = path.join(sourceDirectory, "benchmark-lifecycle.json");
   const journal = await readJSON<Record<string, unknown>>(file);
   if (journal.schema_version !== "1" || journal.failure !== null || !journal.phases || typeof journal.phases !== "object" || Array.isArray(journal.phases)) {
@@ -50,6 +50,19 @@ export async function seedHarborRegradeTrial(sourceDirectory: string, trialDirec
   }
   await mkdir(trialDirectory, { recursive: true });
   await copyFile(file, path.join(trialDirectory, "benchmark-lifecycle.json"));
+  const responseFile = path.join(sourceDirectory, "hitch-final-response.json");
+  const response = await readJSON<Record<string, unknown> | null>(responseFile, null);
+  if (response !== null) {
+    // Caller has verified the sealed result bundle. Never substitute the
+    // candidate-writable artifact for the host's authoritative export.
+    if (!trustedResult || typeof trustedResult.output !== "string"
+      || response.schema_version !== "1" || response.source !== "hitch-run-result"
+      || response.run_id !== trustedResult.run_id || response.termination !== trustedResult.status
+      || response.response !== trustedResult.output) {
+      throw new HitchError("canonical response differs from the sealed candidate result", { code: "eval_verifier_only_unavailable", exitCode: 2 });
+    }
+    await copyFile(responseFile, path.join(trialDirectory, "hitch-final-response.json"));
+  }
 }
 
 export async function runHarborRegrade(input: {
@@ -58,6 +71,7 @@ export async function runHarborRegrade(input: {
   config: Record<string, unknown>;
   runtimeDirectory: string;
   env: NodeJS.ProcessEnv;
+  trustedResult?: Record<string, unknown>;
   harborExecutable?: string;
   signal?: AbortSignal;
 }): Promise<{ trial: Record<string, unknown>; backend: Record<string, unknown> }> {
@@ -67,7 +81,7 @@ export async function runHarborRegrade(input: {
   await ensureDir(input.directory);
   const configPath = path.join(input.directory, "regrade.json");
   await atomicWriteJSON(configPath, input.config);
-  await seedHarborRegradeTrial(String((input.config.source_trial as Record<string, unknown>).path), path.join(String(input.config.trials_dir), String(input.config.trial_name)));
+  await seedHarborRegradeTrial(String((input.config.source_trial as Record<string, unknown>).path), path.join(String(input.config.trials_dir), String(input.config.trial_name)), input.trustedResult);
   const outcome = await invokeHarbor(located.executable, ["trials", "start", "--config", configPath], {
     cwd: input.directory,
     env: { ...input.env, PYTHONPATH: [path.join(input.runtimeDirectory, "payload/integrations/harbor"), input.env.PYTHONPATH].filter(Boolean).join(path.delimiter) },

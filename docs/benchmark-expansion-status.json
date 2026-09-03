@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "goal": "Support all remaining benchmarks and validate two randomly sampled real tasks per benchmark",
-  "status": "blocked_on_external_prerequisites",
+  "status": "in_progress_with_external_prerequisites",
   "sampling": {
     "algorithm": "sha256-rank-v1",
     "seed": 20260902,
@@ -472,8 +472,7 @@
     {
       "id": "hle",
       "revision": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
-      "status": "real_packages_locked_api_credentials_blocked",
-      "blocker": "Authorized pinned Parquet acquired and both real two-task profiles locked/validated. Candidate OPENAI_API_KEY and verifier HLE_JUDGE_API_KEY remain unavailable. No candidate/judge calls or scored HLE trials.",
+      "status": "validated_two_real_tasks_deepseek_no_tools",
       "contract_validation": {
         "synthetic_only": true,
         "native_text_and_image_import": true,
@@ -577,14 +576,134 @@
         "6720449622c03e062e242dd2",
         "66ea031360fbbf249dec70e1"
       ],
-      "valid_sample_count": 0,
-      "required_sample_count": 2
+      "valid_sample_count": 2,
+      "required_sample_count": 2,
+      "eval_id": "eval_ae7b0d682f9e45e7830cdad2f23081cf",
+      "package": ".hitch/benchmark-expansion/packages/hle-real-no-tools-deepseek-schema-guided",
+      "benchmark_revision": "sha256:340d474e99b4adbf5f52f2e196474b8c54836772fffb19fcc32c9562e86580c9",
+      "sample_validation": {
+        "protocol": "hle-real-two-task-validation@1",
+        "created_at": "2026-09-03T05:47:44.761Z",
+        "eval_id": "eval_ae7b0d682f9e45e7830cdad2f23081cf",
+        "benchmark_id": "hle-public-no-tools-deepseek-schema-guided",
+        "benchmark_revision": "sha256:340d474e99b4adbf5f52f2e196474b8c54836772fffb19fcc32c9562e86580c9",
+        "valid_sample_count": 2,
+        "required_sample_count": 2,
+        "profile": "hle-public-no-tools-deepseek-schema-guided",
+        "candidate_model": "deepseek-v4-flash",
+        "judge_model": "deepseek-v4-flash",
+        "judge_api": "responses",
+        "judge_schema_instruction": "system-json-schema@1",
+        "endpoint": "https://api.deepseek.com/",
+        "candidate_attempts_per_task": 1,
+        "source_selection_unchanged": true,
+        "original_invalid_trials_preserved": true,
+        "controller_runtime": {
+          "runtime_id": "sha256:bbbebb463713136490eae84b3cf69cb303e75e4fe35381027db0dd5fde5faf25",
+          "manifest_digest": "sha256:bbbebb463713136490eae84b3cf69cb303e75e4fe35381027db0dd5fde5faf25"
+        },
+        "trials": [
+          {
+            "trial_id": "hle-1c46ac9d20cdf435f43b0c75__8WCtpj5",
+            "task_id": "hle-1c46ac9d20cdf435f43b0c75",
+            "attempt": 1,
+            "observation_status": "valid",
+            "reward": 0,
+            "verifier_result_ref": "verifier/result.json",
+            "run_id": "run_ef1b4899753a4c43bf76d6740740fd8b",
+            "record_status": "valid",
+            "trajectory_status": "valid",
+            "candidate_status": "succeeded",
+            "output_chars": 0,
+            "bundle_index_digest": "sha256:6309256fee0d391a5a3a388579eac47f174ac46b417bf5defd651fe21dc4665b",
+            "source_task_id": "66ea031360fbbf249dec70e1",
+            "provider_completion": {
+              "status": "incomplete",
+              "model": "deepseek-v4-flash",
+              "usage": {
+                "input_tokens": 166,
+                "input_tokens_details": {
+                  "cached_tokens": 128
+                },
+                "output_tokens": 8192,
+                "output_tokens_details": {
+                  "reasoning_tokens": 8192
+                },
+                "total_tokens": 8358
+              },
+              "incomplete_details": {
+                "reason": "max_output_tokens"
+              }
+            }
+          },
+          {
+            "trial_id": "hle-bee86c2fc022da5d2afcc54a__QJNdcAC",
+            "task_id": "hle-bee86c2fc022da5d2afcc54a",
+            "attempt": 1,
+            "observation_status": "valid",
+            "reward": 0,
+            "verifier_result_ref": "evidence/verifier-result.json",
+            "run_id": "run_caa78da0802149eaad076d7c226fe015",
+            "assessment": {
+              "id": "assessment_4a4b30e84e01465da5c8769c5168e5ab",
+              "digest": "sha256:18fed437bcb55674f6709eb251950bc8a6df5265738ff54e60468a73270467ee"
+            },
+            "record_status": "valid",
+            "trajectory_status": "valid",
+            "candidate_status": "succeeded",
+            "output_chars": 0,
+            "bundle_index_digest": "sha256:408339fcecdfb944be9c3e47c171fae25927fd0b4e172bc265e6b248ce02ae01",
+            "source_task_id": "6720449622c03e062e242dd2",
+            "provider_completion": {
+              "status": "incomplete",
+              "model": "deepseek-v4-flash",
+              "usage": {
+                "input_tokens": 264,
+                "input_tokens_details": {
+                  "cached_tokens": 256
+                },
+                "output_tokens": 8192,
+                "output_tokens_details": {
+                  "reasoning_tokens": 8192
+                },
+                "total_tokens": 8456
+              },
+              "incomplete_details": {
+                "reason": "max_output_tokens"
+              }
+            }
+          }
+        ],
+        "scope": "Two fixed real tasks in one named DeepSeek schema-guided no-tools profile; each candidate made one request. One invalid judge was regraded on the unchanged candidate. The previous un-guided profile is separate and is not aggregated here.",
+        "evidence": {
+          "path": ".hitch/benchmark-expansion/hle-deepseek-guided-two-task-validation.json",
+          "sha256": "sha256:3484bcef053e171e59486d7a5f474475cb685eef2ede86ea66c24963b5b053f8"
+        }
+      },
+      "other_profiles": {
+        "original_deepseek_responses": {
+          "eval_id": "eval_88b0bbf1cfc549ec998b237988724359",
+          "valid_sample_count": 1,
+          "required_sample_count": 2,
+          "failure": "The remaining judge output used null for the required string. Local validation rejects it. Historical candidate runs and failed assessments remain preserved.",
+          "evidence": {
+            "path": ".hitch/benchmark-expansion/hle-deepseek-two-task-validation.json",
+            "sha256": "sha256:f8fa5b040973fad1919dfe140d9dd695c61c6878710d3988dbf5041291087ee2"
+          }
+        },
+        "with_tools": {
+          "package_locked": true,
+          "real_scored_tasks": 0,
+          "note": "Available producer/harness profile; not included in this two-task no-tools acceptance."
+        }
+      },
+      "comparison": "Named DeepSeek candidate and substituted judge, with explicit system-json-schema@1 format guidance. Not an Anthropic score reproduction; both model outputs exhausted the declared 8192 token budget with no final text."
     },
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
       "status": "authorized_sample_verified_runtime_incomplete",
-      "blocker": "Fixed task classes, official hash manifest and selected pinned assets acquired and verified. Complete task/controller/website assembly, usable desktop, task_095 user-simulator configuration and two official scored trials remain incomplete.",
+      "blocker": "Gated inputs and declared DeepSeek judge/user-simulator access are verified. Complete controller/VM/website assembly, usable desktop, task_095 runtime media and two official scored trials remain incomplete.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1375,6 +1494,91 @@
             "real_scored_tasks": 0,
             "limitation": "An active GNOME service did not suffice to validate a terminal window in this declared TCG profile. This does not isolate rendering, shortcut configuration, startup timing or resource pressure as the cause. Authorized task setup and scoring remain untested."
           }
+        },
+        "model_dependency_guard": {
+          "implemented": true,
+          "source": "benchmark-packages/osworld/runtime/model_audit.py",
+          "swallowed_errors_invalidate_completion": true,
+          "tests": 8,
+          "synthetic_inputs_only": true,
+          "official_scored_tasks": 0,
+          "installed_sdk_canary": {
+            "path": ".hitch/benchmark-expansion/osworld-model-audit-canary-v2.json",
+            "sha256": "sha256:42efeecb3169cd73aadb3c8ff197b9a755ed5d21784c94f93e2ad49f2fb25870"
+          }
+        },
+        "deepseek_provider": {
+          "implemented": true,
+          "profile": {
+            "path": "benchmark-packages/osworld/deepseek-profile.json",
+            "sha256": "sha256:ef6e111752f6a3a999fa68654a65ac68904404a254efca54386c43c4db4ec67a"
+          },
+          "source": "benchmark-packages/osworld/runtime/deepseek_backend.py",
+          "candidate_credentials_exposed": false,
+          "live_api_calls": 4,
+          "synthetic_inputs_only": true,
+          "official_scored_tasks": 0,
+          "judge_yes_no_passed": true,
+          "user_simulator_passed": true,
+          "live_truncation_invalidated": true,
+          "canary": {
+            "path": ".hitch/benchmark-expansion/osworld-deepseek-canary-2.json",
+            "sha256": "sha256:fea368dd2d30bf1e00e54c356e0525228a0003899a2da059b624b262d1769850"
+          },
+          "chat_budget_probe": {
+            "path": ".hitch/benchmark-expansion/deepseek-chat-budget-probe.json",
+            "sha256": "sha256:d48a0d4c7697a365feb0705657daebe35f6da681ceb8006cad5e5237e05d3f3e"
+          },
+          "image_id": "sha256:264531daffc34d07bd90282f65bc9759463a7824bd0e72ed18ac9c1fdb9539da",
+          "image_source_manifest": {
+            "path": ".hitch/benchmark-expansion/controller-build-v7/source-manifest.json",
+            "sha256": "sha256:cdf5cfd3441f675d9f0f186590d9015096b4aa48358f525b6cd651d2ef76415e"
+          },
+          "sdk_commit": "d578d2d4e0dc82b43e270fdaa7fa89d9708cd154",
+          "runtime_files": 18,
+          "limitation": "Live API calls exercise the pinned SDK and original Task031 method on synthetic inputs, without a native candidate or VM. Mutable provider model aliases are recorded, not claimed as snapshots."
+        },
+        "latest_worker_component_canary": {
+          "image_id": "sha256:e8936cd0f727344731c679b662536de5475f5f7f5e0759f664d348e5cad4a750",
+          "evidence": {
+            "path": ".hitch/benchmark-expansion/controller-sdk-canary-v6.json",
+            "sha256": "sha256:21b5643cd895620793757c2fdcc2114190df7d7475bd9e4559eef97ecaf8d020"
+          },
+          "includes_model_audit": true,
+          "synthetic_task_and_guest": true,
+          "official_scored_tasks": 0
+        },
+        "teamchat_authorized_state": {
+          "source_commit": "9c50b43bb7c1b03deba31eef234ed805f8014603",
+          "backend_image_id": "sha256:fa3145717a7eb8a5f4a035b5da9a757bff6d9a59a61ccdc574da7934e8f1e3ac",
+          "frontend_image_id": "sha256:2a7ebe087fdd9231598a86fbb67497268aeb6d8fde6cc3e25694d8911fb33678",
+          "source_manifest": {
+            "path": ".hitch/benchmark-expansion/teamchat-build/source-manifest.json",
+            "sha256": "sha256:7cf8564c46411678612e5217a9a519d30beee154d5c9f92c3d5ba4dc40e5611e"
+          },
+          "canary": {
+            "path": ".hitch/benchmark-expansion/osworld-teamchat-state-canary.json",
+            "sha256": "sha256:dc4ed6053659589b89d8a1b556e35b550dbf3471e4b64d21f0967c5f54633d84"
+          },
+          "native_initializer_used": true,
+          "cookie_state_isolation_and_reset_verified": true,
+          "official_scored_tasks": 0
+        },
+        "visible_asset_origin_rebase": {
+          "implemented": true,
+          "source": "benchmark-packages/osworld/prepare-state-assets.py",
+          "manifest": {
+            "path": ".hitch/benchmark-expansion/osworld-task031-state-mirror/manifest.json",
+            "sha256": "sha256:eee4e45fe007aaa8392f95a4301bbba5de2a8afc384a3d1ca7ff8e2d49ac8f08"
+          },
+          "visible_files": 35,
+          "asset_bytes_unchanged": true,
+          "inverse_json_transform_matches_original": true,
+          "source_state_sha256": "sha256:00d54d9fbe98bf612bc6aba194e29f7dc5320df74730e8b8e2b666dfdc52efab",
+          "transformed_state_sha256": "sha256:0cba549dec8e29c1e53d5744c15ed5e72f2e71370dd8144c39aa9c4d88a90fea",
+          "mirror_origin": "http://assets.trial.hitch.test",
+          "private_state_excluded_from_public_files": true,
+          "guest_network_assembly_verified": false
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9",
@@ -1449,26 +1653,22 @@
   },
   "regression": {
     "command": "npm run check",
-    "total": 369,
-    "passed": 366,
+    "total": 374,
+    "passed": 371,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
-    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Two subsequent OSWorld public-VM diagnostics completed API boot/reset/base-hash/cleanup checks; CPU recognition and visual limitations are recorded separately and add no official task validation. Latest changes remain documentation/evidence only. A later GNOME-readiness canary failed its terminal-window wait and cleaned up all owned resources. Its new standalone driver was exercised against the pinned VM; the subsequent parent receipt-ordering fix was compile-checked only. Authorized data follow-up: both real HLE profile packages passed Hitch lock/validate; the exact OSWorld release hash manifest, both fixed task classes and selected task_031 asset files and literal state references passed upstream content checks. No runtime code changed and no scored trial was added."
+    "evidence": ".hitch/benchmark-expansion/deepseek-complete-check.log",
+    "additional_verification": "HLE named DeepSeek schema-guided profile: both fixed real tasks have valid scores and verified sealed runs; one artifact-only regrade restores the original trusted response after matching sealed result fields. OSWorld installed-SDK model-error audit, live DeepSeek judge/user-simulator/truncation, authorized TeamChat state initialization and 35-file visible asset origin transformation passed their stated component scopes. No official OSWorld score is claimed."
   },
-  "updated_at": "2026-09-03T04:59:00.487079+00:00",
+  "updated_at": "2026-09-03T05:49:38.679383+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
       "requirement": "A worker that can honor the unchanged live-database-cutover profile: 16 CPUs and a 16384 MiB container memory limit. Current Docker exposes 10 CPUs and about 7.65 GiB; no replacement sample or reduced profile."
     },
     {
-      "benchmark": "hle",
-      "requirement": "Credentials for the declared candidate/judge API configuration. Both fixed real two-task profiles are already imported, locked and validated from authorized pinned data."
-    },
-    {
       "benchmark": "osworld-v2",
-      "requirement": "Complete controller/VM/website assembly, a verified usable desktop and task_095 user-simulator/provider credentials and runtime media configuration, followed by the same two official scored trials. Gated task and asset access is now verified; source/hash receipts are recorded."
+      "requirement": "Gated inputs and declared DeepSeek judge/user-simulator access are verified. Complete controller/VM/website assembly, usable desktop, task_095 runtime media and two official scored trials remain incomplete."
     },
     {
       "benchmark": "cursorbench",
@@ -1523,5 +1723,21 @@
     },
     "candidate_calls": 0,
     "judge_calls": 0
+  },
+  "latest_model_access_observation": {
+    "observed_at": "2026-09-03T05:49:38.679383+00:00",
+    "credential_source": "user-authorized DEEPSEEK_API_KEY in local agent-hitch/.env",
+    "key_in_artifacts": false,
+    "hle_candidate_and_judge": "https://api.deepseek.com/ Responses API",
+    "osworld_judge_and_simulator": "declared hitch_deepseek_chat_v1 Chat Completions adapter",
+    "api_probe": {
+      "path": ".hitch/benchmark-expansion/deepseek-api-probe.json",
+      "sha256": "sha256:688d3faf184942b2d604c58d8f9330c9b453de8ae43148019e00a37b52579b02"
+    },
+    "strict_tool_synthetic_probe": {
+      "path": ".hitch/benchmark-expansion/hle-deepseek-strict-tool-probe.json",
+      "sha256": "sha256:c84427e81f9ea8a90a9970d01a0a45378c59d4ecc197d9d1a086dfce43ec5b3a"
+    },
+    "strict_tool_probe_note": "Exploratory capability probe only; not used by the HLE scoring profile."
   }
 }

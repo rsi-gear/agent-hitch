@@ -73,6 +73,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     await validateEvalTrialReferences(input.root, input.evalId, [original], { benchmarkId: benchmark.id, benchmarkRevision: benchmark.revision });
     const runDirectory = path.join(statePaths(input.root).runs, original.run_id);
     const bundleIndex = await verifyResultBundleIndex(runDirectory);
+    const trustedResult = await readJSON<Record<string, unknown>>(path.join(runDirectory, "result.json"));
     const candidate = await loadRunRecord(runDirectory, { verifyTrajectory: true });
     if (candidate.record.status !== "succeeded" || candidate.record_status !== "valid" || candidate.trajectory_status !== "valid") throw unavailable("candidate evidence is incomplete or corrupt");
     const plannedSlot = execution.slots.find(s => s.task_id === slot.task_id && s.attempt === slot.attempt);
@@ -134,7 +135,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     try {
       config = buildHarborRegradeConfig({ sourceConfig, sourceResult, sourceDirectory, outputDirectory: path.join(evidence, "trials"), trialName, ownershipLabels: dockerOwnershipLabelMap(ownership) });
       await lease.markRunning();
-      outcome = await runHarborRegrade({ root: input.root, directory: evidence, config, runtimeDirectory: verifierRuntime.directory, env,
+      outcome = await runHarborRegrade({ root: input.root, directory: evidence, config, runtimeDirectory: verifierRuntime.directory, env, trustedResult,
         ...(input.harborExecutable ? { harborExecutable: input.harborExecutable } : {}), signal });
     } finally {
       clearInterval(heartbeat);

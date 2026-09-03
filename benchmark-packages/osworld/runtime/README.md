@@ -125,6 +125,41 @@ budget and own VM cleanup and the trial deadline. Native result files, including
 recording, remain intact. Release-specific partial/strict normalization is still
 pending; a rounded partial score is not sufficient evidence of strict success.
 
+The production worker installs `model_audit.py` before loading the task. The
+pinned SDK model facade's shared configuration/backend boundaries are observed
+even when a task imported `generate_text` earlier. Configuration, backend or
+model-call exceptions and unfinished calls invalidate native completion before
+the candidate channel can report `completed`. This is necessary because the
+selected Task031 catches model errors and would otherwise turn them into a
+negative verdict. Its default judge is `gpt-5.2`; Task095's LLM user simulator
+defaults to `gpt-4o`. Configure their controller-only credentials and preserve
+the declared model/provider profile. Successful upstream values and retry
+behavior are unchanged; deterministic graders with no model calls remain valid.
+`model-calls.json` records effective non-secret configuration, outcome types and
+response hashes, without prompts, responses, keys or exception messages. It is
+controller evidence, not a claim that the backend response exposes the exact
+served model version. A failed audit cannot publish `native-execution.json`.
+
+`../deepseek-profile.json` is the explicit substituted-model profile authorized
+for this local run. Apply its environment only to the private controller and
+inject `DEEPSEEK_API_KEY` there. It selects `hitch_deepseek_chat_v1`, whose SDK
+extension in `deepseek_backend.py` preserves native prompts, message/image
+construction and outer retry settings. It sends `max_tokens`, because a live
+probe confirmed DeepSeek silently ignores the upstream `max_completion_tokens`.
+It uses explicit non-thinking mode, disables additional client retries, refuses
+redirects and rejects truncated/empty/refused replies before task scoring. Text
+models reject images; select an explicitly named vision profile when needed.
+Transport audit entries retain requested/returned model, usage, token ceiling,
+finish status and request/response hashes. Aliases are mutable.
+
+`test-support/osworld_deepseek_canary.py` has exercised the installed pinned SDK,
+the original Task031 grader method on synthetic criteria/messages, the native
+LLM user simulator on synthetic knowledge, and a live one-token truncation.
+The yes/no verdicts and user answer passed; truncation made the audit invalid.
+These live API component checks add no official OSWorld scores. The controller
+image, profile digest and receipts are indexed in the expansion status file.
+See [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/).
+
 `AgentChannel` implements the SDK's `reset()` / `predict()` agent interface.
 It makes no model requests. The native runner owns phase setup, gates, action
 execution and final evaluation. One `predict()` consumes one native step even
@@ -225,10 +260,9 @@ prompt, result bundle or diagnostics. Private in-memory management receipts
 also stay outside exported evidence. The model receives only its current
 phase's instruction, observations and tool capabilities.
 
-The current Harbor bridge prepares one tool binding before it assigns one
-candidate run. The dynamic bind/start/retire loop above is **not wired into that
-bridge yet**. The server cannot establish fresh model context by itself; it
-requires that supervisor, the SDK execution thread, lifecycle hooks and the
+The standard native-phase Harbor supervisor described below wires the dynamic
+bind/start/retire loop. The server cannot establish fresh model context by itself;
+it requires that supervisor, the SDK execution thread, lifecycle hooks and the
 authorized package assembly. Cancellation closes the channel, while the owning
 supervisor must still stop the candidate and VM and seal the native outputs.
 

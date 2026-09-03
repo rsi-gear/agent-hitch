@@ -938,6 +938,8 @@ P0/P1 的验收以第 12.1 节为准，包含最小合同与换包验证；上�
 
 实现入口为 `src/evals/verifier-only-rerun.ts`，后端为 `src/backends/harbor/regrade.ts`。执行时验证原 lock、源包字节、compiled task digest、候选 bundle 和 controller runtime；默认沿用原 runtime，保留原 agent provenance、任务、verifier、镜像引用及全部预算。Harbor 默认只复制 `agent/` 与 `artifacts/`，Hitch 额外逐字复制原 `benchmark-lifecycle.json`，不生成新的 prepare/snapshot 成功记录。
 
+HLE 的真实重评补齐了 `hitch-final-response.json` 的复制：此文件由可信 host 在候选完成后生成，位于候选 artifact 目录之外。重评先校验封存 bundle，再核对该文件的 run ID、终止状态和回答与 sealed `result.json` 一致，才逐字复制到新 verifier trial；不采用候选自行写入的同名 artifact。空回答也可恢复，字段或内容不匹配则拒绝。这个修复发生在 host 的证据准备流程，原任务、grader 和冻结评分 runtime 保持不变。
+
 环境 provider 修复通过显式 `--verifier-runtime sha256:<digest>` 选择，且仅允许 `verifier-only`。`prepareVerifierEnvironmentRuntime({root, sourceRuntimeId})` 从原 runtime 独立复制全部文件，只替换当前 Hitch 的 `integrations/harbor/hitch_harbor_environment.py`，再生成新的只读 CAS runtime。重评入口验证新旧 manifest 的完整文件清单、执行位、Node contract 和 entrypoint，要求差异恰好只有该 provider；不能直接指定任意新版 Hitch runtime，改变 grader、归一化、候选代码或增加文件均拒绝。复制不修改原 runtime。这个 API 从 `agent-hitch/evals` 导出；返回的 `runtime_id` 可用于：
 
 ```sh
@@ -958,3 +960,17 @@ Science 当前 **2/2 固定抽样题均完成有效评分，二者均为 0 分**
 只有有效 assessment 才替换原 eval 的无效逻辑 slot，保留原 `run_id`、`trial_id`，附加 `assessment: {id, digest}`。原 run 的失败评分保持封存，新的评分不会伪装成新候选执行，也不改变原 run 的训练数据资格。读取 eval 时校验 assessment 和原 bundle；真实 0 分有效，评分基础设施错误仍无效。存在 assessment 时，`verifier_result_ref` 相对 assessment 目录解析。
 
 资源使用独立 ownership lease，daemon 串行准入并保守预留原 work item 资源上界。中断后的自动接续、远端 regrade 调度、修改 grader 的重评分以及共享 VM checkpoint 恢复仍属于后续范围。每个 benchmark 的真实验证覆盖率以 `docs/benchmark-expansion-status.json` 为准，不能用 synthetic canary 代替实际两题验证。
+
+## 15. DeepSeek 模型配置与实际兼容性（2026-09-03）
+
+用户指定使用本机 `agent-hitch/.env` 的 `DEEPSEEK_API_KEY`。仅解析这个变量并注入需要它的子进程，不把密钥写入 package、profile、日志或 Git。授权数据继续使用先前验证的固定 revision、seed 和两题；本次切换 API 不重新抽题。
+
+HLE 的 `no-tools` candidate 使用已有单次 Responses harness，端点为 `https://api.deepseek.com/`、模型为 `deepseek-v4-flash`。仍为 `tools=[]`、`tool_choice=none`、8,192 输出 token 和原任务墙钟预算。judge 同样使用 Responses，保留原 extraction/equivalence user prompt、五字段 JSON Schema 和 4,096 输出 token；`judge.json` 和 profile 锁定 endpoint、API、model 及是否附加格式说明。原 OpenAI Chat Completions 默认配置继续支持。[DeepSeek Responses 文档](https://api-docs.deepseek.com/guides/responses_api/)
+
+真实调用证明 HTTP 成功与 `json_schema` 参数不足以保证合法输出：模型曾将应为字符串的 `extracted_final_answer` 返回为 JSON null。解析器拒绝这类输出，保留原始响应和独立失败 assessment，不将其转成 0 分。另一个明确命名的 `hle-public-no-tools-deepseek-schema-guided` profile 增加 `system-json-schema@1` 格式消息，重复原 schema 并明确字符串不能转 null；原 user prompt 与评分语义保持不变。它拥有新的 package/profile digest，不能与旧配置混报。模型未给最终答案与 judge 格式错误分别记录；前者可正常判错，后者属于无效评分。
+
+该 profile 的真实两题验收已完成：`eval_ae7b0d682f9e45e7830cdad2f23081cf`，package digest `sha256:340d474e99b4adbf5f52f2e196474b8c54836772fffb19fcc32c9562e86580c9`。两题保持原 seed 抽样，各一次候选调用，均在 8,192 个 reasoning token 后返回 `incomplete/max_output_tokens`，最终文本为空。第一题直接得到有效 `correct=0`；第二题 judge 首次仍返回格式错误，原回答经独立 assessment `assessment_4a4b30e84e01465da5c8769c5168e5ab` 重评后得到有效 `correct=0`。格式提示不是强制约束，仍须保留本地 schema 检验。两份 sealed bundle、run record、trajectory 与评分引用均通过校验。证据索引为 `.hitch/benchmark-expansion/hle-deepseek-guided-two-task-validation.json`。这是 no-tools profile 的 2/2 验证，with-tools profile 尚无真实评分。
+
+OSWorld 的 `benchmark-packages/osworld/deepseek-profile.json` 只配置 controller 的 evaluator/user simulator。它通过 SDK 官方 provider 注册点选择 `hitch_deepseek_chat_v1`，替换 Task031 默认的 `gpt-5.2` 与 Task095 默认的 `gpt-4o`，保持原任务定义与 native 调用预算。实测 `max_completion_tokens=1` 仍生成 25 token，而 `max_tokens=1` 正确截断；适配层因此明确映射参数，使用 non-thinking 模式、保留上游外层重试、关闭额外 SDK 重试，并拒绝空/截断/拒绝/工具回复。[DeepSeek Chat Completions 文档](https://api-docs.deepseek.com/api/create-chat-completion/)
+
+OSWorld worker 在加载任务前安装 model audit：被任务捕获的 API 错误也会使最终评分失效。新 provider 记录 requested/returned model、usage、token ceiling、finish status 和请求/响应摘要；提示词、回答及密钥不进入该元数据。真实 SDK、Task031 原方法的合成正反例、原生用户模拟器和实际单 token 截断测试均已通过。这仍是组件验证，完整 VM/网站/两题执行另行计数。DeepSeek 模型名是可变 alias，不能将其声称为固定模型快照或 Anthropic 的评分配置。

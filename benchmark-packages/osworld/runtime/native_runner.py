@@ -13,7 +13,7 @@ SDK_COMMIT = 'd578d2d4e0dc82b43e270fdaa7fa89d9708cd154'
 RUNNER_SHA256 = '41dae164d16e1ee5ddd788073548caabb1bdceb551195b9f566463c1c156b5e0'
 
 
-def run_native(channel, env, task, max_steps, args, result_directory, *, finalize_on_budget=False):
+def run_native(channel, env, task, max_steps, args, result_directory, *, finalize_on_budget=False, model_audit=None):
     try:
         if type(finalize_on_budget) is not bool:
             raise ValueError('native deadline mode must be explicit')
@@ -34,6 +34,8 @@ def run_native(channel, env, task, max_steps, args, result_directory, *, finaliz
             run, identity = compile_deadline_runner(Path(spec.origin).read_bytes(), runner, channel.budget_exception)
             (directory / 'deadline-adapter.json').write_text(json.dumps(identity, sort_keys=True) + '\n', encoding='utf-8')
         run(channel, env, task, max_steps, task.get('instruction', ''), args, str(directory), scores)
+        if model_audit is not None:
+            model_audit.assert_healthy()
         channel.finish('completed')
         if channel.management_state()['state'] != 'completed':
             raise RuntimeError('native execution finished after its candidate channel closed')

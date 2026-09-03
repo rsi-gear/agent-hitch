@@ -97,3 +97,31 @@ This verifies one public application deployment component. It does not execute
 either selected official OSWorld task, boot the official VM, validate the
 authorized assets, or verify full task initialization/grading. It contributes
 zero real scored tasks to the benchmark acceptance count.
+
+The canary also supports `--application teamchat_web`. The pinned submodule
+`Task-Web/teamchat_web@9c50b43bb7c1b03deba31eef234ed805f8014603`
+was built from unchanged application source/lockfiles, resolving only Docker
+base image references. With `--task-state` and its exact `--task-state-sha256`,
+the installed official SDK's `prepare_stateful_website_urls` initializes the
+authorized Task031 state in two distinct cookie sessions. The real canary
+verified data/note preservation, independent mutation/reset, assets and backend
+routing, and cleaned up its private Compose resources. Evidence is
+`.hitch/benchmark-expansion/osworld-teamchat-state-canary.json`.
+
+This verifies the authorized website-state initializer. It does not verify the
+VM's complete task setup. `prepare-state-assets.py` provides the explicit
+`osworld-state-asset-rebase@1` transformation, since `OSWORLD_FILE_BASE_URL`
+alone does not rewrite embedded absolute asset URLs. It verifies the original
+state digest and every used asset against the pinned acquisition receipt,
+copies only the referenced files into `public/`, and writes the translated
+state under `private/`. The manifest records original/transformed state hashes,
+source origin, trial-local mirror origin and identical asset bytes. Unknown,
+linked or modified inputs fail before publishing an output directory.
+
+The fixed Task031 state produced 35 visible files at
+`.hitch/benchmark-expansion/osworld-task031-state-mirror`. Replacing the mirror
+origin back yields the original JSON structure. Assembly must expose only
+`public/` via the private trial's asset service and use `private/state.json`
+for the native initializer; neither the whole acquisition tree nor `private/`
+belongs in the asset server root. Guest DNS and the full assembled task remain
+to be verified.

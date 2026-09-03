@@ -76,6 +76,26 @@ test("frozen regrade uses the saved resolver and rejects changed source or compi
   await assert.rejects(frozenRerunBenchmark(root), /identity changed/);
 });
 
+test("regrade restores the trusted final response only when it matches the sealed run", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-regrade-response-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source"), output = path.join(root, "output");
+  await mkdir(source);
+  await atomicWriteJSON(path.join(source, "benchmark-lifecycle.json"), { schema_version: "1", phases: {}, failure: null });
+  const result = { run_id: "run-original", status: "succeeded", output: "" };
+  const canonical = { schema_version: "1", source: "hitch-run-result", run_id: result.run_id, termination: result.status, response: result.output };
+  await atomicWriteJSON(path.join(source, "hitch-final-response.json"), canonical);
+  await mkdir(path.join(source, "artifacts"));
+  await atomicWriteJSON(path.join(source, "artifacts/hitch-final-response.json"), { ...canonical, response: "forged candidate artifact" });
+  await assert.rejects(seedHarborRegradeTrial(source, output), /sealed candidate result/);
+  await seedHarborRegradeTrial(source, output, result);
+  assert.deepEqual(await readFile(path.join(output, "hitch-final-response.json")), await readFile(path.join(source, "hitch-final-response.json")));
+  for (const field of ["run_id", "termination", "response", "source"]) {
+    await atomicWriteJSON(path.join(source, "hitch-final-response.json"), { ...canonical, [field]: "changed" });
+    await assert.rejects(seedHarborRegradeTrial(source, output, result), /sealed candidate result/);
+  }
+});
+
 test("separate assessment retains a zero score and rejects evidence and source tampering", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-regrade-assessment-"));
   t.after(() => rm(root, { recursive: true, force: true }));

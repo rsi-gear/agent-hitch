@@ -33,6 +33,7 @@ result={}
 commands={
  'shell':['systemctl','--user','show','org.gnome.Shell@x11.service','--property=ActiveState','--property=SubState','--property=NRestarts','--property=Result'],
  'windows':['wmctrl','-lx'],
+ 'terminal_shortcut':['gsettings','get','org.gnome.settings-daemon.plugins.media-keys','terminal'],
 }
 for key,command in commands.items():
  try:
@@ -66,6 +67,7 @@ def main(args):
         'cpu_model_override': args.cpu_model,
         'desktop_timeout_sec': args.desktop_timeout,
         'terminal_timeout_sec': args.terminal_timeout,
+        'terminal_launch': args.terminal_launch,
         'gnome_service_ready': False, 'terminal_window_registered': False,
         'desktop_readiness_verified': False,
         'scope': 'First-boot GNOME service and graphical terminal-window registration; original PNGs need visual review. Second boot checks VM reset only.',
@@ -145,8 +147,11 @@ def main(args):
                     raise TimeoutError('GNOME did not become active within the desktop wait budget')
                 time.sleep(min(15, max(0, deadline - time.monotonic())))
                 index += 1
-            action = execute("import pyautogui; pyautogui.FAILSAFE=False; pyautogui.moveTo(960,540,duration=0.2); pyautogui.press('shift'); pyautogui.hotkey('ctrl','alt','t')", 90)
-            (directory / 'terminal-shortcut.json').write_text(json.dumps(action, indent=2) + '\n')
+            if args.terminal_launch == 'direct':
+                action = execute("import subprocess,json; p=subprocess.run(['gnome-terminal','--','bash','-lc','printf \\\"OSWORLD DESKTOP CANARY\\\\n\\\"; exec bash'],capture_output=True,text=True,timeout=60); print(json.dumps({'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr}))", 90)
+            else:
+                action = execute("import pyautogui; pyautogui.FAILSAFE=False; pyautogui.moveTo(960,540,duration=0.2); pyautogui.press('shift'); pyautogui.hotkey('ctrl','alt','t')", 90)
+            (directory / 'terminal-launch.json').write_text(json.dumps(action, indent=2) + '\n')
             deadline = time.monotonic() + args.terminal_timeout
             index = 0
             while True:
@@ -192,6 +197,7 @@ if __name__ == '__main__':
     parser.add_argument('--network-policy', choices=['isolated', 'egress'], default='egress')
     parser.add_argument('--desktop-timeout', type=int, default=600)
     parser.add_argument('--terminal-timeout', type=int, default=90)
+    parser.add_argument('--terminal-launch', choices=['shortcut', 'direct'], default='shortcut')
     args = parser.parse_args()
     if args.cpu_model and not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', args.cpu_model):
         parser.error('CPU model must be a simple QEMU model name')
