@@ -145,8 +145,8 @@
         "cmb-cross-inference"
       ],
       "package": ".hitch/benchmark-expansion/packages/science-v2",
-      "status": "one_real_task_validated_cmb_retry_pending",
-      "blocker": "Original CMB has no complete terminal candidate bundle; the same preselected task requires a fresh execution with the fixed runtime.",
+      "status": "one_real_task_validated_cmb_retry_running",
+      "blocker": null,
       "hardware_note": "memory_mb is a container limit, not a minimum launch requirement. Run on observed ~7.65 GiB Docker host without changing upstream limits; preserve any OOM/resource failure and do not treat this as an official leaderboard reproduction.",
       "eval_id": "eval_40a396a80f8441a2b7cf1baf2b88606b",
       "runtime_observation": {
@@ -276,6 +276,26 @@
         "remaining_owned_networks": 0,
         "remaining_owned_volumes": 0,
         "evidence": ".hitch/benchmark-expansion/science-rolling-regrade-result.json"
+      },
+      "targeted_retry": {
+        "task_id": "cmb-cross-inference",
+        "eval_id": "eval_3118e52b515a45da96408579c7aed9e6",
+        "exec_session_id": 19340,
+        "work_id": "work_79c5b7fd19346fe856c41f2bc380bc06",
+        "container": "cmb-cross-inference__yd5veuh__env-main-1",
+        "status": "backend_running",
+        "started_at": "2026-09-03T01:43:49.383Z",
+        "controller_runtime_id": "sha256:ee3c002ce43f6d9e3f23a8189f94d97202615eeb233d2f0f0cfc6d266c153989",
+        "compiler": "harbor-package@5",
+        "original_agent_budget_sec": 28800,
+        "outer_finalization_allowance_ms": 660000,
+        "package": ".hitch/benchmark-expansion/packages/science-cmb-repair",
+        "package_digest": "sha256:418215a04f293f78587707b220e287cac4e4163ac657b2915528d3e01e9c357e",
+        "selection": "same originally sampled task; targeted retry only",
+        "original_task_grader_profile_unchanged": true,
+        "evidence": ".hitch/benchmark-expansion/science-cmb-retry-package.json",
+        "result_pending": ".hitch/benchmark-expansion/science-cmb-retry-result.json",
+        "runtime_frozen": true
       }
     },
     {
@@ -1082,5 +1102,5 @@
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
     "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade passed with official reward 0, original candidate bundle unchanged, a separately identified environment-only repair runtime, and no remaining owned Docker resources."
   },
-  "updated_at": "2026-09-03T01:42:13.489185+00:00"
+  "updated_at": "2026-09-03T01:46:11.569947+00:00"
 }

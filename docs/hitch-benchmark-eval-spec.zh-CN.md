@@ -609,7 +609,7 @@ GDPval 后续阶段的初版输出 win/tie/loss rate（tie=0.5）和 task bootst
 
 Bridge 用单调时钟扣除输入准备耗时，记录 `hitch-agent-budget.json`，剩余时间传给 Hitch CLI。CLI 从本次命令入口建立进程内单调时钟 deadline，解析、artifact handoff 和 executor 准备均不能重置该预算；启动前已耗尽则记录 `timed_out`，不启动模型。运行中的模型使用剩余时限，进程退出后，bridge 在独立 collection 时限内复制真实 result、events 和 run bundle。收集超时生成明确的失败回执，不能补造完成标记或成功状态。容器启动、CLI 进入前的传输与进程退出/收集仍受 Harbor 外层 guard 约束；这不是跨主机共享单调时钟的协议。
 
-`test/harbor-agent-budget.test.ts` 覆盖编译预算、显式上限、准备耗尽、收集阻塞及真实 CLI 的超时导出。本地假模型验证了“运行中超时后进程消失且结果导出”和“CLI 准备耗尽时没有模型进程”两种情况；该测试替换 Harbor 容器 I/O，不代表官方 task 验收。普通任务的 `timed_out` 仍按当前 importer 记为 invalid；按 profile 对终态产物计分还需独立、完整的截止与评分证据支持。该修复不会修补已结束 CMB 的缺失 bundle，也不改变两个已完成 trial 的冻结 runtime。第二题 `rolling-shutter-oma` 的候选于 2026-09-03 01:22 UTC 成功结束，终态 bundle/trajectory 校验通过，但旧 runtime 的相同网络错误使 verifier 未启动；当前仍无有效评分，应在记录新 verifier 执行身份后仅重评其既有产物。
+`test/harbor-agent-budget.test.ts` 覆盖编译预算、显式上限、准备耗尽、收集阻塞及真实 CLI 的超时导出。本地假模型验证了“运行中超时后进程消失且结果导出”和“CLI 准备耗尽时没有模型进程”两种情况；该测试替换 Harbor 容器 I/O，不代表官方 task 验收。普通任务的 `timed_out` 仍按当前 importer 记为 invalid；按 profile 对终态产物计分还需独立、完整的截止与评分证据支持。该修复不会修补已结束 CMB 的缺失 bundle，也不改变两个已完成 trial 的冻结 runtime。第二题 `rolling-shutter-oma` 的候选于 2026-09-03 01:22 UTC 成功结束，终态 bundle/trajectory 校验通过，但旧 runtime 的相同网络错误使 verifier 未启动；其后已按第 14 节完成独立重评并得到有效 reward `0`。CMB 正在使用修复后的 runtime 重试原抽样题；重试包只缩小执行范围，已核对原 task、grader 和 profile 摘要不变。
 
 ### 9.2 HLE
 
