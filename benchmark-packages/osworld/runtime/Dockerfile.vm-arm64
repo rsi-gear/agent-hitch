@@ -1,0 +1,26 @@
+# Explicit experimental arm64/TCG profile. Guest archive, upstream launch
+# scripts and x86 firmware are unchanged; the host-side QEMU binary differs.
+FROM --platform=linux/amd64 happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9 AS upstream
+FROM debian:bookworm-slim@sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f AS vm-runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash ca-certificates curl iproute2 netcat-openbsd nginx procps python3 \
+    qemu-system-x86 qemu-utils tini util-linux wget \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=upstream /run/*.sh /run/
+COPY --from=upstream /run/version /run/version
+COPY --from=upstream /var/www/ /var/www/
+COPY --from=upstream /etc/nginx/ /etc/nginx/
+COPY --from=upstream /usr/share/OVMF/ /usr/share/OVMF/
+COPY vm_owner.py vm_artifact.py /hitch-vm/
+RUN dpkg-query -W -f='${Package}\t${Version}\n' > /hitch-vm/system-packages.txt \
+    && qemu-system-x86_64 --version > /hitch-vm/qemu-version.txt \
+    && test "$(dpkg --print-architecture)" = arm64
+FROM vm-runtime AS vm-image
+RUN --mount=type=bind,source=artifact.zip,target=/tmp/artifact.zip,ro \
+    python3 /hitch-vm/vm_artifact.py --archive /tmp/artifact.zip --output /System.qcow2 --manifest /hitch-vm/vm-artifact.json \
+    && qemu-img info --output=json /System.qcow2 > /hitch-vm/qemu-image-info.json
+# QEMU 7.2 warns that forced MTTCG on arm64 cannot provide x86's stronger
+# memory ordering. Keep all four guest vCPUs, using its supported single TCG
+# thread instead of forcing that unsupported optimization.
+ENV CPU_CORES=4 RAM_SIZE=4G DISK_SIZE=32G DISPLAY=disabled NETWORK=user USER_PORTS=5000,9222,8080 KVM=N CPU_MODEL=Nehalem ARGUMENTS="-accel tcg,thread=single" VM_BOOT_TIMEOUT_SEC=300 MONITOR=none SERIAL=stdio
+ENTRYPOINT ["/usr/bin/python3", "/hitch-vm/vm_owner.py"]

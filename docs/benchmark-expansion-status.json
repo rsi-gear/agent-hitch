@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "authorized_sample_verified_runtime_incomplete",
-      "blocker": "Gated inputs and declared DeepSeek judge/user-simulator access are verified. Complete controller/VM/website assembly, usable desktop, task_095 runtime media and two official scored trials remain incomplete.",
+      "status": "standard_package_assembled_desktop_visibility_blocked",
+      "blocker": "Fixed-sample standard package, controller startup, TeamChat/asset routing, native scalar grader and ARM64 VM boot/reset are implemented. Guest screenshots remain black despite active GNOME and a registered terminal. Guest namespace routing, task_095 runtime media and two real Hitch scored trials remain unvalidated.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1656,6 +1656,65 @@
           "path": ".hitch/benchmark-expansion/authorized-inputs-observation.json",
           "sha256": "sha256:5e6476064c6f9b929720eb91c0e2e9ba5723a60e0c7aaefd0a72a05261d705ef"
         }
+      },
+      "package": ".hitch/benchmark-expansion/packages/osworld-v2-native-score-v1",
+      "valid_sample_count": 0,
+      "required_sample_count": 2,
+      "package_assembly_validation": {
+        "producer": "benchmark-packages/osworld/assemble.py",
+        "spec": "benchmark-packages/osworld/ASSEMBLY.md",
+        "package_digest": "sha256:b62d0150e6ba9a01865674ad3ee116cc33a4001da931f106dbf9d8ae93b4fb57",
+        "profile_digest": "sha256:c1a4be5aa85ed4ec80a31fac923a23bd96f63b5c358f7a445d0ceed5753c706a",
+        "compiled_digest": "sha256:9e03a08b61d229b8b774370288067381d6d14ac2dbbd51cd0fc1db39c3ae1a48",
+        "receipt": ".hitch/benchmark-expansion/osworld-assembly-validation.json",
+        "fixed_tasks": [
+          "task_031",
+          "task_095"
+        ],
+        "native_prediction_steps": 100,
+        "candidate_budget_sec": 7200,
+        "profile_scope": "custom; explicit host-local images and substituted DeepSeek judge/user simulator",
+        "compose_valid_tasks": 2,
+        "image_identity_checks": 5,
+        "offline_metric": "native_score",
+        "strict_success": null,
+        "real_scored_tasks": 0,
+        "source_and_secrets_committed": false,
+        "startup_receipts": [
+          ".hitch/benchmark-expansion/osworld-assembly-startup-v2.json",
+          ".hitch/benchmark-expansion/osworld-assembly-startup-task095.json"
+        ]
+      },
+      "arm64_vm_diagnostic": {
+        "profile": "arm64-host-qemu-7.2.22-tcg-single-nehalem",
+        "runtime_image": "sha256:405166c7f220d0e1d6df5463b2e3234419a7beca683231c3e2a23db384957152",
+        "guest_vcpus": 4,
+        "guest_ram_bytes": 4294967296,
+        "guest_bytes_unchanged": true,
+        "component_canary_passed": true,
+        "initial_boot_sec": 227.76,
+        "gnome_active": true,
+        "terminal_window_registered": true,
+        "usable_desktop_verified": false,
+        "visual_observation": "Black screenshot with cursor; desktop and terminal contents are not visible.",
+        "receipt": ".hitch/benchmark-expansion/osworld-desktop-arm64-single-canary.json",
+        "visual_review": ".hitch/benchmark-expansion/osworld-arm64-visual-review.json",
+        "provenance": ".hitch/benchmark-expansion/osworld-arm64-runtime-provenance.json",
+        "forced_multithread_tcg_trial": "Stopped after QEMU memory-order warning; all resources cleaned.",
+        "remaining_owned_resources": {
+          "containers": 0,
+          "volumes": 0,
+          "networks": 0
+        },
+        "real_scored_tasks": 0
+      },
+      "latest_regression": {
+        "command": "npm run check",
+        "tests": 375,
+        "passed": 372,
+        "skipped": 3,
+        "failed": 0,
+        "log": ".hitch/benchmark-expansion/osworld-assembly-check.log"
       }
     },
     {

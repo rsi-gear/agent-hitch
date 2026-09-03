@@ -1,5 +1,10 @@
 # OSWorld release and sample resolution
 
+The fixed-sample producer is now available as `assemble.py`; see
+[ASSEMBLY.md](ASSEMBLY.md) for inputs, image identities, service isolation,
+DeepSeek configuration and offline scalar grading. A validated/compiled
+package does not yet establish two real scored trials.
+
 `resolve-release.py` prepares the exact release components and a fixed random
 sample from the official **public file inventory**. It uses Python 3.9+ and the
 standard library. This is provenance preparation; the desktop/VM executor and

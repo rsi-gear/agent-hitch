@@ -78,6 +78,11 @@ def main(args):
     if output.exists() or images.exists(): raise ValueError('canary requires fresh output paths')
     if not 30 <= args.boot_timeout <= 1800: raise ValueError('invalid VM boot deadline')
     image_id = json.loads(run(['docker', 'image', 'inspect', args.image, '--format', '{{json .Id}}']).stdout)
+    architecture = run(['docker', 'image', 'inspect', image_id, '--format', '{{.Architecture}}']).stdout.decode().strip()
+    if architecture not in ('amd64', 'arm64'):
+        raise ValueError('unsupported VM runtime architecture')
+    if architecture != 'amd64' and args.acceleration != 'tcg':
+        raise ValueError('an x86 guest on an ARM host requires explicit TCG')
     capacity = json.loads(run(['docker', 'info', '--format', '{"memory":{{.MemTotal}},"cpus":{{.NCPU}}}']).stdout)
     if capacity['memory'] < 6 * 1024**3 or capacity['cpus'] < 4:
         raise ValueError('VM component canary needs host headroom for a 4 GiB guest and controller processes')
@@ -119,7 +124,8 @@ def main(args):
             if internal != (args.network_policy == 'isolated'): raise ValueError('network policy was not applied')
             receipt['network_internal'] = internal
             run(['docker', 'volume', 'create', '--label', 'org.agent-hitch.canary=' + name, storage]); created.append('volume')
-            command = ['docker', 'run', '-d', '--name', name, '--platform', 'linux/amd64', '--network', network,
+            receipt['runtime_platform'] = 'linux/' + architecture
+            command = ['docker', 'run', '-d', '--name', name, '--platform', 'linux/' + architecture, '--network', network,
                        '--label', 'org.agent-hitch.canary=' + name, '--cpus', '4', '--memory', '5g', '--pids-limit', '256',
                        '--mount', 'type=bind,src=' + private + ',dst=/control,readonly',
                        '--mount', 'type=volume,src=' + storage + ',dst=/storage',

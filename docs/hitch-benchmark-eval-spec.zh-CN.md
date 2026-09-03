@@ -974,3 +974,15 @@ HLE 的 `no-tools` candidate 使用已有单次 Responses harness，端点为 `h
 OSWorld 的 `benchmark-packages/osworld/deepseek-profile.json` 只配置 controller 的 evaluator/user simulator。它通过 SDK 官方 provider 注册点选择 `hitch_deepseek_chat_v1`，替换 Task031 默认的 `gpt-5.2` 与 Task095 默认的 `gpt-4o`，保持原任务定义与 native 调用预算。实测 `max_completion_tokens=1` 仍生成 25 token，而 `max_tokens=1` 正确截断；适配层因此明确映射参数，使用 non-thinking 模式、保留上游外层重试、关闭额外 SDK 重试，并拒绝空/截断/拒绝/工具回复。[DeepSeek Chat Completions 文档](https://api-docs.deepseek.com/api/create-chat-completion/)
 
 OSWorld worker 在加载任务前安装 model audit：被任务捕获的 API 错误也会使最终评分失效。新 provider 记录 requested/returned model、usage、token ceiling、finish status 和请求/响应摘要；提示词、回答及密钥不进入该元数据。真实 SDK、Task031 原方法的合成正反例、原生用户模拟器和实际单 token 截断测试均已通过。这仍是组件验证，完整 VM/网站/两题执行另行计数。DeepSeek 模型名是可变 alias，不能将其声称为固定模型快照或 Anthropic 的评分配置。
+
+### OSWorld 固定样本任务包实现
+
+`benchmark-packages/osworld/assemble.py` 已能从授权的本地任务、素材、固定 SDK/网站 checkout 和不可变镜像配置，生成两个完整的 Harbor 格式任务。它重新校验 108 题的发布哈希清单及 seed `20260902` 的排序，固定输出 `task_031`、`task_095`；当前 producer 的评分合同仅覆盖这两个原始任务类。CLI、镜像配置和服务拓扑详见 [ASSEMBLY.md](../benchmark-packages/osworld/ASSEMBLY.md)。
+
+包内包含候选环境、controller、VM、Task031 的 TeamChat/静态路由/可见素材镜像，以及独立 verifier。controller 持有任务代码和 `.env` 提供的 DeepSeek 凭证，通过私有卷向 VM 分发控制凭证；候选只连接 tools 网络。VM/网站网络隔离，所有服务均不发布宿主机端口或挂载 Docker socket。原始状态与 URL 重映射后的状态分别保留并进入 transformation digest。Task095 的运行时媒体下载及原始文件校验继续使用上游逻辑。
+
+`runtime/grade.py` 在 verifier 中离线检查 controller 配置摘要、快照文件清单、task/SDK 身份、native completion、候选通道和 model audit，再原样输出 `native_score`。Task095 会把部分分数四舍五入到两位小数，因此不从 `score == 1` 推导严格成功，独立记录中的 `strict_success` 为 null。错误或缺失证据不生成 reward；Hitch 继续负责 lifecycle、phase 和 run 的绑定校验。
+
+本机生成包为 `.hitch/benchmark-expansion/packages/osworld-v2-native-score-v1`，package digest `sha256:b62d0150e6ba9a01865674ad3ee116cc33a4001da931f106dbf9d8ae93b4fb57`。两题均通过 Hitch 校验、冻结编译、Compose 校验及实际 controller 启动检查；Task031 的私有 TeamChat 路由与可见素材字节校验通过。该 profile 使用显式 100 个 prediction / 7,200 秒候选预算和 host-local 镜像，仅为 Hitch 验证配置。
+
+新增 ARM64 host QEMU 实验保留客体、固件与 4 vCPU / 4 GiB 配置，避免通过 AMD64 模拟再运行 QEMU。支持的单线程 TCG 镜像 `sha256:405166c7f220d0e1d6df5463b2e3234419a7beca683231c3e2a23db384957152` 首次启动约 228 秒、重置约 167 秒；客体基盘 SHA256、进程退出及资源清理均通过。但 GNOME active、终端窗口已注册时截图仍为黑屏，尚不满足视觉评测条件。这些组件证据不计作真实样本验收，OSWorld 仍为 **0/2**。证据与剩余工作见 `docs/benchmark-expansion-status.json`。

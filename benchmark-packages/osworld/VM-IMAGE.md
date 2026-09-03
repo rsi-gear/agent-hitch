@@ -149,3 +149,18 @@ The pinned server's [display and automatic-login guide](https://github.com/xlang
 describes desktop configuration, but does not establish the readiness time or
 behavior of these actual TCG runs. Task preparation must confirm its required
 display and application state, beyond a successful PNG transport check.
+
+## Explicit ARM host experiment
+
+`runtime/Dockerfile.vm-arm64` retains the same guest archive, upstream launch
+scripts and x86 firmware, but runs Debian's native ARM64 QEMU 7.2 instead of
+running an AMD64 QEMU binary through host architecture emulation. It is a new
+runtime profile, not an unchanged upstream image. Record the built image and
+installed package versions before use.
+
+The profile uses `Nehalem`, four guest vCPUs, 4 GiB guest RAM and single-thread
+TCG. A forced multithreaded TCG diagnostic emitted a warning about stronger
+guest memory ordering than the ARM host; that diagnostic was stopped and its
+resources removed. The supported single-thread profile preserves guest CPU
+count and disk bytes while avoiding that forced optimization. Graphical
+readiness and full task acceptance remain separate checks.

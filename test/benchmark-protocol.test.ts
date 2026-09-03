@@ -64,6 +64,12 @@ test("OSWorld DeepSeek preserves token limits and rejects unusable model replies
   assert.match(result.stdout, /OSWorld DeepSeek token and response contracts passed/);
 });
 
+test("OSWorld grader preserves the native scalar and rejects unsealed or unhealthy evidence", () => {
+  const result = spawnSync("python3", ["test-support/osworld_grade_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /offline scalar score and evidence gates passed/);
+});
+
 test("OSWorld state asset mirror preserves bytes and rejects unverified inputs", () => {
   const result = spawnSync("python3", ["test-support/osworld_state_assets_smoke.py"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
