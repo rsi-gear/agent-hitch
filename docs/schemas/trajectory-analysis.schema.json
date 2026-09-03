@@ -112,10 +112,30 @@
           "partial": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["status", "content", "source_seq_count"],
+            "required": ["status", "source_seq_count"],
+            "oneOf": [
+              { "required": ["content"] },
+              { "required": ["streams"] }
+            ],
             "properties": {
               "status": { "const": "incomplete" },
               "content": { "$ref": "#/$defs/content_excerpt" },
+              "streams": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["block_index", "block_start_seq", "kind", "content", "source_seq_count"],
+                  "properties": {
+                    "block_index": { "$ref": "#/$defs/seq" },
+                    "block_start_seq": { "$ref": "#/$defs/seq" },
+                    "kind": { "enum": ["text", "reasoning", "tool_arguments"] },
+                    "content": { "$ref": "#/$defs/content_excerpt" },
+                    "source_seq_count": { "type": "integer", "minimum": 0 }
+                  }
+                }
+              },
               "source_seq_count": { "type": "integer", "minimum": 0 }
             }
           }

@@ -466,6 +466,98 @@ test("chunk field drill-down redacts credentials using context before the select
   }
 });
 
+test("interleaved tool-call deltas are redacted within their own block streams", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-interleaved-tool-redaction-"));
+  t.after(() => forceRemove(root));
+  const credential = "demoCredentialValue123456789";
+  const source = await writeRun(root, RUN_ID, [
+    event(0, "turn/start", { turn: 1 }),
+    event(1, "step/start", { turn: 1, step: 1 }),
+    event(2, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 1, blockType: "tool-call" } }),
+    event(3, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 2, blockType: "tool-call" } }),
+    event(4, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "call-a", name: "bash", argumentsDelta: "demoCredential" },
+    }),
+    event(5, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 2, id: "call-b", name: "bash", argumentsDelta: "public-data" },
+    }),
+    event(6, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "call-a", argumentsDelta: "Value123456789" },
+    }),
+  ]);
+  assert.ok(source.expectedSha256);
+
+  for (const field of ["data.chunk.delta", "event.data.chunk.delta", "data.chunk.argumentsDelta"]) {
+    const page = await pageTrajectoryEvents(source, {
+      filter: { seq_start: 6, seq_end: 6, field },
+      canonicalSha256: source.expectedSha256,
+      credentialValues: [credential],
+    });
+    const drilled = page.events[0] as { value: { preview: string }; source_seq_count: number };
+    assert.match(drilled.value.preview, /\[REDACTED\]/, field);
+    assert.doesNotMatch(drilled.value.preview, /demoCredential|Value123456789|public-data/, field);
+    assert.equal(drilled.source_seq_count, 2, field);
+  }
+
+  const analysis = await projectTrajectoryAnalysis(source, { credentialValues: [credential] });
+  const partial = (analysis.chunk_summaries[0] as {
+    partial: {
+      source_seq_count: number;
+      streams: Array<{ block_index: number; source_seq_count: number; content: { preview: string } }>;
+    };
+  }).partial;
+  assert.equal(partial.source_seq_count, 3);
+  assert.equal(partial.streams.length, 2);
+  const sensitive = partial.streams.find((stream) => stream.block_index === 1);
+  const publicStream = partial.streams.find((stream) => stream.block_index === 2);
+  assert.equal(sensitive?.source_seq_count, 2);
+  assert.match(sensitive?.content.preview ?? "", /\[REDACTED\]/);
+  assert.doesNotMatch(sensitive?.content.preview ?? "", /demoCredential|Value123456789|public-data/);
+  assert.equal(publicStream?.source_seq_count, 1);
+  assert.equal(publicStream?.content.preview, "public-data");
+});
+
+test("streamed projection rejects tool-call identity changes within one block", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-tool-call-identity-"));
+  t.after(() => forceRemove(root));
+  const prefix = [
+    event(0, "turn/start", { turn: 1 }),
+    event(1, "step/start", { turn: 1, step: 1 }),
+    event(2, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 1, blockType: "tool-call" } }),
+    event(3, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "call-a", name: "bash", argumentsDelta: "credential-prefix" },
+    }),
+  ];
+  const invalidStreams = [
+    [...prefix, event(4, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "tool-call-delta", index: 1, id: "call-b", argumentsDelta: "public-data" },
+    })],
+    [...prefix, event(4, "assistant/chunk", {
+      turn: 1,
+      step: 1,
+      chunk: { type: "block-end", index: 1, block: { type: "tool-call", id: "call-b", name: "bash", arguments: "{}" } },
+    })],
+  ];
+
+  for (const events of invalidStreams) {
+    const source = await writeRun(root, RUN_ID, events);
+    await assert.rejects(
+      projectTrajectoryAnalysis(source, { credentialValues: [] }),
+      (error: unknown) => error instanceof HitchError && error.code === "trajectory_integrity_mismatch",
+    );
+  }
+});
+
 test("analysis canonicalizes request headers and suppresses sparse-index deltas after assembly", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-canonical-header-"));
   t.after(() => forceRemove(root));

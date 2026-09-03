@@ -15,12 +15,21 @@ export interface ChunkGroup {
   lastSeq: number;
   count: number;
   types: Map<string, number>;
-  partialAccumulator: BoundedTextAccumulator;
-  partialSourceCount: number;
+  emptyPartialAccumulator: BoundedTextAccumulator;
+  partialStreams: ChunkPartialStream[];
+  openPartialStreams: Map<number, ChunkPartialStream>;
   usage?: { seq: number; value: unknown };
   finishReason?: { seq: number; value: unknown };
   terminalFailure: boolean;
   assembled: boolean;
+}
+
+interface ChunkPartialStream {
+  blockIndex: number;
+  blockStartSeq: number;
+  kind: "text" | "reasoning" | "tool_arguments";
+  accumulator: BoundedTextAccumulator;
+  sourceCount: number;
 }
 
 export function chunkGroupKey(turn: number, step: number, attempt: number): string {
@@ -53,8 +62,9 @@ export function acceptChunk(
       lastSeq: event.seq,
       count: 0,
       types: new Map(),
-      partialAccumulator: chunkAccumulator(credentialValues, pathValues, redactions),
-      partialSourceCount: 0,
+      emptyPartialAccumulator: chunkAccumulator(credentialValues, pathValues, redactions),
+      partialStreams: [],
+      openPartialStreams: new Map(),
       terminalFailure: false,
       assembled: false,
     };
@@ -64,19 +74,36 @@ export function acceptChunk(
   group.count += 1;
   const type = typeof chunk.type === "string" ? chunk.type : "unknown";
   increment(group.types, type);
+  if (type === "block-start") {
+    const kind = partialStreamKind(chunk.blockType);
+    if (kind && Number.isSafeInteger(chunk.index)) {
+      const stream: ChunkPartialStream = {
+        blockIndex: chunk.index as number,
+        blockStartSeq: event.seq,
+        kind,
+        accumulator: chunkAccumulator(credentialValues, pathValues, redactions),
+        sourceCount: 0,
+      };
+      group.partialStreams.push(stream);
+      group.openPartialStreams.set(stream.blockIndex, stream);
+    }
+  }
   if (type === "usage") group.usage = { seq: event.seq, value: chunk.usage };
   if (type === "finish") {
     group.finishReason = { seq: event.seq, value: chunk.reason };
     group.terminalFailure = isTerminalFailure(chunk.reason);
   }
   if (typeof chunk.text === "string") {
-    group.partialAccumulator.append(chunk.text);
-    group.partialSourceCount += 1;
+    const stream = group.openPartialStreams.get(chunk.index as number);
+    stream?.accumulator.append(chunk.text);
+    if (stream) stream.sourceCount += 1;
   }
   if (type === "tool-call-delta" && typeof chunk.argumentsDelta === "string") {
-    group.partialAccumulator.append(chunk.argumentsDelta);
-    group.partialSourceCount += 1;
+    const stream = group.openPartialStreams.get(chunk.index as number);
+    stream?.accumulator.append(chunk.argumentsDelta);
+    if (stream) stream.sourceCount += 1;
   }
+  if (type === "block-end" && Number.isSafeInteger(chunk.index)) group.openPartialStreams.delete(chunk.index as number);
 }
 
 export function chunkSummary(
@@ -110,15 +137,7 @@ export function chunkSummary(
   if (group.assembled || group.terminalFailure) return base;
   return {
     ...base,
-    partial: {
-      status: "incomplete",
-      content: group.partialAccumulator.excerpt({
-        runId,
-        seq: group.firstSeq,
-        field: "data.chunk.delta",
-      }),
-      source_seq_count: group.partialSourceCount,
-    },
+    partial: partialEvidence(group, runId),
   };
 }
 
@@ -138,6 +157,42 @@ function chunkAccumulator(
   redactions: Map<string, number>,
 ): BoundedTextAccumulator {
   return new BoundedTextAccumulator(PREVIEW_BYTES, TAIL_BYTES, credentialValues, pathValues, redactions);
+}
+
+function partialEvidence(group: ChunkGroup, runId: string): unknown {
+  const sourceCount = group.partialStreams.reduce((total, stream) => total + stream.sourceCount, 0);
+  if (group.partialStreams.length <= 1) {
+    const stream = group.partialStreams[0];
+    return {
+      status: "incomplete",
+      content: (stream?.accumulator ?? group.emptyPartialAccumulator).excerpt({
+        runId,
+        seq: stream?.blockStartSeq ?? group.firstSeq,
+        field: "data.chunk.delta",
+      }),
+      source_seq_count: sourceCount,
+    };
+  }
+  return {
+    status: "incomplete",
+    streams: group.partialStreams.map((stream) => ({
+      block_index: stream.blockIndex,
+      block_start_seq: stream.blockStartSeq,
+      kind: stream.kind,
+      content: stream.accumulator.excerpt({
+        runId,
+        seq: stream.blockStartSeq,
+        field: "data.chunk.delta",
+      }),
+      source_seq_count: stream.sourceCount,
+    })),
+    source_seq_count: sourceCount,
+  };
+}
+
+function partialStreamKind(value: unknown): ChunkPartialStream["kind"] | undefined {
+  if (value === "text" || value === "reasoning") return value;
+  return value === "tool-call" ? "tool_arguments" : undefined;
 }
 
 function sortedCounts(value: Record<string, number>): Record<string, number> {

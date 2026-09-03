@@ -14,7 +14,12 @@ import {
 } from "./content-projection.js";
 import type { ContentProjectionContext } from "./content-projection.js";
 import { canonicalRequestHeader } from "./dsh-contract.js";
-import { canonicalChunkDeltaField, locateChunkDrillTarget, toolCallIdentity } from "./events-chunk-drill.js";
+import {
+  canonicalChunkDeltaField,
+  IncrementalChunkStreamTracker,
+  locateChunkDrillTarget,
+  sameChunkStream,
+} from "./events-chunk-drill.js";
 import type { ChunkDeltaField } from "./events-chunk-drill.js";
 import { IncrementalRequestAttemptTracker } from "./request-attempt.js";
 import { scanCanonicalTrajectory } from "./stream-reader.js";
@@ -110,6 +115,9 @@ export async function pageTrajectoryEvents(
     turn: number;
     step: number;
     attempt: number;
+    blockIndex: number;
+    blockStartSeq: number;
+    streamKind: "text" | "reasoning" | "tool_arguments";
     firstSeq: number;
     field: string;
     deltaField: ChunkDeltaField;
@@ -131,6 +139,7 @@ export async function pageTrajectoryEvents(
   let hasMore = false;
   let lastSelectedSeq: number | undefined;
   const requestAttempts = new IncrementalRequestAttemptTracker();
+  const chunkStreams = new IncrementalChunkStreamTracker();
 
   const scan = await scanCanonicalTrajectory(source, (event) => {
     if (!isPublicEventType(event.type, credentialValues, pathValues)) {
@@ -143,23 +152,20 @@ export async function pageTrajectoryEvents(
     if (chunkDeltaDrill) {
       if (chunkDrill && event.type === "assistant/chunk") {
         const data = event.data as Record<string, unknown>;
-        if (data.turn === chunkDrill.turn && data.step === chunkDrill.step
-          && requestAttempt?.attempt === chunkDrill.attempt) {
+        const attempt = requestAttempt?.attempt
+          ?? requestAttempts.current(data.turn as number, data.step as number).attempt;
+        const stream = chunkStreams.accept(event, attempt);
+        if (stream && sameChunkStream(stream, chunkDrill)) {
           const chunk = data.chunk as Record<string, unknown>;
-          let accepted = false;
-          if ((chunkDrill.deltaField === "data.chunk.delta" || chunkDrill.deltaField === "data.chunk.text")
-            && typeof chunk.text === "string") {
-            chunkDrill.accumulator.append(chunk.text);
-            accepted = true;
+          const value = chunkDrill.deltaField === "data.chunk.text"
+            ? chunk.text
+            : chunkDrill.deltaField === "data.chunk.argumentsDelta"
+              ? chunk.argumentsDelta
+              : chunk.text ?? chunk.argumentsDelta;
+          if (typeof value === "string") {
+            chunkDrill.accumulator.append(value);
+            chunkDrill.sourceCount += 1;
           }
-          if ((chunkDrill.deltaField === "data.chunk.delta"
-            || (chunkDrill.deltaField === "data.chunk.argumentsDelta"
-              && toolCallIdentity(chunk) === chunkDrill.callIdentity))
-            && typeof chunk.argumentsDelta === "string") {
-            chunkDrill.accumulator.append(chunk.argumentsDelta);
-            accepted = true;
-          }
-          if (accepted) chunkDrill.sourceCount += 1;
         }
       }
       return;

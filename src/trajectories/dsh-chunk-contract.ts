@@ -10,7 +10,7 @@ const CHUNK_TYPES = new Set([
 
 /** Validate one DSH model stream while allowing EOF to preserve interrupted evidence. */
 export class IncrementalChunkInvariant {
-  private readonly openBlocks = new Map<number, string>();
+  private readonly openBlocks = new Map<number, OpenBlock>();
   private usageSeen = false;
   private finished = false;
   private seen = false;
@@ -26,7 +26,7 @@ export class IncrementalChunkInvariant {
         const index = chunkIndex(chunk, type);
         const blockType = nonEmptyString(chunk.blockType, "block-start blockType");
         if (this.openBlocks.has(index)) throw new Error(`assistant/chunk repeated block-start index ${index}`);
-        this.openBlocks.set(index, blockType);
+        this.openBlocks.set(index, { type: blockType });
         break;
       }
       case "text-delta":
@@ -38,8 +38,10 @@ export class IncrementalChunkInvariant {
       }
       case "tool-call-delta": {
         const index = chunkIndex(chunk, type);
-        requireOpenBlock(this.openBlocks, index, "tool-call");
         if (typeof chunk.id !== "string") throw new Error("tool-call-delta id must be a string");
+        const open = requireOpenBlock(this.openBlocks, index, "tool-call");
+        if (open.toolCallId === undefined) open.toolCallId = chunk.id;
+        else if (open.toolCallId !== chunk.id) throw new Error("tool-call-delta id changed within an open block");
         if (chunk.name !== undefined && typeof chunk.name !== "string") {
           throw new Error("tool-call-delta name must be a string");
         }
@@ -51,7 +53,10 @@ export class IncrementalChunkInvariant {
       case "block-end": {
         const index = chunkIndex(chunk, type);
         const block = validateContentBlock(chunk.block, "block-end block");
-        requireOpenBlock(this.openBlocks, index, block.type as string);
+        const open = requireOpenBlock(this.openBlocks, index, block.type as string);
+        if (block.type === "tool-call" && open.toolCallId !== undefined && block.id !== open.toolCallId) {
+          throw new Error("block-end tool-call id does not match its deltas");
+        }
         this.openBlocks.delete(index);
         break;
       }
@@ -78,6 +83,11 @@ export class IncrementalChunkInvariant {
   assertReadyForRetry(): void {
     if (this.seen && !this.finished) throw new Error("llm/retry-started precedes terminal finish chunk");
   }
+}
+
+interface OpenBlock {
+  type: string;
+  toolCallId?: string;
 }
 
 export function validateContentBlock(value: unknown, label: string): Record<string, unknown> {
@@ -143,11 +153,12 @@ function chunkIndex(chunk: Record<string, unknown>, type: string): number {
   return chunk.index as number;
 }
 
-function requireOpenBlock(open: ReadonlyMap<number, string>, index: number, expected: string): void {
+function requireOpenBlock(open: ReadonlyMap<number, OpenBlock>, index: number, expected: string): OpenBlock {
   const actual = open.get(index);
-  if (actual !== expected) {
+  if (actual?.type !== expected) {
     throw new Error(`assistant/chunk at index ${index} does not match its open block`);
   }
+  return actual;
 }
 
 function tokenCount(value: unknown, label: string): void {
