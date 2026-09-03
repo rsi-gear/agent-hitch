@@ -4,7 +4,7 @@
 
 本文定义 Harbor 兼容的 Hitch 包协议、执行和评分边界；第 3 节是设计基线的差距分析，第 9、14、15 节说明已落地的实现与验证。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型。逐题执行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，设计条目不能视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
 
-当前扩展目标是 AutomationBench 以外的六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric、Science、HLE 的具名 DeepSeek no-tools profile 均为 **2/2**，Terminal-Bench 为 **1/2**，OSWorld 与 CursorBench 为 **0/2**；有效评分允许任务得分为零，HLE with-tools 尚无真实评分。Hugging Face 授权、固定 HLE/OSWorld 数据访问和用户指定的 `.env` DeepSeek 配置均已验证。OSWorld 两题标准包已组装并通过 controller/网站启动检查，仍缺可用桌面和完整候选评分。外部阻塞是 CursorBench 授权任务/评分包，以及满足 Terminal-Bench 原始 16 CPU / 16 GiB 要求的 worker。原始两题选择和任务资源要求保持不变。下文的 AutomationBench MVP 表示已完成的首阶段范围，后续扩展以此段及状态文件为准。
+当前扩展目标是 AutomationBench 以外的六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric、Science、HLE 的具名 DeepSeek no-tools profile 均为 **2/2**，Terminal-Bench 为 **1/2**，OSWorld 与 CursorBench 为 **0/2**；有效评分允许任务得分为零，HLE with-tools 尚无真实评分。Hugging Face 授权、固定 HLE/OSWorld 数据访问和用户指定的 `.env` DeepSeek 配置均已验证。OSWorld 两题标准包已组装，Task095 已进入真实桌面操作和 DeepSeek 用户模拟器交互；完整候选评分仍在运行，Task031 的启动时限修复已排队重试。外部阻塞是 CursorBench 授权任务/评分包，以及满足 Terminal-Bench 原始 16 CPU / 16 GiB 要求的 worker。原始两题选择和任务资源要求保持不变。下文的 AutomationBench MVP 表示已完成的首阶段范围，后续扩展以此段及状态文件为准。
 
 ## 1. 设计决定
 

@@ -1895,6 +1895,17 @@
             "sha256": "sha256:d71a5a0f67123ddbe16a878804e30b618249b544dbd367811856194fd9c9f00c"
           },
           "review": "Native screenshot shows Ubuntu application grid and responsive desktop. Earlier Shotcut splash and partially rendered window are preserved. This is candidate progress, not completed editing or a score."
+        },
+        "download_phase_observation": {
+          "path": ".hitch/benchmark-expansion/osworld-v3-download-phase-resources-20260903T0833/receipt.json",
+          "sha256": "sha256:34e6f7fb1923b5d8719287b6c430a2fab83578e7f8b111e1dc78fb59f4657e0a",
+          "native_screenshot_sequence": 16,
+          "media_visible_on_desktop": true,
+          "visual_observation_is_hash_validation": false,
+          "vm_container_memory_limit_bytes": 5368709120,
+          "oom_events": 0,
+          "swap_bytes_at_observation": 311984128,
+          "native_score_available": false
         }
       },
       "tcg_http120_environment_start_fix": {
@@ -1965,7 +1976,15 @@
       "id": "cursorbench",
       "release": "3.2.0",
       "status": "authorized_package_blocked",
-      "blocker": "User confirmed no authorized task/grader package. No public equivalent can be named CursorBench."
+      "blocker": "User confirmed no authorized task/grader package. No public equivalent can be named CursorBench.",
+      "latest_official_availability_check": {
+        "path": ".hitch/benchmark-expansion/cursorbench-availability-20260903T0839.json",
+        "sha256": "sha256:21aa2ff6de772c33df0922b2ab72ebf564f96bd00272ad40bd62c3d818012348",
+        "observed_at": "2026-09-03T08:39:20.095214+00:00",
+        "board_url": "https://cursor.com/cursorbench",
+        "methodology_url": "https://cursor.com/blog/cursorbench",
+        "task_or_grader_download_link_found": false
+      }
     }
   ],
   "hardware": {
@@ -1994,7 +2013,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-cdp-provider-check.log"
   },
-  "updated_at": "2026-09-03T08:26:24.044188+00:00",
+  "updated_at": "2026-09-03T08:39:20.097680+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
