@@ -4,6 +4,8 @@
 
 本文保留最初的实现设计，并在第 9 节补充接入进度。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型；后续实现、真实运行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，不能将设计条目视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
 
+当前扩展目标是其余六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric 为 2/2、Science 为 2/2、Terminal-Bench 为 1/2，其余三项为 0/2；有效评分允许任务得分为零。整体目标因授权任务/资产、HLE API 凭据及 16 CPU worker 缺失而受阻，OSWorld 完整运行环境也尚未验收。状态文件列出了逐项恢复条件；原始两题选择、任务资源和完整验收范围保持不变。下面的 MVP 描述保留最初阶段的设计范围。
+
 ## 1. 设计决定
 
 **由 Hitch 定义稳定的 Benchmark Package v1 与执行协议。新 benchmark 提供符合协议的评测包，即可通过统一入口运行；在已有能力范围内，新增 benchmark 不修改 Hitch 核心。** Benchmark 包负责题目、环境、工具、初始化/状态导出与评分规则；Hitch 负责校验、能力匹配、候选执行、资源调度、证据和结果管理。

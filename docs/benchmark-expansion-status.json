@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "goal": "Support all remaining benchmarks and validate two randomly sampled real tasks per benchmark",
-  "status": "in_progress",
+  "status": "blocked_on_external_prerequisites",
   "sampling": {
     "algorithm": "sha256-rank-v1",
     "seed": 20260902,
@@ -1321,5 +1321,54 @@
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
     "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Two subsequent OSWorld public-VM diagnostics completed API boot/reset/base-hash/cleanup checks; CPU recognition and visual limitations are recorded separately and add no official task validation. Latest changes remain documentation/evidence only. A later GNOME-readiness canary failed its terminal-window wait and cleaned up all owned resources. Its new standalone driver was exercised against the pinned VM; the subsequent parent receipt-ordering fix was compile-checked only."
   },
-  "updated_at": "2026-09-03T04:32:32.529644+00:00"
+  "updated_at": "2026-09-03T04:37:04.272780+00:00",
+  "resume_requirements": [
+    {
+      "benchmark": "terminal-bench",
+      "requirement": "A worker that can honor the unchanged live-database-cutover profile: 16 CPUs and a 16384 MiB container memory limit. Current Docker exposes 10 CPUs and about 7.65 GiB; no replacement sample or reduced profile."
+    },
+    {
+      "benchmark": "hle",
+      "requirement": "Authorized access or local data for the pinned cais/hle revision, and credentials for the declared candidate/judge API configuration. The existing access question remains unanswered."
+    },
+    {
+      "benchmark": "osworld-v2",
+      "requirement": "Authorized task_031/task_095 data, assets and release hash manifest. User confirmed no access. Full assembly, usable desktop and two official scored trials remain incomplete; diagnostic VM results do not satisfy them."
+    },
+    {
+      "benchmark": "cursorbench",
+      "requirement": "Authorized CursorBench 3.2.0 task/grader package. User confirmed none; public substitutes cannot count as CursorBench."
+    }
+  ],
+  "external_prerequisites_revalidated": {
+    "observed_at": "2026-09-03T04:37:04.272780+00:00",
+    "official_hf_repositories": {
+      "cais/hle": {
+        "gated": "auto",
+        "private": false
+      },
+      "xlangai/osworld_v2_tasks@v2026.08.08": {
+        "gated": "auto",
+        "private": false
+      },
+      "xlangai/osworld_v2_assets_gated@v2026.08.08": {
+        "gated": "auto",
+        "private": false
+      }
+    },
+    "authentication_available": {
+      "HF_TOKEN": false,
+      "HF_cached_token": false,
+      "HLE_JUDGE_API_KEY": false,
+      "OPENAI_API_KEY": false
+    },
+    "docker": {
+      "cpus": 10,
+      "memory_bytes": 8217968640,
+      "architecture": "aarch64",
+      "running_containers": 0
+    },
+    "same_validation_blockers_in_preceding_goal_turns": true,
+    "scope": "Read-only public repository metadata, credential-presence checks without reading secret values, current Docker capacity, existing user confirmation and fixed task profile. No protected dataset terms accepted and no replacement samples drawn."
+  }
 }
