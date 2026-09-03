@@ -111,6 +111,9 @@ The canary also checks that the upstream monitor port is closed.
 The receipt records actual image identity, resource/acceleration settings,
 boot/reset timings, raw screenshot dimensions/digests, base preservation and
 cleanup. TCG timing is not a claim about hardware-accelerated benchmark speed.
+Before cleanup, the canary also records container status and available cgroup
+memory counters. A QEMU child can hit its memory limit while the PID-1 owner
+survives; the container's `OOMKilled` flag alone is not sufficient evidence.
 This has no candidate, authorized task or official evaluator; its real scored
 task count remains zero. Initial guest resolution is recorded as observed;
 the complete SDK/task setup must still satisfy the declared screenshot profile.
@@ -130,3 +133,19 @@ These images do not establish a usable 1920 × 1080 task desktop. The original
 receipt is preserved; a separate visual-review record links its digest and
 both screenshot digests. See `docs/benchmark-expansion-status.json` for the
 local evidence paths and exact image identity.
+
+A subsequent read-only desktop probe observed startup continuing after the
+screenshot API was available: initially Xorg/GDM ran without a window manager
+at 1280 × 800; after a 60-second wait, GNOME Shell and 1920 × 1080 were present
+without changing guest display settings. The later PNG still showed a black
+display, and the following guest marker request exceeded its 20-second HTTP
+deadline. That separate canary failed before reset and cleaned its owned
+resources. It does not invalidate the earlier lifecycle receipt or prove a
+stable desktop. The timeout's cause is not established; those runs did not
+retain cgroup counters. Further VM work should wait for resource-heavy
+benchmark grading to finish on this worker.
+
+The pinned server's [display and automatic-login guide](https://github.com/xlang-ai/osworld-server/tree/a3cc3f0c64e463f020d1a44780307e9b46cbcab1#display-configuration)
+describes desktop configuration, but does not establish the readiness time or
+behavior of these actual TCG runs. Task preparation must confirm its required
+display and application state, beyond a successful PNG transport check.

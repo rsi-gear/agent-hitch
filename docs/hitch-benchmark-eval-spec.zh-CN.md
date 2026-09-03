@@ -688,6 +688,8 @@ VM 制品必须按 release 的 archive SHA256 校验，而不能只依赖 tag �
 
 公开 VM 的独立组件验证已通过 guest API 启动、私有 reset 后临时状态清空、底盘文件完整摘要不变、QEMU 退出和全部 owned 资源清理。该次 TCG/egress 运行的初始启动约 212 秒、reset 约 207 秒；两张原始 1280×800 PNG 经目视检查仍为黑屏，第一张仅有 X 形光标。因此 `ready`/canary `passed` 只证明 API 与生命周期，不能作为可用桌面验收；1920×1080 的任务初始化、真实图形操作、网站和官方评分仍须单独验证，不能通过缩放截图放宽坐标合同。原始回执与单独的截图复核记录见状态文件。
 
+后续独立诊断在 API 就绪后加入只读查询和 60 秒等待，观察到 GNOME Shell 启动、分辨率自行变为 1920×1080；没有修改 guest 显示设置。但截图仍黑屏，随后 guest 请求超过 20 秒 HTTP 时限，该次验证在 reset 前失败并完成资源清理。它证明桌面初始化晚于 API 就绪，不能证明完整桌面可用或确定超时原因。后续 canary 在清理前补采容器状态及 cgroup 内存计数，以区分 QEMU 子进程受内存限制的情况；已有失败运行不能补造这些计数。
+
 Controller 镜像由 `benchmark-packages/osworld/prepare-controller.py` 从固定 Git tree 导出，逐文件校验 Git blob 并记录 SHA256、大小和权限，复制包内 runtime，不携带 checkout 的未提交文件、凭据或 Git 配置。`Dockerfile.controller` 固定 Python/uv 基础镜像摘要，按未修改的上游 `uv.lock` 安装 base 依赖，保留 Python/Debian 包清单；最终镜像摘要必须进入冻结 package。当前构建产物是本地 Docker image ID，跨 worker 分发还须固定 OCI artifact 或 registry manifest 引用，不能将该 ID 当作可 pull 的 `repo@digest`。Image entrypoint 在进入 PID 1 生命周期前核对全部 SDK/runtime 文件及 Python 版本清单。配置现在必须给出 `assets_directory`，worker 显式设置 `OSWORLD_FILE_BASE_URL`，禁止默用上游可变化的线上 main 资产。完整授权资产的版本与内容仍由 producer 验证。
 
 生产 worker 同时向原生 runner/result logger 提供动作间隔与 `result_dir`，原始 summary 随 `native/` 收集。镜像级 canary 用真实安装的 SDK、生产 entrypoint/worker、合成任务与模拟桌面服务，保留原生 60 秒准备等待，检查评分、summary、快照和关闭。该测试不使用真实 VM、模型或官方抽样任务，不能增加真实 benchmark 验收数。

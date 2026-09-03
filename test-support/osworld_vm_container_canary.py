@@ -51,6 +51,22 @@ with response:
 sys.stdout.buffer.write(data)
 '''
 
+CGROUP_MEMORY = r'''
+import json
+from pathlib import Path
+root=Path('/sys/fs/cgroup')
+result={}
+for name in ('memory.current','memory.peak','memory.max'):
+    path=root/name
+    if path.is_file():
+        value=path.read_text().strip()
+        result[name]=int(value) if value.isdecimal() else value
+events=root/'memory.events'
+if events.is_file():
+    result['memory.events']={key:int(value) for key,value in (line.split() for line in events.read_text().splitlines())}
+print(json.dumps(result))
+'''
+
 
 def run(args, timeout=60, **kwargs):
     return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, **kwargs)
@@ -164,6 +180,12 @@ print(json.dumps({'base_sha256':'sha256:'+sha.hexdigest(),'qemu_processes':proce
             raise
         finally:
             if 'container' in created:
+                try:
+                    state = json.loads(run(['docker', 'inspect', name, '--format', '{{json .State}}'], timeout=15).stdout)
+                    receipt['container_state_before_cleanup'] = {key: state.get(key) for key in ['Status', 'Running', 'OOMKilled', 'ExitCode']}
+                    if state.get('Running'):
+                        receipt['cgroup_memory_before_cleanup'] = json.loads(run(['docker', 'exec', name, '/usr/bin/python3', '-c', CGROUP_MEMORY], timeout=15).stdout)
+                except Exception as exc: receipt['resource_observation_error'] = type(exc).__name__
                 try:
                     logs = subprocess.run(['docker', 'logs', name], capture_output=True, timeout=30)
                     output.with_suffix('.container.log').write_bytes(logs.stdout + logs.stderr)

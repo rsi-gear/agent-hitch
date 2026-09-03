@@ -919,7 +919,31 @@
             "observation": "Guest screenshot service did not become ready within the original 900-second window. A separate 20-second screenshot probe also timed out; a debug framebuffer was black. DNS requests were observed; root cause is not established."
           },
           "boot_verification_scope": "osworld-vm-component-canary@1: screenshot API and guest setup/execute, not desktop readiness",
-          "desktop_readiness_verified": false
+          "desktop_readiness_verified": false,
+          "desktop_diagnostic": {
+            "state": "failed_before_reset",
+            "observation_file": ".hitch/benchmark-expansion/osworld-desktop-startup-observation.json",
+            "observation_sha256": "sha256:f61e135f9dd8ae739fbcc84334a9d5fb87cd0b69de21d0c04f54a470de3cfc3c",
+            "explicit_additional_wait_sec": 60,
+            "observed_gnome_shell": true,
+            "observed_native_resolution": [
+              1920,
+              1080
+            ],
+            "display_settings_modified": false,
+            "desktop_readiness_verified": false,
+            "guest_request_timeout_sec": 20,
+            "cleanup_passed": true,
+            "real_scored_tasks": 0,
+            "limitation": "Queries add latency and load beyond the explicit 60-second wait. GNOME Shell and 1920x1080 appeared without guest configuration changes, but the retained screen stayed black. No stable desktop, task initialization or official score was verified. Timeout cause remains unknown; this run did not retain cgroup counters."
+          },
+          "resource_diagnostics": {
+            "implemented": true,
+            "container_state_and_cgroup_counters_before_cleanup": true,
+            "actual_cgroup_observer_check": ".hitch/benchmark-expansion/vm-cgroup-observer-check.json",
+            "check_started_guest_vm": false,
+            "previous_canaries_have_cgroup_counters": false
+          }
         }
       },
       "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
@@ -958,5 +982,5 @@
     "evidence": ".hitch/benchmark-expansion/vm-controlled-check.log",
     "additional_verification": "Five archive/QCOW2 extraction tests and an actual child-process environment test passed. The controlled image passed real TCG/egress guest API boot/reset, full base SHA256 preservation, monitor closure, QEMU exit and zero remaining owned resources. Visual inspection found black 1280x800 screenshots, so desktop readiness remains unverified. No new official benchmark acceptance."
   },
-  "updated_at": "2026-09-03T00:21:38.219538+00:00"
+  "updated_at": "2026-09-03T00:33:58.770105+00:00"
 }
