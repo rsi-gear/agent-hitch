@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import tempfile
@@ -34,6 +35,8 @@ _GPU_OVERRIDE_PREFIX = "__HITCH_GPU_OVERRIDE_"
 
 class HitchHarborDockerEnvironment(DockerEnvironment):
     """Use Harbor's Docker semantics with a final ownership-label overlay."""
+
+    _hitch_static_no_network = False
 
     def __init__(
         self,
@@ -70,6 +73,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         if task_env_config is None and len(positional) >= 5:
             task_env_position = 4
             task_env_config = positional[task_env_position]
+        self._hitch_static_no_network = _static_no_network(positional, kwargs, task_env_config)
+        self._hitch_static_network_receipt = None
         if task_env_config is not None:
             requested = getattr(task_env_config, "docker_image", None)
             resolved = self._hitch_prebuilt_task_image or self._hitch_resolved_images.get(requested)
@@ -96,17 +101,59 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             or self._hitch_model_proxy_host_gateway
             or self._hitch_main_gpu_count > 0
             or self._hitch_benchmark_platform
+            or self._hitch_static_no_network
         ):
             self._hitch_ownership_compose_path = self._write_ownership_overlay()
 
     @property
     def _docker_compose_paths(self) -> list[Path]:
+        if self._hitch_static_no_network and (self._environment_docker_compose_path.exists() or self.extra_docker_compose_paths):
+            raise ValueError("static no-network requires a single Dockerfile/image environment without Compose additions")
         paths = list(super()._docker_compose_paths)
         if self._hitch_ownership_compose_path is not None:
             paths.append(self._hitch_ownership_compose_path)
         if self._hitch_phase_compose_path is not None:
             paths.append(self._hitch_phase_compose_path)
         return paths
+
+    def _requires_egress_control(self, *, startup_network_policy, phase_network_policies):
+        if self._hitch_static_no_network:
+            return False
+        return super()._requires_egress_control(startup_network_policy=startup_network_policy, phase_network_policies=phase_network_policies)
+
+    @property
+    def capabilities(self):
+        result = super().capabilities
+        if self._hitch_static_no_network:
+            return result.model_copy(update={"disable_internet": True, "dynamic_network_policy": False})
+        return result
+
+    async def _apply_network_policy(self, network_policy):
+        if self._hitch_static_no_network:
+            if network_policy != self.network_policy:
+                raise ValueError("static no-network cannot change runtime network policy")
+            return
+        await super()._apply_network_policy(network_policy)
+
+    async def _verify_static_network(self):
+        result = await self._run_docker_compose_command(["ps", "--all", "--quiet", MAIN_SERVICE_NAME])
+        identity = result.stdout.strip()
+        if not re.fullmatch(r"[a-f0-9]{64}", identity):
+            raise RuntimeError("static no-network requires exactly one owned main container")
+        template = '{"mode":{{json .HostConfig.NetworkMode}},"networks":{{json .NetworkSettings.Networks}},"ports":{{json .HostConfig.PortBindings}}}'
+        process = await asyncio.create_subprocess_exec("docker", "inspect", "--format", template, identity,
+                                                       stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), 15)
+        finally:
+            if process.returncode is None:
+                process.kill(); await process.wait()
+        if process.returncode != 0 or len(stdout) > 65536:
+            raise RuntimeError("could not verify static no-network container")
+        inspected = json.loads(stdout)
+        if inspected.get("mode") != "none" or set(inspected.get("networks") or {}) != {"none"} or inspected.get("ports"):
+            raise RuntimeError("Docker did not enforce the static no-network declaration")
+        self._hitch_static_network_receipt = {"container_id": identity, "network_mode": "none", "host_ports": False}
 
     async def recycle_candidate_phase(self, phase_index: int) -> dict[str, Any]:
         """Replace only main after the supervisor has exported the retired run.
@@ -122,6 +169,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
     async def start(self, force_build: bool):
         try:
             await super().start(force_build)
+            if self._hitch_static_no_network:
+                await self._verify_static_network()
             if self._hitch_benchmark:
                 await self._hitch_benchmark.prepare()
         except BaseException:
@@ -194,6 +243,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 config["platform"] = self._hitch_benchmark_platform
             if labels:
                 config["labels"] = labels
+            if name == MAIN_SERVICE_NAME and self._hitch_static_no_network:
+                config["network_mode"] = "none"
             resolved_image = image_overlays.get(name)
             if name == MAIN_SERVICE_NAME and self._hitch_prebuilt_task_image:
                 resolved_image = self._hitch_prebuilt_task_image
@@ -265,6 +316,25 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         )
         target.write_text(contents, encoding="utf-8")
         return target
+
+
+def _static_no_network(positional, kwargs, task_env_config) -> bool:
+    """Use Docker's isolated namespace only when no phase needs connectivity.
+
+    Compose tasks and dynamic policies retain Harbor's egress-control path.
+    A single image/Dockerfile has no sibling-service network to preserve.
+    """
+    policy = kwargs.get("network_policy", positional[6] if len(positional) > 6 else None)
+    phases = kwargs.get("phase_network_policies", positional[7] if len(positional) > 7 else ()) or ()
+    directory = kwargs.get("environment_dir", positional[0] if positional else None)
+    return bool(
+        getattr(getattr(task_env_config, "os", None), "value", None) == "linux"
+        and getattr(getattr(policy, "network_mode", None), "value", None) == "no-network"
+        and all(phase == policy for phase in phases)
+        and directory is not None
+        and not (Path(directory) / "docker-compose.yaml").exists()
+        and not kwargs.get("extra_docker_compose")
+    )
 
 
 def _mapping_names(value: Any, label: str, source: Path) -> set[str]:

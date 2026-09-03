@@ -601,6 +601,10 @@ GDPval 后续阶段的初版输出 win/tie/loss rate（tie=0.5）和 task bootst
 
 实际每题预算优先采用原 task；Science 0.1 不需要 GPU，不应把科研 benchmark 一律送去 GPU worker。保留数值容差、工具版本和科学结果 grader；不要把正确性改成“是否生成文件”。主分通常映射上游 reward，额外 reward 全量保留，以导入 release 的 metric 定义为准。
 
+部分 Science 任务的独立 verifier 声明 `no-network`。本机 Harbor 0.21 的 egress-control 能力检查曾使 `cmb-cross-inference` 的 grader 在启动前被拒绝；候选此前也已到达原定 28,800 秒时限，最终没有有效评分。两项失败分别记录，不能把 grader 未启动记为 0 分，也不能把非终态轨迹快照当作完整候选 bundle。
+
+`HitchHarborDockerEnvironment` 现对 Linux 单 Dockerfile/image、无额外 Compose、所有阶段保持相同 `no-network` 的环境使用 Docker 原生 `network_mode: none`，并在启动后核对实际容器的 network mode、网络集合和端口。该路径不声明动态网络切换能力；追加 Compose 或改为联网均拒绝。其他网络配置继续走 Harbor 现有能力检查。真实容器已验证 loopback 可用、无 IPv4 路由、IPv4/IPv6 外部地址及所测私网地址不可达；完整 Harbor no-op → separate verifier 的无模型测试也已返回有效 reward。它们是环境 conformance，不增加官方抽样题的验收数。可复用检查入口为 `test-support/harbor_static_network_canary.py`，用 Harbor 0.21 的 Python 执行并传入 `--output`。冻结中的旧 controller runtime 不会被该修复追溯修改。
+
 ### 9.2 HLE
 
 输入：固定 HF revision 的 `cais/hle`，保留原 id、question、image、answer_type、类别；answer 等参考字段只进入 grader CAS。读取实际 split/membership，不以 README 题数硬编码。grader 适配官方 extraction/equivalence prompt、模型配置与返回结构，记录解析失败；不能用随意的字符串匹配替换所有短答题。[官方 grader](https://github.com/centerforaisafety/hle/blob/main/hle_eval/run_judge_results.py)

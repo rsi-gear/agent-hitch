@@ -145,7 +145,7 @@
         "cmb-cross-inference"
       ],
       "package": ".hitch/benchmark-expansion/packages/science-v2",
-      "status": "canary_running",
+      "status": "one_trial_invalid_second_running",
       "blocker": null,
       "hardware_note": "memory_mb is a container limit, not a minimum launch requirement. Run on observed ~7.65 GiB Docker host without changing upstream limits; preserve any OOM/resource failure and do not treat this as an official leaderboard reproduction.",
       "eval_id": "eval_40a396a80f8441a2b7cf1baf2b88606b",
@@ -168,14 +168,53 @@
         "candidate_process_name": "codex"
       },
       "latest_session_check": {
-        "observed_at": "2026-09-03T00:12:34.811892+00:00",
+        "observed_at": "2026-09-03T01:00:38.130318+00:00",
         "exec_session_id": 26799,
+        "active_task_id": "rolling-shutter-oma",
         "candidate_process_alive": true,
         "candidate_process_name": "codex",
-        "candidate_pid_in_container": 6642,
-        "new_session_output": false,
-        "terminal_failure_observed": false,
-        "original_session_preserved": true
+        "candidate_pid_in_container": 1718,
+        "original_session_preserved": true,
+        "terminal_failure_observed_for_cmb": true
+      },
+      "completed_trial": {
+        "task_id": "cmb-cross-inference",
+        "candidate_run_id": "run_d9ca1b966b564e0a90833ef9abc7be05",
+        "published_invalid_run_id": "run_0207422b67394774ae83cedb2da8f28f",
+        "observation_status": "invalid",
+        "invalid_reason": "infrastructure_failure",
+        "verifier_result": null,
+        "agent_budget_sec": 28800,
+        "finished_at": "2026-09-03T00:42:09.180191Z",
+        "evidence": ".hitch/benchmark-expansion/science-cmb-terminal-observation.json",
+        "evidence_sha256": "sha256:07fc5fb9365c81a062672563b50c5d0d19e1e7467e6dd12e7e64c021d4ea026f",
+        "secondary_failure": "separate verifier no-network policy rejected before startup",
+        "candidate_bundle_missing": true,
+        "predeadline_snapshot_is_terminal": false
+      },
+      "active_trial": {
+        "task_id": "rolling-shutter-oma",
+        "work_id": "work_48cfa63db70dd0fc610c4ac4a2aae069",
+        "candidate_run_id": "run_a8636028f6c0416892b461c3c071dd00",
+        "container": "rolling-shutter-oma__x6zptuk__env-main-1",
+        "original_controller_runtime_preserved": true,
+        "events_bytes": 87886,
+        "last_event_type": "message.completed",
+        "last_event_at": "2026-09-03T00:57:56.714Z"
+      },
+      "static_network_remediation": {
+        "implemented": true,
+        "scope": "Linux, one Dockerfile/prebuilt image, no task/extra Compose, unchanged no-network policy in all phases",
+        "implementation": "integrations/harbor/hitch_harbor_environment.py",
+        "direct_canary": "test-support/harbor_static_network_canary.py",
+        "direct_canary_receipt": ".hitch/benchmark-expansion/static-network-canary-v4.json",
+        "direct_canary_passed": true,
+        "separate_verifier_job_receipt": ".hitch/benchmark-expansion/static-verifier-job-v2/receipt.json",
+        "separate_verifier_job_passed": true,
+        "candidate_model_in_canaries": false,
+        "official_acceptance_added": false,
+        "old_frozen_runtime_modified": false,
+        "limitations": "Existing CMB trial remains invalid; missing terminal candidate evidence is not repaired by the network fix. The running second trial still uses its original controller runtime."
       }
     },
     {
@@ -979,8 +1018,8 @@
     "passed": 361,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/vm-controlled-check.log",
-    "additional_verification": "Five archive/QCOW2 extraction tests and an actual child-process environment test passed. The controlled image passed real TCG/egress guest API boot/reset, full base SHA256 preservation, monitor closure, QEMU exit and zero remaining owned resources. Visual inspection found black 1280x800 screenshots, so desktop readiness remains unverified. No new official benchmark acceptance."
+    "evidence": ".hitch/benchmark-expansion/static-network-check-v2.log",
+    "additional_verification": "Static no-network real Docker canary verified addressed interfaces, routes, loopback, IPv4/IPv6 and private-address connection rejection, runtime policy reopening rejection and cleanup. A full Harbor no-op/separate-verifier synthetic job returned reward 1 with no residual owned resources. No additional official benchmark acceptance."
   },
-  "updated_at": "2026-09-03T00:33:58.770105+00:00"
+  "updated_at": "2026-09-03T01:00:38.130318+00:00"
 }
