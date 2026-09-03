@@ -43,7 +43,7 @@ export async function frozenRerunBenchmark(evalDirectory: string): Promise<{ id:
   if (lock.protocol !== "hitch-benchmark@1" || pkg.package_digest !== lock.package_digest
     || lock.package_digest !== sha256JSON(lock.files) || lock.package_digest !== await benchmarkTreeDigest(pkg.source)
     || compiled.digest !== pkg.compiled_digest
-    || !["harbor-package@3", "harbor-package@4"].some(compiler => compiled.digest === sha256JSON({ lock, compiler }))
+    || !["harbor-package@3", "harbor-package@4", "harbor-package@5"].some(compiler => compiled.digest === sha256JSON({ lock, compiler }))
     || compiled.tasks_digest !== await benchmarkTreeDigest(pkg.tasks)) throw unavailable("compiled benchmark identity changed");
   return { id: lock.benchmark_id, revision: lock.package_digest, tasks: pkg.tasks };
 }

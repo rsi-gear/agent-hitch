@@ -3,6 +3,7 @@ import path from "node:path";
 import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, readJSON, sha256JSON } from "../../foundation/index.js";
 import type { DockerResourceOwnershipV1, EvalRequest, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
 import { harborDatasetConfig } from "./dataset-config.js";
+import { harborAgentTimeoutOverride } from "./agent-budget.js";
 import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
 import { invokeHarbor } from "./process.js";
@@ -314,7 +315,8 @@ export async function buildHarborJobConfig({
   if (logicalAttempt !== undefined && (!Number.isSafeInteger(logicalAttempt) || logicalAttempt < 1)) {
     throw invalidInput("Harbor logical attempt must be a positive safe integer");
   }
-  const timeoutSeconds = request.timeout_ms > 0 ? Math.ceil(request.timeout_ms / 1_000) : null;
+  const dataset = await harborDatasetConfig(request.dataset, taskNames);
+  const outerTimeoutSeconds = await harborAgentTimeoutOverride(dataset, request.timeout_ms);
   const setupTimeoutSeconds = request.setup_timeout_ms > 0 ? Math.ceil(request.setup_timeout_ms / 1_000) : null;
   const credentialNames = credentialEnvironmentNames(request.pass_env, env);
   const agent: Record<string, unknown> = {
@@ -363,7 +365,7 @@ export async function buildHarborJobConfig({
     env: credentialEnvironment(credentialNames),
     include_logs: ["hitch-*"],
   };
-  if (timeoutSeconds !== null) agent.override_timeout_sec = timeoutSeconds + 30;
+  if (outerTimeoutSeconds !== null) agent.override_timeout_sec = outerTimeoutSeconds;
   if (setupTimeoutSeconds !== null) agent.override_setup_timeout_sec = setupTimeoutSeconds;
 
   return compact({
@@ -374,7 +376,7 @@ export async function buildHarborJobConfig({
     environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits, resolvedImages, prebuiltTaskImage, Boolean(modelProxy && process.platform === "linux")),
     verifier: harborVerifierConfig(request),
     agents: [agent],
-    datasets: [await harborDatasetConfig(request.dataset, taskNames)],
+    datasets: [dataset],
     tasks: [],
   });
 }

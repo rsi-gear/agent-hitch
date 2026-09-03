@@ -605,6 +605,12 @@ GDPval 后续阶段的初版输出 win/tie/loss rate（tie=0.5）和 task bootst
 
 `HitchHarborDockerEnvironment` 现对 Linux 单 Dockerfile/image、无额外 Compose、所有阶段保持相同 `no-network` 的环境使用 Docker 原生 `network_mode: none`，并在启动后核对实际容器的 network mode、网络集合和端口。该路径不声明动态网络切换能力；追加 Compose 或改为联网均拒绝。其他网络配置继续走 Harbor 现有能力检查。真实容器已验证 loopback 可用、无 IPv4 路由、IPv4/IPv6 外部地址及所测私网地址不可达；完整 Harbor no-op → separate verifier 的无模型测试也已返回有效 reward。它们是环境 conformance，不增加官方抽样题的验收数。可复用检查入口为 `test-support/harbor_static_network_canary.py`，用 Harbor 0.21 的 Python 执行并传入 `--output`。冻结中的旧 controller runtime 不会被该修复追溯修改。
 
+普通任务的超时收集合同也已修复。旧实现中 Harbor 先开始计时，而 Hitch 在输入上传和 CLI 准备之后才启动相同时长的模型计时，外层可能先取消，导致终态结果未导出。`harbor-package@5` 保留原 task/profile，编译出的 `task.toml` 外层时限为原 agent budget 加 `collection_timeout_ms + cleanup_grace_ms`；私有 descriptor 分别保存原预算和收尾 allowance。显式 `--timeout` 只能缩短原任务预算，生成 Harbor override 时保留收尾 allowance。Native phases 继续使用原有的多阶段收尾公式；旧 compiler 包保持原身份可读。
+
+Bridge 用单调时钟扣除输入准备耗时，记录 `hitch-agent-budget.json`，剩余时间传给 Hitch CLI。CLI 从本次命令入口建立进程内单调时钟 deadline，解析、artifact handoff 和 executor 准备均不能重置该预算；启动前已耗尽则记录 `timed_out`，不启动模型。运行中的模型使用剩余时限，进程退出后，bridge 在独立 collection 时限内复制真实 result、events 和 run bundle。收集超时生成明确的失败回执，不能补造完成标记或成功状态。容器启动、CLI 进入前的传输与进程退出/收集仍受 Harbor 外层 guard 约束；这不是跨主机共享单调时钟的协议。
+
+`test/harbor-agent-budget.test.ts` 覆盖编译预算、显式上限、准备耗尽、收集阻塞及真实 CLI 的超时导出。本地假模型验证了“运行中超时后进程消失且结果导出”和“CLI 准备耗尽时没有模型进程”两种情况；该测试替换 Harbor 容器 I/O，不代表官方 task 验收。普通任务的 `timed_out` 仍按当前 importer 记为 invalid；按 profile 对终态产物计分还需独立、完整的截止与评分证据支持。该修复不会修补已结束 CMB 的缺失 bundle，也不改变两个已完成 trial 的冻结 runtime。第二题 `rolling-shutter-oma` 的候选于 2026-09-03 01:22 UTC 成功结束，终态 bundle/trajectory 校验通过，但旧 runtime 的相同网络错误使 verifier 未启动；当前仍无有效评分，应在记录新 verifier 执行身份后仅重评其既有产物。
+
 ### 9.2 HLE
 
 输入：固定 HF revision 的 `cais/hle`，保留原 id、question、image、answer_type、类别；answer 等参考字段只进入 grader CAS。读取实际 split/membership，不以 README 题数硬编码。grader 适配官方 extraction/equivalence prompt、模型配置与返回结构，记录解析失败；不能用随意的字符串匹配替换所有短答题。[官方 grader](https://github.com/centerforaisafety/hle/blob/main/hle_eval/run_judge_results.py)

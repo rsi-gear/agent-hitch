@@ -48,7 +48,7 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
 }
 
 export async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string): Promise<{ source: string; tasks: string; digest: string }> {
-  const digest = sha256JSON({ lock: loaded.lock, compiler: "harbor-package@4" });
+  const digest = sha256JSON({ lock: loaded.lock, compiler: "harbor-package@5" });
   const store = await ensureDir(path.join(root, "store", "benchmarks"));
   const target = path.join(store, digest.slice(7));
   await withFileLock(path.join(store, "locks"), digest, async () => {
@@ -70,23 +70,28 @@ export async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string):
         const taskPath = path.join(temporary, "tasks", task.id);
         await cp(path.join(snapshot.directory, task.path), taskPath, { recursive: true });
         const nativePhases = task.config.driver.kind === "tool-server" && task.config.driver.config.native_phases;
+        let finalizationTimeoutMs = loaded.profile.budget.collection_timeout_ms + loaded.profile.budget.cleanup_grace_ms;
         if (nativePhases) {
           // Hitch enforces the original candidate budget in its private phase
           // supervisor. Harbor's outer guard also allows final evidence export
           // and failure teardown without extending the model's deadline.
-          const execution = structuredClone(task.harbor);
-          const agent = execution.agent as Record<string, unknown>;
           // Cancellation/export and host inspection each have a shutdown
           // allowance, bounded by collection_timeout_ms; snapshot has its own.
           const collections = nativePhases.protocol === "hitch-native-phase-control@2" ? 4 : 3;
-          agent.timeout_sec = Number(agent.timeout_sec) + Math.ceil((collections * loaded.profile.budget.collection_timeout_ms + 2 * loaded.profile.budget.cleanup_grace_ms) / 1000);
-          await writeFile(path.join(taskPath, "task.toml"), stringifyTOML(execution));
+          finalizationTimeoutMs = collections * loaded.profile.budget.collection_timeout_ms + 2 * loaded.profile.budget.cleanup_grace_ms;
         }
+        // The inner Hitch invocation retains the source budget. The outer
+        // Harbor guard must also permit process retirement and result export.
+        const execution = structuredClone(task.harbor);
+        const agent = execution.agent as Record<string, unknown>;
+        agent.timeout_sec = Number(agent.timeout_sec) + Math.ceil(finalizationTimeoutMs / 1000);
+        await writeFile(path.join(taskPath, "task.toml"), stringifyTOML(execution));
         await atomicWriteJSON(path.join(taskPath, ".hitch-benchmark.json"), {
           schema_version: "1", task_id: task.id, task: task.config,
           profile_digest: loaded.lock.profile_digest, profile: loaded.profile,
           primary_metric: loaded.manifest.primary_metric, metrics: loaded.manifest.metrics,
           tools: task.tools, agent_timeout_sec: (task.harbor.agent as Record<string, unknown>).timeout_sec,
+          agent_finalization_timeout_ms: finalizationTimeoutMs,
           ...(task.config.driver.kind === "model-call" ? { candidate_input: JSON.parse(await readFile(path.join(snapshot.directory, task.config.driver.config.input), "utf8")) } : {}),
           package_digest: loaded.lock.package_digest, task_digest: loaded.lock.tasks.find((t) => t.task_id === task.id)!.task_digest,
         });

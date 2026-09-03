@@ -727,11 +727,14 @@ class HitchHarborAgent(BaseAgent):
         *,
         prepared_phase: PreparedPhase | None = None,
     ) -> None:
-        if prepared_phase is None and getattr(environment, "_hitch_benchmark", None):
+        invocation_started_ns = time.monotonic_ns()
+        session = getattr(environment, "_hitch_benchmark", None)
+        task_budget_ms = self.hitch_timeout_ms
+        if prepared_phase is None and session:
             from hitch_benchmark import candidate_instruction
             instruction, task_timeout = candidate_instruction(instruction, environment)
-            if prepared_phase is None and self.hitch_timeout_ms == 0 and task_timeout is not None:
-                self.hitch_timeout_ms = task_timeout
+            if task_timeout is not None:
+                task_budget_ms = min(task_timeout, task_budget_ms) if task_budget_ms > 0 else task_timeout
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         workdir = self._require_workdir()
         assigned_run_id = prepared_phase.run_id if prepared_phase else "run_" + uuid.uuid4().hex
@@ -807,11 +810,23 @@ class HitchHarborAgent(BaseAgent):
         if self._entrypoint is None:
             raise RuntimeError("Hitch agent setup() must run before run() to resolve the runtime entrypoint")
         entry = self._remote_entry(self._entrypoint)
-        timeout_ms = self.hitch_timeout_ms
+        timeout_ms = task_budget_ms
         if prepared_phase is not None:
             timeout_ms = (prepared_phase.deadline_ns - time.monotonic_ns()) // 1_000_000
             if timeout_ms <= 0:
                 raise RuntimeError("candidate whole-task budget expired during phase binding/upload")
+        elif session:
+            preparation_ms = (time.monotonic_ns() - invocation_started_ns) // 1_000_000
+            timeout_ms = task_budget_ms - preparation_ms
+            (self.logs_dir / "hitch-agent-budget.json").write_text(json.dumps({
+                "schema_version": "hitch-agent-budget@1", "run_id": run_id,
+                "task_budget_ms": task_budget_ms, "preparation_ms": preparation_ms,
+                "hitch_timeout_ms": max(0, timeout_ms),
+                "collection_timeout_ms": session.config["profile"]["budget"]["collection_timeout_ms"],
+                "scope": "invocation-budget-and-collection-allowance",
+            }))
+            if timeout_ms <= 0:
+                raise RuntimeError("candidate budget expired during input preparation; no model was launched")
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
@@ -856,6 +871,32 @@ class HitchHarborAgent(BaseAgent):
             + " | tee /logs/agent/hitch-events.jsonl"
         )
         execution = await environment.exec(command, cwd=workdir)
+        collection = self._collect_run(
+            environment, context, execution, assigned_run_id=assigned_run_id,
+            context_payload=context_payload, parent_payload=parent_payload, prepared_phase=prepared_phase,
+            workdir=workdir, proxy_health=proxy_health,
+        )
+        if prepared_phase is not None or not session:
+            await collection
+            return
+        try:
+            await asyncio.wait_for(collection, session.config["profile"]["budget"]["collection_timeout_ms"] / 1000)
+        except asyncio.TimeoutError as error:
+            # A completed process with uncollected evidence is still invalid.
+            # Do not fabricate a terminal bundle or relabel it as model success.
+            receipt = {"code": "hitch_run_collection_timeout", "run_id": assigned_run_id,
+                       "process_return_code": execution.return_code}
+            (self.logs_dir / "hitch-collection-timeout.json").write_text(json.dumps(receipt))
+            raise RuntimeError("hitch_run_collection_timeout: terminal evidence export exceeded its allowance") from error
+
+    async def _collect_run(
+        self, environment: BaseEnvironment, context: AgentContext, execution: ExecResult, *,
+        assigned_run_id: str, context_payload: dict[str, Any], parent_payload: dict[str, Any] | None,
+        prepared_phase: PreparedPhase | None,
+        workdir: str, proxy_health: str,
+    ) -> None:
+        run_id = assigned_run_id
+        trial_id, task_id, attempt = self._trial_identity()
         events = self._events(execution.stdout or "")
         observed_run_id = next((
             value

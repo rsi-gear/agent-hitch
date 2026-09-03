@@ -12,6 +12,7 @@ import { assertNoArgs, parseRunRequest, takeFlag, takeOption, takeRepeatedOption
 import { waitForDaemonRun } from "../output.js";
 
 export async function runCommand(args: string[], root: string): Promise<void> {
+  const invocationStartedNs = process.hrtime.bigint();
   const useDaemon = takeFlag(args, "--daemon");
   const output = takeOption(args, "--output") || "jsonl";
   const internalFlags = takeInternalLocalGitFlags(args);
@@ -30,6 +31,7 @@ export async function runCommand(args: string[], root: string): Promise<void> {
     throw invalidInput("phase control requires a directly executed, normally sealed benchmark phase with an assigned run ID");
   }
   if (deferBenchmarkObservation) request.defer_benchmark_observation = true;
+  if (deferBenchmarkObservation && useDaemon) throw invalidInput("managed benchmark task budgets require direct execution");
   if (internalCredentialNames.length > 0) request.credential_names = internalCredentialNames;
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
@@ -62,6 +64,11 @@ export async function runCommand(args: string[], root: string): Promise<void> {
     const result = await executeRun({
       runId,
       request,
+      // A benchmark's allowance already excludes bridge input preparation.
+      // CLI validation/artifact handoff must not reset that remaining budget.
+      ...(deferBenchmarkObservation && Number(request.timeout_ms) > 0 ? {
+        candidateDeadlineNs: invocationStartedNs + BigInt(Math.floor(Number(request.timeout_ms) * 1_000_000)),
+      } : {}),
       runsRoot: statePaths(root).runs,
       root,
       ...(cancellation ? { signal: cancellation.signal } : {}),

@@ -58,7 +58,7 @@ export async function nativePhaseDescriptor(input: ImportEvalRunOptions, taskId:
   if (lock.protocol !== "hitch-benchmark@1" || lock.benchmark_id !== input.benchmarkId || lock.package_digest !== input.benchmarkRevision
     || pkg.package_digest !== lock.package_digest || lock.package_digest !== sha256JSON(lock.files)
     || lock.package_digest !== await benchmarkTreeDigest(pkg.source) || compiled.digest !== pkg.compiled_digest
-    || compiled.digest !== sha256JSON({ lock, compiler: "harbor-package@4" }) || compiled.tasks_digest !== await benchmarkTreeDigest(pkg.tasks)
+    || !["harbor-package@4", "harbor-package@5"].some(compiler => compiled.digest === sha256JSON({ lock, compiler })) || compiled.tasks_digest !== await benchmarkTreeDigest(pkg.tasks)
     || !lockedTask || descriptor.task_digest !== lockedTask.task_digest || descriptor.package_digest !== lock.package_digest
     || descriptor.task_id !== taskId || task.source_task_id !== lockedTask.source_task_id) throw new Error("native compiled benchmark identity changed");
   return { task, task_digest: lockedTask.task_digest, primary_metric: String(descriptor.primary_metric),
