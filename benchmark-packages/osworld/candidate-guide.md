@@ -2,6 +2,12 @@ Use `desktop.observe` and `desktop.submit` to complete the native task. The
 original task instruction and screenshot come from the native phase controller.
 Read the tool schemas and open the returned screenshot with your image viewer.
 
+The shell that launches this bridge runs in a tool-client container. Desktop
+applications, task files, and task websites run in a separate VM. Use desktop
+actions to interact with them; for guest-side commands, open a terminal on the
+desktop and type there. Local `ls`, `find`, and `curl` results describe the
+tool-client container.
+
 Stay in this run while working on the task. When the work is complete, submit
 `actions: ["DONE"]`. If you cannot complete it, submit `actions: ["FAIL"]`.
 Use the latest observed sequence and a valid, unique request ID. Submit the

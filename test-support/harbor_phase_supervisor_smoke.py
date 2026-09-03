@@ -221,7 +221,7 @@ class SyntheticAgent(bridge.HitchHarborAgent):
             raise bridge.HitchBridgeError("hitch_process_failed", "synthetic cancelled CLI", {})
 
 
-async def run_case(root, case, executable, revision):
+async def run_case(root, case, executable, revision, controller_runtime):
     finalizing = case.startswith("finalize")
     root.mkdir()
     (root / "lock.json").write_text(json.dumps({"schema_version": 2, "task": {"name": "synthetic-native-phases"}}))
@@ -234,7 +234,8 @@ async def run_case(root, case, executable, revision):
     server.endpoint = f"http://controller:{server.public.server_port}/"
     server.start()
     env = LocalEnvironment(root, server, case)
-    agent = SyntheticAgent(logs_dir=root / "agent", harness_ref="codex", revision_identity=revision, hitch_runtime_dir=str(repo),
+    agent = SyntheticAgent(logs_dir=root / "agent", harness_ref="codex", revision_identity=revision,
+                           hitch_runtime_dir=controller_runtime["directory"], controller_runtime_id=controller_runtime["runtime_id"],
                            workdir="/workspace", eval_id="eval_" + "1" * 32, benchmark_id="synthetic-phases", benchmark_revision=digest, verifier_identity=digest)
     agent.executable = executable
     await agent.setup(env)
@@ -344,8 +345,14 @@ async function tool(name, args) {
         script = "import {resolveHarness,parseHarnessReference} from './dist/src/revisions/index.js';console.log((await resolveHarness(parseHarnessReference('codex'),{root:process.argv[1]})).identity)"
         resolved = await command("node", "--input-type=module", "-e", script, root / "resolution", env={**os.environ, "HITCH_CODEX_PATH": str(executable)})
         assert resolved.return_code == 0, resolved.stderr
+        # Exercise the same manifest + payload/ layout that a real Harbor job
+        # passes to the bridge, rather than the source checkout's dist/ tree.
+        runtime_script = "import {ensureControllerRuntime} from './dist/src/controller-runtime/index.js';const r=await ensureControllerRuntime({root:process.argv[1]});console.log(JSON.stringify({directory:r.directory,runtime_id:r.runtime_id}));"
+        frozen = await command("node", "--input-type=module", "-e", runtime_script, root / "runtime-state")
+        assert frozen.return_code == 0, frozen.stderr
+        controller_runtime = json.loads(frozen.stdout)
         for case in ["complete", "gated", "finalize-budget", "finalize-between", "finalize-failed", "early-exit", "bad-binding", "bad-state", "budget", "recycle-failed", "reused-session", "cancel-upload-failed"]:
-            await run_case(root / case, case, executable, resolved.stdout.strip())
+            await run_case(root / case, case, executable, resolved.stdout.strip(), controller_runtime)
     print("native phase orchestration passed; synthetic host environments only")
 
 

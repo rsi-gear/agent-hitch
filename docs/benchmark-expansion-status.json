@@ -702,8 +702,8 @@
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "task031_retry_running_task095_retry_queued",
-      "blocker": "No OSWorld native score yet. Task031 is running after the environment-start guard repair. Task095 v3 ended normally at the candidate process level but did not submit the required native terminal action, so native grading never began; its fixed v5 retry is queued after Task031 cleanup.",
+      "status": "two_fixed_tasks_retry_running_after_native_phase_inspector_fix",
+      "blocker": "No OSWorld score has completed Hitch validation yet. Task031 v4 ended without a native terminal action. Task095 v5 reached native completion but host inspection used the wrong runtime payload path, and native scoring artifacts were not collected. The fixed v6 full package is running the original two tasks sequentially.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1933,7 +1933,7 @@
         }
       },
       "tcg_http120_environment_start_fix": {
-        "status": "task031_retry_running",
+        "status": "native_prepare_validated_candidate_protocol_failure",
         "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v4",
         "package_digest": "sha256:a80990afe8a725d185d3299dc132c2429b97e757821fa682fefdb22dc3738d65",
         "profile_digest": "sha256:addce93c6684704517d5d090377bf8aed234df45488c7bad543af32cac25f55e",
@@ -1953,7 +1953,7 @@
         "candidate_max_predictions": 100,
         "same_controller_and_vm_images_as_v3": true,
         "real_scored_tasks": 0,
-        "next_action": "Task031 is running from the fixed original sample. Its environment completed native prepare and the candidate began desktop actions. Do not launch another Task031 evaluation while this frozen trial is active.",
+        "next_action": "The v4 candidate result is immutable and invalid. Follow the new v6 full-package evaluation after the task guide and host phase-inspector fixes.",
         "task031_execution_subset": {
           "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v4-task031-retry",
           "parent_package_digest": "sha256:a80990afe8a725d185d3299dc132c2429b97e757821fa682fefdb22dc3738d65",
@@ -1976,7 +1976,7 @@
           }
         },
         "sequential_continuation": {
-          "state_observed": "task031_running",
+          "state_observed": "task031_process_finished",
           "pid": 18320,
           "record": ".hitch/benchmark-expansion/osworld-task031-sequential-run.json",
           "waiting_for_eval": "eval_2a322d75c6bd457b9a0a26c752443225",
@@ -2005,6 +2005,22 @@
           "native_score_available": false,
           "visual_observation": "The original native screenshot shows Chrome rendering page 1 of the two-page requirement PDF at assets.trial.hitch.test/task_031/requirement.pdf. This demonstrates candidate-visible HTTP access and rendering of this selected asset; other task artifacts and final grading are not yet verified.",
           "guest_api_called_by_diagnostic": false
+        },
+        "terminal_result": {
+          "status": "invalid",
+          "completed_at": "2026-09-03T09:27:37.867Z",
+          "failure_code": "native_candidate_exited_before_boundary",
+          "candidate_status": "succeeded",
+          "candidate_exit_code": 0,
+          "native_grading_started": false,
+          "result": {
+            "path": ".hitch/benchmark-expansion/osworld-task031-start-guard-retry-eval-result.json",
+            "sha256": "sha256:48b342cb7e79fa29c39ce8a41f8575738d8ff2e665e4d5026c5ccf7aab049d07"
+          },
+          "audit": {
+            "path": ".hitch/benchmark-expansion/osworld-v4-task031-terminal-failure.json",
+            "sha256": "sha256:36feebe5038b3437a6a07d330899836bdb70e20477fac77396480f6780977591"
+          }
         }
       },
       "guest_dns_observation": {
@@ -2018,7 +2034,7 @@
         "scope": "Read-only Task095 guest diagnostic. Does not establish Task031 TeamChat or PDF HTTP reachability."
       },
       "native_candidate_guide_fix": {
-        "status": "validated_task095_retry_queued",
+        "status": "actual_guide_verified_native_completion_reached_inspector_failed",
         "reason": "Task095 v3 exposed that Harbor task instructions were discarded when each native candidate phase was started. The bridge now forwards the locked task instruction in every fresh phase. The OSWorld candidate guide requires an accepted DONE/FAIL submission before final text and explains literal-keystroke typing.",
         "guide_sha256": "sha256:6b8d265a9b357b7761846763fbcf39d72c26df1513c0d3ad71addbd80beedb1e",
         "validation": {
@@ -2052,12 +2068,97 @@
           "selection_unchanged": true,
           "queue": {
             "record": ".hitch/benchmark-expansion/osworld-task095-sequential-run.json",
-            "state_observed": "waiting_for_active_eval_cleanup",
+            "state_observed": "task095_process_finished",
             "observed_at": "2026-09-03T09:10:25.721Z",
             "pid": 50140,
             "waiting_for_eval": "eval_ad4dd1b4cfa6425a92c3862aea10e710"
           },
-          "queue_state": "waiting_for_task031_completion_and_cleanup"
+          "queue_state": "task095_process_finished",
+          "eval_id": "eval_9a3a438fe23e461d8b8c77c2ef098eb2",
+          "trial_id": "osworld-task-095__w6krNxP",
+          "candidate_run_id": "run_f2fe1d01fec2486b982635f45cccf8c2",
+          "controller_runtime_id": "sha256:2cd15d2172b14766c7b137a6dff3a6fdeab6cd6e877ead42ce226e319175463a",
+          "status": "invalid_host_phase_inspection_failure",
+          "native_boundary": {
+            "state": "completed",
+            "generation": 1,
+            "sequence": 6
+          },
+          "result": {
+            "path": ".hitch/benchmark-expansion/osworld-task095-native-completion-retry-eval-result.json",
+            "sha256": "sha256:f6417f87f6ce4d299a1ebfbc14dc2c985eb56d3b16204d7dd5542bee72243900"
+          },
+          "inspection_diagnostic": {
+            "path": ".hitch/benchmark-expansion/osworld-v5-task095-inspector-layout-diagnostic.json",
+            "sha256": "sha256:21a0a8d6d79c1825a32521c19e0338ce32578ca2a7cc8e16c5f45351a8f64932"
+          }
+        },
+        "actual_candidate_guide_verification": {
+          "path": ".hitch/benchmark-expansion/osworld-v5-task095-actual-guide-verification.json",
+          "sha256": "sha256:cd115843bbb688d1ab5e8b5c64f5ebffcfc6a23de6e1600ebe588f0062b7bd14"
+        }
+      },
+      "desktop_vm_boundary_guide": {
+        "guide_sha256": "sha256:926c11e3926098bbc65730246f7f277b22a19bc92b03893c0d9c41344166a3c1",
+        "change": "Explain that the bridge shell runs in a tool-client container while task files, applications and task websites live in a separate VM. Desktop actions remain the interface to that VM.",
+        "candidate_claim_of_missing_vm_files_verified": false,
+        "authorized_report_archive_check": {
+          "path": ".hitch/benchmark-expansion/osworld-task031-report-archive-check.json",
+          "sha256": "sha256:5015b6e1b193b0a522512d5f8aa6d6486d188a28fa7a5ddbf09d878dec1ba916"
+        },
+        "guest_readback_follow": {
+          "record": ".hitch/benchmark-expansion/osworld-v6-task031-guest-file-readback-follow.json",
+          "state_observed": "waiting_for_native_prepare",
+          "result": ".hitch/benchmark-expansion/osworld-v6-task031-guest-file-readback.json"
+        },
+        "native_task_and_grader_changed": false
+      },
+      "phase_inspector_payload_fix": {
+        "status": "fixed_two_task_retry_running",
+        "cause": "Host inspection resolved runtime-root/dist/src/runs/phase-bundle.js; the verified bundle stores it under runtime-root/payload/dist/src/runs/phase-bundle.js.",
+        "fix": "Resolve the phase inspection module inside payload/. The orchestration regression now builds and uses a real controller runtime bundle rather than passing the source checkout as its runtime root.",
+        "previous_actual_candidate_bundle_inspection_passed": true,
+        "diagnostic": {
+          "path": ".hitch/benchmark-expansion/osworld-v5-task095-inspector-layout-diagnostic.json",
+          "sha256": "sha256:21a0a8d6d79c1825a32521c19e0338ce32578ca2a7cc8e16c5f45351a8f64932"
+        },
+        "readiness": {
+          "path": ".hitch/benchmark-expansion/osworld-v6-phase-inspector-retry-readiness.json",
+          "sha256": "sha256:e919806e0ba7eee67004eb3d5c07333927a04b9f56defac243ea7a5ebed1eca7"
+        },
+        "package": "/Users/tangyehui/agent-hitch/.hitch/benchmark-expansion/packages/osworld-v2-tcg-http120-v6",
+        "package_digest": "sha256:4793d55cf12d0834fd4b7653cd589708d22e9a7df5264e83acd4d542fa3cb2ea",
+        "profile_digest": "sha256:08a91f860eb0364240b4ec1047d66f2b6c102efd937dae621be2e88c44bd0614",
+        "compiled_digest": "sha256:3b66881a88895872f9348a4cf79e073ddcd0ebf2144fa6eae00f3847a25adfd6",
+        "controller_runtime_id": "sha256:fb9bd779e36e2044e47acb450180426fde6214e91590b4b32848050efff7971a",
+        "eval_id": "eval_67debacbf31445ceba211881bfa18e54",
+        "log": ".hitch/benchmark-expansion/osworld-v6-phase-inspector-retry-eval.log",
+        "result": ".hitch/benchmark-expansion/osworld-v6-phase-inspector-retry-eval-result.json",
+        "task_ids": [
+          "osworld-task-031",
+          "osworld-task-095"
+        ],
+        "max_concurrent": 1,
+        "resample_on_failure": false,
+        "candidate_max_predictions": 100,
+        "candidate_timeout_sec": 7200,
+        "real_scored_tasks": 0,
+        "cancelled_same_runtime_preparation": {
+          "eval_id": "eval_5fec8fd13cef4c058d7dfb1604be9962",
+          "trial_id": "osworld-task-031__2NrVAco",
+          "native_predictions": 0,
+          "result": {
+            "path": ".hitch/benchmark-expansion/osworld-task031-native-guide-retry-eval-result.json",
+            "sha256": "sha256:d41f1e7a7954d06aa59dbdb7d1c126d56d8ccdfd1273162b71da1755e3d55f29"
+          },
+          "interruption": {
+            "path": ".hitch/benchmark-expansion/osworld-task031-native-inspector-interruption.json",
+            "sha256": "sha256:a55b9e87e35939cf595419a84b237649fa18c7e5d81cb49d0eeeaaf44374c57a"
+          },
+          "cleanup": {
+            "path": ".hitch/benchmark-expansion/osworld-task031-inspector-cancel-cleanup/receipt.json",
+            "sha256": "sha256:cce20967326443ba904bc5ad60e73bcd4d2309eb46792779046e998b5d23f50b"
+          }
         }
       }
     },
@@ -2107,9 +2208,9 @@
     "passed": 373,
     "skipped": 3,
     "failed": 0,
-    "evidence": ".hitch/benchmark-expansion/osworld-native-guide-forwarding-check.log"
+    "evidence": ".hitch/benchmark-expansion/osworld-phase-inspection-payload-check.log"
   },
-  "updated_at": "2026-09-03T09:18:51.436134+00:00",
+  "updated_at": "2026-09-03T09:52:40.315566+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -2117,7 +2218,7 @@
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Let active Task031 finish and collect its native result. The queued Task095 retry will then verify cleanup, the tested instruction-forwarding source hashes and the locked retry package before launch; collect its native result without resampling or budget changes."
+      "requirement": "Follow active eval_67debacbf31445ceba211881bfa18e54 (Task031 then Task095). Check the live Task031 guest report readback follower and collect native scores, sealed phase evidence and valid Hitch assessments. Preserve original sample membership, budgets and all prior invalid/cancelled receipts."
     },
     {
       "benchmark": "cursorbench",

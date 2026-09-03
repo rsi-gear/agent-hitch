@@ -264,7 +264,7 @@ class NativePhaseSupervisor:
             raise PhaseSupervisionError("native_candidate_export_incomplete")
 
     async def _inspect(self, source):
-        module = (self.agent.hitch_runtime_dir / "dist/src/runs/phase-bundle.js").resolve(strict=True)
+        module = (self.agent.hitch_runtime_dir / "payload/dist/src/runs/phase-bundle.js").resolve(strict=True)
         node = shutil.which("node")
         if not node:
             raise PhaseSupervisionError("native_phase_inspection_node_missing")

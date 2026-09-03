@@ -37,6 +37,11 @@ The native phase supervisor passes these locked task instructions into every
 fresh candidate alongside the current native instruction and date. Use a host
 controller runtime that includes this forwarding fix; older frozen runtimes
 discarded the static task instructions when starting native phases.
+The guide also distinguishes the tool-client container from the desktop VM:
+task files and desktop applications are accessed through native desktop actions.
+Host-side phase inspection loads the verified runtime's
+`payload/dist/src/runs/phase-bundle.js`; the runtime cache root itself has no
+`dist/` directory.
 
 The Harbor environment start guard is explicitly 1,800 seconds, matching the
 profile's setup allowance. Harbor includes the native prepare hook inside
