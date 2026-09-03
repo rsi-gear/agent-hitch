@@ -2207,7 +2207,16 @@
           "run_group_id": "run_group_a59c731cd36b4228845cfa49d71b0b11",
           "supervision_started_at": "2026-09-03T10:53:02.265277+00:00",
           "status": "candidate_running",
-          "native_score_available": false
+          "native_score_available": false,
+          "native_input_observation": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task095-native-input-observation.json",
+            "sha256": "sha256:7a8fcf0164bf82f8c238ef453775cbc968641fa46890cfbef50bb23336d85f56"
+          },
+          "native_input_observation_scope": "One native SDK command failure was logged about 90 seconds after a 1944-character TYPING action. Existing screenshots show repeated characters; the exact cause is not established. The candidate continued. This is retained action-level evidence, not a terminal eval status or a score override.",
+          "candidate_visible_media_and_app_observation": {
+            "path": ".hitch/benchmark-expansion/osworld-v6-task095-observation-000017/receipt.json",
+            "sha256": "sha256:e4f30d118f1e91667a042cde565b453da6f66a1bea3eae63795e742ba1d262a8"
+          }
         }
       },
       "real_scored_tasks": 1
@@ -2235,8 +2244,8 @@
     "note": "live-database-cutover needs 16 CPUs/16 GiB; Docker provides 10 CPUs/~7.65 GiB. Suitable remote worker requested; no answer yet. Requirements were not reduced.",
     "docker_cpus": 10,
     "existing_worker_check": {
-      "path": ".hitch/benchmark-expansion/worker-availability-20260903T0847.json",
-      "sha256": "sha256:69bf13ee019fc883762cebc9ceb606dcfbb9053ac37a7c2371c6a91d9c94fafb",
+      "path": ".hitch/benchmark-expansion/worker-availability-20260903T110745.json",
+      "sha256": "sha256:c57c0dfb8d8922c3f281414467d4fd342dc9588ee4039318392b48ed2d848ac4",
       "registered_workers_found": 0,
       "live_daemons_found": 0,
       "scope": "Current benchmark state and default ~/.hitch state only; no remote capacity provisioned."
@@ -2260,7 +2269,7 @@
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/osworld-phase-inspection-payload-check.log"
   },
-  "updated_at": "2026-09-03T10:56:12.694722+00:00",
+  "updated_at": "2026-09-03T11:44:37.299064+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
