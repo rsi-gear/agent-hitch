@@ -2,6 +2,7 @@ import type { SessionEvent } from "../domain/index.js";
 import { HitchError, sha256JSON } from "../foundation/index.js";
 import {
   acceptChunk,
+  chunkGroupKey,
   chunkSummary,
   groupHasPartialEvidence,
 } from "./chunk-projection.js";
@@ -46,6 +47,8 @@ interface SurfaceNodeV1 {
 interface RequestBoundaryV1 {
   turn: number;
   step: number;
+  attempt: number;
+  retry_id?: unknown;
   boundary_seq: number;
   surface_revision: number;
   request_header_seq?: number;
@@ -90,7 +93,13 @@ export interface TrajectoryAnalysisOptions {
   credentialValues?: readonly string[];
 }
 
-/** Build the bounded analysis-v1 surface and diagnostic projection in one scan. */
+interface RequestAttempt {
+  attempt: number;
+  retryId?: string;
+  retrySeq?: number;
+}
+
+/** Build the bounded trajectory analysis schema v1 surface and diagnostic projection in one scan. */
 export async function projectTrajectoryAnalysis(
   source: CanonicalTrajectorySource,
   options: TrajectoryAnalysisOptions = {},
@@ -109,6 +118,7 @@ export async function projectTrajectoryAnalysis(
   const requestBoundaries: RequestBoundaryV1[] = [];
   const boundaryKeys = new Set<string>();
   const chunkGroups = new Map<string, ChunkGroup>();
+  const requestAttempts = new Map<string, RequestAttempt>();
   const omitted = new Map<string, number>();
   let latestHeader: unknown = null;
   let latestHeaderSeq: number | undefined;
@@ -123,13 +133,21 @@ export async function projectTrajectoryAnalysis(
     pathValues,
     redactions,
   });
-  const recordBoundary = (event: SessionEvent, turn: number, step: number): void => {
-    const key = `${turn}:${step}`;
+  const recordBoundary = (event: SessionEvent, turn: number, step: number, requestAttempt: RequestAttempt): void => {
+    const key = chunkGroupKey(turn, step, requestAttempt.attempt);
     if (boundaryKeys.has(key)) return;
     boundaryKeys.add(key);
     requestBoundaries.push({
       turn,
       step,
+      attempt: requestAttempt.attempt,
+      ...(requestAttempt.retryId === undefined ? {} : {
+        retry_id: projectBoundedJson(
+          requestAttempt.retryId,
+          contextFor(requestAttempt.retrySeq ?? event.seq),
+          "data.retryId",
+        ),
+      }),
       boundary_seq: event.seq,
       surface_revision: fold.revision,
       ...(latestHeaderSeq === undefined ? {} : { request_header_seq: latestHeaderSeq }),
@@ -144,7 +162,21 @@ export async function projectTrajectoryAnalysis(
       });
     }
     const step = eventStep(event);
-    if (event.type === "assistant/message" && step) recordBoundary(event, step.turn, step.step);
+    if (event.type === "step/start" && step) {
+      requestAttempts.set(stepKey(step.turn, step.step), { attempt: 0 });
+    } else if (event.type === "llm/retry-started" && step) {
+      const data = event.data as Record<string, unknown>;
+      const current = requestAttemptFor(requestAttempts, step.turn, step.step);
+      requestAttempts.set(stepKey(step.turn, step.step), {
+        attempt: current.attempt + 1,
+        retryId: data.retryId as string,
+        retrySeq: event.seq,
+      });
+    }
+    const requestAttempt = step ? requestAttemptFor(requestAttempts, step.turn, step.step) : null;
+    if ((event.type === "assistant/message" || event.type === "llm/retry") && step && requestAttempt) {
+      recordBoundary(event, step.turn, step.step, requestAttempt);
+    }
     try {
       fold.accept(event);
     } catch (error) {
@@ -166,8 +198,21 @@ export async function projectTrajectoryAnalysis(
     }
     if (event.type === "assistant/chunk") {
       const { turn, step, chunk } = chunkData(event);
-      recordBoundary(event, turn, step);
-      acceptChunk(chunkGroups, event, turn, step, chunk, credentialValues, pathValues, redactions);
+      const attempt = requestAttemptFor(requestAttempts, turn, step);
+      recordBoundary(event, turn, step, attempt);
+      acceptChunk(
+        chunkGroups,
+        event,
+        turn,
+        step,
+        attempt.attempt,
+        attempt.retryId,
+        attempt.retrySeq,
+        chunk,
+        credentialValues,
+        pathValues,
+        redactions,
+      );
       increment(omitted, event.type);
       return;
     }
@@ -178,8 +223,8 @@ export async function projectTrajectoryAnalysis(
         surface_op: event.surfaceOp as SurfaceNodeV1["surface_op"],
         message: projectBoundedJson(deriveSurfaceMessage(event), contextFor(event.seq), "message"),
       });
-      if (event.type === "assistant/message" && step) {
-        const group = chunkGroups.get(`${step.turn}:${step.step}`);
+      if (event.type === "assistant/message" && step && requestAttempt) {
+        const group = chunkGroups.get(chunkGroupKey(step.turn, step.step, requestAttempt.attempt));
         if (group) group.assembled = true;
       }
     }
@@ -190,6 +235,7 @@ export async function projectTrajectoryAnalysis(
       requestHeaders.push({ seq: event.seq, header: latestHeader });
     }
     diagnostics.push(projectDiagnosticEvent(event, contextFor(event.seq)));
+    if (event.type === "step/end" && step) requestAttempts.delete(stepKey(step.turn, step.step));
   });
 
   const chunkSummaries = [...chunkGroups.values()]
@@ -224,7 +270,9 @@ export async function projectTrajectoryAnalysis(
     coverage: {
       surface: "complete",
       chunks: chunkGroups.size === 0 ? "omitted" : hasPartialChunks ? "partial" : "coalesced",
-      content: containsExcerpt({ nodes, diagnostics, requestHeaders, chunkSummaries }) ? "excerpted" : "complete",
+      content: containsExcerpt({ nodes, diagnostics, requestBoundaries, requestHeaders, chunkSummaries })
+        ? "excerpted"
+        : "complete",
       child_sessions: "unavailable",
     },
     ...(redactions.size === 0 ? {} : { redactions: redactionEntries(redactions) }),
@@ -284,6 +332,19 @@ function chunkData(event: SessionEvent): { turn: number; step: number; chunk: Re
 function eventStep(event: SessionEvent): { turn: number; step: number } | null {
   const data = event.data as Record<string, unknown>;
   return isNonNegativeInteger(data.turn) && isNonNegativeInteger(data.step) ? { turn: data.turn, step: data.step } : null;
+}
+
+function stepKey(turn: number, step: number): string {
+  return `${turn}:${step}`;
+}
+
+function requestAttemptFor(attempts: Map<string, RequestAttempt>, turn: number, step: number): RequestAttempt {
+  const key = stepKey(turn, step);
+  const current = attempts.get(key);
+  if (current) return current;
+  const initial = { attempt: 0 };
+  attempts.set(key, initial);
+  return initial;
 }
 
 function projectDiagnosticEvent(event: SessionEvent, context: ContentProjectionContext): unknown {

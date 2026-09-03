@@ -32,6 +32,7 @@ test("CLI advertises bounded trajectory capabilities", () => {
     schema_version: "1",
     trajectory_analysis: "1",
     trajectory_events_page: "1",
+    verifier_evidence: "1",
   });
 });
 
@@ -196,6 +197,8 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.match(help.stdout, /hitch worker register --server <url>/);
   assert.match(help.stdout, /hitch worker run --server <url>/);
   assert.match(help.stdout, /hitch trajectory project <run-id>/);
+  assert.match(help.stdout, /--profile analysis/);
+  assert.doesNotMatch(help.stdout, /analysis-v1/);
   assert.match(help.stdout, /hitch trajectory events <run-id>/);
   assert.match(help.stdout, /hitch capabilities \[--json\]/);
 

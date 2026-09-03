@@ -47,11 +47,11 @@ async function inspectTrajectory(args: string[], root: string): Promise<void> {
 
 async function projectTrajectory(args: string[], root: string): Promise<void> {
   const json = takeFlag(args, "--json");
-  const profile = takeOption(args, "--profile") ?? "analysis-v1";
+  const profile = takeOption(args, "--profile") ?? "analysis";
   const maxBytes = integerOption(takeOption(args, "--max-bytes"), DEFAULT_ANALYSIS_MAX_BYTES, "--max-bytes", 1);
   const runId = args.shift();
   if (!runId) throw invalidInput("trajectory project requires a run ID");
-  if (profile !== "analysis-v1") throw invalidInput("trajectory project --profile must be analysis-v1");
+  if (profile !== "analysis") throw invalidInput("trajectory project --profile must be analysis");
   assertNoArgs(args);
   const source = await requireSource(root, runId);
   const result = await projectTrajectoryAnalysis(source, { maxBytes });

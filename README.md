@@ -63,16 +63,19 @@ The output includes a run ID. Use bounded trajectory and verifier views for
 automated consumers, or the full trajectory inspect view for explicit auditing:
 
 ```bash
-hitch trajectory project RUN_ID --profile analysis-v1 --json
+hitch trajectory project RUN_ID --profile analysis --json
 hitch trajectory events RUN_ID --types tool/call,tool/result --limit 100 --json
 hitch trajectory inspect RUN_ID
 hitch verifier inspect RUN_ID --json
 ```
 
-`project` reconstructs the DSH surface and coalesces streaming chunks. `events`
+`project` reconstructs the DSH surface and coalesces streaming chunks per request
+attempt, keeping retries and their finish reasons separate. `events`
 filters and pages at the source; `--field` drill-down additionally requires the
 `canonical_sha256` returned by either bounded view. Streamed views fail closed
 for legacy trajectory refs that do not pin a canonical SHA-256.
+Commands invoked with `--json` emit a stable JSON error envelope on stderr when
+they fail.
 
 Every run is stored below `~/.hitch/runs/RUN_ID` with its manifest, result,
 events, logs, and trajectory.

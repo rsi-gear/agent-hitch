@@ -8,10 +8,11 @@ export function capabilitiesCommand(args: string[]): void {
     schema_version: SCHEMA_VERSION,
     trajectory_analysis: "1",
     trajectory_events_page: "1",
+    verifier_evidence: "1",
   } as const;
   if (json) {
     process.stdout.write(`${JSON.stringify(capabilities)}\n`);
     return;
   }
-  process.stdout.write("trajectory_analysis 1\ntrajectory_events_page 1\n");
+  process.stdout.write("trajectory_analysis 1\ntrajectory_events_page 1\nverifier_evidence 1\n");
 }

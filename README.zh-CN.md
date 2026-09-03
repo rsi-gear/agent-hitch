@@ -63,15 +63,17 @@ hitch run \
 inspect 仅用于显式审计：
 
 ```bash
-hitch trajectory project RUN_ID --profile analysis-v1 --json
+hitch trajectory project RUN_ID --profile analysis --json
 hitch trajectory events RUN_ID --types tool/call,tool/result --limit 100 --json
 hitch trajectory inspect RUN_ID
 hitch verifier inspect RUN_ID --json
 ```
 
-`project` 会重建 DSH surface 并合并流式 chunk；`events` 在源端完成过滤和分页。
+`project` 会重建 DSH surface，并按请求 attempt 合并流式 chunk，使 retry 及其
+finish reason 保持独立；`events` 在源端完成过滤和分页。
 使用 `--field` 钻取字段时，还必须传入任一有界视图返回的 `canonical_sha256`。
 对于没有固定 canonical SHA-256 的旧版 trajectory ref，流式视图会 fail closed。
+使用 `--json` 调用的命令失败时，会在 stderr 返回稳定的 JSON 错误 envelope。
 
 每次运行的 manifest、结果、事件、日志和轨迹都会保存在
 `~/.hitch/runs/RUN_ID` 下。

@@ -26,7 +26,7 @@ test("trajectory project and events CLI return compact bounded JSON", async (t) 
   await writeRun(root, RUN_ID, completeEvents());
   const analysis = spawnSync(process.execPath, [
     executable, "--root", root, "trajectory", "project", RUN_ID,
-    "--profile", "analysis-v1", "--max-bytes", String(32 * 1024), "--json",
+    "--profile", "analysis", "--max-bytes", String(32 * 1024), "--json",
   ], { encoding: "utf8" });
   assert.equal(analysis.status, 0, analysis.stderr || undefined);
   assert.equal(Buffer.byteLength(analysis.stdout) <= 32 * 1024, true);
@@ -54,10 +54,26 @@ test("trajectory project and events CLI return compact bounded JSON", async (t) 
   ], { encoding: "utf8" });
   assert.equal(overflow.status, 3);
   assert.equal(overflow.stdout, "");
-  assert.match(overflow.stderr, /trajectory_projection_overflow/);
+  const overflowError = JSON.parse(overflow.stderr) as {
+    schema_version: string;
+    kind: string;
+    error: { code: string; message: string; exit_code: number };
+  };
+  assert.equal(overflowError.schema_version, "1");
+  assert.equal(overflowError.kind, "error");
+  assert.equal(overflowError.error.code, "trajectory_projection_overflow");
+  assert.equal(overflowError.error.exit_code, 3);
+  assert.match(overflowError.error.message, /suggested_cursor=/);
+
+  const legacyProfile = spawnSync(process.execPath, [
+    executable, "--root", root, "trajectory", "project", RUN_ID,
+    "--profile", "analysis-v1", "--json",
+  ], { encoding: "utf8" });
+  assert.equal(legacyProfile.status, 2);
+  assert.equal((JSON.parse(legacyProfile.stderr) as { error: { code: string } }).error.code, "invalid_input");
 });
 
-test("analysis-v1 folds the DSH surface and coalesces chunks without hiding diagnostic history", async (t) => {
+test("analysis projection folds the DSH surface and coalesces chunks without hiding diagnostic history", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-analysis-"));
   t.after(() => forceRemove(root));
   const source = await writeRun(root, RUN_ID, completeEvents());
@@ -70,14 +86,15 @@ test("analysis-v1 folds the DSH surface and coalesces chunks without hiding diag
   assert.deepEqual(result.surface.current_node_seqs, [14, 17]);
   assert.deepEqual(result.surface.replacements, [{ seq: 14, start: 2, end: 11, shadowed_seqs: [2, 9, 11] }]);
   assert.deepEqual(result.surface.request_boundaries, [
-    { turn: 1, step: 1, boundary_seq: 4, surface_revision: 1, request_header_seq: 3 },
-    { turn: 1, step: 2, boundary_seq: 17, surface_revision: 4, request_header_seq: 16 },
+    { turn: 1, step: 1, attempt: 0, boundary_seq: 4, surface_revision: 1, request_header_seq: 3 },
+    { turn: 1, step: 2, attempt: 0, boundary_seq: 17, surface_revision: 4, request_header_seq: 16 },
   ]);
   assert.deepEqual(result.header, { config: { provider: "test", model: "model-2" }, system: "system-2" });
   assert.equal(result.events.some((entry) => (entry as { seq?: number }).seq === 9), true);
   assert.equal(result.events.some((entry) => (entry as { type?: string }).type === "assistant/chunk"), false);
   assert.equal(result.chunk_summaries.length, 1);
   const summary = result.chunk_summaries[0] as Record<string, unknown>;
+  assert.equal(summary.attempt, 0);
   assert.deepEqual(summary.types, { "block-end": 1, "block-start": 1, finish: 1, "reasoning-delta": 1, usage: 1 });
   assert.equal(summary.partial, undefined);
   assert.equal(result.omitted_event_types["assistant/chunk"], 5);
@@ -89,7 +106,7 @@ test("analysis-v1 folds the DSH surface and coalesces chunks without hiding diag
   });
 });
 
-test("analysis-v1 emits redacted bounded partial evidence for an interrupted stream", async (t) => {
+test("analysis projection emits redacted bounded partial evidence for an interrupted stream", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-partial-"));
   t.after(() => forceRemove(root));
   const events: SessionEvent[] = [
@@ -121,7 +138,7 @@ test("analysis-v1 emits redacted bounded partial evidence for an interrupted str
   assert.ok(summary.partial.content.bytes > 0);
 });
 
-test("analysis-v1 excerpts oversized message fields and never writes beyond its total budget", async (t) => {
+test("analysis projection excerpts oversized message fields and never writes beyond its total budget", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-excerpt-"));
   t.after(() => forceRemove(root));
   const hostPath = path.join(root, "runs", RUN_ID);
@@ -507,18 +524,22 @@ test("streamed projection validates known chunk variants and stream grammar", as
   }
 });
 
-test("chunk validation starts a new stream attempt at llm/retry-started", async (t) => {
+test("chunk projection keeps retry request attempts separate", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-retry-stream-"));
   t.after(() => forceRemove(root));
   const source = await writeRun(root, RUN_ID, [
     event(0, "turn/start", { turn: 1 }),
     event(1, "step/start", { turn: 1, step: 1 }),
-    event(2, "assistant/chunk", {
+    event(2, "request/header", {
+      header: { config: { provider: "test", model: "first-model" } },
+      reason: "initial",
+    }),
+    event(3, "assistant/chunk", {
       turn: 1,
       step: 1,
       chunk: { type: "finish", reason: { kind: "error", failure: { message: "retry", code: "SERVER" } } },
     }),
-    event(3, "llm/retry", {
+    event(4, "llm/retry", {
       retryId: "retry-1",
       turn: 1,
       step: 1,
@@ -530,13 +551,17 @@ test("chunk validation starts a new stream attempt at llm/retry-started", async 
       delayMs: 0,
       failure: { message: "retry", code: "SERVER" },
     }),
-    event(4, "llm/retry-started", { retryId: "retry-1", turn: 1, step: 1, retry: 1 }),
-    event(5, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 7, blockType: "text" } }),
-    event(6, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "text-delta", index: 7, text: "recovered" } }),
-    event(7, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-end", index: 7, block: { type: "text", text: "recovered" } } }),
-    event(8, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } } }),
-    event(9, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "finish", reason: { kind: "stop" } } }),
-    surfaceEvent(10, "assistant/message", {
+    event(5, "llm/retry-started", { retryId: "retry-1", turn: 1, step: 1, retry: 1 }),
+    event(6, "request/header", {
+      header: { config: { provider: "test", model: "retry-model" } },
+      reason: "change",
+    }),
+    event(7, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-start", index: 7, blockType: "text" } }),
+    event(8, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "text-delta", index: 7, text: "recovered" } }),
+    event(9, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "block-end", index: 7, block: { type: "text", text: "recovered" } } }),
+    event(10, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } } }),
+    event(11, "assistant/chunk", { turn: 1, step: 1, chunk: { type: "finish", reason: { kind: "stop" } } }),
+    surfaceEvent(12, "assistant/message", {
       turn: 1,
       step: 1,
       message: {
@@ -545,11 +570,27 @@ test("chunk validation starts a new stream attempt at llm/retry-started", async 
         content: [{ type: "text", text: "recovered" }],
         source: { kind: "model", provider: "test", model: "model" },
       },
-    }, "append", [2, 5, 6, 7, 8, 9]),
+    }, "append", [7, 8, 9, 10, 11]),
   ]);
   const result = await projectTrajectoryAnalysis(source, { credentialValues: [] });
   assert.equal(result.coverage.chunks, "coalesced");
-  assert.equal((result.chunk_summaries[0] as { count: number }).count, 6);
+  assert.deepEqual(result.surface.request_boundaries, [
+    { turn: 1, step: 1, attempt: 0, boundary_seq: 3, surface_revision: 0, request_header_seq: 2 },
+    { turn: 1, step: 1, attempt: 1, retry_id: "retry-1", boundary_seq: 7, surface_revision: 0, request_header_seq: 6 },
+  ]);
+  assert.equal(result.chunk_summaries.length, 2);
+  const initial = result.chunk_summaries[0] as Record<string, unknown>;
+  const retry = result.chunk_summaries[1] as Record<string, unknown>;
+  assert.equal(initial.attempt, 0);
+  assert.equal(initial.count, 1);
+  assert.deepEqual(initial.finish_reason, { kind: "error", failure: { message: "retry", code: "SERVER" } });
+  assert.equal(initial.retry_id, undefined);
+  assert.equal(initial.partial, undefined);
+  assert.equal(retry.attempt, 1);
+  assert.equal(retry.retry_id, "retry-1");
+  assert.equal(retry.count, 5);
+  assert.deepEqual(retry.finish_reason, { kind: "stop" });
+  assert.equal(retry.partial, undefined);
 
   const forgedRoot = await mkdtemp(path.join(tmpdir(), "hitch-trajectory-forged-retry-"));
   t.after(() => forceRemove(forgedRoot));

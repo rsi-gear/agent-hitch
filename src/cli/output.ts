@@ -108,7 +108,7 @@ Usage:
   hitch images unpin <sha256:image-id>
   hitch trajectory inspect <run-id> [--json]
   hitch verifier inspect <run-id> [--json]
-  hitch trajectory project <run-id> [--profile analysis-v1] [--max-bytes <bytes>] [--json]
+  hitch trajectory project <run-id> [--profile analysis] [--max-bytes <bytes>] [--json]
   hitch trajectory events <run-id> [--types <a,b>] [--seq-start <n>] [--seq-end <n>] [--field <path>] [--canonical-sha256 <digest>] [--limit <n>] [--cursor <opaque>] [--max-bytes <bytes>] [--json]
   hitch capabilities [--json]
   hitch feedback list <run-id> [--json]
