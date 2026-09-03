@@ -4,7 +4,7 @@
 
 本文保留最初的实现设计，并在第 9 节补充接入进度。设计阶段核对了发布页、benchmark 官方资料、Hitch 源码和本机 Harbor 的配置模型；后续实现、真实运行结果与剩余阻塞以 `docs/benchmark-expansion-status.json` 为准，不能将设计条目视为全部已完成。上游 `main` 页面只用于调研，运行时另行锁定提交和数据文件。
 
-当前扩展目标是其余六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric 为 2/2、Science 为 2/2、Terminal-Bench 为 1/2，其余三项为 0/2；有效评分允许任务得分为零。整体目标因授权任务/资产、HLE API 凭据及 16 CPU worker 缺失而受阻，OSWorld 完整运行环境也尚未验收。状态文件列出了逐项恢复条件；原始两题选择、任务资源和完整验收范围保持不变。下面的 MVP 描述保留最初阶段的设计范围。
+当前扩展目标是其余六项 benchmark 各预选随机两题，完成 Hitch 执行和有效评分。截至 2026-09-03，GDPval-public-rubric 为 2/2、Science 为 2/2、Terminal-Bench 为 1/2，其余三项为 0/2；有效评分允许任务得分为零。用户已完成 Hugging Face 授权，本机 OAuth 登录和 HLE/OSWorld 三个 gated 仓库的实际文件读取均已验证；HLE 两种 profile 的真实两题包已锁定，OSWorld 两题源码已通过官方哈希校验。整体目标仍缺 CursorBench 授权包、HLE API 凭据及 16 CPU worker，OSWorld 完整运行环境也尚未验收。状态文件列出了逐项恢复条件；原始两题选择、任务资源和完整验收范围保持不变。下面的 MVP 描述保留最初阶段的设计范围。
 
 ## 1. 设计决定
 
@@ -632,6 +632,8 @@ With-tools 首期用 shared agent image + 每题可见材料；最终回复由�
 
 Judge 只看必要题面、gold 与 final response；judge credentials 不进入 agent image/env。准确率为逐题 binary correctness；confidence/calibration 作为独立可选指标，缺 confidence 不记成 0% confidence。
 
+授权与导入更新（2026-09-03）：固定 revision 的完整 Parquet 已下载，SHA256 与上游 LFS 标识一致。按照既定 seed `20260902` 从全部 2,500 题抽出同样两题，生成 `hle-real-no-tools`、`hle-real-with-tools` 私有包；两者均通过 Hitch lock/validate。原始数据、题面、答案和生成包仅保存在忽略的 `.hitch/benchmark-expansion/` 下，Git 只记录任务 id、版本和摘要。候选 `OPENAI_API_KEY` 与独立 verifier 的 `HLE_JUDGE_API_KEY` 仍缺失，因此真实评分数保持 0/2。
+
 ### 9.3 AutomationBench-public
 
 本节是首个标准包实例。MVP 从固定上游提交的正式公共任务中选择两个不同的真实 task，允许同属一个领域，各运行一次；包维护者的独立 source adapter 接受任务选择，输出完整 Benchmark Package v1（manifest、profile、Harbor tasks、runtime 与 source manifest），再由 Hitch 通用 resolver 生成 lock。记录来源提交与原始 task id。两个任务可作为显式子集，无需先导入全部 600 题；结果标记为公共集子集，不能作为全量 benchmark 分数。首期只接通一个 Hitch harness 和一个固定 toolset，默认采用官方 CLI 的 `api`。
@@ -669,6 +671,8 @@ CUA bridge 合同：`observe → image/artifact refs + seq`；`submit(seq, reque
 Provider 增加 `vm`、`cua`、`state_snapshot` 能力和 `vm_slots` / 外部服务 namespace capacity；QEMU 需要的 KVM、内存与磁盘在 preflight 检查。CPU/memory 仍进入现有 ledger；VM 和远端网站账户也需要 lease/mutex。仅重置 VM 而不重置网站数据不算环境复原。
 
 实施更新：官方现已发布 `osworld-v2-2026.08.08`，直接以该 release 为目标。必须拿到其可授权 task/assets，并按官方 release manifest 锁定代码、任务、assets、网站与 VM 镜像；全部组件一致才运行。拿不到时该目标明确是 `blocked_on_dataset`，不能换成 6 月任务。参见[官方版本清单](https://github.com/xlang-ai/OSWorld-V2/blob/main/benchmark_releases/osworld-v2-2026.08.08.json)。
+
+授权更新（2026-09-03）：现已取得固定版本的 task/hash manifest 与素材访问权。官方清单 SHA256、108 题 membership、`task_031`/`task_095` 源码摘要校验通过；`task_031` 素材目录及其 state 内直接引用的素材已按固定 asset commit 下载。`task_095` 还使用上游配置的 `gpt-4o` LLM user simulator 和运行中的远程媒体发现，需要 controller 专用凭据与相应运行配置。授权解除不代表完整 Compose、网站 reset、可用桌面及两题评分已完成；这些仍保留为待验收项。
 
 当前组件：`benchmark-packages/osworld/runtime/` 已包含受管 VM owner/provider、原生 `Agent.reset/predict` channel、动作校验和固定 SHA256 的 runner wrapper。多阶段流程委托给 `d578d2d4e0dc82b43e270fdaa7fa89d9708cd154` 的原始 `lib_run_single.run_single_example`，保留同一 VM 的 phase setup、gate 和评分文件；synthetic 对照已覆盖这些语义。每次 reset 撤销旧 token，并要求 supervisor 绑定新的 Hitch run。候选启动、取消与封存现已接入标准包入口，整题 assessment 导入也已接通；**这些合同测试尚不代表 OSWorld VM 与官方两题验收完成**。Run ID 检查只能防止复用标识，不能替代清空模型会话的证据。
 

@@ -29,6 +29,16 @@ separately gated. Once authorized inputs are available, the producer must verify
 Python classes against that manifest. Public membership resolution alone does
 not attest to task contents and is not execution evidence.
 
+Authorized access was established on 2026-09-03. The pinned hash manifest and
+both selected task classes now pass the official release/hash checks. The
+`task_031` asset subtree and its literal state-file asset references were acquired
+from the pinned asset revision. This does not establish a runnable package:
+website/VM assembly, a usable desktop, and official task execution remain pending.
+The selected `task_095` also declares an LLM user simulator (`gpt-4o`) and remote
+media discovery; its controller credentials and runtime dependencies must be
+configured without altering the original task. Private inputs and receipts stay
+under `.hitch/benchmark-expansion/`; only identities/status belong in Git.
+
 Remaining execution work follows section 9.5 of
 `docs/hitch-benchmark-eval-spec.zh-CN.md`: a managed VM and website namespace,
 lease/fencing and cleanup, native screenshot/action bridge, official task

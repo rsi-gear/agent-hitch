@@ -51,9 +51,14 @@ Source-file SHA256, dataset/grader revisions and sample membership are recorded.
 The caller must supply the correct authorized Parquet for that revision; an
 asserted revision alone is not a cryptographic upstream dataset attestation.
 
-At present only synthetic text/image import and mock API contracts have been
-validated. Real two-task execution is blocked by gated data and API credentials.
-The synthetic fixture is not HLE execution evidence.
+The authorized real Parquet was acquired on 2026-09-03 at the pinned revision;
+its SHA256 matches the upstream LFS identity. Both profiles were imported from
+the complete 2,500-row membership using the same fixed two-task selection, and
+both passed `hitch benchmark lock` and `hitch benchmark validate`. Their private
+packages and acquisition receipts remain under `.hitch/benchmark-expansion/`.
+Real candidate/judge execution still needs `OPENAI_API_KEY` and
+`HLE_JUDGE_API_KEY`. Package validation and the earlier synthetic contracts add
+no scored HLE trials. See `docs/benchmark-expansion-status.json` for identities.
 
 Sources: [dataset](https://huggingface.co/datasets/cais/hle),
 [official evaluation code](https://github.com/centerforaisafety/hle),

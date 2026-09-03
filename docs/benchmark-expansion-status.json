@@ -472,8 +472,8 @@
     {
       "id": "hle",
       "revision": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
-      "status": "producer_and_runner_contract_validated_real_data_blocked",
-      "blocker": "Official cais/hle is gated=auto. Exact Parquet download returned HTTP 401; no HF_TOKEN/cache token. Candidate OPENAI_API_KEY and verifier HLE_JUDGE_API_KEY are also unavailable. No real HLE tasks were sampled or executed.",
+      "status": "real_packages_locked_api_credentials_blocked",
+      "blocker": "Authorized pinned Parquet acquired and both real two-task profiles locked/validated. Candidate OPENAI_API_KEY and verifier HLE_JUDGE_API_KEY remain unavailable. No candidate/judge calls or scored HLE trials.",
       "contract_validation": {
         "synthetic_only": true,
         "native_text_and_image_import": true,
@@ -485,14 +485,106 @@
         "evidence": ".hitch/benchmark-expansion/hle-browser-access-observation.json",
         "usable_authenticated_access_observed": false,
         "scope": "Selected in-app browser only",
-        "existing_authorized_data_or_login_requested": true
-      }
+        "existing_authorized_data_or_login_requested": true,
+        "historical": true,
+        "superseded_by": "authorized_data_validation"
+      },
+      "authorized_data_validation": {
+        "observed_at": "2026-09-03T04:59:00.487079+00:00",
+        "revision": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
+        "parquet_sha256": "sha256:6d0ee0602e8aea6b159509577e884f48ecac7b8e3f6822a35f51335a446c726a",
+        "parquet_size": 274276147,
+        "upstream_lfs_sha256_verified": true,
+        "profiles": [
+          {
+            "profile": "no-tools",
+            "package": ".hitch/benchmark-expansion/packages/hle-real-no-tools",
+            "package_digest": "sha256:624d72a88f1fd4c9621be15ced581159f2038080081332ca09a6ede25359bfc3",
+            "profile_digest": "sha256:02486b2f45ba9134af8806bf3aed8e2740f531a991fa0b997acc1ff6ce159170",
+            "lock": {
+              "path": ".hitch/benchmark-expansion/packages/hle-real-no-tools/benchmark.lock.json",
+              "sha256": "sha256:b039ee65c59a8f19194edcd9c455d4b1a1eb9bdcac7e747a5e3f60605861cc48"
+            },
+            "validation": {
+              "path": ".hitch/benchmark-expansion/hle-real-no-tools-validation.json",
+              "sha256": "sha256:598f343f2c29436fe02592389061c3a8cf4c600e11a7cd1b6e8fd88e167ca939"
+            },
+            "valid": true,
+            "selection": {
+              "algorithm": "sha256-rank-v1",
+              "seed": 20260902,
+              "population_size": 2500,
+              "tasks": [
+                "6720449622c03e062e242dd2",
+                "66ea031360fbbf249dec70e1"
+              ],
+              "population_digest": "sha256:24bd6fc004b6a698bc200a6ee8790b2a954037f1cba45664add8bfd26d445ccd"
+            },
+            "source_task_mapping": [
+              {
+                "task_id": "hle-1c46ac9d20cdf435f43b0c75",
+                "source_task_id": "66ea031360fbbf249dec70e1"
+              },
+              {
+                "task_id": "hle-bee86c2fc022da5d2afcc54a",
+                "source_task_id": "6720449622c03e062e242dd2"
+              }
+            ]
+          },
+          {
+            "profile": "with-tools",
+            "package": ".hitch/benchmark-expansion/packages/hle-real-with-tools",
+            "package_digest": "sha256:bb6cf2c4982b96495074ef2f3ba890c783c2021840532a44f790c2c59e5db221",
+            "profile_digest": "sha256:dc61b2e7b3d4ee9262a11064a2a5549869ef8d095b8d4825ae38c282b84b4a64",
+            "lock": {
+              "path": ".hitch/benchmark-expansion/packages/hle-real-with-tools/benchmark.lock.json",
+              "sha256": "sha256:7933aa9e41709430a9956ed7fb3b472829ae294f2806a765e23f9e4fb8c1c58c"
+            },
+            "validation": {
+              "path": ".hitch/benchmark-expansion/hle-real-with-tools-validation.json",
+              "sha256": "sha256:fdac29fa8ee4f2fa9fcde008102b07b8b754e13c5deeb4b46f7128f2d2dee726"
+            },
+            "valid": true,
+            "selection": {
+              "algorithm": "sha256-rank-v1",
+              "seed": 20260902,
+              "population_size": 2500,
+              "tasks": [
+                "6720449622c03e062e242dd2",
+                "66ea031360fbbf249dec70e1"
+              ],
+              "population_digest": "sha256:24bd6fc004b6a698bc200a6ee8790b2a954037f1cba45664add8bfd26d445ccd"
+            },
+            "source_task_mapping": [
+              {
+                "task_id": "hle-1c46ac9d20cdf435f43b0c75",
+                "source_task_id": "66ea031360fbbf249dec70e1"
+              },
+              {
+                "task_id": "hle-bee86c2fc022da5d2afcc54a",
+                "source_task_id": "6720449622c03e062e242dd2"
+              }
+            ]
+          }
+        ],
+        "real_scored_tasks": 0,
+        "evidence": {
+          "path": ".hitch/benchmark-expansion/authorized-inputs-observation.json",
+          "sha256": "sha256:5e6476064c6f9b929720eb91c0e2e9ba5723a60e0c7aaefd0a72a05261d705ef"
+        }
+      },
+      "tasks": [
+        "6720449622c03e062e242dd2",
+        "66ea031360fbbf249dec70e1"
+      ],
+      "valid_sample_count": 0,
+      "required_sample_count": 2
     },
     {
       "id": "osworld-v2",
       "release": "osworld-v2-2026.08.08",
-      "status": "membership_locked_execution_and_data_blocked",
-      "blocker": "User confirmed no authorized task/assets access. Public file inventory supports fixed selection of task_031/task_095, but their contents and official hash manifest remain gated. Desktop/VM execution integration and two real scored trials are incomplete.",
+      "status": "authorized_sample_verified_runtime_incomplete",
+      "blocker": "Fixed task classes, official hash manifest and selected pinned assets acquired and verified. Complete task/controller/website assembly, usable desktop, task_095 user-simulator configuration and two official scored trials remain incomplete.",
       "population": 108,
       "tasks": [
         "task_031",
@@ -1285,7 +1377,50 @@
           }
         }
       },
-      "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9"
+      "resolved_vm_runtime_image": "happysixd/osworld-docker@sha256:0e6497a9295647cf05bf2b2af522fdd79bdeba2737595259cab310a3bcf6baa9",
+      "authorized_data_validation": {
+        "observed_at": "2026-09-03T04:59:00.487079+00:00",
+        "task_revision": "3736efa55d9d5dc78f57e873ef78886663e41200",
+        "asset_revision": "acad110ef3136405f95434b54862bf9066176c2a",
+        "task_verification": {
+          "manifest_sha256": "sha256:42f8f6f8939b8712997d5891456a575f8a2a5f53465e9e3e6747af5d6efd0915",
+          "membership_count": 108,
+          "tasks": [
+            {
+              "task_id": "task_031",
+              "sha256": "883db214a66bcf00016e3c25a1111c626afc4aca8586868c45faa392164b0ce1",
+              "size": 6438,
+              "official_manifest_verified": true
+            },
+            {
+              "task_id": "task_095",
+              "sha256": "58413e35891268ac0a13098e580a9bc018d0bb61f5737277dce538e7fd36de3d",
+              "size": 35231,
+              "official_manifest_verified": true
+            }
+          ]
+        },
+        "selected_asset_file_count": 37,
+        "selected_asset_bytes": 1023824,
+        "state_reference_count": 35,
+        "original_task_and_state_bytes_unchanged": true,
+        "real_scored_tasks": 0,
+        "task_095_user_simulator": {
+          "type": "llm",
+          "upstream_default_model": "gpt-4o",
+          "executed": false,
+          "configuration_pending": true
+        },
+        "limitations": [
+          "Selected-task asset acquisition does not attest to full VM/website assembly or runtime dependency closure.",
+          "task_095 remote media discovery and user simulator remain part of unchanged task semantics.",
+          "Usable desktop and two official scored trials remain unverified."
+        ],
+        "evidence": {
+          "path": ".hitch/benchmark-expansion/authorized-inputs-observation.json",
+          "sha256": "sha256:5e6476064c6f9b929720eb91c0e2e9ba5723a60e0c7aaefd0a72a05261d705ef"
+        }
+      }
     },
     {
       "id": "cursorbench",
@@ -1319,9 +1454,9 @@
     "skipped": 3,
     "failed": 0,
     "evidence": ".hitch/benchmark-expansion/verifier-runtime-check-v3.log",
-    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Two subsequent OSWorld public-VM diagnostics completed API boot/reset/base-hash/cleanup checks; CPU recognition and visual limitations are recorded separately and add no official task validation. Latest changes remain documentation/evidence only. A later GNOME-readiness canary failed its terminal-window wait and cleaned up all owned resources. Its new standalone driver was exercised against the pinned VM; the subsequent parent receipt-ordering fix was compile-checked only."
+    "additional_verification": "Real Science rolling-shutter-oma artifact-only regrade and same-sample CMB retry both returned valid official reward 0. CMB run record, trajectory, verifier, bundle, 14 submission files, unchanged task/grader/profile and frozen controller runtime verified; no owned Docker resources remain. Two subsequent OSWorld public-VM diagnostics completed API boot/reset/base-hash/cleanup checks; CPU recognition and visual limitations are recorded separately and add no official task validation. Latest changes remain documentation/evidence only. A later GNOME-readiness canary failed its terminal-window wait and cleaned up all owned resources. Its new standalone driver was exercised against the pinned VM; the subsequent parent receipt-ordering fix was compile-checked only. Authorized data follow-up: both real HLE profile packages passed Hitch lock/validate; the exact OSWorld release hash manifest, both fixed task classes and selected task_031 asset files and literal state references passed upstream content checks. No runtime code changed and no scored trial was added."
   },
-  "updated_at": "2026-09-03T04:37:04.272780+00:00",
+  "updated_at": "2026-09-03T04:59:00.487079+00:00",
   "resume_requirements": [
     {
       "benchmark": "terminal-bench",
@@ -1329,11 +1464,11 @@
     },
     {
       "benchmark": "hle",
-      "requirement": "Authorized access or local data for the pinned cais/hle revision, and credentials for the declared candidate/judge API configuration. The existing access question remains unanswered."
+      "requirement": "Credentials for the declared candidate/judge API configuration. Both fixed real two-task profiles are already imported, locked and validated from authorized pinned data."
     },
     {
       "benchmark": "osworld-v2",
-      "requirement": "Authorized task_031/task_095 data, assets and release hash manifest. User confirmed no access. Full assembly, usable desktop and two official scored trials remain incomplete; diagnostic VM results do not satisfy them."
+      "requirement": "Complete controller/VM/website assembly, a verified usable desktop and task_095 user-simulator/provider credentials and runtime media configuration, followed by the same two official scored trials. Gated task and asset access is now verified; source/hash receipts are recorded."
     },
     {
       "benchmark": "cursorbench",
@@ -1369,6 +1504,24 @@
       "running_containers": 0
     },
     "same_validation_blockers_in_preceding_goal_turns": true,
-    "scope": "Read-only public repository metadata, credential-presence checks without reading secret values, current Docker capacity, existing user confirmation and fixed task profile. No protected dataset terms accepted and no replacement samples drawn."
+    "scope": "Read-only public repository metadata, credential-presence checks without reading secret values, current Docker capacity, existing user confirmation and fixed task profile. No protected dataset terms accepted and no replacement samples drawn.",
+    "historical": true
+  },
+  "latest_authorized_data_observation": {
+    "observed_at": "2026-09-03T04:59:00.487079+00:00",
+    "evidence": {
+      "path": ".hitch/benchmark-expansion/authorized-inputs-observation.json",
+      "sha256": "sha256:5e6476064c6f9b929720eb91c0e2e9ba5723a60e0c7aaefd0a72a05261d705ef"
+    },
+    "all_three_hf_repositories_accessible": true,
+    "hf_oauth_cache_available": true,
+    "credentials_present": {
+      "OPENAI_API_KEY": false,
+      "HLE_JUDGE_API_KEY": false,
+      "OSWORLD_USER_SIM_API_KEY": false,
+      "OSWORLD_EVAL_MODEL_API_KEY": false
+    },
+    "candidate_calls": 0,
+    "judge_calls": 0
   }
 }
