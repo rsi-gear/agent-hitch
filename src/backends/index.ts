@@ -1,5 +1,6 @@
 export type { BackendArtifactReference, BackendResult } from "./contract.js";
 export { buildHarborJobConfig, lockedHarnessRef, normalizeHarborResult, readHarborRawResult, runHarborBackend } from "./harbor/index.js";
+export { buildHarborRegradeConfig, runHarborRegrade, seedHarborRegradeTrial } from "./harbor/index.js";
 export type { BuildHarborJobConfigOptions, HarborBackendResult, HarborPreparedArtifactUse, RunHarborBackendOptions } from "./harbor/index.js";
 export { harborEnvironmentConfig, inspectHarborTaskResources, parseHarborTaskResourceDeclaration } from "./harbor/index.js";
 export type { HarborDockerServiceLimitsV1, HarborEnvironmentImageDeclarationV1, HarborEnvironmentImageFallbackV1, HarborTaskResourceDeclarationV1 } from "./harbor/index.js";

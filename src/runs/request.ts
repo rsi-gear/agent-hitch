@@ -101,7 +101,8 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
   } catch (error) {
     throw invalidInput((error as Error).message, { cause: error });
   }
-  if (parent && context.kind !== "benchmark_task") throw invalidInput("eval parent requires a benchmark_task context");
+  if (parent && context.kind !== "benchmark_task" && context.kind !== "benchmark_phase") throw invalidInput("eval parent requires a benchmark_task or benchmark_phase context");
+  if (context.kind === "benchmark_phase" && !parent) throw invalidInput("benchmark_phase requires an eval parent");
   let deferObservation = false;
   try {
     if (input.defer_benchmark_observation !== undefined) {

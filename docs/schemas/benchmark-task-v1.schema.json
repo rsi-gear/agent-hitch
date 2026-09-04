@@ -1,0 +1,384 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hitch.dev/schemas/benchmark-task-v1.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "source_task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "driver": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "tool-server"
+            },
+            "protocol_version": {
+              "const": "1"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "transport": {
+                  "const": "http-json-cli"
+                },
+                "endpoint": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "schema": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "service": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "native_phases": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "protocol",
+                    "argv",
+                    "audit_path",
+                    "shutdown_timeout_ms"
+                  ],
+                  "properties": {
+                    "protocol": {
+                      "enum": ["hitch-native-phase-control@1", "hitch-native-phase-control@2"]
+                    },
+                    "argv": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 32,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8192
+                      }
+                    },
+                    "audit_path": {
+                      "type": "string",
+                      "pattern": "^/"
+                    },
+                    "shutdown_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 600000
+                    },
+                    "finalization_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "if": { "properties": { "protocol": { "const": "hitch-native-phase-control@2" } } },
+                  "then": { "required": ["finalization_timeout_ms"] },
+                  "else": { "not": { "required": ["finalization_timeout_ms"] } }
+                }
+              },
+              "required": [
+                "transport",
+                "endpoint",
+                "schema",
+                "service"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "protocol_version",
+            "config"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "terminal"
+            },
+            "protocol_version": {
+              "const": "1"
+            },
+            "config": {
+              "type": "object",
+              "maxProperties": 0
+            }
+          },
+          "required": [
+            "kind",
+            "protocol_version",
+            "config"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "model-call"
+            },
+            "protocol_version": {
+              "const": "1"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "input"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "protocol_version",
+            "config"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "lifecycle": {
+      "type": "object",
+      "properties": {
+        "prepare": {
+          "$ref": "benchmark-hook-v1.schema.json"
+        },
+        "quiesce": {
+          "$ref": "benchmark-hook-v1.schema.json"
+        },
+        "snapshot": {
+          "$ref": "benchmark-hook-v1.schema.json"
+        },
+        "cleanup": {
+          "$ref": "benchmark-hook-v1.schema.json"
+        }
+      },
+      "additionalProperties": false
+    },
+    "submission": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "artifacts",
+            "environment"
+          ]
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "final_response": {
+          "const": "/hitch-evidence/final-response.json"
+        }
+      },
+      "required": [
+        "kind",
+        "paths",
+        "max_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "grading": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "command",
+            "harbor"
+          ]
+        },
+        "entrypoint": {
+          "const": [
+            "bash",
+            "/tests/test.sh"
+          ]
+        },
+        "metric_map": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "entrypoint",
+        "metric_map"
+      ],
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_task_id",
+    "driver",
+    "requirements",
+    "lifecycle",
+    "submission",
+    "grading"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "driver": {
+            "properties": {
+              "kind": {
+                "const": "tool-server"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "lifecycle": {
+            "required": [
+              "prepare",
+              "quiesce",
+              "snapshot",
+              "cleanup"
+            ]
+          },
+          "submission": {
+            "properties": {
+              "kind": {
+                "const": "artifacts"
+              },
+              "paths": {
+                "minItems": 1
+              }
+            }
+          },
+          "grading": {
+            "properties": {
+              "kind": {
+                "const": "command"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "lifecycle": {
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "driver": {
+            "properties": {
+              "kind": {
+                "const": "model-call"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "submission": {
+            "required": [
+              "final_response"
+            ],
+            "properties": {
+              "kind": {
+                "const": "artifacts"
+              }
+            }
+          },
+          "grading": {
+            "properties": {
+              "kind": {
+                "const": "command"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "submission": {
+            "properties": {
+              "kind": {
+                "const": "artifacts"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "submission": {
+            "properties": {
+              "paths": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "driver": {
+            "properties": {
+              "kind": {
+                "const": "terminal"
+              }
+            }
+          },
+          "submission": {
+            "properties": {
+              "paths": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

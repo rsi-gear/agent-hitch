@@ -33,7 +33,7 @@ export async function runRemoteInfrastructureRetries(input: {
     const refs: EvalTrialRefV1[] = [];
     const publish = async (ref: EvalTrialRefV1): Promise<void> => {
       assertSelectedTrial(ref, input.item);
-      const existing = refs.find((entry) => entry.trial_id === ref.trial_id || entry.run_id === ref.run_id);
+      const existing = refs.find((entry) => entry.trial_id === ref.trial_id || (entry.run_group ? entry.run_group.run_group_id === ref.run_group?.run_group_id : entry.run_id === ref.run_id));
       if (existing) {
         if (JSON.stringify(existing) !== JSON.stringify(ref)) throw new Error(`remote retry trial identity changed: ${ref.trial_id}`);
         return;

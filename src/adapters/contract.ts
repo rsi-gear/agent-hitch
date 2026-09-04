@@ -40,6 +40,7 @@ export interface AdapterRequest {
 }
 
 export interface AdapterProcessRuntime {
+  entrypoint_integrity?: string | undefined;
   observed_version?: string | undefined;
   run_directory?: string;
   runtime_home?: string;

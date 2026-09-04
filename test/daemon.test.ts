@@ -87,7 +87,10 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
     method: "POST",
     body: "{}",
   });
+  // Consume the body to release fetch's connection before daemon shutdown.
+  const unauthorizedBody = await unauthorized.json() as { error: { code: string } };
   assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorizedBody.error.code, "unauthorized");
 
   const client = await daemonClient(root);
   await assert.rejects(

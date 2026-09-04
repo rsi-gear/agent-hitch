@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hitch.dev/schemas/benchmark-metric-v1.schema.json",
+  "type": "object",
+  "properties": {
+    "type": {
+      "enum": [
+        "binary",
+        "scalar"
+      ]
+    },
+    "direction": {
+      "enum": [
+        "maximize",
+        "minimize"
+      ]
+    },
+    "range": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "reducer": {
+      "const": "task_macro_mean"
+    }
+  },
+  "required": [
+    "type",
+    "direction",
+    "range",
+    "reducer"
+  ],
+  "additionalProperties": false
+}

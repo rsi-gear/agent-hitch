@@ -9,7 +9,7 @@ test("Harbor ownership environment labels every controlled Compose resource and 
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-harbor-environment-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(path.join(directory, "docker-compose.yaml"), JSON.stringify({
-    services: { main: { build: "." }, database: { image: "registry.test/database:16" } },
+    services: { main: { build: "." }, database: { image: "registry.test/database:16", platform: "linux/arm64" } },
     networks: { private: {}, shared: { external: true } },
     volumes: { data: {}, shared_data: { external: true } },
   }));
@@ -61,6 +61,18 @@ assert overlay["services"]["database"]["image"] == resolved["registry.test/datab
 assert env.task_env_config.docker_image == resolved["registry.test/task:v1"]
 assert "cpus" not in overlay["services"]["main"]
 assert env._docker_compose_paths[-1] == env._hitch_ownership_compose_path
+env._hitch_benchmark_platform = "linux/amd64"
+benchmark_overlay_path = env._write_ownership_overlay()
+benchmark_overlay = json.loads(benchmark_overlay_path.read_text())
+assert benchmark_overlay["services"]["main"]["platform"] == "linux/amd64"
+assert "platform" not in benchmark_overlay["services"]["database"]
+(root / "docker-compose-hitch-platform.yaml").write_text(benchmark_overlay_path.read_text())
+extra = root / "declared-main-platform.json"
+extra.write_text(json.dumps({"services": {"main": {"platform": "linux/arm64"}}}))
+env.extra_docker_compose_paths = [extra]
+explicit_main = json.loads(env._write_ownership_overlay().read_text())
+assert "platform" not in explicit_main["services"]["main"]
+env.extra_docker_compose_paths = []
 prebuilt = "sha256:" + "c" * 64
 prebuilt_env = module.HitchHarborDockerEnvironment(environment_dir=root, task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt)
 prebuilt_overlay_text = prebuilt_env._hitch_ownership_compose_path.read_text()
@@ -126,4 +138,12 @@ else: raise AssertionError("mutable prebuilt task image accepted")
   const gpuConfig = JSON.parse(gpuMerged.stdout) as { services: { main: { deploy?: { resources?: { reservations?: { devices?: Array<{ count?: number; capabilities?: string[] }> } } } } } };
   assert.equal(gpuConfig.services.main.deploy?.resources?.reservations?.devices?.[0]?.count, 2);
   assert.deepEqual(gpuConfig.services.main.deploy?.resources?.reservations?.devices?.[0]?.capabilities, ["gpu"]);
+  const platformMerged = spawnSync("docker", [
+    "compose", "-f", path.join(directory, "docker-compose.yaml"),
+    "-f", path.join(directory, "docker-compose-hitch-platform.yaml"), "config", "--format", "json",
+  ], { encoding: "utf8" });
+  assert.equal(platformMerged.status, 0, platformMerged.stderr || platformMerged.stdout);
+  const platforms = JSON.parse(platformMerged.stdout).services;
+  assert.equal(platforms.main.platform, "linux/amd64");
+  assert.equal(platforms.database.platform, "linux/arm64");
 });

@@ -55,20 +55,22 @@ export async function parseRunRequest(args: string[]): Promise<RunRequestInput> 
   };
 }
 
-export function parseEvalRequest(args: string[]): Record<string, unknown> {
+export function parseEvalRequest(args: string[], benchmark = false): Record<string, unknown> {
   const backend = takeOption(args, "--backend") || "harbor";
   const dataset = takeOption(args, "--dataset");
   const harness = takeOption(args, "--harness");
   const model = takeOption(args, "--model") || "";
-  const attempts = positiveInteger(takeOption(args, "--attempts") || 1, "--attempts");
-  const maxConcurrent = positiveInteger(takeOption(args, "--max-concurrent") || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
+  const attemptsValue = takeOption(args, "--attempts");
+  const concurrentValue = takeOption(args, "--max-concurrent");
+  const attempts = benchmark && attemptsValue === undefined ? undefined : positiveInteger(attemptsValue || 1, "--attempts");
+  const maxConcurrent = benchmark && concurrentValue === undefined ? undefined : positiveInteger(concurrentValue || DEFAULT_MAX_CONCURRENT, "--max-concurrent");
   const infrastructureRetries = takeOption(args, "--infrastructure-retries");
   const infrastructureRetryBackoff = takeOption(args, "--infrastructure-retry-backoff");
   const timeoutValue = takeOption(args, "--timeout");
   const setupTimeoutValue = takeOption(args, "--setup-timeout");
   const agentArgs = takeRepeatedOption(args, "--agent-arg");
   const passEnv = takeRepeatedOption(args, "--pass-env");
-  if (!dataset) throw invalidInput("--dataset is required");
+  if (!dataset && !benchmark) throw invalidInput("--dataset is required");
   if (!harness) throw invalidInput("--harness is required");
   return {
     backend,

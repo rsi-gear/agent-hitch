@@ -5,6 +5,10 @@
   "type": "object",
   "additionalProperties": true,
   "required": ["schema_version", "run_id", "context", "status", "harness", "model", "protocol", "request_ref", "resolution_ref", "created_at"],
+  "allOf": [{
+    "if": { "properties": { "context": { "properties": { "kind": { "const": "benchmark_phase" } }, "required": ["kind"] } }, "required": ["context"] },
+    "then": { "required": ["parent"], "not": { "required": ["observation"] } }
+  }],
   "properties": {
     "schema_version": { "const": "1" },
     "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },

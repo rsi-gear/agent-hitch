@@ -16,6 +16,7 @@ import { feedbackCommand } from "./commands/feedback.js";
 import { daemonCommand } from "./commands/daemon.js";
 import { workerCommand } from "./commands/worker.js";
 import { imagesCommand } from "./commands/images.js";
+import { benchmarkCommand } from "./commands/benchmark.js";
 import { verifierCommand } from "./commands/verifier.js";
 import { capabilitiesCommand } from "./commands/capabilities.js";
 
@@ -33,6 +34,7 @@ export async function main(argv: string[]): Promise<void> {
     case "runs": return runsCommand(args, root);
     case "compare": return compareCommand(args, root);
     case "eval": return evalCommand(args, root);
+    case "benchmark": return benchmarkCommand(args);
     case "workspace": return workspaceCommand(args, root);
     case "trajectory": return trajectoryCommand(args, root);
     case "verifier": return verifierCommand(args, root);

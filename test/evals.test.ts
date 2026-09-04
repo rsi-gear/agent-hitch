@@ -179,8 +179,10 @@ test("eval progress is canonical, monotonic, and rejects conflicting trial ident
   assert.equal(third.generation, 2);
   assert.deepEqual(third.trials.map((trial) => trial.task_id), ["task-a", "task-b"]);
   assert.deepEqual(third.summary, { settled_trials: 2, valid_trials: 1, invalid_trials: 1 });
+  const firstTrial = third.trials[0]!;
+  assert.ok(!firstTrial.run_group);
   assert.throws(() => mergeEvalProgressTrial(third, {
-    ...third.trials[0]!,
+    ...firstTrial,
     run_id: "run_cccccccccccccccccccccccccccccccc",
   }), /trial identity conflict/);
 });
@@ -901,7 +903,9 @@ test("Harbor diagnostic runs retain a validated bridge error without trusting it
   assert.equal(refs[0]?.task_id, "canonical-task");
   assert.equal(refs[0]?.observation_status, "invalid");
   assert.equal(refs[0]?.invalid_reason, "infrastructure_failure");
-  const runDirectory = path.join(root, "runs", refs[0]!.run_id);
+  const diagnosticTrial = refs[0]!;
+  assert.ok(!diagnosticTrial.run_group);
+  const runDirectory = path.join(root, "runs", diagnosticTrial.run_id);
   const result = await readJSON<{ run_id: string; error: { code: string; message: string } }>(path.join(runDirectory, "result.json"));
   assert.equal(result.run_id, refs[0]?.run_id);
   assert.deepEqual(result.error, {
@@ -968,7 +972,9 @@ test("Harbor diagnostic runs safely ignore an invalid bridge error artifact", as
     },
   });
 
-  const runDirectory = path.join(root, "runs", refs[0]!.run_id);
+  const diagnosticTrial = refs[0]!;
+  assert.ok(!diagnosticTrial.run_group);
+  const runDirectory = path.join(root, "runs", diagnosticTrial.run_id);
   const result = await readJSON<{ error: { code: string } }>(path.join(runDirectory, "result.json"));
   assert.equal(result.error.code, "infrastructure_failure");
   await assert.rejects(

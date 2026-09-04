@@ -1,6 +1,7 @@
-export interface EvalTrialRefV1 {
+import type { BenchmarkPhaseGroupRefV1 } from "./runs.js";
+
+interface EvalTrialObservationV1 {
   trial_id: string;
-  run_id: string;
   task_id: string;
   attempt: number;
   observation_status: "valid" | "invalid";
@@ -8,6 +9,12 @@ export interface EvalTrialRefV1 {
   verifier_result_ref?: string;
   invalid_reason?: string;
 }
+
+/** A whole trial references either one original run or the complete phase group. */
+export type EvalTrialRefV1 = EvalTrialObservationV1 & (
+  { run_id: string; run_group?: never; assessment?: { id: string; digest: string } }
+  | { run_id?: never; run_group: BenchmarkPhaseGroupRefV1; assessment: { id: string; digest: string } }
+);
 
 export interface EvalResultV1 {
   schema_version: "1";

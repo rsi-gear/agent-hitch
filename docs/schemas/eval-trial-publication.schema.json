@@ -9,31 +9,7 @@
     "schema_version": { "const": "1" },
     "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
     "mode": { "enum": ["settle", "replace-invalid"] },
-    "trial": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["trial_id", "run_id", "task_id", "attempt", "observation_status"],
-      "properties": {
-        "trial_id": { "type": "string", "minLength": 1 },
-        "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
-        "task_id": { "type": "string", "minLength": 1 },
-        "attempt": { "type": "integer", "minimum": 1 },
-        "observation_status": { "enum": ["valid", "invalid"] },
-        "reward": { "type": "number" },
-        "verifier_result_ref": { "type": "string", "minLength": 1 },
-        "invalid_reason": { "type": "string", "minLength": 1 }
-      },
-      "allOf": [
-        {
-          "if": { "properties": { "observation_status": { "const": "valid" } } },
-          "then": { "required": ["reward"] }
-        },
-        {
-          "if": { "properties": { "observation_status": { "const": "invalid" } } },
-          "then": { "required": ["invalid_reason"] }
-        }
-      ]
-    },
+    "trial": { "$ref": "eval-trial-reference.schema.json" },
     "created_at": { "type": "string", "format": "date-time" }
   }
 }

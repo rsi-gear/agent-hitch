@@ -481,8 +481,32 @@ backward compatibility. Rerun/recovery operations have distinct semantics:
 | `candidate-restart` | Executes again from the original instruction | New conversation | Clean environment | Supported |
 | `candidate-resume` | Continues an interrupted candidate | Provider-native session | Restored checkpoint | Reserved; rejected until both checkpoint and adapter resume exist |
 | `trajectory-replay` | Starts a new physical execution with prior context | Verified canonical trajectory | Restored checkpoint | Reserved; rejected until replay and checkpoint support exist |
-| `verifier-only` | Does not execute | None | Original retained environment | Automatic only while the original trial is live |
-| `collect-only` | Does not execute | None | None | Reserved for terminal-but-uncollected recovery |
+| `verifier-only` | Does not execute | None | Fresh verifier, recorded artifacts | Harbor 0.21.0, frozen standard package, local Docker, original single-step separate verifier |
+| `collect-only` | Does not execute | None | None | Imports a complete late result from an isolated work item |
+
+For a verifier timeout or missing result after a successful candidate, use
+`hitch eval rerun EVAL_ID --invalid --type verifier-only`. The original run,
+trajectory, task, verifier, image references and budgets are preserved. This
+mode rejects incomplete artifacts, shared-environment graders, multi-step tasks,
+and candidate failures. It never selects an alternative task or calls the model.
+
+Each regrade writes an immutable assessment under
+`evals/EVAL_ID/assessments/assessment_ID/`. Its manifest links the original
+candidate bundle, artifact snapshot, task digest, Harbor result, verifier logs,
+resource lease and cleanup evidence, including the original lifecycle receipt
+that Harbor's built-in regrade does not copy. The original run's invalid observation stays
+sealed. A valid assessment replaces the invalid eval slot with the same run/trial
+identity and an `assessment: {id, digest}` reference. In that case,
+`verifier_result_ref` is relative to the assessment directory; otherwise it is
+relative to the run directory. A real zero counts as valid. Another infrastructure
+failure stays invalid and leaves the original slot intact. Artifact digests are
+captured at regrade preparation; older Harbor manifests did not record them at
+candidate completion, so the capture timestamp is explicit.
+
+The daemon admits regrades serially using a conservative maximum of the original
+work-item reservations. Regrade bookkeeping does not create a new candidate run
+or alter the original run's training-data eligibility. Remote dispatch and
+recovering a partially collected artifact set are not supported by this mode.
 
 A canonical trajectory is evidence, not a process checkpoint. Feeding it back
 to an LLM can reconstruct conversational context, but it cannot restore the
@@ -578,3 +602,31 @@ cancellation response. Use a fresh ID for a new repair. This fence survives daem
 restart. If the daemon itself crashed during execution and cannot prove that the
 backend stopped, cancellation returns `execution_state_ambiguous` instead of
 claiming success; the controller must retain ownership for reconciliation.
+
+## Multiphase candidate evidence (integration in progress)
+
+Tasks that reset the candidate conversation between phases use ordinary Hitch
+runs with `context.kind = benchmark_phase`, an eval parent, `run_group_id` and
+a one-based `phase_index`. Each phase has its own request, process result,
+native session and sealed bundle. Phase manifests cannot contain a standalone
+`observation`: an entire task's score must not be assigned to just one phase.
+They can be queried by benchmark/task/eval identity, while standalone strict
+comparison and training-candidate derivation exclude them.
+
+The `agent-hitch/runs` API exports
+`inspectBenchmarkPhaseGroup`, `sealBenchmarkPhaseGroup` and
+`readBenchmarkPhaseGroup`. The group file is stored at
+`evals/<eval-id>/run-groups/<run-group-id>/group.json` and references the original
+run bundles without copying their trajectories. Inspection requires consecutive
+phase indices, matching trial and candidate identity, terminal non-overlapping
+execution intervals, valid trajectories/bundles and distinct native session IDs.
+Reads revalidate every referenced bundle. A sealed group cannot be replaced by
+different membership or evidence.
+
+This group has scope `candidate-evidence-only`. It does not prove that every
+native task phase ran, that its gates passed, or that a new session received no
+prior context. The runtime supervisor must establish those facts with native
+controller evidence and isolated candidate environments. Dynamic Harbor
+candidate replacement, group import/publication and native score reconciliation
+are not connected yet. The existing single-run importer rejects phase runs;
+these records cannot currently produce a scored eval trial.

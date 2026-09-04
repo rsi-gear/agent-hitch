@@ -1,3 +1,5 @@
+import { validateEvalTrialReferences } from "./trial-reference-validation.js";
+export { validateEvalTrialReferences } from "./trial-reference-validation.js";
 import { cp, lstat, mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage, statePaths, writePrivateFile } from "../foundation/index.js";
@@ -25,6 +27,7 @@ import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./intera
 import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-import-identity.js";
 import { writeEvalTrialPublication } from "./trial-publication.js";
 import type { EvalTrialPublicationMode } from "./trial-publication.js";
+import { importNativePhaseTrial, nativePhaseDescriptor, NativePhaseBundlePendingError } from "./native-phase-evidence.js";
 export interface ImportEvalRunsOptions {
   root: string;
   evalId: string;
@@ -87,9 +90,12 @@ export async function importEvalTrialRun(
     });
     return existing;
   }
-  const bundle = await findRunBundle(trialDirectory, 0, options.requireCompleteMarker === true);
+  let bundle: string | null = null;
   let published = false;
   try {
+    const descriptor = await nativePhaseDescriptor(options, taskId);
+    if (descriptor) return await importNativePhaseTrial({ ...options, trial, taskId, trialId, attempt, trialDirectory }, descriptor);
+    bundle = await findRunBundle(trialDirectory, 0, options.requireCompleteMarker === true);
     if (options.requireCompleteMarker && !bundle && !options.allowMissingBundleDiagnostic) throw new TrialBundlePendingError(trialId);
     const ref = bundle
       ? await importRunBundle({ ...options, trial, taskId, trialId, attempt, trialDirectory, bundle })
@@ -98,10 +104,11 @@ export async function importEvalTrialRun(
     return ref;
   } catch (error) {
     if (options.signal?.aborted || (error as Error)?.name === "AbortError") throw error;
+    if (error instanceof NativePhaseBundlePendingError) throw new TrialBundlePendingError(trialId);
     if (error instanceof TrialBundlePendingError || error instanceof TrialIdentityConflictError) throw error;
     const safeMessage = safeDiagnosticMessage(error, credentialValuesFromEnv(options.request.pass_env ?? [], options.env ?? process.env));
-    if (bundle) {
-      await atomicWriteJSON(path.join(path.dirname(bundle), "hitch-run-import-error.json"), {
+    {
+      await atomicWriteJSON(path.join(bundle ? path.dirname(bundle) : trialDirectory, "hitch-run-import-error.json"), {
         schema_version: "1",
         trial_id: trialId,
         code: "run_bundle_import_failed",
@@ -127,14 +134,12 @@ export async function importEvalTrialRun(
     }
   }
 }
-
 export class TrialBundlePendingError extends Error {
   constructor(readonly trialId: string) {
     super(`Harbor trial bundle is not ready: ${trialId}`);
     this.name = "TrialBundlePendingError";
   }
 }
-
 export class TrialIdentityConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -464,31 +469,5 @@ async function validateJSONLines(file: string): Promise<void> {
     try { JSON.parse(line); } catch (error) {
       throw new Error(`invalid JSONL at ${path.basename(file)}:${index + 1}: ${(error as Error).message}`);
     }
-  }
-}
-
-export async function validateEvalTrialReferences(
-  root: string,
-  evalId: string,
-  trials: EvalTrialRefV1[],
-  expected?: { benchmarkId: string; benchmarkRevision: string },
-): Promise<void> {
-  for (const trial of trials) {
-    const loaded = await loadRunRecord(path.join(statePaths(root).runs, trial.run_id), { verifyTrajectory: false });
-    const record = loaded.record;
-    if (record.context.kind !== "benchmark_task") throw new Error(`eval trial ${trial.trial_id} references a non-benchmark run`);
-    if (expected && (
-      record.context.benchmark_id !== expected.benchmarkId
-      || record.context.benchmark_revision !== expected.benchmarkRevision
-      || record.context.verifier_identity !== benchmarkVerifierIdentity(expected.benchmarkId, expected.benchmarkRevision)
-    )) throw new Error(`eval trial ${trial.trial_id} benchmark identity mismatch`);
-    if (record.parent?.eval_id !== evalId || record.parent.trial_id !== trial.trial_id || record.parent.attempt !== trial.attempt) {
-      throw new Error(`eval trial ${trial.trial_id} parent mismatch`);
-    }
-    if (record.context.task_id !== trial.task_id) throw new Error(`eval trial ${trial.trial_id} task mismatch`);
-    if (record.observation?.status !== trial.observation_status) throw new Error(`eval trial ${trial.trial_id} observation status mismatch`);
-    if (record.observation?.reward !== trial.reward) throw new Error(`eval trial ${trial.trial_id} reward mismatch`);
-    if (record.observation?.verifier_result_ref !== trial.verifier_result_ref) throw new Error(`eval trial ${trial.trial_id} verifier ref mismatch`);
-    if (record.observation?.invalid_reason !== trial.invalid_reason) throw new Error(`eval trial ${trial.trial_id} invalid reason mismatch`);
   }
 }

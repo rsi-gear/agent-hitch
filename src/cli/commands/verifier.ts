@@ -32,4 +32,3 @@ export async function verifierCommand(args: string[], root: string): Promise<voi
   }
   for (const issue of evidence.verifier.issues ?? []) process.stdout.write(`  issue: ${issue}\n`);
 }
-

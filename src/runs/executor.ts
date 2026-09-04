@@ -29,6 +29,8 @@ import { buildManifest, safeAgentArgsForPersistence } from "./manifest.js";
 import { assertQueuedRunIdentity } from "./queued.js";
 import { adapterFidelity, failureResult, mergeRedactions, providerModelId } from "./outcome.js";
 import { writeResultBundleIndex } from "./bundle.js";
+import { prepareAdapterProcess } from "./adapter-process.js";
+import { completedRunManifest } from "./finalizer.js";
 export interface ExecuteRunOptions {
   runId: RunId;
   request: RunRequestInput;
@@ -41,6 +43,8 @@ export interface ExecuteRunOptions {
   onEvent?: (event: Record<string, unknown>) => void;
   onProcess?: (control: { child?: import("node:child_process").ChildProcess } | null) => void;
   signal?: AbortSignal;
+  /** Process-local monotonic deadline supplied by the managed benchmark CLI. */
+  candidateDeadlineNs?: bigint;
 }
 export async function executeRun({
   runId,
@@ -54,8 +58,13 @@ export async function executeRun({
   onEvent,
   onProcess,
   signal,
+  candidateDeadlineNs,
 }: ExecuteRunOptions): Promise<Record<string, unknown>> {
   const normalized = await validateRunRequest(request);
+  if (candidateDeadlineNs !== undefined && (typeof candidateDeadlineNs !== "bigint" || candidateDeadlineNs <= 0n
+    || normalized.context.kind !== "benchmark_task" || !normalized.defer_benchmark_observation)) {
+    throw new HitchError("candidate deadline requires a managed benchmark task", { code: "invalid_input", exitCode: 2 });
+  }
   const credentialValues = credentialValuesFromEnv(normalized.credential_names, process.env);
   workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const runDirectory = path.join(runsRoot, runId);
@@ -178,13 +187,7 @@ export async function executeRun({
     stage = "adapter_setup";
     const adapterState: Record<string, unknown> = {};
     const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
-    const specification = await adapter.process(executionRequest, artifact.executable, {
-      observed_version: artifact.observed_version ?? undefined,
-      resolution,
-      run_directory: runDirectory,
-      runtime_home: runtimeHome,
-    });
-    if (artifact.entrypoint_args?.length) specification.args.unshift(...artifact.entrypoint_args);
+    const specification = await prepareAdapterProcess(adapter, executionRequest, artifact, resolution, runDirectory, runtimeHome);
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);
       sink.emit({ type: "run.failed", status: "cancelled", error: (result.error as { code: string; message: string }) });
@@ -198,6 +201,11 @@ export async function executeRun({
       };
       delete childEnvironment.OLDPWD;
       const invocation = prepareSpawnCommand(specification.executable, specification.args);
+      const remainingMs = candidateDeadlineNs === undefined ? normalized.timeout_ms
+        : Number((candidateDeadlineNs - process.hrtime.bigint()) / 1_000_000n);
+      if (candidateDeadlineNs !== undefined && remainingMs <= 0) {
+        throw new HitchError("candidate budget expired before model launch", { code: "timed_out", exitCode: 8 });
+      }
       child = spawn(invocation.executable, invocation.args, {
         cwd: workspaceLease.execution_workspace,
         env: childEnvironment,
@@ -210,10 +218,14 @@ export async function executeRun({
       launched.stdin?.on("error", () => { /* Process-level error/exit determines the typed result. */ });
       onProcess?.({ child: launched });
       abortHandler = () => {
+        if (cancelled) return;
         cancelled = true;
         terminateProcess(launched).catch(() => {});
       };
       signal?.addEventListener("abort", abortHandler, { once: true });
+      // Cancellation can arrive during workspace launch or synchronously from
+      // onProcess, before this listener has been installed.
+      if (signal?.aborted) abortHandler();
       consumeLines(launched.stdout as import("node:stream").Readable, (line) => {
         if (adapter.translateLine) {
           const safeLine = providerCapture?.appendText(line) ?? redactProviderText(line, new Map(), credentialValues);
@@ -271,11 +283,13 @@ export async function executeRun({
         launched.once("error", reject);
         launched.once("close", (code, processSignal) => resolve({ code, signal: processSignal }));
       });
-      if (normalized.timeout_ms > 0) {
+      if (normalized.timeout_ms > 0 || candidateDeadlineNs !== undefined) {
+        const processTimeoutMs = candidateDeadlineNs === undefined ? normalized.timeout_ms
+          : Math.max(1, Number((candidateDeadlineNs - process.hrtime.bigint()) / 1_000_000n));
         timeout = setTimeout(async () => {
           timedOut = true;
           await terminateProcess(launched).catch(() => {});
-        }, normalized.timeout_ms);
+        }, processTimeoutMs);
         timeout.unref?.();
       }
       launched.stdin?.end(specification.input);
@@ -475,25 +489,7 @@ export async function executeRun({
     (result as Record<string, unknown>).effective_model = observedEffectiveModel;
   }
   await atomicWriteJSON(resultPath, result);
-  const terminalStatus = (result as { status: string }).status;
-  const observation = normalized.context.kind === "benchmark_task" && !normalized.defer_benchmark_observation
-    ? {
-        status: "invalid",
-        invalid_reason: terminalStatus === "succeeded"
-          ? "verifier_result_missing"
-          : terminalStatus === "cancelled"
-            ? "cancelled"
-            : "infrastructure_failure",
-      }
-    : undefined;
-  const terminalManifest = {
-    ...manifest,
-    status: terminalStatus,
-    result_ref: "result.json",
-    ...(observation ? { observation } : {}),
-    completed_at: (result as { completed_at?: string }).completed_at,
-    sealed: !normalized.defer_benchmark_observation,
-  };
+  const terminalManifest = completedRunManifest(manifest, result as Record<string, unknown>, normalized);
   await atomicWriteJSON(manifestPath, terminalManifest);
   if (terminalManifest.sealed) await writeResultBundleIndex(runDirectory);
   return result;

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/eval-trial-reference.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "trial_id",
+    "task_id",
+    "attempt",
+    "observation_status"
+  ],
+  "properties": {
+    "trial_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run_[a-f0-9]{32}$"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "observation_status": {
+      "enum": [
+        "valid",
+        "invalid"
+      ]
+    },
+    "reward": {
+      "type": "number"
+    },
+    "verifier_result_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "invalid_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assessment": {
+      "$ref": "regrade-assessment-reference.schema.json"
+    },
+    "run_group": {
+      "type": "object",
+      "required": [
+        "run_group_id",
+        "digest"
+      ],
+      "properties": {
+        "run_group_id": {
+          "type": "string",
+          "pattern": "^run_group_[a-f0-9]{32}$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "run_id"
+      ],
+      "not": {
+        "required": [
+          "run_group"
+        ]
+      }
+    },
+    {
+      "required": [
+        "run_group",
+        "assessment"
+      ],
+      "not": {
+        "required": [
+          "run_id"
+        ]
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "observation_status": {
+            "const": "valid"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reward"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observation_status": {
+            "const": "invalid"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "invalid_reason"
+        ]
+      }
+    }
+  ]
+}

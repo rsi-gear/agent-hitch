@@ -1,0 +1,123 @@
+{
+  "schema_version": "1",
+  "date": "2026-09-02",
+  "scope": "P0+P1, AutomationBench public two-task subset",
+  "source_commit": "4a8e1061254004d9dac807054eed33fad7d1ff14",
+  "real_canary": {
+    "eval_id": "eval_8dde8333fcc640b78f0b9c7603760609",
+    "status": "succeeded",
+    "exit_code": 0,
+    "harness": "codex@version:0.145.0",
+    "requested_model": "gpt-5.4",
+    "effective_model": "not independently observed",
+    "attempts_per_task": 1,
+    "package_digest": "sha256:f569f997a9b59ec6c358b28fe0e43adaf0748b93b514b4785315b145f7be597d",
+    "runtime": {
+      "schema_version": "1",
+      "storage": "controller-runtime-ref-v1",
+      "runtime_id": "sha256:604056b70f40b663dda8343dc7eb86042d4e12a34db621b82b7091820c22a760",
+      "manifest_digest": "sha256:604056b70f40b663dda8343dc7eb86042d4e12a34db621b82b7091820c22a760",
+      "created_at": "2026-09-02T15:12:02.976Z"
+    },
+    "artifact_directory": ".hitch/benchmark-real-state/evals/eval_8dde8333fcc640b78f0b9c7603760609",
+    "trials": [
+      {
+        "trial_id": "sales-advance_opportunity_stage__st3NvK8",
+        "run_id": "run_eaa8dcbd692340a698a1f09fa4f2a8de",
+        "task_id": "sales-advance_opportunity_stage",
+        "attempt": 1,
+        "observation_status": "valid",
+        "reward": 1,
+        "verifier_result_ref": "verifier/result.json",
+        "source_task_id": "sales.advance_opportunity_stage",
+        "raw_rewards": {
+          "partial_credit": 1,
+          "task_completed_correctly": 1
+        },
+        "primary_metric": "task_completed_correctly",
+        "raw_grader_ref": ".hitch/benchmark-real-state/evals/eval_8dde8333fcc640b78f0b9c7603760609/harbor/work-items/work_1d6a248aec83bcc157a319bdbe4115fd/epoch-000001/job/sales-advance_opportunity_stage__st3NvK8/verifier/benchmark-rewards.json",
+        "raw_grader_digest": "sha256:44addf5bd95cb08dffd96190f4b451c3a0a104b9ce9eb0456469f91d1ef09801",
+        "snapshot_ref": ".hitch/benchmark-real-state/evals/eval_8dde8333fcc640b78f0b9c7603760609/harbor/work-items/work_1d6a248aec83bcc157a319bdbe4115fd/epoch-000001/job/sales-advance_opportunity_stage__st3NvK8/artifacts/evidence/snapshot.json",
+        "snapshot_digest": "sha256:b56760cf0b79441e0fb1954e720d3cf644eb4424a151d5264de9ad53c11a85b7"
+      },
+      {
+        "trial_id": "sales-update_contact_phone__N7auqkB",
+        "run_id": "run_fe8d7744da814c24b1f7bf61a6249678",
+        "task_id": "sales-update_contact_phone",
+        "attempt": 1,
+        "observation_status": "valid",
+        "reward": 1,
+        "verifier_result_ref": "verifier/result.json",
+        "source_task_id": "sales.update_contact_phone",
+        "raw_rewards": {
+          "partial_credit": 1,
+          "task_completed_correctly": 1
+        },
+        "primary_metric": "task_completed_correctly",
+        "raw_grader_ref": ".hitch/benchmark-real-state/evals/eval_8dde8333fcc640b78f0b9c7603760609/harbor/work-items/work_4c85dde870c5896981a88d65e6298f0c/epoch-000001/job/sales-update_contact_phone__N7auqkB/verifier/benchmark-rewards.json",
+        "raw_grader_digest": "sha256:f0d03d1c16a91f285aa74dcb4324374d01508ac3f15c9500ff69f00bdfd7d35f",
+        "snapshot_ref": ".hitch/benchmark-real-state/evals/eval_8dde8333fcc640b78f0b9c7603760609/harbor/work-items/work_4c85dde870c5896981a88d65e6298f0c/epoch-000001/job/sales-update_contact_phone__N7auqkB/artifacts/evidence/snapshot.json",
+        "snapshot_digest": "sha256:53c80111b8c0403a76e9cab043eb4d6830340d5af344fc32840dd3de0403cd0a"
+      }
+    ]
+  },
+  "fixture_canary": {
+    "eval_id": "eval_5157459387c247c59bd29a5a8c23e3f9",
+    "status": "succeeded",
+    "exit_code": 0,
+    "candidate": "deterministic local Git pi fixture (no model calls)",
+    "benchmark_id": "runtime-created-counter",
+    "tool": "bump_value",
+    "metric": "goal_met",
+    "trials": [
+      {
+        "trial_id": "reach-seven__H9sc6MQ",
+        "run_id": "run_c150766072c64e81875d03e2c8175edd",
+        "task_id": "reach-seven",
+        "attempt": 1,
+        "observation_status": "valid",
+        "reward": 1,
+        "verifier_result_ref": "verifier/result.json"
+      }
+    ],
+    "artifact_directory": ".hitch/benchmark-fixture-state/evals/eval_5157459387c247c59bd29a5a8c23e3f9"
+  },
+  "current_package_validation": {
+    "directory": ".hitch/benchmarks/automationbench-public-final",
+    "package_digest": "sha256:1c7643a05bb68cbf0bad169be239756af0f6f429502aaf07053eb7a5154dfd3a",
+    "source_adapter": {
+      "id": "automationbench-public-source",
+      "version": "1",
+      "code_digest": "sha256:448d663dd58a4fc0afc839ad04f4c76181008854583b1bbf9ff78a457ed3a281"
+    },
+    "task_ids": [
+      "sales.advance_opportunity_stage",
+      "sales.update_contact_phone"
+    ],
+    "transformations": 2,
+    "official_task_contracts_match_real_canary": true,
+    "official_runtime_digests": {
+      "official.py": "sha256:1f91b101556e27d764209d8b00b19801e39d69e38b5dbf87b3ebe01abd618258",
+      "server.py": "sha256:143d75e4c3d30e55d6251e1a16db2d75fc42630635c1a3445781c8ad6b5f11c0",
+      "export.py": "sha256:bffc60ce3eaf5840188e508f48a5dbf740b471221a5c5eb1e719d82f71a4fcd8",
+      "tools.json": "sha256:f4600ae9762cf22abd2dc9cbba0c90f4598c77c1d48c412060489607e3c48159"
+    }
+  },
+  "verification": {
+    "command": "npm run check",
+    "tests": 331,
+    "passed": 328,
+    "skipped": 3,
+    "failed": 0,
+    "credential_scan": {
+      "scanned_files": 95,
+      "matching_files": 0
+    },
+    "published_json_schemas": "validated with JSON Schema Draft 2020-12 against the package, profile, lock and both tasks"
+  },
+  "notes": [
+    "This is a public subset integration canary, not a full benchmark or private leaderboard score.",
+    "The real canary preserves its original immutable package and controller runtime. Subsequent lock/provenance hardening is covered by the final standard-package validation and deterministic Docker canary. Official task contracts and runtime implementation bytes are unchanged; additional failure/metric validation is covered by offline protocol tests.",
+    "No raw benchmark data or credentials are committed; full local evidence remains under the artifact directories."
+  ]
+}

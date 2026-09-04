@@ -23,14 +23,18 @@ export const RUNTIME_NODE_RANGE = ">=22";
  * checkers) is deliberately excluded so editing a release script never changes
  * a controller `runtime_id` (spec §4.4).
  */
-export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src"] as const;
+export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src", "node_modules/smol-toml"] as const;
 
 /** Python modules imported by Harbor while it is constructing trial agents. */
 export const RUNTIME_HARBOR_BRIDGE_FILES = [
   "integrations/harbor/hitch_harbor_agent.py",
   "integrations/harbor/hitch_harbor_environment.py",
+  "integrations/harbor/hitch_candidate_recycle.py",
+  "integrations/harbor/hitch_phase_supervisor.py",
   "integrations/harbor/hitch_harbor_task_resources.py",
   "integrations/harbor/hitch_harbor_verifier.py",
+  "integrations/harbor/hitch_benchmark.py",
+  "integrations/harbor/hitch_tool_client.mjs",
 ] as const;
 
 /**
@@ -49,9 +53,10 @@ export interface RuntimePayloadRule {
   directory?: string;
 }
 
-/** The compiled payload allowlist. V1 keeps zero runtime npm dependencies. */
+/** Include the pinned TOML parser's execution closure in transported runtimes. */
 export const RUNTIME_PAYLOAD_RULES: RuntimePayloadRule[] = [
   { path: "package.json" },
+  { path: "integrations/model-call/cli.js" },
   ...RUNTIME_PAYLOAD_DIRECTORIES.map((directory) => ({ directory })),
   ...RUNTIME_HARBOR_BRIDGE_FILES.map((bridge) => ({ path: bridge })),
 ];

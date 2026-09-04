@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/xlang-ai/OSWorld-V2",
+  "commit": "d578d2d4e0dc82b43e270fdaa7fa89d9708cd154",
+  "path": "lib_run_single.py",
+  "source_sha256": "41dae164d16e1ee5ddd788073548caabb1bdceb551195b9f566463c1c156b5e0",
+  "source_fixture": "native_runner_source.py",
+  "functions": [
+    "_get_task_phases",
+    "_configure_agent_for_task",
+    "_run_multi_phase_task_example"
+  ],
+  "fixture_sha256": "a771ff4a056ef12df42e7fc2672b6fc895b5b6e585eea3855efeeba796bf57d6",
+  "additional_unmodified_files": [
+    {
+      "path": "desktop_env/actions.py",
+      "fixture": "native_actions.py",
+      "sha256": "8ef3e804a7d5c49619a0921688e08c0df8a1d3d9e05a1d565b799444e163ec92"
+    }
+  ]
+}

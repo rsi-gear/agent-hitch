@@ -79,10 +79,12 @@ async def main() -> None:
                 except bridge.HitchBridgeError as error:
                     assert error.code == "hitch_node_runtime_integrity_mismatch", error
                 assert not any("tar --no-same-owner" in command for command in env.commands)
+                assert not agent._setup_complete
                 assert agent.version() is None
                 print("corrupt-upload: rejected OK", flush=True)
                 continue
             await agent.setup(env)
+            assert agent._setup_complete
             assert (agent.version() or "").startswith("hitch "), agent.version()
             result = await env.exec(agent._node_prefix() + ' node --version && npm --version && npx --version && node /opt/hitch-harness-artifact/entry.js')
             assert result.return_code == 0, result.stderr
