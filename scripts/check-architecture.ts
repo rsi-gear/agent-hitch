@@ -4,7 +4,7 @@ import path from "node:path";
 const SRC_ROOT = path.resolve("src");
 const MODULES = new Set([
   "domain", "foundation", "benchmarks", "adapters", "revisions", "artifacts", "controller-runtime",
-  "images", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
+  "images", "inference", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
 ]);
 const ALLOWED = new Map<string, Set<string>>([
   ["domain", new Set()],
@@ -15,6 +15,7 @@ const ALLOWED = new Map<string, Set<string>>([
   ["artifacts", new Set(["domain", "foundation", "adapters", "revisions"])],
   ["controller-runtime", new Set(["domain", "foundation"])],
   ["images", new Set(["domain", "foundation"])],
+  ["inference", new Set(["domain", "foundation"])],
   ["model-access", new Set(["domain", "foundation"])],
   ["trajectories", new Set(["domain", "foundation", "adapters"])],
   ["feedback", new Set(["domain", "foundation", "trajectories"])],
@@ -22,7 +23,7 @@ const ALLOWED = new Map<string, Set<string>>([
   ["runs", new Set(["domain", "foundation", "adapters", "revisions", "artifacts", "workspaces", "trajectories", "model-access"])],
   ["backends", new Set(["domain", "foundation"])],
   ["evals", new Set(["domain", "foundation", "benchmarks", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
-  ["control-plane", new Set(["domain", "foundation", "adapters", "model-access", "evals", "images"])],
+  ["control-plane", new Set(["domain", "foundation", "adapters", "model-access", "evals", "images", "inference"])],
   ["workers", new Set(["domain", "foundation", "artifacts", "backends", "controller-runtime", "evals", "control-plane"])],
   ["daemon", new Set(["domain", "foundation", "runs", "workspaces", "control-plane"])],
   ["cli", new Set([...MODULES].filter((name) => name !== "cli"))],

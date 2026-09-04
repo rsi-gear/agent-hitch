@@ -10,10 +10,17 @@ if (process.argv.includes('--version')) {
 const args = process.argv.slice(2);
 if (args.length !== 2 || args[0] !== '--model' || !args[1]) throw new Error('Usage: model-call --model MODEL');
 const model = args[1];
-const key = process.env.OPENAI_API_KEY;
-if (!key) throw new Error('OPENAI_API_KEY is required for the model-call harness');
-const base = new URL(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/');
-if (base.username || base.password || base.search || base.hash || (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)))) throw new Error('invalid model endpoint');
+const key = process.env.HITCH_LOCAL_MODEL_TOKEN || process.env.OPENAI_API_KEY;
+if (!key) throw new Error('a model API credential is required for the model-call harness');
+const base = new URL(process.env.HITCH_LOCAL_MODEL_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1/');
+const loopback = base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname);
+const managedRunId = process.env.HITCH_MANAGED_RUN_ID || '';
+const managed = process.env.HITCH_MANAGED_LOCAL_INFERENCE === '1'
+  && key === 'hitch-managed-local'
+  && /^run_[a-f0-9]{32}$/.test(managedRunId)
+  && base.protocol === 'http:'
+  && new RegExp(`^/[a-f0-9]{48}/${managedRunId}/openai/?$`).test(base.pathname);
+if (base.username || base.password || base.search || base.hash || (base.protocol !== 'https:' && !loopback && !managed)) throw new Error('invalid model endpoint');
 if (!base.pathname.endsWith('/')) base.pathname += '/';
 let raw = '';
 for await (const chunk of process.stdin) {
@@ -33,7 +40,8 @@ for (const message of input.messages) {
     } else throw new Error('unsupported input modality');
   }
 }
-const maxTokens = input.max_output_tokens ?? 8192;
+const localDefault = process.env.HITCH_LOCAL_MAX_OUTPUT_TOKENS === undefined ? 8192 : Number(process.env.HITCH_LOCAL_MAX_OUTPUT_TOKENS);
+const maxTokens = input.max_output_tokens ?? localDefault;
 if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 131072) throw new Error('invalid max_output_tokens');
 if (input.reasoning_effort !== undefined && !['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(input.reasoning_effort)) throw new Error('invalid reasoning effort');
 const emit = event => console.log(JSON.stringify(event));

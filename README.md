@@ -80,6 +80,34 @@ they fail.
 Every run is stored below `~/.hitch/runs/RUN_ID` with its manifest, result,
 events, logs, and trajectory.
 
+## Local inference with SGLang
+
+Import a complete Hugging Face safetensors checkpoint once, then use the same
+run and eval commands with a `local/<name>` model. Hitch chooses a pinned
+CPU or CUDA preview runtime, starts the daemon and SGLang service when needed, and
+records the immutable model/runtime/inference identities automatically.
+
+```bash
+hitch models add /models/coder-checkpoint --name coder
+
+hitch run \
+  --harness codex@version:0.145.0 \
+  --model local/coder \
+  --prompt "Inspect this repository"
+
+hitch eval run \
+  --dataset terminal-bench@2.0 \
+  --harness codex@version:0.145.0 \
+  --model local/coder \
+  --device cuda
+```
+
+`--device` defaults to `auto`. The P0 runtime targets Linux/amd64 Docker hosts
+with either an Intel Xeon AMX CPU or one NVIDIA CUDA GPU; unsupported hardware
+fails during preflight and never falls back to a cloud model. See the
+[local-inference implementation spec](docs/local-model-inference-spec.zh-CN.md)
+for the support boundary and advanced `hitch local` commands.
+
 ## Pin any harness revision
 
 Harness selection is explicit for every run:

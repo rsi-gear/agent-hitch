@@ -27,6 +27,7 @@ export { HARBOR_NODE_VERSION, HARBOR_NODE_VERSION_WITH_PREFIX, HARBOR_PNPM_VERSI
 export type { EvalHarborArtifactBuilder, HarborArtifactPreparationResult } from "./harbor-artifact-builder.js";
 export { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 export type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
+export { forceLocalInferenceCapturePlan } from "./model-capture-plan.js";
 export { recoverLocalDockerEvalLeases } from "./recovery.js";
 export type { EvalLeaseRecoveryResult } from "./recovery.js";
 export type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageManifestLoader, EvalEnvironmentImageResolver, EvalExecutionPhase, EvalInteractionCaptureExporter, EvalRemoteWorkExecutionResult, EvalRemoteWorkExecutor, EvalResult, EvalWorkStateSnapshot, RunEvalOptions, WorkItemAdmissionController, WorkItemAdmissionPermit } from "./service-types.js";

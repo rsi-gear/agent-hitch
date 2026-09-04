@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalExecutionPlanV1, EvalId, EvalRequest, EvalTrialRefV1, InteractionCaptureRefV1, ModelCapturePlanV1, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalExecutionPlanV1, EvalId, EvalRequest, EvalTrialRefV1, InteractionCaptureRefV1, ManagedInferenceCoordinator, ModelCapturePlanV1, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse } from "../backends/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
@@ -45,6 +45,7 @@ export interface RunEvalOptions {
   environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
   harborArtifactBuilder?: EvalHarborArtifactBuilder;
   remoteWorkExecutor?: EvalRemoteWorkExecutor;
+  inferenceCoordinator?: ManagedInferenceCoordinator;
 }
 
 export type EvalEnvironmentImageManifestLoader = (imageId: Sha256) => Promise<EnvironmentImageManifestV1>;

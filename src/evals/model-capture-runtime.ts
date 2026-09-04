@@ -1,6 +1,6 @@
 import path from "node:path";
 import { isIP } from "node:net";
-import type { InteractionCaptureRefV1, ModelCapturePlanV1, ModelProxyRouteV1 } from "../domain/index.js";
+import type { InteractionCaptureRefV1, ModelCapturePlanV1, ModelEndpointBindingV1, ModelProxyRouteV1 } from "../domain/index.js";
 import { HitchError, runCommand } from "../foundation/index.js";
 import { HostModelProxy } from "../model-access/index.js";
 import { readModelProxyRuntimeState, writeModelProxyRuntimeState } from "./model-proxy-runtime-state.js";
@@ -26,6 +26,7 @@ export async function startEvalModelCaptureRuntime(input: {
   runtimeTopology?: "host-side" | "in-sandbox";
   /** A sealed remote plan cannot be rewritten after dispatch when optional proxy startup fails. */
   preservePlanOnOptionalFailure?: boolean;
+  managedInference?: { binding: ModelEndpointBindingV1; credential: string; modelId: import("../domain/index.js").Sha256 };
 }): Promise<EvalModelCaptureRuntime> {
   if (input.plan.effective_mode !== "proxy" && input.plan.effective_mode !== "hybrid") {
     return { plan: input.plan, close: async () => undefined };
@@ -47,6 +48,16 @@ export async function startEvalModelCaptureRuntime(input: {
       topology: runtimeTopology,
       bindHost: binding.bindHost,
       advertisedHost: binding.advertisedHost,
+      ...(input.managedInference ? {
+        upstreams: { openai: input.managedInference.binding.base_url },
+        upstreamAuthorizations: { openai: `Bearer ${input.managedInference.credential}` },
+        upstreamWireModels: { openai: input.managedInference.binding.wire_model },
+        credentialValues: [input.managedInference.credential],
+        managedInferenceIdentity: {
+          inference_id: input.managedInference.binding.inference_id,
+          model_id: input.managedInference.modelId,
+        },
+      } : {}),
       ...(persisted ? {
         listenPort: persisted.listen_port,
         capabilityToken: persisted.capability_token,

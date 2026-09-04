@@ -303,11 +303,11 @@ test("planned infrastructure retry starts before unrelated initial work finishes
   const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
     type: "start" | "end"; task: string; call: number; time: number;
   });
-  const retryStart = activity.find((entry) => entry.type === "start" && entry.task === "one" && entry.call === 2)?.time;
-  const unrelatedEnd = activity.find((entry) => entry.type === "end" && entry.task === "two" && entry.call === 1)?.time;
-  assert.equal(typeof retryStart, "number");
-  assert.equal(typeof unrelatedEnd, "number");
-  assert.ok((retryStart as number) < (unrelatedEnd as number), "retry waited for the unrelated initial trial barrier");
+  const retryStart = activity.findIndex((entry) => entry.type === "start" && entry.task === "one" && entry.call === 2);
+  const unrelatedEnd = activity.findIndex((entry) => entry.type === "end" && entry.task === "two" && entry.call === 1);
+  assert.notEqual(retryStart, -1);
+  assert.notEqual(unrelatedEnd, -1);
+  assert.ok(retryStart < unrelatedEnd, "retry waited for the unrelated initial trial barrier");
 });
 
 test("a persisted planned retry resumes without repeating the initial candidate", async (t) => {
@@ -533,14 +533,15 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exi
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
 const task = config.datasets[0].task_names[0];
 const counter = path.join(${JSON.stringify(directory)}, task + ".count");
+const retryStarted = path.join(${JSON.stringify(directory)}, "retry-started");
 let call = 1;
 try { call = Number(fs.readFileSync(counter, "utf8")) + 1; } catch {}
 fs.writeFileSync(counter, String(call));
 const activity = (type) => fs.appendFileSync(${JSON.stringify(activityLog)}, JSON.stringify({type, task, call, time:Date.now()}) + "\\n");
 const output = path.join(config.jobs_dir, config.job_name);
-const delay = task === "two" ? 500 : 50;
 activity("start");
-setTimeout(() => {
+if (task === "one" && call === 2) fs.writeFileSync(retryStarted, "1");
+const finish = () => {
   const trialName = task + "__call-" + call;
   const trialDirectory = path.join(output, trialName);
   fs.mkdirSync(trialDirectory, {recursive:true});
@@ -556,7 +557,16 @@ setTimeout(() => {
     stats:{n_completed_trials:failed ? 0 : 1,n_errored_trials:failed ? 1 : 0,n_cancelled_trials:0}
   }));
   activity("end");
-}, delay);
+};
+if (task !== "two") setTimeout(finish, 50);
+else {
+  const deadline = Date.now() + 3000;
+  const waitForRetry = () => {
+    if (fs.existsSync(retryStarted) || Date.now() >= deadline) finish();
+    else setTimeout(waitForRetry, 20);
+  };
+  waitForRetry();
+}
 `;
   await writeFile(executable, source, { mode: 0o755 });
   return executable;

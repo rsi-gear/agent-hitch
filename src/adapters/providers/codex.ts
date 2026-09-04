@@ -1,6 +1,10 @@
 import type { AdapterDefinition } from "../contract.js";
 import { asString, codexSupportsEphemeral } from "./shared.js";
 import { codexContainerAuth } from "./codex-auth.js";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { invalidInput } from "../../foundation/index.js";
 
 export const codexAdapter: AdapterDefinition = {
     id: "codex",
@@ -39,8 +43,16 @@ export const codexAdapter: AdapterDefinition = {
       const args = ["exec", "--json"];
       if (codexSupportsEphemeral(runtime.observed_version)) args.push("--ephemeral");
       args.push("--skip-git-repo-check", "--color", "never", "-C", request.cwd);
-      if (request.model) args.push("--model", request.model);
+      const endpoint = runtime.model_endpoint;
+      if (endpoint && (!runtime.model_endpoint_credential || !runtime.runtime_home)) {
+        throw new Error("managed local model binding is incomplete");
+      }
+      const model = endpoint?.wire_model ?? request.model;
+      if (model) args.push("--model", model);
       args.push(...request.agent_args, "-");
+      if (endpoint) {
+        return localCodexProcess(request, executable, args, runtime);
+      }
       const auth = codexContainerAuth();
       return { executable, args, input: request.prompt, ...(auth ? { env: auth } : {}) };
     },
@@ -92,3 +104,58 @@ export const codexAdapter: AdapterDefinition = {
       return [{ type: "provider.event", provider_type: (event.type as string) || "unknown", native: event }];
     },
 };
+
+async function localCodexProcess(
+  request: import("../contract.js").AdapterRequest,
+  executable: string,
+  args: string[],
+  runtime: import("../contract.js").AdapterProcessRuntime,
+): Promise<import("../contract.js").ProcessSpecification> {
+  const endpoint = runtime.model_endpoint;
+  if (!endpoint) throw new Error("managed local model binding is missing");
+  if (endpoint.api !== "responses") throw invalidInput("Codex local inference requires a Responses endpoint");
+  const codexHome = await mkdtemp(path.join(tmpdir(), "hitch-codex-local-"));
+  try {
+    await chmod(codexHome, 0o700);
+    await writeFile(path.join(codexHome, "config.toml"), localCodexConfig(endpoint), { mode: 0o600 });
+  } catch (error) {
+    await rm(codexHome, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+  return {
+    executable,
+    args,
+    input: request.prompt,
+    env: {
+      CODEX_HOME: codexHome,
+      [endpoint.credential_env_name]: runtime.model_endpoint_credential as string,
+    },
+    cleanup: () => rm(codexHome, { recursive: true, force: true }),
+  };
+}
+
+function localCodexConfig(endpoint: import("../../domain/index.js").ModelEndpointBindingV1): string {
+  const quote = (value: string) => JSON.stringify(value);
+  return [
+    `model = ${quote(endpoint.wire_model)}`,
+    'model_provider = "hitch_local"',
+    'web_search = "disabled"',
+    "check_for_update_on_startup = false",
+    "",
+    "[model_providers.hitch_local]",
+    'name = "Hitch Local SGLang"',
+    `base_url = ${quote(endpoint.base_url.replace(/\/+$/, ""))}`,
+    `env_key = ${quote(endpoint.credential_env_name)}`,
+    'wire_api = "responses"',
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
+    "requires_openai_auth = false",
+    "",
+    "[analytics]",
+    "enabled = false",
+    "",
+    "[feedback]",
+    "enabled = false",
+    "",
+  ].join("\n");
+}

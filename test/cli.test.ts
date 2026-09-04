@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import http from "node:http";
+import { once } from "node:events";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -164,6 +166,43 @@ test("CLI environment image GC is a dry run unless --apply is explicit", async (
   assert.deepEqual(report.removed, []);
 });
 
+test("CLI local eval automatically uses the root daemon", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-cli-local-eval-"));
+  t.after(() => forceRemove(root));
+  const token = "daemon-secret";
+  const instanceId = "instance-local-eval";
+  const evalId = `eval_${"7".repeat(32)}`;
+  let submitted: Record<string, unknown> | undefined;
+  const server = http.createServer(async (request, response) => {
+    if (request.url === "/health") return sendJSON(response, 200, { status: "running", instance_id: instanceId });
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    if (request.method === "POST" && request.url === "/v1/evals") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      submitted = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      return sendJSON(response, 202, { eval_id: evalId, status: "queued" });
+    }
+    if (request.method === "GET" && request.url === `/v1/evals/${evalId}`) {
+      return sendJSON(response, 200, { result: { schema_version: "1", eval_id: evalId, status: "completed", exit_code: 0 } });
+    }
+    return sendJSON(response, 404, { error: { code: "not_found" } });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const port = (server.address() as { port: number }).port;
+  await writeFile(path.join(root, "daemon.json"), `${JSON.stringify({ port, instance_id: instanceId })}\n`);
+  await writeFile(path.join(root, "daemon.token"), `${token}\n`);
+
+  const result = await runCli([
+    "--root", root, "eval", "run", "--dataset", "demo@1.0", "--harness", "codex@version:0.145.0",
+    "--model", "local/coder", "--device", "cpu", "--output", "json",
+  ]);
+  assert.equal(result.code, 0, result.stderr || undefined);
+  assert.equal(submitted?.model, "local/coder");
+  assert.equal((submitted?.local_inference as { device?: string } | undefined)?.device, "cpu");
+});
+
 test("CLI exposes harness revision commands and rejects mixed legacy selection", () => {
   const help = spawnSync(process.execPath, [executable, "--help"], { encoding: "utf8" });
   assert.match(help.stdout, /hitch resolve <harness-ref>/);
@@ -294,6 +333,21 @@ test("CLI exposes harness revision commands and rejects mixed legacy selection",
   assert.equal(invalidDaemonPort.status, 2);
   assert.match(invalidDaemonPort.stderr, /--port must be between 0 and 65535/);
 });
+
+function sendJSON(response: http.ServerResponse, status: number, value: unknown): void {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(`${JSON.stringify(value)}\n`);
+}
+
+async function runCli(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [executable, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+  const [code] = await once(child, "close") as [number | null];
+  return { code, stdout, stderr };
+}
 
 test("CLI sets up and diagnoses a managed Harbor backend", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-cli-eval-setup-"));

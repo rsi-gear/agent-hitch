@@ -177,6 +177,68 @@ test("eval model capture runtime persists and restores the exact Harbor route", 
   assert.deepEqual(restored.route, originalRoute);
 });
 
+test("eval proxy hides a managed inference credential and rewrites only the upstream model alias", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-model-runtime-managed-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const credential = "c".repeat(64);
+  let observed: { authorization: string | undefined; model: string | undefined; path: string | undefined } | undefined;
+  const upstream = http.createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { model?: string };
+      observed = { authorization: request.headers.authorization, model: body.model, path: request.url };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ model: "hitch-wire-model", output: "ok" }));
+    });
+  });
+  const upstreamUrl = await serverUrl(upstream);
+  t.after(() => close(upstream));
+  const evalId = `eval_${"7".repeat(32)}`;
+  const runId = `run_${"8".repeat(32)}`;
+  const runtime = await startEvalModelCaptureRuntime({
+    plan: { requested_mode: "native", effective_mode: "proxy", required: true, topology: "host-side" },
+    evalId,
+    evalDirectory: root,
+    env: LOOPBACK_PROXY_ENV,
+    managedInference: {
+      binding: {
+        kind: "managed-local",
+        inference_id: `sha256:${"a".repeat(64)}`,
+        api: "responses",
+        base_url: `${upstreamUrl}/runs/${runId}/v1/`,
+        wire_model: "hitch-wire-model",
+        credential_env_name: "HITCH_LOCAL_MODEL_TOKEN",
+        capabilities: { streaming: true, tool_calls: true, parallel_tool_calls: false, input_modalities: ["text"] },
+      },
+      credential,
+      modelId: `sha256:${"b".repeat(64)}`,
+    },
+  });
+  t.after(() => runtime.close());
+  const response = await fetch(`${runtime.route!.base_url_template
+    .replace("{run_id}", runId)
+    .replace("{provider}", "openai")}/responses`, {
+    method: "POST",
+    headers: { authorization: "Bearer caller-key", "content-type": "application/json" },
+    body: JSON.stringify({ model: "local/coder", input: "hello" }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(observed, {
+    authorization: `Bearer ${credential}`,
+    model: "hitch-wire-model",
+    path: `/runs/${runId}/v1/responses`,
+  });
+  const destination = path.join(root, "run");
+  const ref = await runtime.exporter!.finalizeRun(runId, destination);
+  assert.equal(ref.completeness, "complete");
+  const loaded = await loadInteractionCapture(destination);
+  assert.equal(loaded.interactions[0]?.requested_model, "local/coder");
+  for (const file of await filesUnder(path.join(destination, "interactions"))) {
+    assert.equal((await readFile(file, "utf8")).includes(credential), false);
+  }
+});
+
 test("remote capture runtime preserves an in-sandbox route and evidence topology", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-model-runtime-sandbox-"));
   t.after(() => rm(root, { recursive: true, force: true }));

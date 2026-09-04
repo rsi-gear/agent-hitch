@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/inference-runtime-manifest.schema.json",
+  "title": "Hitch SGLang runtime manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "runtime_id", "engine", "sglang_version", "sglang_commit", "backend", "package", "compatibility_profile"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "runtime_id": { "$ref": "#/$defs/sha256" },
+    "engine": { "const": "sglang" },
+    "sglang_version": { "type": "string", "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+" },
+    "sglang_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "backend": { "enum": ["cpu", "cuda", "metal"] },
+    "package": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "image", "image_digest", "platform"],
+          "properties": {
+            "kind": { "const": "oci" }, "image": { "type": "string", "minLength": 1 },
+            "image_digest": { "$ref": "#/$defs/sha256" }, "platform": { "const": "linux/amd64" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "environment_digest", "python_version", "packages_digest"],
+          "properties": {
+            "kind": { "const": "python-env" }, "environment_digest": { "$ref": "#/$defs/sha256" },
+            "python_version": { "type": "string", "minLength": 1 }, "packages_digest": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    },
+    "compatibility_profile": { "type": "string", "minLength": 1 }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/local-model-manifest.schema.json",
+  "title": "Hitch local model manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model_id", "format", "files", "architecture", "model_type", "dtype", "quantization", "context_tokens", "tokenizer_digest", "template_digest", "source", "created_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "model_id": { "$ref": "#/$defs/sha256" },
+    "format": { "const": "hf-safetensors" },
+    "files": {
+      "type": "array", "minItems": 3,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "size", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
+          "size": { "type": "integer", "minimum": 0 },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "architecture": { "type": "string", "minLength": 1 },
+    "model_type": { "type": "string", "minLength": 1 },
+    "dtype": { "type": "string", "minLength": 1 },
+    "quantization": { "type": ["string", "null"] },
+    "context_tokens": { "type": ["integer", "null"], "minimum": 1 },
+    "tokenizer_digest": { "$ref": "#/$defs/sha256" },
+    "template_digest": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "label", "license"],
+      "properties": {
+        "kind": { "const": "local-directory" },
+        "label": { "type": "string", "minLength": 1 },
+        "license": { "type": ["string", "null"] }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } }
+}

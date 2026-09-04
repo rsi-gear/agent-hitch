@@ -103,7 +103,9 @@ The first versions of Hitch will not:
 - implement benchmark tasks, verifiers, reward logic, or winner promotion
 - schedule multi-candidate A/B experiments
 - coordinate multiple agents
-- provide model routing or API gateway behavior
+- provide a general-purpose model router or API gateway; the optional local-inference
+  path only binds one run/eval to one content-addressed SGLang service and never
+  performs provider selection or cloud fallback
 - synchronize user prompts, MCP servers, or skills across desktop applications
 - provide a GUI, dashboard, system tray, or cloud sync
 

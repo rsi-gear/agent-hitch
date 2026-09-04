@@ -78,6 +78,33 @@ finish reason 保持独立；`events` 在源端完成过滤和分页。
 每次运行的 manifest、结果、事件、日志和轨迹都会保存在
 `~/.hitch/runs/RUN_ID` 下。
 
+## 使用 SGLang 做本地推理
+
+完整的 Hugging Face safetensors checkpoint 只需导入一次，此后继续使用原有
+run/eval 命令，并把模型写成 `local/<name>`。Hitch 会自动选择固定摘要的 CPU 或
+CUDA preview runtime、按需启动 daemon 和 SGLang 服务，并记录不可变的模型、runtime
+和 inference 身份。
+
+```bash
+hitch models add /models/coder-checkpoint --name coder
+
+hitch run \
+  --harness codex@version:0.145.0 \
+  --model local/coder \
+  --prompt "Inspect this repository"
+
+hitch eval run \
+  --dataset terminal-bench@2.0 \
+  --harness codex@version:0.145.0 \
+  --model local/coder \
+  --device cuda
+```
+
+`--device` 默认为 `auto`。P0 runtime 面向 Linux/amd64 Docker 主机，支持 Intel
+Xeon AMX CPU 或单张 NVIDIA CUDA GPU；不支持的硬件会在 preflight 阶段明确
+失败，绝不会回退到云模型。支持边界和高级 `hitch local` 命令见
+[本地推理实现 Spec](docs/local-model-inference-spec.zh-CN.md)。
+
 ## 固定任意 Harness 版本
 
 每次运行都会显式选择 Harness：

@@ -1,4 +1,4 @@
-import type { AdapterRuntimeRequirementsV1 } from "../domain/index.js";
+import type { AdapterRuntimeRequirementsV1, ModelEndpointBindingV1 } from "../domain/index.js";
 
 export interface AdapterCapabilities {
   non_interactive: boolean;
@@ -45,6 +45,9 @@ export interface AdapterProcessRuntime {
   run_directory?: string;
   runtime_home?: string;
   resolution?: unknown;
+  model_endpoint?: ModelEndpointBindingV1;
+  model_endpoint_credential?: string;
+  model_endpoint_max_output_tokens?: number;
 }
 
 export interface ProcessSpecification {
@@ -52,6 +55,7 @@ export interface ProcessSpecification {
   args: string[];
   input: string;
   env?: Record<string, string>;
+  cleanup?: () => Promise<void>;
 }
 
 export interface RevisionSourceDefinition {

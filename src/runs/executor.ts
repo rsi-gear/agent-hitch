@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { getAdapter } from "../adapters/index.js";
 import { EventSink } from "./events.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, consumeLines, credentialValuesFromEnv, ensureDir, prepareSpawnCommand, readJSON, terminateProcess } from "../foundation/index.js";
-import { parseHarnessReference, type VerifiedLocalGitSource } from "../revisions/index.js";
+import { parseHarnessReference } from "../revisions/index.js";
 import { assertPreparedArtifactRevision, prepareHarness, resolveHarness } from "../artifacts/index.js";
 import type { PreparedArtifact, ResolvedRevision } from "../artifacts/index.js";
 import {
@@ -14,38 +14,22 @@ import {
   markWorkspaceFinalizationFailed,
   planWorkspace,
   prepareWorkspace,
-  workspaceManifestFields,
-  workspaceRecordPath,
-  workspaceDigest,
+  workspaceManifestFields, workspaceRecordPath, workspaceDigest, type WorkspacePlan,
 } from "../workspaces/index.js";
-import type { WorkspacePlan } from "../workspaces/index.js";
 import { TrajectoryProjector, TrajectoryWriter, canonicalTrajectoryFileRef, importDeepseekNativeSession, trajectoryRefPath, trajectoryRefV2 } from "../trajectories/index.js";
 import { ProviderCaptureWriter, redactProviderText } from "../trajectories/index.js";
-import type { ModelIdentityV1, RunId } from "../domain/index.js";
-import { looksImmutableModelId } from "./identity.js";
+import type { ManagedInferenceLeaseV1 } from "../domain/index.js";
 import { validateRunRequest } from "./request.js";
 import type { RunRequestInput } from "./request.js";
 import { buildManifest, safeAgentArgsForPersistence } from "./manifest.js";
 import { assertQueuedRunIdentity } from "./queued.js";
-import { adapterFidelity, failureResult, mergeRedactions, providerModelId } from "./outcome.js";
+import { adapterFidelity, applyEffectiveModelIdentity, failureResult, mergeRedactions, providerModelId } from "./outcome.js";
 import { writeResultBundleIndex } from "./bundle.js";
 import { prepareAdapterProcess } from "./adapter-process.js";
 import { completedRunManifest } from "./finalizer.js";
-export interface ExecuteRunOptions {
-  runId: RunId;
-  request: RunRequestInput;
-  runsRoot: string;
-  root?: string;
-  resolvedRevision?: ResolvedRevision;
-  preparedArtifact?: PreparedArtifact;
-  verifiedLocalGitSource?: VerifiedLocalGitSource;
-  workspacePlan?: WorkspacePlan;
-  onEvent?: (event: Record<string, unknown>) => void;
-  onProcess?: (control: { child?: import("node:child_process").ChildProcess } | null) => void;
-  signal?: AbortSignal;
-  /** Process-local monotonic deadline supplied by the managed benchmark CLI. */
-  candidateDeadlineNs?: bigint;
-}
+import { harnessChildEnvironment, managedHarborModelRuntime } from "./local-inference-environment.js";
+import type { ExecuteRunOptions } from "./executor-types.js";
+import { acquireRunInference, bindManagedModelProxy } from "./local-inference-run.js";
 export async function executeRun({
   runId,
   request,
@@ -59,13 +43,24 @@ export async function executeRun({
   onProcess,
   signal,
   candidateDeadlineNs,
+  inferenceCoordinator,
+  managedModelProxy,
 }: ExecuteRunOptions): Promise<Record<string, unknown>> {
-  const normalized = await validateRunRequest(request);
+  let normalized = await validateRunRequest(request);
+  const usesManagedLocalInference = Boolean(normalized.local_inference);
+  normalized = bindManagedModelProxy(normalized, managedModelProxy, process.env);
+  const managedProxyRuntime = managedModelProxy ? managedHarborModelRuntime(process.env, runId, managedModelProxy) : undefined;
   if (candidateDeadlineNs !== undefined && (typeof candidateDeadlineNs !== "bigint" || candidateDeadlineNs <= 0n
     || normalized.context.kind !== "benchmark_task" || !normalized.defer_benchmark_observation)) {
     throw new HitchError("candidate deadline requires a managed benchmark task", { code: "invalid_input", exitCode: 2 });
   }
   const credentialValues = credentialValuesFromEnv(normalized.credential_names, process.env);
+  if (managedProxyRuntime) credentialValues.push(managedProxyRuntime.model_endpoint.base_url, managedProxyRuntime.model_endpoint_credential);
+  if (normalized.local_inference && !inferenceCoordinator) {
+    throw new HitchError("local model execution requires the managed inference coordinator", {
+      code: "inference_runtime_unavailable", exitCode: 3,
+    });
+  }
   workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const runDirectory = path.join(runsRoot, runId);
   const runtimeHome = path.join(runDirectory, "runtime-home");
@@ -97,8 +92,9 @@ export async function executeRun({
   let cancelled = false;
   let finalMessage: string | undefined;
   let observedEffectiveModel: string | undefined;
-  let abortHandler: (() => void) | undefined;
+  let abortHandler: (() => void) | undefined, processCleanup: (() => Promise<void>) | undefined;
   let result: Record<string, unknown> | undefined;
+  let inferenceLease: ManagedInferenceLeaseV1 | undefined;
   let stage = "event_setup";
   let resolution: ResolvedRevision | undefined = resolvedRevision;
   let artifact: PreparedArtifact | undefined;
@@ -119,6 +115,21 @@ export async function executeRun({
     sink = new EventSink(runDirectory, runId, onEvent);
     await sink.open();
     sinkOpened = true;
+    if (normalized.local_inference) {
+      stage = "inference_preflight";
+      const acquired = await acquireRunInference({
+        coordinator: inferenceCoordinator as NonNullable<typeof inferenceCoordinator>,
+        request: normalized as typeof normalized & { local_inference: NonNullable<typeof normalized.local_inference> },
+        runId,
+        ...(signal ? { signal } : {}),
+        manifest,
+        manifestPath,
+        onEvent: (event) => sink?.emit(event),
+      });
+      inferenceLease = acquired.lease;
+      manifest = acquired.manifest;
+      credentialValues.push(inferenceLease.credential);
+    }
     providerCapture = await ProviderCaptureWriter.open({ runDirectory, structured: Boolean(adapter.translate), credentialValues });
     stage = "resolution";
     resolution ||= await resolveHarness(reference, { root });
@@ -187,19 +198,21 @@ export async function executeRun({
     stage = "adapter_setup";
     const adapterState: Record<string, unknown> = {};
     const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
-    const specification = await prepareAdapterProcess(adapter, executionRequest, artifact, resolution, runDirectory, runtimeHome);
+    const specification = await prepareAdapterProcess(adapter, executionRequest, artifact, resolution, runDirectory, runtimeHome,
+      inferenceLease ? {
+        model_endpoint: inferenceLease.binding,
+        model_endpoint_credential: inferenceLease.credential,
+        model_endpoint_max_output_tokens: inferenceLease.lock.generation.max_output_tokens,
+      } : managedProxyRuntime ?? {});
+    processCleanup = specification.cleanup;
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);
       sink.emit({ type: "run.failed", status: "cancelled", error: (result.error as { code: string; message: string }) });
     } else {
       stage = "launch";
       workspaceLease = await markWorkspaceRunning(workspaceLease, { recordPath: workspacePath });
-      const childEnvironment: NodeJS.ProcessEnv = {
-        ...process.env,
-        ...specification.env,
-        PWD: workspaceLease.execution_workspace,
-      };
-      delete childEnvironment.OLDPWD;
+      const childEnvironment = harnessChildEnvironment({ parent: process.env, ...(specification.env ? { adapter: specification.env } : {}),
+        cwd: workspaceLease.execution_workspace, managedLocal: usesManagedLocalInference });
       const invocation = prepareSpawnCommand(specification.executable, specification.args);
       const remainingMs = candidateDeadlineNs === undefined ? normalized.timeout_ms
         : Number((candidateDeadlineNs - process.hrtime.bigint()) / 1_000_000n);
@@ -223,8 +236,7 @@ export async function executeRun({
         terminateProcess(launched).catch(() => {});
       };
       signal?.addEventListener("abort", abortHandler, { once: true });
-      // Cancellation can arrive during workspace launch or synchronously from
-      // onProcess, before this listener has been installed.
+      // Cancellation may arrive during launch or synchronously from onProcess.
       if (signal?.aborted) abortHandler();
       consumeLines(launched.stdout as import("node:stream").Readable, (line) => {
         if (adapter.translateLine) {
@@ -335,6 +347,8 @@ export async function executeRun({
   } finally {
     if (abortHandler) signal?.removeEventListener("abort", abortHandler);
     onProcess?.(null);
+    await processCleanup?.().catch((error) => { result = failureResult(runId, startedAt, "adapter_cleanup_failed", redactProviderText((error as Error)?.message || String(error), new Map(), credentialValues), 12); });
+    await inferenceLease?.release().catch(() => {});
   }
   if (workspaceLease) {
     try {
@@ -439,8 +453,7 @@ export async function executeRun({
       sha256: canonicalFile.sha256,
     };
     if (status === "succeeded") {
-      // §5.6: `result.output` is the text of the last non-empty assistant
-      // message in the canonical trajectory.
+      // §5.6: output is the last non-empty assistant message in the canonical trajectory.
       (result as Record<string, unknown>).output = projected.finalOutput || finalMessage || "";
     }
     manifest = { ...manifest, trajectory_ref: "trajectory.ref.json" };
@@ -453,9 +466,7 @@ export async function executeRun({
       message: redactProviderText((error as Error)?.message || String(error), new Map(), credentialValues),
     };
     if ((result as { status?: string } | undefined)?.status === "timed_out") {
-      // The agent timeout is the authoritative terminal cause. Recording is a
-      // secondary failure and must not turn an attributable timeout into an
-      // infrastructure failure for downstream evaluators.
+      // Recording failure must not replace the authoritative agent timeout.
       (result as Record<string, unknown>).trajectory_warning = warning;
       manifest = { ...manifest, trajectory_warning: warning };
       sink?.emit({ type: "trajectory.recording_failed", status: "timed_out", error: warning });
@@ -479,15 +490,8 @@ export async function executeRun({
       error_code: ((result as { error?: { code?: string } }).error?.code) || "resolution_unavailable",
     });
   }
-  if (observedEffectiveModel) {
-    const currentModel = (manifest.model || normalized.model_identity) as ModelIdentityV1;
-    manifest.model = {
-      ...currentModel,
-      effective_id: observedEffectiveModel,
-      identity_resolved: currentModel.identity_resolved === true || looksImmutableModelId(observedEffectiveModel),
-    };
-    (result as Record<string, unknown>).effective_model = observedEffectiveModel;
-  }
+  manifest = applyEffectiveModelIdentity({ manifest, requested: normalized.model_identity, result,
+    ...(inferenceLease ? { inferenceLease } : {}), ...(observedEffectiveModel ? { observed: observedEffectiveModel } : {}) });
   await atomicWriteJSON(resultPath, result);
   const terminalManifest = completedRunManifest(manifest, result as Record<string, unknown>, normalized);
   await atomicWriteJSON(manifestPath, terminalManifest);

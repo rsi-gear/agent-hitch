@@ -5,7 +5,7 @@ import type { QueuedRun, RunRequestInput } from "../runs/index.js";
 import { SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage } from "../foundation/index.js";
 import { cancelPlannedWorkspace, recoverInterruptedWorkspace } from "../workspaces/index.js";
 import type { WorkspacePlan } from "../workspaces/index.js";
-import type { ResolvedRevision, RunId } from "../domain/index.js";
+import type { ManagedInferenceCoordinator, ResolvedRevision, RunId } from "../domain/index.js";
 import type { ResourceVectorV1 } from "../domain/index.js";
 import { ResourceLedger, zeroResources } from "../control-plane/index.js";
 import type { ResourceLease } from "../control-plane/index.js";
@@ -32,6 +32,7 @@ export interface SchedulerOptions {
   resources?: ResourceLedger;
   runResources?: ResourceVectorV1;
   credentialEnv?: NodeJS.ProcessEnv;
+  inferenceCoordinator?: ManagedInferenceCoordinator;
 }
 
 export class Scheduler {
@@ -42,13 +43,14 @@ export class Scheduler {
   readonly resources: ResourceLedger | undefined;
   readonly runResources: ResourceVectorV1;
   readonly credentialEnv: NodeJS.ProcessEnv;
+  readonly inferenceCoordinator: ManagedInferenceCoordinator | undefined;
   private queue: QueuedEntry[] = [];
   private active = new Map<RunId, ActiveRun>();
   private completions = new Map<RunId, Promise<unknown>>();
   private accepting = true;
   private readonly unsubscribe: (() => void) | undefined;
 
-  constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {}, resources, runResources = zeroResources(), credentialEnv = process.env }: SchedulerOptions) {
+  constructor({ runsRoot, root = path.dirname(runsRoot), maxConcurrent = 4, onEvent = () => {}, resources, runResources = zeroResources(), credentialEnv = process.env, inferenceCoordinator }: SchedulerOptions) {
     this.runsRoot = runsRoot;
     this.root = root;
     this.maxConcurrent = maxConcurrent;
@@ -56,6 +58,7 @@ export class Scheduler {
     this.resources = resources;
     this.runResources = runResources;
     this.credentialEnv = credentialEnv;
+    this.inferenceCoordinator = inferenceCoordinator;
     this.unsubscribe = resources?.subscribe(() => this.drain());
   }
 
@@ -142,6 +145,7 @@ export class Scheduler {
         resolvedRevision: entry.resolvedRevision,
         workspacePlan: entry.workspacePlan,
         onEvent: this.onEvent,
+        ...(this.inferenceCoordinator ? { inferenceCoordinator: this.inferenceCoordinator } : {}),
         signal: controller.signal,
         onProcess: (processControl) => {
           if (processControl) this.active.set(entry.runId, {

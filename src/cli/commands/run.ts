@@ -10,10 +10,11 @@ import type { ResolvedRevision, VerifiedLocalGitSource } from "../../revisions/i
 import { validateLocalGitTransportManifest, verifyMaterializedLocalGitSource } from "../../backends/index.js";
 import { assertNoArgs, parseRunRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
 import { waitForDaemonRun } from "../output.js";
+import { ensureLocalInferenceDaemon } from "./daemon.js";
 
 export async function runCommand(args: string[], root: string): Promise<void> {
   const invocationStartedNs = process.hrtime.bigint();
-  const useDaemon = takeFlag(args, "--daemon");
+  let useDaemon = takeFlag(args, "--daemon");
   const output = takeOption(args, "--output") || "jsonl";
   const internalFlags = takeInternalLocalGitFlags(args);
   const internalArtifactFlags = takeInternalPreparedArtifactFlags(args);
@@ -26,6 +27,24 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   }
   if (internalRunId && !/^run_[a-f0-9]{32}$/.test(internalRunId)) throw invalidInput("invalid internal run ID");
   const request = await parseRunRequest(args);
+  const managedModelProxy = managedModelProxyIdentity(process.env);
+  if (request.model?.toString().startsWith("local/")) {
+    if (managedModelProxy) {
+      if (!internalRunId || !internalArtifactFlags || useDaemon) {
+        throw new HitchError("managed local inference requires an internal direct Harbor run", {
+          code: "local_inference_topology_unsupported", exitCode: 12,
+        });
+      }
+    } else {
+      if (internalRunId || internalFlags || internalArtifactFlags) {
+        throw new HitchError("local inference Harbor handoff is missing its managed proxy", {
+          code: "local_inference_topology_unsupported", exitCode: 12,
+        });
+      }
+      await ensureLocalInferenceDaemon(root);
+      useDaemon = true;
+    }
+  }
   if (phaseControlFile && (!internalRunId || useDaemon || deferBenchmarkObservation
     || (request.context as { kind?: unknown } | undefined)?.kind !== "benchmark_phase")) {
     throw invalidInput("phase control requires a directly executed, normally sealed benchmark phase with an assigned run ID");
@@ -76,12 +95,24 @@ export async function runCommand(args: string[], root: string): Promise<void> {
       ...(internalArtifact ? { preparedArtifact: internalArtifact.artifact } : {}),
       ...(internal ? { verifiedLocalGitSource: internal.source } : {}),
       ...(output === "jsonl" ? { onEvent: (event) => process.stdout.write(`${JSON.stringify(event)}\n`) } : {}),
+      ...(managedModelProxy ? { managedModelProxy } : {}),
     });
     if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     process.exitCode = result.exit_code as number;
   } finally {
     await cancellation?.close();
   }
+}
+
+function managedModelProxyIdentity(env: NodeJS.ProcessEnv): { inference_id: import("../../domain/index.js").Sha256; model_id: import("../../domain/index.js").Sha256 } | undefined {
+  if (env.HITCH_MANAGED_LOCAL_INFERENCE !== "1") return undefined;
+  if (env.HITCH_HARBOR_INTERNAL !== "1") throw invalidInput("managed local inference marker is internal to Harbor");
+  const inferenceId = env.HITCH_MANAGED_INFERENCE_ID;
+  const modelId = env.HITCH_MANAGED_MODEL_ID;
+  if (!inferenceId || !modelId || !/^sha256:[a-f0-9]{64}$/.test(inferenceId) || !/^sha256:[a-f0-9]{64}$/.test(modelId)) {
+    throw invalidInput("managed local inference identity is incomplete");
+  }
+  return { inference_id: inferenceId as import("../../domain/index.js").Sha256, model_id: modelId as import("../../domain/index.js").Sha256 };
 }
 
 interface InternalPreparedArtifactFlags {

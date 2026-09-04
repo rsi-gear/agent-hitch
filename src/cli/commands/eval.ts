@@ -5,6 +5,7 @@ import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput, positiveInteger } from "../../foundation/index.js";
 import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
 import { waitForDaemonEval, waitForDaemonEvalRerun } from "../output.js";
+import { ensureLocalInferenceDaemon } from "./daemon.js";
 
 export async function evalCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();
@@ -141,7 +142,7 @@ async function evalDoctorCommand(args: string[], root: string): Promise<void> {
 async function evalRunCommand(args: string[], root: string): Promise<void> {
   const benchmark = takeOption(args, "--benchmark");
   const benchmarkLock = takeOption(args, "--benchmark-lock");
-  const useDaemon = takeFlag(args, "--daemon");
+  let useDaemon = takeFlag(args, "--daemon");
   const idempotencyKey = takeOption(args, "--idempotency-key");
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
@@ -150,6 +151,16 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
   const request = parseEvalRequest(args, Boolean(benchmark || benchmarkLock));
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
+  if (String(request.model || "").startsWith("local/")) {
+    if (benchmark || benchmarkLock) {
+      throw new HitchError("local inference is currently supported for dataset evals, not benchmark packages", {
+        code: "local_inference_topology_unsupported",
+        exitCode: 2,
+      });
+    }
+    await ensureLocalInferenceDaemon(root);
+    useDaemon = true;
+  }
   if (useDaemon) {
     if (benchmark || benchmarkLock) throw invalidInput("standard package runs currently require a local root without --daemon");
     if (requestedEvalId !== undefined) throw invalidInput("--eval-id is unavailable with --daemon; submission IDs are server-assigned");

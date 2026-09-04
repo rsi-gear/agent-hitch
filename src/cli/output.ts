@@ -81,7 +81,14 @@ Usage:
   hitch inspect <harness> [--json]
   hitch resolve <harness-ref> [--json]
   hitch prepare <harness-ref> [--json]
-  hitch run --harness <ref> [--model <id>] [--context-file <json>] [--workspace-mode <mode>] --prompt <text> [--daemon]
+  hitch models add <checkpoint-directory> --name <name> [--force] [--json]
+  hitch models inspect local/<name> [--verify] [--json]
+  hitch models gc [--dry-run | --apply] [--json]
+  hitch local prepare local/<name> [--device auto|cpu|cuda] [--profile baseline|throughput] [--offline] [--json]
+  hitch local doctor [--device auto|cpu|cuda] [--json]
+  hitch local status [--json]
+  hitch local stop [<service-id>] [--force]
+  hitch run --harness <ref> [--model <id>] [--device auto|cpu|cuda] [--local-profile baseline|throughput] [--offline] [--context-file <json>] [--workspace-mode <mode>] --prompt <text> [--daemon]
   hitch runs list [filters] [--json]
   hitch runs inspect <run-id> [--json]
   hitch runs rebuild-index [--json]
@@ -89,7 +96,7 @@ Usage:
   hitch compare model|harness [filters] [--reference-run <run-id>] [--json]
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
-  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>] [execution policy]
+  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--device auto|cpu|cuda] [--local-profile baseline|throughput] [--offline] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>] [execution policy]
   hitch benchmark validate --package <directory>
   hitch benchmark lock --package <directory> [--out <benchmark.lock.json>]
   hitch eval run --benchmark <directory> | --benchmark-lock <file> --harness <immutable-ref> [--model <id>]
@@ -132,6 +139,8 @@ Usage:
 
 Eval:
   Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.
+  A local/<name> model automatically starts the root daemon and a managed SGLang service;
+  --device defaults to auto, so the common path needs no setup or daemon command.
   Rerun type candidate-restart is supported and is the compatibility default.
   collect-only imports an already-finished Harbor result without executing Candidate. candidate-resume, trajectory-replay, and verifier-only fail explicitly until their recovery prerequisites exist.
   Use 'hitch eval setup harbor' for an isolated managed install and 'hitch eval doctor' to verify it.

@@ -1,5 +1,6 @@
 import type { RunId, Sha256 } from "./ids.js";
 import type { TrajectoryFidelity } from "./trajectories.js";
+import type { LocalInferenceSelectionV1 } from "./inference.js";
 
 export type RunStatus =
   | "queued"
@@ -70,6 +71,7 @@ export interface ModelIdentityV1 {
   parameters_sha256?: Sha256;
   /** False when effective_id is only a provider alias rather than a snapshot. */
   identity_resolved?: boolean;
+  inference_id?: Sha256;
 }
 
 export interface ProtocolIdentityV1 {
@@ -144,6 +146,7 @@ export interface RunRequest {
   parent?: EvalRunParentV1;
   model_identity?: ModelIdentityV1;
   protocol_identity?: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256">;
+  local_inference?: LocalInferenceSelectionV1;
 }
 
 export interface RunResult {

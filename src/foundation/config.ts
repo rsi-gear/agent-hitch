@@ -29,6 +29,15 @@ export interface StatePaths {
   environmentImages: string;
   environmentImagePins: string;
   environmentImageReferenceLocks: string;
+  modelFiles: string;
+  models: string;
+  modelAliases: string;
+  inferenceRuntimes: string;
+  inferenceLocks: string;
+  inferenceServices: string;
+  inferencePrivate: string;
+  inferenceOperationLocks: string;
+  inferenceCache: string;
   buildRecords: string;
   buildLocks: string;
   buildIndexes: string;
@@ -89,6 +98,15 @@ export function statePaths(root: string): StatePaths {
     environmentImages: path.join(root, "store", "environment-images", "sha256"),
     environmentImagePins: path.join(root, "store", "environment-image-pins", "sha256"),
     environmentImageReferenceLocks: path.join(root, "locks", "environment-image-references"),
+    modelFiles: path.join(root, "store", "model-files", "sha256"),
+    models: path.join(root, "store", "models", "sha256"),
+    modelAliases: path.join(root, "indexes", "models", "aliases.json"),
+    inferenceRuntimes: path.join(root, "store", "inference-runtimes", "sha256"),
+    inferenceLocks: path.join(root, "store", "inference-locks", "sha256"),
+    inferenceServices: path.join(root, "inference", "services"),
+    inferencePrivate: path.join(root, "inference", "private"),
+    inferenceOperationLocks: path.join(root, "locks", "inference"),
+    inferenceCache: path.join(root, "cache", "inference"),
     buildRecords: path.join(root, "store", "build-records", "sha256"),
     buildLocks: path.join(root, "locks", "builds"),
     buildIndexes: path.join(root, "indexes", "builds"),
