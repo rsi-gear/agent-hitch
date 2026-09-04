@@ -12,6 +12,8 @@ export { createQueuedRun } from "./queued.js";
 export type { QueuedRun } from "./queued.js";
 export { canonicalJSON, isTerminal, loadRunRecord, projectRunRecord, sha256Bytes, sha256JSON, trajectoryRefV2 } from "./records.js";
 export type { RunRecordLoadResult } from "./records.js";
+export { loadVerifierEvidence, MAX_VERIFIER_ARTIFACT_OUTPUT_BYTES, MAX_VERIFIER_RESULT_BYTES } from "./verifier-evidence.js";
+export type { LoadVerifierEvidenceOptions } from "./verifier-evidence.js";
 export { benchmarkTaskDigest, benchmarkVerifierIdentity, defaultModelIdentity, inferModelProvider, looksImmutableModelId } from "./identity.js";
 export { queryRuns, rebuildRunIndexes } from "./query.js";
 export type { RebuiltRunIndex, RunQuery } from "./query.js";

@@ -5,15 +5,15 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval as runEvalProduction, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
+import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, readEvalProgress, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval as runEvalProduction, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { readHarborBridgeError } from "../src/evals/harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure } from "../src/evals/verifier-diagnostics.js";
-import { atomicWriteJSON, readJSON } from "../src/foundation/index.js";
+import { HitchError, atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { harborEnvironmentConfig, lockedHarnessRef } from "../src/backends/harbor/index.js";
 import type { HarborTrialRuntimeContract } from "../src/backends/harbor/index.js";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
-import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
+import { benchmarkTaskDigest, benchmarkVerifierIdentity, loadVerifierEvidence } from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
 import { TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/store.js";
 import { forceRemove, prepareHostHarborArtifactForTest, writeFakeDeepseekNpm, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
@@ -1193,6 +1193,11 @@ test("Harbor eval retries a masked verifier bootstrap failure without rerunning 
   assert.equal(history.status, "recovered");
   assert.equal(history.candidate_rerun, false);
   assert.deepEqual(history.attempts[0]?.signals, ["dns_resolution_failed", "test_runner_missing"]);
+  const evidence = await loadVerifierEvidence(root, trial.runId);
+  assert.equal(evidence.verifier.status, "complete");
+  assert.deepEqual(evidence.verifier.diagnostics?.ctrf?.json, {});
+  assert.equal(evidence.verifier.diagnostics?.stdout?.[0]?.text, "1 passed in 0.01s\n");
+  assert.equal(evidence.verifier.diagnostics?.retry_history?.length, 1);
   assert.equal(await readFile(path.join(root, "fake-harbor-verifier-retry.count"), "utf8"), "1");
   await assert.rejects(
     stat(path.join(root, "evals", evalId, "infrastructure-retries")),
@@ -1405,6 +1410,263 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
     harborExecutable: harbor,
     env,
   }), (error: unknown) => (error as { code?: string }).code === "eval_rerun_id_conflict");
+});
+
+test("eval rerun restarts any failed preparation attempt before executable plan creation", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-pre-plan-rerun-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "", "utf8");
+  const request = await validateEvalRequest(evalRequest({
+    dataset,
+    model: "openai/test-model",
+    timeout_ms: 5_000,
+    infrastructure_retries: 0,
+  }));
+  const evalDirectory = path.join(root, "evals", evalId);
+  await mkdir(path.join(evalDirectory, "local-source"), { recursive: true });
+  await atomicWriteJSON(path.join(evalDirectory, "request.json"), request);
+  await atomicWriteJSON(path.join(evalDirectory, "result.json"), {
+    schema_version: "1",
+    eval_id: evalId,
+    status: "failed",
+    exit_code: 12,
+    error: {
+      code: "fixture_preparation_failed",
+      message: "the fixture preparation step failed",
+    },
+    failure_stage: "preparing",
+    benchmark_id: request.benchmark_id,
+    benchmark_revision: request.benchmark_revision,
+    trials: [],
+    started_at: new Date(0).toISOString(),
+    completed_at: new Date(1).toISOString(),
+  });
+  const originalEvent = {
+    schema_version: "1",
+    sequence: 1,
+    timestamp: new Date(1).toISOString(),
+    eval_id: evalId,
+    type: "eval.failed",
+  };
+  await writeFile(path.join(evalDirectory, "events.jsonl"), `${JSON.stringify(originalEvent)}\n`, "utf8");
+  await writeFile(path.join(evalDirectory, "local-source", "marker"), "archived", "utf8");
+  const harbor = await writeFakeHarbor(root);
+  const npm = await writeFakeNpm(root);
+  const rerunId = "rerun_12121212121212121212121212121212";
+
+  const rerun = await rerunEval({
+    evalId,
+    rerunId,
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    modelCapturePlan: { requested_mode: "off", effective_mode: "off", required: false },
+    env: {
+      PATH: process.env.PATH,
+      HITCH_NPM_PATH: npm,
+      NODE_ENV: "test",
+      HITCH_TEST_HOST_ARTIFACT_BUILDER: "1",
+    },
+  });
+
+  assert.equal(rerun.eval_status, "failed");
+  assert.deepEqual(rerun.selected_tasks, ["one"]);
+  assert.deepEqual(rerun.repaired_tasks, []);
+  assert.deepEqual(rerun.remaining_invalid_tasks, ["one"]);
+  const archive = path.join(evalDirectory, "reruns", rerunId, "previous-attempt");
+  const archivedResult = await readJSON<{ error: { code: string }; failure_stage: string }>(path.join(archive, "result.json"));
+  assert.equal(archivedResult.error.code, "fixture_preparation_failed");
+  assert.equal(archivedResult.failure_stage, "preparing");
+  assert.equal(await readFile(path.join(archive, "local-source", "marker"), "utf8"), "archived");
+  assert.equal(await readFile(path.join(archive, "events.jsonl"), "utf8"), `${JSON.stringify(originalEvent)}\n`);
+  const result = await readJSON<{ status: string; trials: Array<{ task_id: string }> }>(path.join(evalDirectory, "result.json"));
+  assert.equal(result.status, "failed");
+  assert.deepEqual(result.trials.map((trial) => trial.task_id), ["one"]);
+  assert.ok((await stat(path.join(evalDirectory, "plan.json"))).isFile());
+  assert.ok((await stat(path.join(evalDirectory, "logical-plan.json"))).isFile());
+  assert.ok((await stat(path.join(evalDirectory, "progress.json"))).isFile());
+  const logical = await readJSON<{ model_capture: { requested_mode: string; effective_mode: string; required: boolean } }>(path.join(evalDirectory, "logical-plan.json"));
+  assert.deepEqual(logical.model_capture, { requested_mode: "off", effective_mode: "off", required: false });
+});
+
+test("standalone eval preparation restart retains the default native capture plan", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-standalone-pre-plan-rerun-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "", "utf8");
+  const request = await validateEvalRequest(evalRequest({
+    dataset,
+    model: "openai/test-model",
+    infrastructure_retries: 0,
+  }));
+  const evalDirectory = path.join(root, "evals", evalId);
+  await mkdir(evalDirectory, { recursive: true });
+  await atomicWriteJSON(path.join(evalDirectory, "request.json"), request);
+  await atomicWriteJSON(path.join(evalDirectory, "result.json"), {
+    schema_version: "1",
+    eval_id: evalId,
+    status: "failed",
+    exit_code: 12,
+    error: { code: "fixture_preparation_failed", message: "preparation failed before planning" },
+    failure_stage: "preparing",
+    benchmark_id: request.benchmark_id,
+    benchmark_revision: request.benchmark_revision,
+    trials: [],
+    started_at: new Date(0).toISOString(),
+    completed_at: new Date(1).toISOString(),
+  });
+  const harbor = await writeFakeHarbor(root);
+  const npm = await writeFakeNpm(root);
+
+  await assert.rejects(rerunEval({
+    evalId,
+    rerunId: "rerun_78787878787878787878787878787878",
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    env: { PATH: process.env.PATH, HITCH_NPM_PATH: npm },
+    harborArtifactBuilder: async () => {
+      throw new HitchError("fixture builder remains unavailable", { code: "fixture_builder_unavailable", exitCode: 12 });
+    },
+  }), (error: unknown) => (error as { code?: string }).code === "fixture_builder_unavailable");
+
+  const logical = await readJSON<{ model_capture: { requested_mode: string; effective_mode: string; required: boolean } }>(
+    path.join(evalDirectory, "logical-plan.json"),
+  );
+  assert.deepEqual(logical.model_capture, { requested_mode: "native", effective_mode: "native", required: false });
+});
+
+test("eval preparation restart rejects opaque task membership before archive or execution", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-opaque-preparation-rerun-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const request = await validateEvalRequest(evalRequest({ infrastructure_retries: 0 }));
+  const evalDirectory = path.join(root, "evals", evalId);
+  await mkdir(evalDirectory, { recursive: true });
+  await atomicWriteJSON(path.join(evalDirectory, "request.json"), request);
+  await atomicWriteJSON(path.join(evalDirectory, "result.json"), {
+    schema_version: "1",
+    eval_id: evalId,
+    status: "failed",
+    exit_code: 12,
+    error: { code: "fixture_preparation_failed", message: "preparation failed before planning" },
+    failure_stage: "preparing",
+    benchmark_id: request.benchmark_id,
+    benchmark_revision: request.benchmark_revision,
+    trials: [],
+    started_at: new Date(0).toISOString(),
+    completed_at: new Date(1).toISOString(),
+  });
+  const originalEvents = `${JSON.stringify({ schema_version: "1", eval_id: evalId, type: "eval.failed" })}\n`;
+  await writeFile(path.join(evalDirectory, "events.jsonl"), originalEvents, "utf8");
+  const activityLog = path.join(root, "harbor-activity.jsonl");
+  const harbor = await writeFakeHarbor(root, { activityLog });
+  const rerunId = "rerun_56565656565656565656565656565656";
+
+  await assert.rejects(rerunEval({
+    evalId,
+    rerunId,
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    modelCapturePlan: { requested_mode: "native", effective_mode: "native", required: false },
+  }), (error: unknown) => (error as { code?: string }).code === "eval_rerun_unavailable"
+    && /enumerable local task plan/.test((error as Error).message));
+
+  assert.equal(await readFile(path.join(evalDirectory, "events.jsonl"), "utf8"), originalEvents);
+  assert.equal((await readJSON<{ error: { code: string } }>(path.join(evalDirectory, "result.json"))).error.code, "fixture_preparation_failed");
+  await assert.rejects(stat(activityLog), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(evalDirectory, "reruns", rerunId, "previous-attempt")), { code: "ENOENT" });
+});
+
+test("eval persists a logical plan and empty progress before artifact preparation", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-preparation-checkpoint-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "", "utf8");
+  const npm = await writeFakeNpm(root);
+  const harbor = await writeFakeHarbor(root);
+
+  const result = await runEvalProduction({
+    root,
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    request: evalRequest({ dataset, model: "openai/test-model", infrastructure_retries: 0 }),
+    modelCapturePlan: { requested_mode: "off", effective_mode: "off", required: false },
+    harborArtifactBuilder: async () => {
+      throw new HitchError("fixture builder is unavailable", { code: "fixture_builder_unavailable", exitCode: 12 });
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error?.code, "fixture_builder_unavailable");
+  assert.equal(result.failure_stage, "preparing");
+  const evalDirectory = path.join(root, "evals", result.eval_id);
+  const logical = await readJSON<{ kind: string; tasks: string[]; model_capture: { effective_mode: string } }>(path.join(evalDirectory, "logical-plan.json"));
+  assert.equal(logical.kind, "eval-logical-plan");
+  assert.deepEqual(logical.tasks, ["one"]);
+  assert.equal(logical.model_capture.effective_mode, "off");
+  const progress = await readEvalProgress(evalDirectory);
+  assert.equal(progress?.generation, 0);
+  assert.deepEqual(progress?.trials, []);
+  await assert.rejects(stat(path.join(evalDirectory, "plan.json")), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(evalDirectory, "execution-plan.json")), { code: "ENOENT" });
+});
+
+test("eval preparation restart stays failed when preparation fails again", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-preparation-retry-failure-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "", "utf8");
+  const npm = await writeFakeNpm(root);
+  const harbor = await writeFakeHarbor(root);
+  const first = await runEvalProduction({
+    root,
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    request: evalRequest({ dataset, model: "openai/test-model", infrastructure_retries: 0 }),
+    modelCapturePlan: { requested_mode: "off", effective_mode: "off", required: false },
+    harborArtifactBuilder: async () => {
+      throw new HitchError("first preparation failed", { code: "first_preparation_failed", exitCode: 12 });
+    },
+  });
+  const rerunId = "rerun_34343434343434343434343434343434";
+  const evalDirectory = path.join(root, "evals", first.eval_id);
+  let previousTerminalVisible = false;
+
+  await assert.rejects(rerunEval({
+    evalId: first.eval_id,
+    rerunId,
+    root,
+    selector: { mode: "invalid" },
+    harborExecutable: harbor,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    harborArtifactBuilder: async () => {
+      const terminal = await readJSON<{ error: { code: string } }>(path.join(evalDirectory, "result.json"));
+      previousTerminalVisible = terminal.error.code === "first_preparation_failed";
+      throw new HitchError("second preparation failed", { code: "second_preparation_failed", exitCode: 12 });
+    },
+  }), (error: unknown) => (error as { code?: string }).code === "second_preparation_failed");
+
+  assert.equal(previousTerminalVisible, true);
+  const current = await readJSON<{ status: string; error: { code: string }; failure_stage: string }>(path.join(evalDirectory, "result.json"));
+  assert.equal(current.status, "failed");
+  assert.equal(current.error.code, "second_preparation_failed");
+  assert.equal(current.failure_stage, "preparing");
+  const logical = await readJSON<{ model_capture: { effective_mode: string } }>(path.join(evalDirectory, "logical-plan.json"));
+  assert.equal(logical.model_capture.effective_mode, "off");
+  const archived = await readJSON<{ error: { code: string } }>(path.join(evalDirectory, "reruns", rerunId, "previous-attempt", "result.json"));
+  assert.equal(archived.error.code, "first_preparation_failed");
+  const state = await readJSON<{ status: string; error: { code: string } }>(path.join(evalDirectory, "reruns", rerunId, "state.json"));
+  assert.equal(state.status, "failed");
+  assert.equal(state.error.code, "second_preparation_failed");
 });
 
 test("collect-only imports a late terminal result without executing the candidate again", async (t) => {

@@ -59,11 +59,23 @@ hitch run \
   --output jsonl
 ```
 
-The output includes a run ID. Use it to inspect the saved trajectory:
+The output includes a run ID. Use bounded trajectory and verifier views for
+automated consumers, or the full trajectory inspect view for explicit auditing:
 
 ```bash
+hitch trajectory project RUN_ID --profile analysis --json
+hitch trajectory events RUN_ID --types tool/call,tool/result --limit 100 --json
 hitch trajectory inspect RUN_ID
+hitch verifier inspect RUN_ID --json
 ```
+
+`project` reconstructs the DSH surface and coalesces streaming chunks per request
+attempt, keeping retries and their finish reasons separate. `events`
+filters and pages at the source; `--field` drill-down additionally requires the
+`canonical_sha256` returned by either bounded view. Streamed views fail closed
+for legacy trajectory refs that do not pin a canonical SHA-256.
+Commands invoked with `--json` emit a stable JSON error envelope on stderr when
+they fail.
 
 Every run is stored below `~/.hitch/runs/RUN_ID` with its manifest, result,
 events, logs, and trajectory.
@@ -105,12 +117,13 @@ Hitch records the chain from request to result:
 - normalized control-plane events and raw process logs;
 - redacted provider-native events where supported;
 - DSH-compatible canonical trajectory with SHA-256-bound files; and
-- versioned message feedback and evaluation evidence.
+- versioned message feedback and bounded verifier/evaluation evidence.
 
 Use the CLI to query runs and attach feedback without rewriting the trajectory:
 
 ```bash
 hitch runs list --json
+hitch verifier inspect RUN_ID --json
 hitch feedback list RUN_ID --json
 hitch feedback put RUN_ID \
   --message MESSAGE_ID \
@@ -173,6 +186,7 @@ run the real NVIDIA gate through the manually dispatched
 
 - [Design and architecture](docs/design.md)
 - [Harbor-backed evals](docs/evals.md)
+- [Verifier evidence](docs/verifier-evidence.md)
 - [Workspace isolation](docs/workspaces.md)
 - [Daemon design](docs/daemon.md)
 - [Hitch 0.2 development spec](docs/hitch-0.2-development-spec.md)

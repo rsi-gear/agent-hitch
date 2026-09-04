@@ -28,6 +28,8 @@ export { inspectEval, isControlPlaneEval, listEvals } from "./records.js";
 export type { InspectedEval, ListedEval } from "./records.js";
 export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";
 export type { ImportEvalRunsOptions } from "./trial-import.js";
+export { captureVerifierDiagnostics, DEFAULT_VERIFIER_DIAGNOSTIC_MAX_BYTES, MAX_VERIFIER_DIAGNOSTIC_MAX_BYTES, persistTrialVerifierDiagnostics, VERIFIER_ARTIFACT_NAMES, VERIFIER_DIAGNOSTICS_INDEX_REF } from "./verifier-artifacts.js";
+export type { CaptureVerifierDiagnosticsOptions, PersistedVerifierArtifactV1, VerifierDiagnosticsIndexV1 } from "./verifier-artifacts.js";
 export { createEvalProgress, evalTrialKey, mergeEvalProgressTrial, parseEvalTrialRef, readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 export { rerunEval, selectRerunTasks, selectRerunTrialSlots } from "./rerun.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun.js";

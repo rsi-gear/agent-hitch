@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rsi-gear/agent-hitch/blob/main/docs/schemas/verifier-evidence.schema.json",
+  "title": "Hitch Verifier Evidence V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "run_id", "verifier"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "verifier-evidence" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eval_id", "trial_id", "attempt"],
+      "properties": {
+        "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+        "trial_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "observation": { "$ref": "#/$defs/observation" },
+    "verifier": { "$ref": "#/$defs/verifier" },
+    "redactions": { "type": "array", "items": { "$ref": "#/$defs/redaction" } }
+  },
+  "$defs": {
+    "observation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reward", "verifier_result_ref"],
+          "properties": {
+            "status": { "const": "valid" },
+            "reward": { "type": "number" },
+            "verifier_result_ref": { "$ref": "#/$defs/relativePath" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "invalid_reason"],
+          "properties": {
+            "status": { "const": "invalid" },
+            "invalid_reason": { "type": "string", "minLength": 1 },
+            "verifier_result_ref": { "$ref": "#/$defs/relativePath" }
+          }
+        }
+      ]
+    },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["complete", "result_only", "missing", "corrupt"] },
+        "result": {},
+        "result_sha256": { "$ref": "#/$defs/sha256" },
+        "diagnostics": { "$ref": "#/$defs/diagnostics" },
+        "issues": { "type": "array", "maxItems": 16, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "complete" } }, "required": ["status"] },
+          "then": {
+            "required": ["result", "result_sha256", "diagnostics"],
+            "properties": {
+              "diagnostics": {
+                "allOf": [
+                  { "$ref": "#/$defs/diagnostics" },
+                  { "anyOf": [{ "required": ["ctrf"] }, { "required": ["stdout"] }, { "required": ["stderr"] }] }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "result_only" } }, "required": ["status"] },
+          "then": {
+            "required": ["result", "result_sha256"],
+            "properties": {
+              "diagnostics": {
+                "allOf": [
+                  { "$ref": "#/$defs/diagnostics" },
+                  { "not": { "anyOf": [{ "required": ["ctrf"] }, { "required": ["stdout"] }, { "required": ["stderr"] }] } }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "missing" } }, "required": ["status"] },
+          "then": { "not": { "required": ["result"] } }
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "ctrf": { "$ref": "#/$defs/artifact" },
+        "stdout": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "stderr": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "infrastructure_error": {},
+        "retry_history": { "type": "array", "minItems": 1, "items": {} }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "media_type", "bytes", "sha256", "truncated"],
+      "properties": {
+        "name": { "enum": ["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"] },
+        "media_type": { "enum": ["application/json", "text/plain"] },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "truncated": { "type": "boolean" },
+        "json": {},
+        "text": { "type": "string" }
+      },
+      "oneOf": [
+        { "required": ["json"], "not": { "required": ["text"] } },
+        { "required": ["text"], "not": { "required": ["json"] } }
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "name": { "const": "ctrf.json" } }, "required": ["name"] },
+          "then": { "properties": { "media_type": { "const": "application/json" } } },
+          "else": { "properties": { "media_type": { "const": "text/plain" } } }
+        },
+        {
+          "if": { "properties": { "truncated": { "const": true } }, "required": ["truncated"] },
+          "then": { "required": ["text"], "not": { "required": ["json"] } }
+        },
+        {
+          "if": { "required": ["json"] },
+          "then": {
+            "properties": {
+              "name": { "const": "ctrf.json" },
+              "media_type": { "const": "application/json" },
+              "truncated": { "const": false }
+            }
+          }
+        }
+      ]
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "count"],
+      "properties": {
+        "rule_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\).+$"
+    },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

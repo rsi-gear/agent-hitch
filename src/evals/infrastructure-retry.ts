@@ -199,6 +199,7 @@ export async function runInfrastructureRetries(
               publicationMode: "replace-invalid",
               runtimeId: options.controllerRuntime.runtime_id,
               env: options.env,
+              ...(options.signal ? { signal: options.signal } : {}),
               ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
               ...(options.interactionCaptureExporter ? {
                 interactionCaptureExporter: options.interactionCaptureExporter,
@@ -230,6 +231,7 @@ export async function runInfrastructureRetries(
         publicationMode: "replace-invalid",
         runtimeId: options.controllerRuntime.runtime_id,
         env: options.env,
+        ...(options.signal ? { signal: options.signal } : {}),
         ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
         ...(options.interactionCaptureExporter ? {
           interactionCaptureExporter: options.interactionCaptureExporter,

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { executeRun, newRunId } from "../src/runs/index.js";
@@ -16,6 +16,54 @@ function restoreEnv(name: string, value: string | undefined): void {
 
 async function readJSONLines(file: string): Promise<Record<string, unknown>[]> {
   return (await readFile(file, "utf8")).trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function writeDeepseekTimeoutSessionFixture(options: {
+  runDirectory: string;
+  cwd: string;
+  state: "open" | "invalid";
+}): Promise<string> {
+  const base = 1_700_000_000_000;
+  const header = {
+    type: "session",
+    version: 0,
+    id: "session-native",
+    createdAt: base,
+    cwd: options.cwd,
+    delegationDepth: 0,
+  };
+  const openEvents = [
+    { type: "permission/preset", seq: 0, time: base + 1, data: { preset: "headless" } },
+    { type: "turn/start", seq: 1, time: base + 10, data: { turn: 1 } },
+    { type: "step/start", seq: 2, time: base + 20, data: { turn: 1, step: 1 } },
+    {
+      type: "assistant/chunk",
+      seq: 3,
+      time: base + 30,
+      data: {
+        turn: 1,
+        step: 1,
+        chunk: {
+          type: "usage",
+          usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, reasoningTokens: 0 },
+        },
+      },
+    },
+  ];
+  const events = options.state === "open"
+    ? openEvents
+    : [openEvents[0], openEvents[1], { ...openEvents[1], seq: 2, time: base + 20 }];
+  const file = path.join(
+    options.runDirectory,
+    "runtime-home",
+    "sessions",
+    "--fake--",
+    "session-native",
+    "session.jsonl",
+  );
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${[header, ...events].map((row) => JSON.stringify(row)).join("\n")}\n`);
+  return file;
 }
 
 function request(overrides: Partial<RunRequestInput> = {}): RunRequestInput {
@@ -328,8 +376,6 @@ test("DeepSeek imports its native session with tool events, usage, and original 
 test("DeepSeek timeout seals an open native turn without masking timed_out", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-timeout-native-"));
   const executable = await writeFakeDeepseek(root, {
-    nativeSession: true,
-    nativeSessionState: "open",
     delayMs: 2_000,
   });
   const previous = process.env.HITCH_DEEPSEEK_PATH;
@@ -337,6 +383,8 @@ test("DeepSeek timeout seals an open native turn without masking timed_out", asy
   t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
   const runId = newRunId();
   const runDirectory = path.join(root, "runs", runId);
+  const fixture = await writeDeepseekTimeoutSessionFixture({ runDirectory, cwd: root, state: "open" });
+  assert.equal((await readJSONLines(fixture)).at(-1)?.type, "assistant/chunk", "native timeout fixture must exist before launch");
 
   const result = await executeRun({
     runId,
@@ -366,8 +414,6 @@ test("DeepSeek timeout seals an open native turn without masking timed_out", asy
 test("trajectory recording failure remains secondary to an established timeout", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-timeout-trajectory-failure-"));
   const executable = await writeFakeDeepseek(root, {
-    nativeSession: true,
-    nativeSessionState: "invalid",
     delayMs: 2_000,
   });
   const previous = process.env.HITCH_DEEPSEEK_PATH;
@@ -375,6 +421,8 @@ test("trajectory recording failure remains secondary to an established timeout",
   t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
   const runId = newRunId();
   const runDirectory = path.join(root, "runs", runId);
+  const fixture = await writeDeepseekTimeoutSessionFixture({ runDirectory, cwd: root, state: "invalid" });
+  assert.equal((await readJSONLines(fixture)).length, 4, "invalid native timeout fixture must exist before launch");
 
   const result = await executeRun({
     runId,
