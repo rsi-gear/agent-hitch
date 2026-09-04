@@ -1,0 +1,17 @@
+export { inferenceLockIdentity, inferenceRuntimeIdentity, localModelIdentity, parseInferenceRuntimeManifest, parseInferenceServiceRecord, parseLocalModelManifest } from "./manifest.js";
+export { addLocalModel, gcLocalModels, resolveLocalModel, verifyLocalModel } from "./model-store.js";
+export type { AddLocalModelOptions, LocalModelGcResultV1 } from "./model-store.js";
+export { listRuntimeCatalog, runtimeCatalogEntry } from "./runtime-catalog.js";
+export { doctorLocalInference, resolveLocalInferenceDevice } from "./doctor.js";
+export type { InferenceDoctorCheckV1, InferenceDoctorOptions, InferenceDoctorResultV1 } from "./doctor.js";
+export { loadInferenceRuntime, prepareInferenceRuntime } from "./runtime-store.js";
+export type { PrepareInferenceRuntimeOptions } from "./runtime-store.js";
+export { buildInferenceLock, loadInferenceLock, persistInferenceLock, validateInferenceLockShape } from "./lock.js";
+export type { BuildInferenceLockOptions } from "./lock.js";
+export { prepareLocalInference } from "./preflight.js";
+export type { LocalInferencePreflightOptions, LocalInferencePreflightResultV1 } from "./preflight.js";
+export { materializeLocalModel } from "./materialize.js";
+export { DockerSGLangLauncher } from "./sglang.js";
+export type { DockerSGLangLauncherOptions, SGLangLaunchedService, SGLangLauncher, SGLangLaunchInput } from "./sglang.js";
+export { SGLangServiceSupervisor } from "./supervisor.js";
+export type { AcquireSGLangServiceInput, SGLangServiceLease, SGLangServiceSupervisorOptions } from "./supervisor.js";

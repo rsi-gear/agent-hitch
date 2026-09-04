@@ -19,6 +19,8 @@ import { imagesCommand } from "./commands/images.js";
 import { benchmarkCommand } from "./commands/benchmark.js";
 import { verifierCommand } from "./commands/verifier.js";
 import { capabilitiesCommand } from "./commands/capabilities.js";
+import { modelsCommand } from "./commands/models.js";
+import { localCommand } from "./commands/local.js";
 
 export async function main(argv: string[]): Promise<void> {
   const args = [...argv];
@@ -42,6 +44,8 @@ export async function main(argv: string[]): Promise<void> {
     case "daemon": return daemonCommand(args, root);
     case "worker": return workerCommand(args, root);
     case "images": return imagesCommand(args, root);
+    case "models": return modelsCommand(args, root);
+    case "local": return localCommand(args, root);
     case "capabilities": return capabilitiesCommand(args);
     case "help":
     case "--help":

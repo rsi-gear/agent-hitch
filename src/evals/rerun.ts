@@ -31,6 +31,7 @@ import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import { verifierOnlyEvalRerun } from "./verifier-only-rerun.js";
 import { restartIncompleteEval } from "./preparation-rerun.js";
+import { writeRerunState } from "./rerun-state.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 interface RerunPlan {
@@ -118,17 +119,36 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   const repaired = new Map<string, EvalTrialSlot>();
   const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
   let captureRuntime: EvalModelCaptureRuntime | undefined;
+  let inferenceLease: Awaited<ReturnType<import("../domain/index.js").ManagedInferenceCoordinator["acquire"]>> | undefined;
   try {
     if (options.rerunType === "verifier-only") return await verifierOnlyEvalRerun({ ...options, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
     if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials, env: options.env ?? process.env, ...(options.signal ? { signal: options.signal } : {}) });
     if (selectedTrials.length > 0) {
       const executionPlan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(options.evalDirectory, "execution-plan.json")));
       if (executionPlan.eval_id !== options.evalId) throw unavailable("eval execution plan identity changed");
+      if (request.local_inference) {
+        if (!options.inferenceCoordinator) throw new HitchError("local eval rerun inference requires the Hitch daemon", { code: "inference_route_unavailable", exitCode: 12 });
+        const inferenceId = plan.candidate.inference_id;
+        if (typeof inferenceId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(inferenceId)) {
+          throw new HitchError("source eval has no valid local inference identity", { code: "inference_lock_mismatch", exitCode: 12 });
+        }
+        inferenceLease = await options.inferenceCoordinator.acquire({
+          run_id: `run_${rerunId.slice("rerun_".length)}`,
+          harness_ref: request.harness_ref,
+          selection: { ...request.local_inference, inference_id: inferenceId as import("../domain/index.js").Sha256 },
+          cache_scope_owner: `${options.evalId}:${rerunId}`,
+          evidence_owner: { kind: "eval", eval_id: options.evalId, rerun_id: rerunId },
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+      }
       captureRuntime = await startEvalModelCaptureRuntime({
         plan: executionPlan.model_capture ?? defaultModelCapturePlan(),
         evalId: options.evalId,
         evalDirectory: rerunDirectory,
         env: options.env ?? process.env,
+        ...(inferenceLease ? { managedInference: {
+          binding: inferenceLease.binding, credential: inferenceLease.credential, modelId: inferenceLease.lock.model_id,
+        } } : {}),
       });
       const activeCaptureRuntime = captureRuntime;
       const resolvedRevision = await loadRerunResolvedRevision(options.evalDirectory, plan);
@@ -319,6 +339,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     throw error;
   } finally {
     await captureRuntime?.close().catch(() => undefined);
+    await inferenceLease?.release().catch(() => undefined);
   }
 }
 function defaultModelCapturePlan(): ModelCapturePlanV1 {
@@ -449,43 +470,6 @@ async function finalizeRerun(
   if (succeeded) delete result.error;
   await atomicWriteJSON(path.join(evalDirectory, "result.json"), result);
   return result;
-}
-
-async function writeRerunState(file: string, input: {
-  rerunId: string;
-  evalId: string;
-  rerunType: EvalRerunType;
-  status: "running" | "completed" | "failed";
-  tasks: readonly string[];
-  trials?: readonly EvalTrialSlot[];
-  repairedTasks: readonly string[];
-  repairedTrials?: readonly EvalTrialSlot[];
-  startedAt: string;
-  completedAt?: string;
-  evalStatus?: "succeeded" | "failed";
-  remainingInvalidTasks?: readonly string[];
-  remainingInvalidTrials?: readonly EvalTrialSlot[];
-  errorCode?: string;
-}): Promise<void> {
-  await atomicWriteJSON(file, {
-    schema_version: SCHEMA_VERSION,
-    rerun_id: input.rerunId,
-    eval_id: input.evalId,
-    rerun_type: input.rerunType,
-    semantics: evalRerunSemantics(input.rerunType),
-    status: input.status,
-    tasks: [...input.tasks],
-    ...(input.trials ? { trials: sortSlots(input.trials) } : {}),
-    repaired_tasks: [...input.repairedTasks],
-    ...(input.repairedTrials ? { repaired_trials: sortSlots(input.repairedTrials) } : {}),
-    ...(input.evalStatus ? { eval_status: input.evalStatus } : {}),
-    ...(input.remainingInvalidTasks ? { remaining_invalid_tasks: [...input.remainingInvalidTasks] } : {}),
-    ...(input.remainingInvalidTrials ? { remaining_invalid_trials: sortSlots(input.remainingInvalidTrials) } : {}),
-    ...(input.errorCode ? { error: { code: input.errorCode } } : {}),
-    started_at: input.startedAt,
-    ...(input.completedAt ? { completed_at: input.completedAt } : {}),
-    updated_at: input.completedAt ?? new Date().toISOString(),
-  });
 }
 
 function requiredString(value: unknown, label: string): string {

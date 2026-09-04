@@ -31,6 +31,7 @@ export interface EvalRequestInput {
   setup_timeout_ms?: unknown;
   agent_args?: unknown;
   pass_env?: unknown;
+  local_inference?: unknown;
 }
 
 export async function validateEvalRequest(input: EvalRequestInput): Promise<EvalRequest> {
@@ -38,7 +39,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   const allowed = new Set([
     "schema_version", "backend", "dataset", "harness_ref", "model", "attempts",
     "max_concurrent", "infrastructure_retries", "infrastructure_retry_backoff_ms",
-    "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env",
+    "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env", "local_inference",
   ]);
   const unexpected = Object.keys(input).find((field) => !allowed.has(field));
   if (unexpected) throw invalidInput(`unknown eval request field: ${unexpected}`);
@@ -71,6 +72,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   if (input.pass_env !== undefined && (!Array.isArray(input.pass_env) || input.pass_env.some((value) => typeof value !== "string"))) {
     throw invalidInput("pass_env must be an array of strings");
   }
+  const localInference = validateEvalLocalInference(input.local_inference, typeof input.model === "string" ? input.model : "");
   const agentArgs = Array.isArray(input.agent_args) ? [...input.agent_args] as string[] : [];
   const bypassArg = HARBOR_EVAL_BYPASS_ARG[reference.harness_id];
   if (bypassArg && !agentArgs.includes(bypassArg)) agentArgs.unshift(bypassArg);
@@ -90,6 +92,40 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     pass_env: [...new Set(Array.isArray(input.pass_env) ? input.pass_env as string[] : [])],
     benchmark_id: benchmark.benchmark_id,
     benchmark_revision: benchmark.benchmark_revision,
+    ...(localInference ? { local_inference: localInference } : {}),
+  };
+}
+
+function validateEvalLocalInference(value: unknown, model: string): import("../domain/index.js").LocalInferenceSelectionV1 | undefined {
+  const localModel = model.startsWith("local/");
+  if (!localModel) {
+    if (value !== undefined) throw invalidInput("--device, --local-profile, --inference and --offline require a local/<name> model");
+    return undefined;
+  }
+  if (value === undefined) return { model, device: "auto", profile: "baseline", offline: false };
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("local_inference must be an object");
+  const record = value as Record<string, unknown>;
+  const allowed = new Set(["model", "device", "profile", "inference_id", "offline"]);
+  const unexpected = Object.keys(record).find((field) => !allowed.has(field));
+  if (unexpected) throw invalidInput(`local_inference has unknown field: ${unexpected}`);
+  if (record.model !== undefined && record.model !== model) throw invalidInput("local_inference.model must match model");
+  if (record.inference_id !== undefined && (record.device !== undefined || record.profile !== undefined)) {
+    throw invalidInput("--inference cannot be combined with --device or --local-profile");
+  }
+  const device = record.device ?? "auto";
+  const profile = record.profile ?? "baseline";
+  if (!new Set(["auto", "cpu", "cuda", "metal"]).has(String(device))) throw invalidInput("local_inference.device must be auto, cpu, cuda, or metal");
+  if (profile !== "baseline" && profile !== "throughput") throw invalidInput("local_inference.profile must be baseline or throughput");
+  if (record.offline !== undefined && typeof record.offline !== "boolean") throw invalidInput("local_inference.offline must be a boolean");
+  if (record.inference_id !== undefined && (typeof record.inference_id !== "string" || !/^sha256:[a-f0-9]{64}$/.test(record.inference_id))) {
+    throw invalidInput("local_inference.inference_id must be a SHA-256 digest");
+  }
+  return {
+    model,
+    device: device as import("../domain/index.js").LocalInferenceDevice,
+    profile,
+    offline: record.offline === true,
+    ...(record.inference_id === undefined ? {} : { inference_id: record.inference_id as import("../domain/index.js").Sha256 }),
   };
 }
 

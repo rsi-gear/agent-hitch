@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/inference-lock.schema.json",
+  "title": "Hitch inference lock v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "engine", "model_id", "runtime_id", "inference_id", "profile", "execution", "generation", "protocol", "resources"],
+  "properties": {
+    "schema_version": { "const": "1" }, "engine": { "const": "sglang" },
+    "model_id": { "$ref": "#/$defs/sha256" }, "runtime_id": { "$ref": "#/$defs/sha256" }, "inference_id": { "$ref": "#/$defs/sha256" },
+    "profile": { "enum": ["baseline", "throughput"] },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["platform", "load_format", "dtype", "quantization", "tensor_parallel_size", "data_parallel_size", "pipeline_parallel_size", "context_tokens_per_request", "max_running_requests", "max_queued_requests", "max_total_tokens", "chunked_prefill_size", "max_prefill_tokens", "kv_cache_dtype", "attention_backend", "sampling_backend", "deterministic_inference", "prefix_cache", "hicache", "speculative_decoding", "cpu_offload_gb", "startup_timeout_ms", "queue_timeout_ms", "request_timeout_ms", "idle_ttl_ms"],
+      "properties": {
+        "platform": { "$ref": "#/$defs/platform" }, "load_format": { "const": "safetensors" },
+        "dtype": { "type": "string", "minLength": 1 }, "quantization": { "type": ["string", "null"] },
+        "tensor_parallel_size": { "const": 1 }, "data_parallel_size": { "const": 1 }, "pipeline_parallel_size": { "const": 1 },
+        "context_tokens_per_request": { "type": "integer", "minimum": 1 }, "max_running_requests": { "type": "integer", "minimum": 1 },
+        "max_queued_requests": { "type": "integer", "minimum": 0 }, "max_total_tokens": { "type": "integer", "minimum": 1 },
+        "chunked_prefill_size": { "type": "integer", "minimum": -1 }, "max_prefill_tokens": { "type": "integer", "minimum": 1 },
+        "kv_cache_dtype": { "type": "string", "minLength": 1 }, "attention_backend": { "type": "string", "minLength": 1 },
+        "sampling_backend": { "type": "string", "minLength": 1 }, "deterministic_inference": { "type": "boolean" },
+        "prefix_cache": {
+          "type": "object", "additionalProperties": false, "required": ["mode", "scope", "initial_state"],
+          "properties": { "mode": { "enum": ["disabled", "radix"] }, "scope": { "enum": ["run", "eval"] }, "initial_state": { "const": "empty" } }
+        },
+        "hicache": { "const": false }, "speculative_decoding": { "const": false }, "cpu_offload_gb": { "const": 0 },
+        "startup_timeout_ms": { "type": "integer", "minimum": 1 }, "queue_timeout_ms": { "type": "integer", "minimum": 1 },
+        "request_timeout_ms": { "type": "integer", "minimum": 1 }, "idle_ttl_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "generation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["temperature", "top_p", "top_k", "min_p", "repetition_penalty", "seed", "max_output_tokens", "override_policy"],
+      "properties": {
+        "temperature": { "type": "number", "minimum": 0 }, "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
+        "top_k": { "type": "integer", "minimum": 0 }, "min_p": { "type": "number", "minimum": 0, "maximum": 1 },
+        "repetition_penalty": { "type": "number", "exclusiveMinimum": 0 }, "seed": { "type": "integer" },
+        "max_output_tokens": { "type": "integer", "minimum": 1 }, "override_policy": { "const": "reject-conflicts" }
+      }
+    },
+    "protocol": {
+      "type": "object", "additionalProperties": false,
+      "required": ["api", "streaming", "tool_calls", "parallel_tool_calls", "input_modalities", "tool_call_parser", "reasoning_parser", "compatibility_profile_id"],
+      "properties": {
+        "api": { "enum": ["responses", "chat-completions"] }, "streaming": { "type": "boolean" }, "tool_calls": { "type": "boolean" },
+        "parallel_tool_calls": { "type": "boolean" }, "input_modalities": { "const": ["text"] },
+        "tool_call_parser": { "type": ["string", "null"] }, "reasoning_parser": { "type": ["string", "null"] },
+        "compatibility_profile_id": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "resources": { "$ref": "#/$defs/resources" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "platform": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["backend", "cpu_threads", "numa_policy", "cpu_feature_requirement", "overlap_schedule"], "properties": { "backend": { "const": "cpu" }, "cpu_threads": { "type": "integer", "minimum": 1 }, "numa_policy": { "const": "single-node" }, "cpu_feature_requirement": { "const": "amx" }, "overlap_schedule": { "const": false } } },
+        { "type": "object", "additionalProperties": false, "required": ["backend", "mem_fraction_static", "overlap_schedule", "cuda_graph"], "properties": { "backend": { "const": "cuda" }, "device_constraint": { "type": "string", "minLength": 1 }, "mem_fraction_static": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }, "overlap_schedule": { "type": "boolean" }, "cuda_graph": { "enum": ["enabled", "disabled"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["backend", "mlx_quantization", "overlap_schedule"], "properties": { "backend": { "const": "metal" }, "mlx_quantization": { "enum": ["none", "prequantized"] }, "overlap_schedule": { "type": "boolean" } } }
+      ]
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 }, "memory_bytes": { "type": "integer", "minimum": 0 },
+        "container_slots": { "type": "integer", "minimum": 0 }, "build_slots": { "type": "integer", "minimum": 0 },
+        "gpu_count": { "type": "integer", "minimum": 0 }, "ephemeral_disk_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

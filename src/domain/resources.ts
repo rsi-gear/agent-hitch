@@ -12,7 +12,7 @@ export interface ResourceVectorV1 {
 export interface ResourceAllocationV1 {
   allocation_id: string;
   owner_id: string;
-  kind: "run" | "eval" | "build";
+  kind: "run" | "eval" | "build" | "inference";
   resources: ResourceVectorV1;
   acquired_at: string;
 }

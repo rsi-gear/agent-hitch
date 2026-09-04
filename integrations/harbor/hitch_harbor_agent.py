@@ -127,6 +127,7 @@ class HitchHarborAgent(BaseAgent):
         verifier_identity: str | None = None,
         logical_attempt: int | None = None,
         model_capture: dict[str, Any] | None = None,
+        managed_local_inference: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(logs_dir=logs_dir, **kwargs)
@@ -165,6 +166,18 @@ class HitchHarborAgent(BaseAgent):
             raise ValueError("logical_attempt must be a positive integer")
         self.logical_attempt = logical_attempt
         self.model_capture = _validate_model_capture(model_capture)
+        if managed_local_inference is not None and (
+            not isinstance(managed_local_inference, dict)
+            or set(managed_local_inference) != {"inference_id", "model_id"}
+            or any(not isinstance(value, str) or re.fullmatch(r"sha256:[a-f0-9]{64}", value) is None for value in managed_local_inference.values())
+        ):
+            raise ValueError("managed_local_inference identity is invalid")
+        if managed_local_inference is not None and self.model_capture is None:
+            raise ValueError("managed_local_inference requires model_capture")
+        self.managed_local_inference = dict(managed_local_inference) if managed_local_inference else None
+        capture_inference = self.model_capture.get("managed_inference") if self.model_capture else None
+        if capture_inference != self.managed_local_inference:
+            raise ValueError("managed_local_inference must match model_capture identity")
         self._hitch_version: str | None = None
         self._entrypoint: str | None = None
         self._artifact_manifest: dict[str, Any] | None = None
@@ -1134,6 +1147,13 @@ mv "$stage_dir" "$target_dir"
         return [
             f"OPENAI_BASE_URL={shlex.quote(base.replace('{provider}', 'openai'))}",
             f"ANTHROPIC_BASE_URL={shlex.quote(base.replace('{provider}', 'anthropic'))}",
+            *([
+                "HITCH_MANAGED_LOCAL_INFERENCE=1",
+                f"HITCH_MANAGED_RUN_ID={run_id}",
+                f"HITCH_MANAGED_INFERENCE_ID={self.managed_local_inference['inference_id']}",
+                f"HITCH_MANAGED_MODEL_ID={self.managed_local_inference['model_id']}",
+                "OPENAI_API_KEY=hitch-managed-local",
+            ] if self.managed_local_inference else []),
         ], "healthy"
 
     @staticmethod
@@ -1595,9 +1615,10 @@ esac""", "hitch_node_runtime_incompatible")
 def _validate_model_capture(value: dict[str, Any] | None) -> dict[str, Any] | None:
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {
+    required_fields = {
         "schema_version", "mode", "required", "topology", "base_url_template", "health_url_template"
-    }:
+    }
+    if not isinstance(value, dict) or not required_fields.issubset(value) or set(value) - required_fields - {"managed_inference"}:
         raise ValueError("model_capture fields are invalid")
     if (
         value.get("schema_version") != "1"
@@ -1622,6 +1643,13 @@ def _validate_model_capture(value: dict[str, Any] | None) -> dict[str, Any] | No
         )
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError(f"model_capture {field} URL is invalid")
+    managed = value.get("managed_inference")
+    if managed is not None and (
+        not isinstance(managed, dict)
+        or set(managed) != {"inference_id", "model_id"}
+        or any(not isinstance(item, str) or re.fullmatch(r"sha256:[a-f0-9]{64}", item) is None for item in managed.values())
+    ):
+        raise ValueError("model_capture managed inference identity is invalid")
     return dict(value)
 
 

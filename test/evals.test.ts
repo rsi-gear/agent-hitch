@@ -441,6 +441,71 @@ test("Harbor eval enables native permission bypass for Codex and OpenCode", asyn
   assert.deepEqual(pi.agent_args, ["--extra-flag"]);
 });
 
+test("local eval acquires one managed inference lease and seals the Harbor proxy identity", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-local-eval-"));
+  t.after(() => forceRemove(root));
+  const fakeNpm = await writeFakeNpm(root, { version: "0.92.0", packageName: "@openai/codex", binName: "codex" });
+  const fakeHarbor = await writeFakeHarbor(root);
+  const evalId = newEvalId();
+  const inferenceId = `sha256:${"8".repeat(64)}` as const;
+  const modelId = `sha256:${"9".repeat(64)}` as const;
+  let acquired: Record<string, unknown> | undefined;
+  let released = 0;
+  const result = await runEvalProduction({
+    evalId,
+    root,
+    harborExecutable: fakeHarbor,
+    env: {
+      ...process.env,
+      HITCH_NPM_PATH: fakeNpm,
+      HITCH_MODEL_PROXY_BIND_HOST: "127.0.0.1",
+      HITCH_MODEL_PROXY_ADVERTISED_HOST: "127.0.0.1",
+    },
+    harborArtifactBuilder: prepareHostHarborArtifactForTest,
+    inferenceCoordinator: {
+      acquire: async (input) => {
+        acquired = input as unknown as Record<string, unknown>;
+        return {
+          binding: {
+            kind: "managed-local", inference_id: inferenceId, api: "responses",
+            base_url: "http://127.0.0.1:65534/runs/run_00000000000000000000000000000000/v1/",
+            wire_model: "hitch-wire-model", credential_env_name: "HITCH_LOCAL_MODEL_TOKEN",
+            capabilities: { streaming: true, tool_calls: true, parallel_tool_calls: false, input_modalities: ["text"] },
+          },
+          credential: "a".repeat(64),
+          lock: { inference_id: inferenceId, model_id: modelId } as never,
+          service_id: `inference_${"a".repeat(32)}`,
+          service_epoch: 1,
+          release: async () => { released += 1; },
+        };
+      },
+    },
+    request: {
+      dataset: "demo@1.0",
+      harness_ref: "codex@version:0.92.0",
+      model: "local/coder",
+      attempts: 1,
+      max_concurrent: 1,
+      timeout_ms: 5_000,
+      local_inference: { device: "cuda", profile: "baseline", offline: true },
+    },
+  });
+  assert.equal(result.status, "failed", "fake Harbor exports intentionally incomplete run evidence");
+  assert.equal((result.error as { code?: string } | undefined)?.code, "eval_has_invalid_tasks", JSON.stringify(result));
+  assert.equal(released, 1);
+  assert.equal((acquired?.selection as { model?: string }).model, "local/coder");
+  assert.deepEqual(acquired?.evidence_owner, { kind: "eval", eval_id: evalId });
+  const evalDirectory = path.join(root, "evals", evalId);
+  const logical = await readJSON<{ candidate: { inference_id?: string } }>(path.join(evalDirectory, "logical-plan.json"));
+  assert.equal(logical.candidate.inference_id, inferenceId);
+  const config = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor", "job.json"));
+  const kwargs = ((config.agents as Record<string, unknown>[])[0]!.kwargs) as Record<string, unknown>;
+  assert.deepEqual(kwargs.managed_local_inference, { inference_id: inferenceId, model_id: modelId });
+  assert.deepEqual((kwargs.model_capture as { managed_inference?: unknown }).managed_inference, {
+    inference_id: inferenceId, model_id: modelId,
+  });
+});
+
 test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-"));
   t.after(() => forceRemove(root));

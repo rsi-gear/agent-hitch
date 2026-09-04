@@ -6,6 +6,15 @@ import type { EvalHarborArtifactBuilder } from "../src/evals/index.js";
 
 export const prepareHostHarborArtifactForTest: EvalHarborArtifactBuilder = prepareHostArtifact;
 
+export function safetensorsFixture(): Buffer {
+  const rawHeader = Buffer.from(JSON.stringify({ weight: { dtype: "F32", shape: [1], data_offsets: [0, 4] } }));
+  const padding = (8 - rawHeader.length % 8) % 8;
+  const header = Buffer.concat([rawHeader, Buffer.alloc(padding, 0x20)]);
+  const prefix = Buffer.alloc(8);
+  prefix.writeBigUInt64LE(BigInt(header.length));
+  return Buffer.concat([prefix, header, Buffer.alloc(4)]);
+}
+
 /**
  * Remove a tree even when it contains read-only controller runtime bundles
  * (spec §4.5 makes promoted payloads 0555/0444; plain `rm -rf` then fails to

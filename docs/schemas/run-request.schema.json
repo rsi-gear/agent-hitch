@@ -70,6 +70,7 @@
     },
     "model_identity": { "type": "object" },
     "protocol_identity": { "type": "object" },
-    "defer_benchmark_observation": { "type": "boolean" }
+    "defer_benchmark_observation": { "type": "boolean" },
+    "local_inference": { "$ref": "local-inference-selection.schema.json" }
   }
 }
