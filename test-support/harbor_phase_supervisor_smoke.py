@@ -124,6 +124,7 @@ class LocalEnvironment:
         self._hitch_ownership_labels = {"io.hitch.lease-id": "synthetic-lease", "io.hitch.lease-epoch": "1"}
         self.events, self.tokens, self.binds = [], [], []
         self.clock = SupervisorClock()
+        self.phase_finished = asyncio.Event()
         self.number = 0
         self.fresh()
     def fresh(self):
@@ -158,9 +159,10 @@ class LocalEnvironment:
             self.events.append("bind"); self.binds.append(request["parameters"])
         result = await command("/bin/sh", "-c", text, timeout=kwargs["timeout_sec"] + 1)
         if self.case == "finalize-budget" and request["operation"] == "expire_budget":
-            # The channel is already fenced. Delay the management reply so the
-            # CLI's own timeout wins over the supervisor cancellation request.
-            await asyncio.sleep(0.3)
+            # The channel is already fenced. Wait for the CLI to finish its own
+            # timeout path before returning the management reply, so this case
+            # does not depend on relative timer scheduling on the CI host.
+            await asyncio.wait_for(self.phase_finished.wait(), 4)
         if self.case == "bad-binding" and request["operation"] == "bind":
             output = json.loads(result.stdout); output["binding"]["tools"] = []
             result.stdout = json.dumps(output)
@@ -233,6 +235,7 @@ class SyntheticAgent(bridge.HitchHarborAgent):
         assert exported.return_code == 0, exported.stderr
         env.events.append("export")
         context.metadata = {"hitch_run_id": prepared.run_id, "hitch_phase_bundle_exported": True, "hitch_status": evidence["status"]}
+        env.phase_finished.set()
         if result.return_code:
             context.metadata["hitch_bridge_error_code"] = "hitch_process_failed"
             raise bridge.HitchBridgeError("hitch_process_failed", "synthetic cancelled CLI", {})
