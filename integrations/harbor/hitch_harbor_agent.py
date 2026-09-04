@@ -25,6 +25,7 @@ from harbor.models.agent.context import AgentContext
 CONTROLLER_RUNTIME_MANIFEST_VERSION = "2"
 HARNESS_ARTIFACT_REMOTE_ROOT = "/opt/hitch-harness-artifact"
 HITCH_BRIDGE_ERROR_LOG = "/logs/agent/hitch-bridge-error.json"
+HITCH_AGENT_OUTCOME_NAME = "hitch-agent-outcome.json"
 HITCH_DIAGNOSTIC_MAX_BYTES = 8 * 1024
 HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024
 HITCH_RESULT_MISSING_EXIT = 44
@@ -1050,6 +1051,13 @@ mv "$stage_dir" "$target_dir"
             primary_code = "hitch_result_artifact_copy_failed"
             primary_message = f"Hitch result artifact copy failed (run_id={run_id}, trial_id={trial_id})"
 
+        self._write_trusted_agent_outcome(
+            run_id=run_id,
+            hitch_result=hitch_result,
+            bundle_export=bundle_export,
+            reason_code=primary_code,
+        )
+
         context.metadata = {
             "candidate_id": self.candidate_id,
             "harness_ref": self.harness_ref,
@@ -1288,6 +1296,37 @@ mv "$stage_dir" "$target_dir"
             f"umask 077; printf '%s\\n' {shlex.quote(payload)} > {HITCH_BRIDGE_ERROR_LOG}",
             cwd="/",
         )
+
+    def _write_trusted_agent_outcome(
+        self,
+        *,
+        run_id: str,
+        hitch_result: dict[str, Any] | None,
+        bundle_export: ExecResult,
+        reason_code: str | None,
+    ) -> None:
+        result_status = hitch_result.get("status") if hitch_result else "failed"
+        if result_status not in {"succeeded", "failed", "timed_out", "cancelled"}:
+            result_status = "failed"
+        bundle = "complete" if hitch_result is not None and bundle_export.return_code == 0 else (
+            "missing" if bundle_export.return_code != 0 else "invalid"
+        )
+        outcome = {
+            "schema_version": "1",
+            "run_id": run_id,
+            "status": result_status,
+            "candidate_bundle": bundle,
+            "submission_snapshot": "not-required",
+            "gradeability": "gradeable" if bundle == "complete" else "ungradeable",
+        }
+        if bundle != "complete":
+            outcome["reason_code"] = reason_code or "candidate_evidence_unavailable"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        target = self.logs_dir / HITCH_AGENT_OUTCOME_NAME
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(outcome, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(target)
 
     def _trial_identity(self) -> tuple[str, str, int]:
         """Read Harbor's stable trial/task identity from the persisted trial state."""

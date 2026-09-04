@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { ResourceLedger, WorkItemDispatcher } from "../src/control-plane/index.js";
 import { localEnvironmentImageBuild } from "../src/control-plane/eval-image-resolution.js";
-import { parseEvalExecutionPlan, readExecutionLeases, runEval as runEvalProduction } from "../src/evals/index.js";
+import { parseEvalExecutionPlan, readEvalRetryState, readExecutionLeases, runEval as runEvalProduction } from "../src/evals/index.js";
 import type { RunEvalOptions } from "../src/evals/index.js";
 import { hitchRootId, readEvalEnvironmentImageReferences, readJSON } from "../src/foundation/index.js";
 import { loadEnvironmentImageManifest } from "../src/images/index.js";
@@ -198,6 +198,13 @@ test("planned infrastructure retries reacquire admission and use a new owned lea
   });
 
   assert.equal(result.status, "failed");
+  const scheduler = result.scheduler_summary as Record<string, number | string>;
+  assert.equal(scheduler.policy, "critical-path-lpt-v1");
+  assert.ok((scheduler.makespan_ms as number) > 0);
+  assert.ok((scheduler.physical_work_ms as number) >= (scheduler.initial_work_ms as number));
+  assert.ok((scheduler.max_active as number) >= 1);
+  assert.ok((scheduler.slot_utilization as number) > 0 && (scheduler.slot_utilization as number) <= 1);
+  assert.ok((scheduler.effective_parallelism as number) > 0);
   const retries = result.infrastructure_retry_runs as Array<Record<string, unknown>>;
   assert.equal(retries.length, 1);
   assert.equal(retries[0]?.execution_kind, "physical-infrastructure-retry");
@@ -206,23 +213,137 @@ test("planned infrastructure retries reacquire admission and use a new owned lea
   assert.equal(allocations.length, 2, "initial execution and physical retry must each be admitted");
   assert.equal(new Set(allocations).size, 2);
   const evalDirectory = path.join(root, "evals", result.eval_id as string);
+  const plan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(evalDirectory, "execution-plan.json")));
+  const sourceWorkId = plan.work_items[0]?.work_id as string;
   const leases = await readExecutionLeases(evalDirectory);
   assert.equal(leases.length, 2);
   assert.equal(new Set(leases.map((lease) => lease.lease_id)).size, 2);
-  assert.equal(new Set(leases.map((lease) => lease.work_id)).size, 1);
+  assert.equal(new Set(leases.map((lease) => lease.work_id)).size, 2);
   assert.ok(leases.every((lease) => lease.state === "released" && lease.parent_allocation_id));
   assert.deepEqual(new Set(reaped), new Set(leases.map((lease) => lease.lease_id)));
   const retryLease = leases.find((lease) => lease.lease_id === retries[0]?.lease_id);
   assert.ok(retryLease);
+  assert.equal(retryLease.work_id, retries[0]?.work_id);
+  assert.notEqual(retryLease.work_id, sourceWorkId);
   const retryConfig = await readJSON<Record<string, unknown>>(path.join(
     evalDirectory,
-    "harbor", "work-items", retryLease.work_id, "infrastructure-retries", "retry-0001", "harbor", "job.json",
+    "harbor", "work-items", sourceWorkId, "infrastructure-retries", "retry-0001", "harbor", "job.json",
   ));
   const labels = ((retryConfig.environment as Record<string, unknown>).kwargs as Record<string, Record<string, string>>).hitch_ownership_labels;
   assert.ok(labels);
   assert.equal(labels["io.hitch.lease-id"], retryLease.lease_id);
   assert.equal(labels["io.hitch.work-id"], retryLease.work_id);
+  const retryState = await readEvalRetryState(evalDirectory, result.eval_id as string);
+  assert.equal(retryState?.decisions.length, 1);
+  assert.equal(retryState?.decisions[0]?.retry_work_id, retryLease.work_id);
+  assert.equal(retryState?.decisions[0]?.state, "exhausted");
   assert.deepEqual(resources.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
+});
+
+test("terminal provider failures open the retry-only circuit without physical retry", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-provider-circuit-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const harbor = await writeProviderQuotaFailureHarbor(root);
+  const npm = await writeFakeNpm(root);
+  const events: Array<Record<string, unknown>> = [];
+  const result = await runEval({
+    root, harborExecutable: harbor, executionStrategy: "local-task-slots-v1", trialBundleGraceMs: 0,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    onEvent: (event) => events.push(event as unknown as Record<string, unknown>),
+    request: {
+      dataset, harness_ref: "pi@version:1.2.3", model: "openai/test", attempts: 1,
+      max_concurrent: 1, infrastructure_retries: 2, infrastructure_retry_backoff_ms: 0,
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(await readFile(path.join(root, "provider-quota.count"), "utf8"), "1");
+  const circuit = events.find((event) => event.type === "eval.provider-circuit.opened");
+  assert.deepEqual(circuit && {
+    scope: circuit.scope, mode: circuit.mode, provider: circuit.provider, model: circuit.model,
+    stable_code: circuit.stable_code, automatic_probe: circuit.automatic_probe,
+  }, {
+    scope: "trial-retry", mode: "retry-only", provider: "local-docker", model: "openai/test",
+    stable_code: "provider_quota_exhausted", automatic_probe: false,
+  });
+});
+
+test("planned infrastructure retry starts before unrelated initial work finishes", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-immediate-retry-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  for (const task of ["one", "two"]) {
+    await mkdir(path.join(dataset, task), { recursive: true });
+    await writeFile(path.join(dataset, task, "task.toml"), `name = ${JSON.stringify(task)}\n`);
+  }
+  const activityLog = path.join(root, "activity.jsonl");
+  const harbor = await writeImmediateRetryHarbor(root, activityLog);
+  const npm = await writeFakeNpm(root);
+  const result = await runEval({
+    root,
+    harborExecutable: harbor,
+    executionStrategy: "local-task-slots-v1",
+    executionResources: { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 },
+    trialBundleGraceMs: 0,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+    request: {
+      dataset,
+      harness_ref: "pi@version:1.2.3",
+      attempts: 1,
+      max_concurrent: 2,
+      infrastructure_retries: 1,
+      infrastructure_retry_backoff_ms: 0,
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  const activity = (await readFile(activityLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
+    type: "start" | "end"; task: string; call: number; time: number;
+  });
+  const retryStart = activity.find((entry) => entry.type === "start" && entry.task === "one" && entry.call === 2)?.time;
+  const unrelatedEnd = activity.find((entry) => entry.type === "end" && entry.task === "two" && entry.call === 1)?.time;
+  assert.equal(typeof retryStart, "number");
+  assert.equal(typeof unrelatedEnd, "number");
+  assert.ok((retryStart as number) < (unrelatedEnd as number), "retry waited for the unrelated initial trial barrier");
+});
+
+test("a persisted planned retry resumes without repeating the initial candidate", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-retry-resume-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "name = \"one\"\n");
+  const harbor = await writeInfrastructureFailureHarbor(root);
+  const npm = await writeFakeNpm(root);
+  const controller = new AbortController();
+  const request = {
+    dataset, harness_ref: "pi@version:1.2.3", attempts: 1, max_concurrent: 1,
+    infrastructure_retries: 1, infrastructure_retry_backoff_ms: 200,
+  };
+  const interrupted = await runEval({
+    root, harborExecutable: harbor, executionStrategy: "local-task-slots-v1", trialBundleGraceMs: 0,
+    env: { ...process.env, HITCH_NPM_PATH: npm }, request, signal: controller.signal,
+    onEvent: (event) => { if (event.type === "eval.retry.decision") controller.abort(); },
+  });
+  assert.equal(interrupted.status, "cancelled");
+  assert.equal(await readFile(path.join(root, "infrastructure-failure.count"), "utf8"), "1");
+  const evalDirectory = path.join(root, "evals", interrupted.eval_id as string);
+  const planned = await readEvalRetryState(evalDirectory, interrupted.eval_id as string);
+  assert.equal(planned?.decisions[0]?.state, "planned");
+
+  await rm(path.join(evalDirectory, "result.json"));
+  const resumed = await runEval({
+    root, evalId: interrupted.eval_id as never, request, precreated: true, resumeExisting: true,
+    harborExecutable: harbor, executionStrategy: "local-task-slots-v1", trialBundleGraceMs: 0,
+    env: { ...process.env, HITCH_NPM_PATH: npm },
+  });
+  assert.equal(resumed.status, "failed");
+  assert.equal(await readFile(path.join(root, "infrastructure-failure.count"), "utf8"), "2");
+  const terminal = await readEvalRetryState(evalDirectory, interrupted.eval_id as string);
+  assert.equal(terminal?.decisions[0]?.state, "exhausted");
 });
 
 test("planned task Dockerfiles are built once and injected as immutable prebuilt images", async (t) => {
@@ -362,6 +483,80 @@ fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
 fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
   n_total_trials:1, stats:{n_completed_trials:0,n_errored_trials:1,n_cancelled_trials:0}
 }));
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeProviderQuotaFailureHarbor(directory: string): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-provider-quota");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) { process.stdout.write("harbor 0.21.0\\n"); process.exit(0); }
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const counter = ${JSON.stringify(path.join(directory, "provider-quota.count"))};
+let call = 1;
+try { call = Number(fs.readFileSync(counter, "utf8")) + 1; } catch {}
+fs.writeFileSync(counter, String(call));
+const output = path.join(config.jobs_dir, config.job_name);
+const trial = "one__quota-" + call;
+const trialDirectory = path.join(output, trial);
+fs.mkdirSync(path.join(trialDirectory, "agent"), {recursive:true});
+fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:"one"}}));
+fs.writeFileSync(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), JSON.stringify({
+  schema_version:"1", code:"hitch_process_failed", message:"account quota exhausted"
+}));
+fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+  task_name:"one", trial_name:trial, exception_info:{exception_type:"HitchBridgeError"}, verifier_result:{rewards:{reward:0}}
+}));
+fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+  n_total_trials:1, stats:{n_completed_trials:0,n_errored_trials:1,n_cancelled_trials:0}
+}));
+`;
+  await writeFile(executable, source, { mode: 0o755 });
+  return executable;
+}
+
+async function writeImmediateRetryHarbor(directory: string, activityLog: string): Promise<string> {
+  const executable = path.join(directory, "fake-harbor-immediate-retry");
+  const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args.includes("--version")) { process.stdout.write("harbor 0.21.0\\n"); process.exit(0); }
+const configIndex = args.indexOf("--config");
+if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
+const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+const task = config.datasets[0].task_names[0];
+const counter = path.join(${JSON.stringify(directory)}, task + ".count");
+let call = 1;
+try { call = Number(fs.readFileSync(counter, "utf8")) + 1; } catch {}
+fs.writeFileSync(counter, String(call));
+const activity = (type) => fs.appendFileSync(${JSON.stringify(activityLog)}, JSON.stringify({type, task, call, time:Date.now()}) + "\\n");
+const output = path.join(config.jobs_dir, config.job_name);
+const delay = task === "two" ? 500 : 50;
+activity("start");
+setTimeout(() => {
+  const trialName = task + "__call-" + call;
+  const trialDirectory = path.join(output, trialName);
+  fs.mkdirSync(trialDirectory, {recursive:true});
+  fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:task}}));
+  const failed = task === "one";
+  fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({
+    task_name:task, trial_name:trialName,
+    ...(failed ? {exception_info:{exception_type:"InfrastructureError"}} : {}),
+    verifier_result:{rewards:{reward:failed ? 0 : 1}}
+  }));
+  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({
+    n_total_trials:1,
+    stats:{n_completed_trials:failed ? 0 : 1,n_errored_trials:failed ? 1 : 0,n_cancelled_trials:0}
+  }));
+  activity("end");
+}, delay);
 `;
   await writeFile(executable, source, { mode: 0o755 });
   return executable;

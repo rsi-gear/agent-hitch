@@ -4,7 +4,7 @@ export { EvalScheduler } from "./eval-scheduler.js";
 export type { CancelEvalOutcome, EvalSchedulerOptions, EvalSchedulerStatus, SubmitEvalOptions } from "./eval-scheduler.js";
 export { defaultEvalExecutionPolicy, evalTaskCollisionKey, normalizeEvalSubmissionInput, parseEvalControl, parseEvalExecutionPolicy } from "./eval-records.js";
 export type { EvalSubmissionInputV1, NormalizedEvalSubmissionInput } from "./eval-records.js";
-export { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
+export { applyEvalPhase, applyEvalWorkItem, queueEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
 export { CollisionLockManager } from "./collisions.js";
 export type { CollisionLease } from "./collisions.js";
 export { WorkItemDispatcher } from "./work-dispatcher.js";

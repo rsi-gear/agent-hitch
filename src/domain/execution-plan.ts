@@ -37,6 +37,14 @@ export interface TrialRuntimeContractV1 {
   node_version: string;
 }
 
+export interface SchedulingHintV1 {
+  policy: "critical-path-lpt-v1";
+  estimated_duration_ms: number;
+  remaining_path_ms: number;
+  estimate_source: "evolution-baseline" | "history-p75" | "task-budget" | "default";
+  estimate_sample_count: number;
+}
+
 export interface BackendWorkItemV1 {
   schema_version: "1";
   work_id: string;
@@ -54,6 +62,9 @@ export interface BackendWorkItemV1 {
    * Optional only so pre-contract persisted plans remain readable. */
   artifact_id?: Sha256;
   runtime_contract?: TrialRuntimeContractV1;
+  /** Planning-time throughput hint. It affects dispatch order only and is not
+   * part of the Candidate or work identity. */
+  scheduling?: SchedulingHintV1;
 }
 
 export type ResourceRequirementSourceV1 =

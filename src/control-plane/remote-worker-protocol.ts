@@ -4,11 +4,12 @@ import path from "node:path";
 import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteCredentialEnvelopeV1, RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, RemoteWorkerHeartbeatV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { parseExecutionLease } from "../evals/index.js";
-import { maxResourceVectors, resourceValue, subtractResourceVectors, sumResourceVectors, validateResourceVector } from "./resources.js";
+import { maxResourceVectors, resourceValue, subtractResourceVectors, sumResourceVectors } from "./resources.js";
 import { RemoteWorkerArtifactStore } from "./remote-worker-artifacts.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { RemoteWorkInputStore } from "./remote-work-inputs.js";
 import { RemoteCredentialEnvelopeIssuer, canonicalRemoteCredentialNames } from "./remote-worker-credentials.js";
+import { parseRemoteWorkItem } from "./remote-work-item.js";
 
 const OFFER_ID = /^offer_[a-f0-9]{32}$/;
 const LEASE_ID = /^lease_[a-f0-9]{32}$/;
@@ -377,26 +378,6 @@ export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
 }
 
 
-function parseRemoteWorkItem(value: unknown): BackendWorkItemV1 {
-  const record = exact(value, ["schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots", "opaque_membership", "requested_parallelism", "reservation", "provider", "image_refs", "artifact_id", "runtime_contract"], "remote work item");
-  if (record.schema_version !== "1" || typeof record.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(record.work_id)
-    || typeof record.eval_id !== "string" || !/^eval_[a-f0-9]{32}$/.test(record.eval_id) || record.backend !== "harbor"
-    || record.logical_attempt !== null && (!Number.isSafeInteger(record.logical_attempt) || (record.logical_attempt as number) < 1)
-    || !stringArray(record.task_ids) || !stringArray(record.slots) || typeof record.opaque_membership !== "boolean"
-    || !Number.isSafeInteger(record.requested_parallelism) || (record.requested_parallelism as number) < 1
-    || typeof record.provider !== "string" || !record.provider || record.image_refs !== undefined && !Array.isArray(record.image_refs)
-    || record.artifact_id !== undefined && (typeof record.artifact_id !== "string" || !SHA256.test(record.artifact_id))
-    || (record.artifact_id === undefined) !== (record.runtime_contract === undefined)) throw protocolError("remote work item is invalid");
-  if (record.runtime_contract !== undefined) {
-    const runtime = exact(record.runtime_contract, ["docker_platform", "artifact_platform", "node_version"], "remote work runtime contract");
-    if ((runtime.docker_platform !== "linux/amd64" && runtime.docker_platform !== "linux/arm64")
-      || (runtime.artifact_platform !== "linux-x64" && runtime.artifact_platform !== "linux-arm64")
-      || (runtime.docker_platform === "linux/amd64") !== (runtime.artifact_platform === "linux-x64")
-      || typeof runtime.node_version !== "string" || !/^v\d+\.\d+\.\d+$/.test(runtime.node_version)) throw protocolError("remote work runtime contract is invalid");
-  }
-  return { ...record, reservation: validateResourceVector(record.reservation as ResourceVectorV1, "remote work reservation") } as unknown as BackendWorkItemV1;
-}
-
 function parseAcceptReceipt(value: unknown): { schema_version: "1"; offer_id: string; nonce: string; generation: number; accepted: boolean; rejection_code?: string; sent_at: string } {
   const record = exact(value, ["schema_version", "offer_id", "nonce", "generation", "accepted", "rejection_code", "sent_at"], "remote work accept receipt");
   if (record.schema_version !== "1" || typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
@@ -485,7 +466,6 @@ function acceptedOrCollecting(state: RemoteWorkOfferV1["state"]): boolean {
 
 function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count", "ephemeral_disk_bytes"]; }
 function timestamp(value: unknown): boolean { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
-function stringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0 && !/[\0\r\n]/.test(entry)) && new Set(value).size === value.length; }
 function validSequence(value: unknown, allowZero: boolean): number { if (!Number.isSafeInteger(value) || (value as number) < (allowZero ? 0 : 1)) throw protocolError("remote worker event sequence state is invalid"); return value as number; }
 
 function exact(value: unknown, keys: string[], label: string): Record<string, unknown> {

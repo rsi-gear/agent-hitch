@@ -10,6 +10,7 @@ import type { ExecutePlannedHarborOptions } from "./planned-execution.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
 import { prebuiltTaskImage, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
+import { physicalRetryWorkItem } from "./physical-retry-work.js";
 
 export async function beginPlannedInfrastructureRetry(input: {
   options: ExecutePlannedHarborOptions;
@@ -19,7 +20,8 @@ export async function beginPlannedInfrastructureRetry(input: {
   backendDirectory: string;
   environmentImages?: TrialEnvironmentImagesV1;
 }): Promise<InfrastructureRetryLifecycle> {
-  const { options, item } = input;
+  const { options } = input;
+  const item = physicalRetryWorkItem(input.item, input.retry, input.triggers);
   const taskId = item.task_ids[0] as string;
   let permit: Awaited<ReturnType<NonNullable<typeof options.admission>["acquire"]>> | undefined;
   let lease: ExecutionLeaseHandle | undefined;
@@ -64,7 +66,7 @@ export async function beginPlannedInfrastructureRetry(input: {
       attempt: item.logical_attempt,
       trigger_trials: input.triggers.map((trial) => trial.trial_id).sort(),
     });
-    return retryLifecycle(input, lease, permit, runningAnnounced);
+    return retryLifecycle({ ...input, item }, lease, permit, runningAnnounced);
   } catch (error) {
     if (lease) await lease.release(lease.current().epoch).catch(() => undefined);
     if (runningAnnounced) await options.onWorkItemState?.(item.work_id, lease?.leaseId ?? "", "terminal").catch(() => undefined);

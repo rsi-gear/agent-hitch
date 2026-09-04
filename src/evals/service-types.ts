@@ -35,6 +35,9 @@ export interface RunEvalOptions {
   resumeExisting?: boolean;
   onControlPhase?: (phase: EvalExecutionPhase, work?: EvalWorkStateSnapshot) => Promise<void>;
   onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
+  onWorkItemQueued?: (workId: string) => Promise<void>;
+  /** Trusted per-task durations from the once-materialized Evolution baseline. */
+  evolutionBaselineDurations?: Readonly<Record<string, number>>;
   dockerResourceReaper?: EvalDockerResourceReaper;
   environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
   environmentImageResolver?: EvalEnvironmentImageResolver;

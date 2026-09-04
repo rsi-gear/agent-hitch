@@ -28,6 +28,7 @@ import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-
 import { writeEvalTrialPublication } from "./trial-publication.js";
 import type { EvalTrialPublicationMode } from "./trial-publication.js";
 import { importNativePhaseTrial, nativePhaseDescriptor, NativePhaseBundlePendingError } from "./native-phase-evidence.js";
+import { readCandidateIneligibleDiagnostic } from "./verifier-eligibility.js";
 export interface ImportEvalRunsOptions {
   root: string;
   evalId: string;
@@ -217,10 +218,14 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       input.trialDirectory,
       primaryVerifierReward(input.trial),
     );
+    const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(staging, verifierInfrastructure);
     await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, signal: input.signal });
     const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
-    const observation = verifierObservation({
+    const bridgeError = input.trial.exception_info
+      ? await readHarborBridgeError(input.trialDirectory, credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env))
+      : null;
+    const initialObservation = verifierObservation({
       trial: input.trial,
       runStatus: beforeObservation.record.status,
       trajectoryStatus: beforeObservation.trajectory_status,
@@ -228,6 +233,13 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       verifierRef,
       infrastructure: verifierInfrastructure,
     });
+    const observation: RunObservationV1 = candidateIneligible
+      ? { status: "invalid", invalid_reason: "candidate_evidence_unavailable", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
+      : initialObservation.status === "invalid"
+      && initialObservation.invalid_reason === "infrastructure_failure"
+      && bridgeError?.failureClassification
+      ? { ...initialObservation, invalid_reason: bridgeError.failureClassification.code }
+      : initialObservation;
     const manifest = await readJSON<Record<string, unknown>>(path.join(staging, "manifest.json"));
     const portableManifest = withoutKeys(manifest, [
       "workspace", "source_workspace", "execution_workspace",
@@ -279,6 +291,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
       input.trialDirectory,
       primaryVerifierReward(input.trial),
     );
+    const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
     await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, signal: input.signal });
     const bridgeError = input.trial.exception_info
@@ -295,10 +308,12 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
         bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
       );
     }
-    const reason = verifierInfrastructure
+    const reason = candidateIneligible
+      ? "candidate_evidence_unavailable"
+      : verifierInfrastructure
       ? "verifier_infrastructure_failure"
       : input.trial.exception_info
-      ? "infrastructure_failure"
+      ? bridgeError?.failureClassification?.code ?? "infrastructure_failure"
       : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
     const observation: RunObservationV1 = {
       status: "invalid",

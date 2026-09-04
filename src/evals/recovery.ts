@@ -7,11 +7,16 @@ import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, heartbeatExecutionLease, markExec
 import { LocalDockerExecutionProvider, readLocalDockerProcessRecordByLease, waitForLocalDockerProcessTerminal } from "./local-docker-provider.js";
 import { loadEvalResumeState } from "./resume-state.js";
 import { mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
+import { replaceInvalidEvalProgressTrial } from "./progress.js";
 import { assertBackendTrialSet } from "./result-helpers.js";
 import { importEvalTrialRuns, validateEvalTrialReferences } from "./trial-import.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import { readModelProxyRuntimeState } from "./model-proxy-runtime-state.js";
+import { ensurePhysicalRetryDecision, readEvalRetryState, resolveRetryWork, transitionRetryDecision } from "./retry-state.js";
+import { classifyTrialFailure, physicalRetryAllowed } from "./failure-classifier.js";
+import { physicalRetryWorkItem } from "./physical-retry-work.js";
+import { retryBackoffMs } from "./retry-backoff.js";
 
 export interface EvalLeaseRecoveryResult {
   status: "resumable" | "ambiguous";
@@ -141,8 +146,16 @@ async function collectRecoveredWork(
   captureRuntime?: EvalModelCaptureRuntime,
 ): Promise<void> {
   const state = await loadEvalResumeState(input.evalDirectory);
-  const work = state.executionPlan.work_items.find((item) => item.work_id === lease.work_id);
+  const retryState = await readEvalRetryState(input.evalDirectory, input.evalId);
+  const dynamic = resolveRetryWork(state.executionPlan, retryState, lease.work_id);
+  const work = state.executionPlan.work_items.find((item) => item.work_id === lease.work_id) ?? dynamic?.item;
   if (!work || work.logical_attempt === null || work.task_ids.length !== 1) throw ambiguous("recovered lease does not match one planned task slot");
+  const existing = state.progress.trials.find((trial) => trial.task_id === work.task_ids[0] && trial.attempt === work.logical_attempt);
+  if (dynamic && existing?.observation_status === "valid") {
+    for (const decision of dynamic.decisions) await settleRecoveredRetryDecision(input.evalDirectory, input.evalId, decision.decision_id, decision.state, "repaired");
+    emit({ type: "eval.retry.recovered", work_id: work.work_id, lease_id: lease.lease_id, state: "repaired", collection: "already-published" });
+    return;
+  }
   const jobDirectory = path.join(input.evalDirectory, backendDirectory, "job");
   const rawResult = await readHarborRawResult(jobDirectory);
   if (!rawResult) throw new HitchError("recovered Harbor work item has no aggregate result", { code: "recovery_collection_missing", exitCode: 12 });
@@ -164,8 +177,9 @@ async function collectRecoveredWork(
     env: input.env ?? process.env,
     ...(state.executionPlan.model_capture ? { modelCapturePlan: captureRuntime?.plan ?? state.executionPlan.model_capture } : {}),
     ...(captureRuntime?.exporter ? { interactionCaptureExporter: captureRuntime.exporter } : {}),
+    ...(dynamic ? { publicationMode: "replace-invalid" as const } : {}),
     rawResult,
-  }, state.progress.trials);
+  }, dynamic ? [] : state.progress.trials);
   const workRefs = refs.filter((ref) => ref.task_id === work.task_ids[0] && ref.attempt === work.logical_attempt);
   assertBackendTrialSet(rawResult, workRefs);
   await validateEvalTrialReferences(input.root, input.evalId, workRefs, {
@@ -173,9 +187,44 @@ async function collectRecoveredWork(
     benchmarkRevision: state.progress.benchmark_revision,
   });
   let progress = state.progress;
-  for (const ref of workRefs) progress = mergeEvalProgressTrial(progress, ref);
+  for (const ref of workRefs) {
+    if (dynamic) {
+      if (ref.observation_status === "valid") progress = replaceInvalidEvalProgressTrial(progress, ref);
+    } else progress = mergeEvalProgressTrial(progress, ref);
+  }
   if (progress.generation !== state.progress.generation) await writeEvalProgress(input.evalDirectory, progress);
+  if (dynamic) {
+    const repaired = workRefs.some((ref) => ref.observation_status === "valid");
+    const retryable = workRefs.filter((ref) => physicalRetryAllowed(classifyTrialFailure(ref)));
+    const retryIndex = dynamic.decisions[0]?.retry_index ?? 0;
+    if (!repaired && retryable.length > 0 && retryIndex < state.executionPlan.retry_policy.infrastructure_retries) {
+      const origin = state.executionPlan.work_items.find((item) => item.slots.includes(dynamic.decisions[0]!.slot_id));
+      if (!origin) throw ambiguous("recovered retry origin is absent from execution plan");
+      const nextWork = physicalRetryWorkItem(origin, retryIndex + 1, retryable);
+      for (const trigger of retryable) await ensurePhysicalRetryDecision({
+        evalDirectory: input.evalDirectory, evalId: input.evalId, item: origin, retryIndex: retryIndex + 1, trigger,
+        notBefore: new Date(Date.now() + retryBackoffMs(state.executionPlan.retry_policy.infrastructure_retry_backoff_ms, retryIndex + 1, nextWork.work_id)).toISOString(),
+      });
+    }
+    const target = repaired ? "repaired" : retryIndex >= state.executionPlan.retry_policy.infrastructure_retries ? "exhausted" : "invalid";
+    for (const decision of dynamic.decisions) await settleRecoveredRetryDecision(input.evalDirectory, input.evalId, decision.decision_id, decision.state, target);
+  }
   emit({ type: "eval.work-item.recovered", work_id: work.work_id, lease_id: lease.lease_id, trials: workRefs.length });
+}
+
+async function settleRecoveredRetryDecision(
+  evalDirectory: string,
+  evalId: string,
+  decisionId: string,
+  current: "planned" | "running" | "repaired" | "invalid" | "skipped" | "exhausted",
+  target: "repaired" | "invalid" | "exhausted",
+): Promise<void> {
+  if (current === target) return;
+  if (current === "planned") {
+    await transitionRetryDecision({ evalDirectory, evalId, decisionId, state: "running" });
+    current = "running";
+  }
+  if (current === "running") await transitionRetryDecision({ evalDirectory, evalId, decisionId, state: target });
 }
 
 async function restoreModelCaptureForRecovery(input: {

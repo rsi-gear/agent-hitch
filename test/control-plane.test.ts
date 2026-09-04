@@ -5,7 +5,7 @@ import type { ChildProcess } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { EvalScheduler, ResourceLedger, applyEvalPhase, applyEvalWorkItem, scaleResources, settleEvalWorkItems } from "../src/control-plane/index.js";
+import { EvalScheduler, ResourceLedger, applyEvalPhase, applyEvalWorkItem, queueEvalWorkItem, scaleResources, settleEvalWorkItems } from "../src/control-plane/index.js";
 import type { BackendWorkItemV1, EvalControlV1, EvalProgressV1, EvalRequest, ResourceVectorV1, Sha256 } from "../src/domain/index.js";
 import type { EvalResult, RunEvalOptions } from "../src/evals/index.js";
 import { createExecutionLease, parseEvalExecutionPlan, readExecutionLeases, recoverPromotedEvalTrialPublications, runEval as runEvalProduction, validateEvalRequest } from "../src/evals/index.js";
@@ -123,7 +123,11 @@ test("eval control phases and lease/work sets advance monotonically", () => {
   const terminal = applyEvalWorkItem(active, workA, leaseA, "terminal");
   assert.deepEqual(terminal.active_leases, []);
   assert.deepEqual(terminal.terminal_work_items, [workA]);
-  assert.deepEqual(settleEvalWorkItems(terminal).terminal_work_items, [workA, workB]);
+  const dynamic = `work_${"e".repeat(32)}`;
+  const queuedRetry = queueEvalWorkItem(terminal, dynamic);
+  assert.deepEqual(queuedRetry.queued_work_items, [workB, dynamic]);
+  assert.deepEqual(queueEvalWorkItem(queuedRetry, dynamic), queuedRetry);
+  assert.deepEqual(settleEvalWorkItems(queuedRetry).terminal_work_items, [workA, workB, dynamic]);
   assert.equal(applyEvalPhase(running, "preparing").state, "running");
 });
 
