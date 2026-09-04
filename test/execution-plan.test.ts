@@ -101,6 +101,25 @@ test("task-slot planning emits one schedulable work item per logical trial", () 
   assert.deepEqual(parseEvalExecutionPlan(plan), plan);
 });
 
+test("task-slot planning seals scheduling hints without changing work identity", () => {
+  const plain = buildEvalExecutionPlan({ ...input, tasks: ["two", "one"], workItemMode: "task-slots" });
+  const taskScheduling = {
+    one: { policy: "critical-path-lpt-v1" as const, estimated_duration_ms: 10_000, remaining_path_ms: 12_000, estimate_source: "history-p75" as const, estimate_sample_count: 4 },
+    two: { policy: "critical-path-lpt-v1" as const, estimated_duration_ms: 60_000, remaining_path_ms: 60_000, estimate_source: "evolution-baseline" as const, estimate_sample_count: 1 },
+  };
+  const prioritized = buildEvalExecutionPlan({ ...input, tasks: ["two", "one"], workItemMode: "task-slots", taskScheduling });
+  assert.deepEqual(prioritized.work_items.map((item) => item.scheduling), [taskScheduling.one, taskScheduling.one, taskScheduling.two, taskScheduling.two]);
+  assert.deepEqual(prioritized.work_items.map((item) => item.work_id), plain.work_items.map((item) => item.work_id));
+  assert.deepEqual(parseEvalExecutionPlan(prioritized), prioritized);
+  assert.throws(
+    () => buildEvalExecutionPlan({ ...input, tasks: ["one", "two"], workItemMode: "task-slots", taskScheduling: { one: taskScheduling.one } }),
+    /cover every planned task exactly once/,
+  );
+  const forged = structuredClone(prioritized);
+  forged.work_items[0]!.scheduling!.estimate_sample_count = 0;
+  assert.throws(() => parseEvalExecutionPlan(forged), /sample count is invalid/);
+});
+
 test("execution planning binds each task environment to its matching artifact contract", () => {
   const x64 = `sha256:${"d".repeat(64)}`;
   const arm64 = `sha256:${"e".repeat(64)}`;

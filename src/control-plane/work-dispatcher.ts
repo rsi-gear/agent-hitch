@@ -11,6 +11,7 @@ export interface WorkDispatchRequest {
   maxParallelism: number;
   reservation: ResourceVectorV1;
   collisionKeys: readonly string[];
+  priority?: number;
   signal?: AbortSignal;
 }
 
@@ -40,6 +41,7 @@ interface PendingWork {
   resolve: (permit: WorkDispatchPermit) => void;
   reject: (error: unknown) => void;
   abort?: () => void;
+  sequence: number;
 }
 
 interface EvalLane {
@@ -69,6 +71,7 @@ export class WorkItemDispatcher {
   private draining = false;
   private closed = false;
   private lastGrantedEvalId: string | undefined;
+  private nextSequence = 0;
 
   constructor({ resources, collisions = new CollisionLockManager(), quantum = 1 }: WorkItemDispatcherOptions) {
     if (!Number.isSafeInteger(quantum) || quantum < 1) throw new TypeError("work dispatcher quantum must be a positive safe integer");
@@ -100,6 +103,7 @@ export class WorkItemDispatcher {
       const pending: PendingWork = {
         request,
         cost: Math.max(1, request.reservation.container_slots),
+        sequence: this.nextSequence++,
         resolve,
         reject,
       };
@@ -179,7 +183,7 @@ export class WorkItemDispatcher {
         for (const lane of ordered) {
           if (lane.queue.length === 0 || lane.active >= lane.maxParallelism) continue;
           lane.deficit += this.quantum;
-          for (const pending of lane.queue) {
+          for (const pending of [...lane.queue].sort(comparePending)) {
             if (lane.deficit < pending.cost) {
               waitingForDeficit = true;
               continue;
@@ -258,12 +262,19 @@ function validateRequest(request: WorkDispatchRequest): void {
   if (!/^eval_[a-f0-9]{32}$/.test(request.evalId) || !/^work_[a-f0-9]{32}$/.test(request.workId)) {
     throw new TypeError("work dispatcher identity is invalid");
   }
+  if (request.priority !== undefined && (!Number.isFinite(request.priority) || request.priority < 0)) {
+    throw new TypeError("work dispatcher priority is invalid");
+  }
   if (!Number.isSafeInteger(request.maxParallelism) || request.maxParallelism < 1) {
     throw new TypeError("work dispatcher max parallelism is invalid");
   }
   if (request.collisionKeys.length === 0 || request.collisionKeys.some((key) => typeof key !== "string" || !key)) {
     throw new TypeError("work dispatcher collision keys are invalid");
   }
+}
+
+function comparePending(left: PendingWork, right: PendingWork): number {
+  return (right.request.priority ?? 0) - (left.request.priority ?? 0) || left.sequence - right.sequence;
 }
 
 function cancelled(): HitchError {

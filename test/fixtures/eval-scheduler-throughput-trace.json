@@ -1,0 +1,1291 @@
+{
+  "schema_version": "1",
+  "source": {
+    "evolution_id": "bb14b103-569d-4192-b9d1-51b26dc65a84",
+    "round_id": "52466690-5f1a-4146-8d77-a78fa1680797",
+    "captured_at": "2026-09-04",
+    "physical_trials": 142
+  },
+  "slots": 10,
+  "meta_agent_duration_ms": 221447,
+  "work": [
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:build-pmars:0",
+      "task_id": "build-pmars",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 233000,
+      "queued_order": 0
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:mcmc-sampling-stan:0",
+      "task_id": "mcmc-sampling-stan",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2379000,
+      "queued_order": 1
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:git-leak-recovery:0",
+      "task_id": "git-leak-recovery",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 151000,
+      "queued_order": 2
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:regex-log:0",
+      "task_id": "regex-log",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 364000,
+      "queued_order": 3
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:nginx-request-logging:0",
+      "task_id": "nginx-request-logging",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 180000,
+      "queued_order": 4
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:make-doom-for-mips:0",
+      "task_id": "make-doom-for-mips",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3777000,
+      "queued_order": 5
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:merge-diff-arc-agi-task:0",
+      "task_id": "merge-diff-arc-agi-task",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 333000,
+      "queued_order": 6
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:overfull-hbox:0",
+      "task_id": "overfull-hbox",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 771000,
+      "queued_order": 7
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:sparql-university:0",
+      "task_id": "sparql-university",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 325000,
+      "queued_order": 8
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:db-wal-recovery:0",
+      "task_id": "db-wal-recovery",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 635000,
+      "queued_order": 9
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:custom-memory-heap-crash:0",
+      "task_id": "custom-memory-heap-crash",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 352000,
+      "queued_order": 10
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:torch-tensor-parallelism:0",
+      "task_id": "torch-tensor-parallelism",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1089000,
+      "queued_order": 11
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:protein-assembly:0",
+      "task_id": "protein-assembly",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1798000,
+      "queued_order": 12
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:polyglot-c-py:0",
+      "task_id": "polyglot-c-py",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 362000,
+      "queued_order": 13
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:build-pov-ray:0",
+      "task_id": "build-pov-ray",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1135000,
+      "queued_order": 14
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:vulnerable-secret:0",
+      "task_id": "vulnerable-secret",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 97000,
+      "queued_order": 15
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:fix-git:0",
+      "task_id": "fix-git",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 120000,
+      "queued_order": 16
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:write-compressor:0",
+      "task_id": "write-compressor",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 477000,
+      "queued_order": 17
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:gcode-to-text:0",
+      "task_id": "gcode-to-text",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2134000,
+      "queued_order": 18
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:log-summary-date-ranges:0",
+      "task_id": "log-summary-date-ranges",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 86000,
+      "queued_order": 19
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:extract-elf:0",
+      "task_id": "extract-elf",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 363000,
+      "queued_order": 20
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:regex-chess:0",
+      "task_id": "regex-chess",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3655000,
+      "queued_order": 21
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:cobol-modernization:0",
+      "task_id": "cobol-modernization",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 489000,
+      "queued_order": 22
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:password-recovery:0",
+      "task_id": "password-recovery",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 255000,
+      "queued_order": 23
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:prove-plus-comm:0",
+      "task_id": "prove-plus-comm",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 159000,
+      "queued_order": 24
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:feal-differential-cryptanalysis:0",
+      "task_id": "feal-differential-cryptanalysis",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 362000,
+      "queued_order": 25
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:constraints-scheduling:0",
+      "task_id": "constraints-scheduling",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 134000,
+      "queued_order": 26
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:cancel-async-tasks:0",
+      "task_id": "cancel-async-tasks",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 378000,
+      "queued_order": 27
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:qemu-alpine-ssh:0",
+      "task_id": "qemu-alpine-ssh",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3664000,
+      "queued_order": 28
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:torch-pipeline-parallelism:0",
+      "task_id": "torch-pipeline-parallelism",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 799000,
+      "queued_order": 29
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:path-tracing:0",
+      "task_id": "path-tracing",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1547000,
+      "queued_order": 30
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:qemu-startup:0",
+      "task_id": "qemu-startup",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 844000,
+      "queued_order": 31
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:multi-source-data-merger:0",
+      "task_id": "multi-source-data-merger",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 123000,
+      "queued_order": 32
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:mailman:0",
+      "task_id": "mailman",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 852000,
+      "queued_order": 33
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:caffe-cifar-10:0",
+      "task_id": "caffe-cifar-10",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2809000,
+      "queued_order": 34
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:model-extraction-relu-logits:0",
+      "task_id": "model-extraction-relu-logits",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 954000,
+      "queued_order": 35
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:build-cython-ext:0",
+      "task_id": "build-cython-ext",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 505000,
+      "queued_order": 36
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:bn-fit-modify:0",
+      "task_id": "bn-fit-modify",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 268000,
+      "queued_order": 37
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:llm-inference-batching-scheduler:0",
+      "task_id": "llm-inference-batching-scheduler",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3663000,
+      "queued_order": 38
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:sqlite-with-gcov:0",
+      "task_id": "sqlite-with-gcov",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 201000,
+      "queued_order": 39
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:raman-fitting:0",
+      "task_id": "raman-fitting",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 726000,
+      "queued_order": 40
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:polyglot-rust-c:0",
+      "task_id": "polyglot-rust-c",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 516000,
+      "queued_order": 41
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:dna-insert:0",
+      "task_id": "dna-insert",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 564000,
+      "queued_order": 42
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:make-doom-for-mips:1",
+      "task_id": "make-doom-for-mips",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 3689000,
+      "queued_order": 0
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:regex-chess:1",
+      "task_id": "regex-chess",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 3206000,
+      "queued_order": 1
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:qemu-alpine-ssh:1",
+      "task_id": "qemu-alpine-ssh",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 3673000,
+      "queued_order": 2
+    },
+    {
+      "phase": "seed-baseline",
+      "work_id": "seed-baseline:llm-inference-batching-scheduler:1",
+      "task_id": "llm-inference-batching-scheduler",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 723000,
+      "queued_order": 3
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:build-pmars:0",
+      "task_id": "build-pmars",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 214000,
+      "queued_order": 0
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:mcmc-sampling-stan:0",
+      "task_id": "mcmc-sampling-stan",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1397000,
+      "queued_order": 1
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:git-leak-recovery:0",
+      "task_id": "git-leak-recovery",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 116000,
+      "queued_order": 2
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:regex-log:0",
+      "task_id": "regex-log",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 303000,
+      "queued_order": 3
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:nginx-request-logging:0",
+      "task_id": "nginx-request-logging",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 205000,
+      "queued_order": 4
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:make-doom-for-mips:0",
+      "task_id": "make-doom-for-mips",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3762000,
+      "queued_order": 5
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:merge-diff-arc-agi-task:0",
+      "task_id": "merge-diff-arc-agi-task",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 278000,
+      "queued_order": 6
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:overfull-hbox:0",
+      "task_id": "overfull-hbox",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 768000,
+      "queued_order": 7
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:sparql-university:0",
+      "task_id": "sparql-university",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 537000,
+      "queued_order": 8
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:db-wal-recovery:0",
+      "task_id": "db-wal-recovery",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 818000,
+      "queued_order": 9
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:custom-memory-heap-crash:0",
+      "task_id": "custom-memory-heap-crash",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 256000,
+      "queued_order": 10
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:torch-tensor-parallelism:0",
+      "task_id": "torch-tensor-parallelism",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 540000,
+      "queued_order": 11
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:protein-assembly:0",
+      "task_id": "protein-assembly",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 923000,
+      "queued_order": 12
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:polyglot-c-py:0",
+      "task_id": "polyglot-c-py",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 798000,
+      "queued_order": 13
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:build-pov-ray:0",
+      "task_id": "build-pov-ray",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 849000,
+      "queued_order": 14
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:vulnerable-secret:0",
+      "task_id": "vulnerable-secret",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 116000,
+      "queued_order": 15
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:fix-git:0",
+      "task_id": "fix-git",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 160000,
+      "queued_order": 16
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:write-compressor:0",
+      "task_id": "write-compressor",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1282000,
+      "queued_order": 17
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:gcode-to-text:0",
+      "task_id": "gcode-to-text",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2431000,
+      "queued_order": 18
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:log-summary-date-ranges:0",
+      "task_id": "log-summary-date-ranges",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 85000,
+      "queued_order": 19
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:extract-elf:0",
+      "task_id": "extract-elf",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 249000,
+      "queued_order": 20
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:regex-chess:0",
+      "task_id": "regex-chess",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3849000,
+      "queued_order": 21
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:cobol-modernization:0",
+      "task_id": "cobol-modernization",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 532000,
+      "queued_order": 22
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:password-recovery:0",
+      "task_id": "password-recovery",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 226000,
+      "queued_order": 23
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:prove-plus-comm:0",
+      "task_id": "prove-plus-comm",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 112000,
+      "queued_order": 24
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:feal-differential-cryptanalysis:0",
+      "task_id": "feal-differential-cryptanalysis",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 587000,
+      "queued_order": 25
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:constraints-scheduling:0",
+      "task_id": "constraints-scheduling",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 141000,
+      "queued_order": 26
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:cancel-async-tasks:0",
+      "task_id": "cancel-async-tasks",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 540000,
+      "queued_order": 27
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:qemu-alpine-ssh:0",
+      "task_id": "qemu-alpine-ssh",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 503000,
+      "queued_order": 28
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:torch-pipeline-parallelism:0",
+      "task_id": "torch-pipeline-parallelism",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1264000,
+      "queued_order": 29
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:path-tracing:0",
+      "task_id": "path-tracing",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 673000,
+      "queued_order": 30
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:qemu-startup:0",
+      "task_id": "qemu-startup",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3664000,
+      "queued_order": 31
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:multi-source-data-merger:0",
+      "task_id": "multi-source-data-merger",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 162000,
+      "queued_order": 32
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:mailman:0",
+      "task_id": "mailman",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1102000,
+      "queued_order": 33
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:caffe-cifar-10:0",
+      "task_id": "caffe-cifar-10",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3638000,
+      "queued_order": 34
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:model-extraction-relu-logits:0",
+      "task_id": "model-extraction-relu-logits",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2115000,
+      "queued_order": 35
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:build-cython-ext:0",
+      "task_id": "build-cython-ext",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 610000,
+      "queued_order": 36
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:bn-fit-modify:0",
+      "task_id": "bn-fit-modify",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 358000,
+      "queued_order": 37
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:llm-inference-batching-scheduler:0",
+      "task_id": "llm-inference-batching-scheduler",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1235000,
+      "queued_order": 38
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:sqlite-with-gcov:0",
+      "task_id": "sqlite-with-gcov",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 414000,
+      "queued_order": 39
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:raman-fitting:0",
+      "task_id": "raman-fitting",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 600000,
+      "queued_order": 40
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:polyglot-rust-c:0",
+      "task_id": "polyglot-rust-c",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1144000,
+      "queued_order": 41
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:dna-insert:0",
+      "task_id": "dna-insert",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 610000,
+      "queued_order": 42
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:make-doom-for-mips:1",
+      "task_id": "make-doom-for-mips",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 3695000,
+      "queued_order": 0
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:regex-chess:1",
+      "task_id": "regex-chess",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 6345000,
+      "queued_order": 1
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:qemu-startup:1",
+      "task_id": "qemu-startup",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 770000,
+      "queued_order": 2
+    },
+    {
+      "phase": "seed-candidate",
+      "work_id": "seed-candidate:caffe-cifar-10:1",
+      "task_id": "caffe-cifar-10",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 2163000,
+      "queued_order": 3
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:count-dataset-tokens:0",
+      "task_id": "count-dataset-tokens",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 604000,
+      "queued_order": 0
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:large-scale-text-editing:0",
+      "task_id": "large-scale-text-editing",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 899000,
+      "queued_order": 1
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:pytorch-model-cli:0",
+      "task_id": "pytorch-model-cli",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 619000,
+      "queued_order": 2
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:make-mips-interpreter:0",
+      "task_id": "make-mips-interpreter",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3059000,
+      "queued_order": 3
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:feal-linear-cryptanalysis:0",
+      "task_id": "feal-linear-cryptanalysis",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 831000,
+      "queued_order": 4
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:openssl-selfsigned-cert:0",
+      "task_id": "openssl-selfsigned-cert",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 148000,
+      "queued_order": 5
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:headless-terminal:0",
+      "task_id": "headless-terminal",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 717000,
+      "queued_order": 6
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:tune-mjcf:0",
+      "task_id": "tune-mjcf",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1498000,
+      "queued_order": 7
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:break-filter-js-from-html:0",
+      "task_id": "break-filter-js-from-html",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 239000,
+      "queued_order": 8
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:sqlite-db-truncate:0",
+      "task_id": "sqlite-db-truncate",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 284000,
+      "queued_order": 9
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:path-tracing-reverse:0",
+      "task_id": "path-tracing-reverse",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1912000,
+      "queued_order": 10
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:modernize-scientific-stack:0",
+      "task_id": "modernize-scientific-stack",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 105000,
+      "queued_order": 11
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:distribution-search:0",
+      "task_id": "distribution-search",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 235000,
+      "queued_order": 12
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:kv-store-grpc:0",
+      "task_id": "kv-store-grpc",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 97000,
+      "queued_order": 13
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:git-multibranch:0",
+      "task_id": "git-multibranch",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 312000,
+      "queued_order": 14
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:rstan-to-pystan:0",
+      "task_id": "rstan-to-pystan",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1504000,
+      "queued_order": 15
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:extract-moves-from-video:0",
+      "task_id": "extract-moves-from-video",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3644000,
+      "queued_order": 16
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:pypi-server:0",
+      "task_id": "pypi-server",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 127000,
+      "queued_order": 17
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:filter-js-from-html:0",
+      "task_id": "filter-js-from-html",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2959000,
+      "queued_order": 18
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:dna-assembly:0",
+      "task_id": "dna-assembly",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2210000,
+      "queued_order": 19
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:largest-eigenval:0",
+      "task_id": "largest-eigenval",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2038000,
+      "queued_order": 20
+    },
+    {
+      "phase": "heldout-baseline",
+      "work_id": "heldout-baseline:extract-moves-from-video:1",
+      "task_id": "extract-moves-from-video",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 3648000,
+      "queued_order": 0
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:count-dataset-tokens:0",
+      "task_id": "count-dataset-tokens",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 316000,
+      "queued_order": 0
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:large-scale-text-editing:0",
+      "task_id": "large-scale-text-editing",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 384000,
+      "queued_order": 1
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:pytorch-model-cli:0",
+      "task_id": "pytorch-model-cli",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 1032000,
+      "queued_order": 2
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:make-mips-interpreter:0",
+      "task_id": "make-mips-interpreter",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2902000,
+      "queued_order": 3
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:feal-linear-cryptanalysis:0",
+      "task_id": "feal-linear-cryptanalysis",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3164000,
+      "queued_order": 4
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:openssl-selfsigned-cert:0",
+      "task_id": "openssl-selfsigned-cert",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 153000,
+      "queued_order": 5
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:headless-terminal:0",
+      "task_id": "headless-terminal",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 265000,
+      "queued_order": 6
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:tune-mjcf:0",
+      "task_id": "tune-mjcf",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 3218000,
+      "queued_order": 7
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:break-filter-js-from-html:0",
+      "task_id": "break-filter-js-from-html",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 179000,
+      "queued_order": 8
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:sqlite-db-truncate:0",
+      "task_id": "sqlite-db-truncate",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 362000,
+      "queued_order": 9
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:path-tracing-reverse:0",
+      "task_id": "path-tracing-reverse",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 413000,
+      "queued_order": 10
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:modernize-scientific-stack:0",
+      "task_id": "modernize-scientific-stack",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 80000,
+      "queued_order": 11
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:distribution-search:0",
+      "task_id": "distribution-search",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 278000,
+      "queued_order": 12
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:kv-store-grpc:0",
+      "task_id": "kv-store-grpc",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 180000,
+      "queued_order": 13
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:git-multibranch:0",
+      "task_id": "git-multibranch",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 393000,
+      "queued_order": 14
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:rstan-to-pystan:0",
+      "task_id": "rstan-to-pystan",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2438000,
+      "queued_order": 15
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:extract-moves-from-video:0",
+      "task_id": "extract-moves-from-video",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2356000,
+      "queued_order": 16
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:pypi-server:0",
+      "task_id": "pypi-server",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 136000,
+      "queued_order": 17
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:filter-js-from-html:0",
+      "task_id": "filter-js-from-html",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 697000,
+      "queued_order": 18
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:dna-assembly:0",
+      "task_id": "dna-assembly",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 2300000,
+      "queued_order": 19
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:largest-eigenval:0",
+      "task_id": "largest-eigenval",
+      "execution_kind": "initial",
+      "retry_index": 0,
+      "duration_ms": 683000,
+      "queued_order": 20
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:make-mips-interpreter:1",
+      "task_id": "make-mips-interpreter",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 58000,
+      "queued_order": 0
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:feal-linear-cryptanalysis:1",
+      "task_id": "feal-linear-cryptanalysis",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 57000,
+      "queued_order": 1
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:tune-mjcf:1",
+      "task_id": "tune-mjcf",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 58000,
+      "queued_order": 2
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:rstan-to-pystan:1",
+      "task_id": "rstan-to-pystan",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 53000,
+      "queued_order": 3
+    },
+    {
+      "phase": "heldout-candidate",
+      "work_id": "heldout-candidate:dna-assembly:1",
+      "task_id": "dna-assembly",
+      "execution_kind": "physical-infrastructure-retry",
+      "retry_index": 1,
+      "duration_ms": 56000,
+      "queued_order": 4
+    }
+  ]
+}

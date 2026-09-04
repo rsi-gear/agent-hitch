@@ -16,6 +16,23 @@ export type EvalTrialRefV1 = EvalTrialObservationV1 & (
   | { run_id?: never; run_group: BenchmarkPhaseGroupRefV1; assessment: { id: string; digest: string } }
 );
 
+export interface EvalSchedulerSummaryV1 {
+  policy: "fifo-compat" | "critical-path-lpt-v1";
+  makespan_ms: number;
+  physical_work_ms: number;
+  initial_work_ms: number;
+  retry_work_ms: number;
+  verifier_work_ms: number;
+  max_active: number;
+  effective_parallelism: number;
+  slot_utilization: number;
+  single_active_tail_ms: number;
+  resource_blocked_ms: number;
+  collision_blocked_ms: number;
+  backoff_blocked_ms: number;
+  verifier_skipped: number;
+}
+
 export interface EvalResultV1 {
   schema_version: "1";
   eval_id: string;
@@ -24,6 +41,7 @@ export interface EvalResultV1 {
   status: "succeeded" | "failed" | "cancelled";
   generation?: number;
   trials: EvalTrialRefV1[];
+  scheduler_summary?: EvalSchedulerSummaryV1;
   started_at: string;
   completed_at: string;
 }

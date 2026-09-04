@@ -9,14 +9,13 @@ import type { EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { EvalEventSink } from "./events.js";
 import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
-import { infrastructureFailureTrials, runInfrastructureRetries, type InfrastructureRetryRun } from "./infrastructure-retry.js";
+import { runInfrastructureRetries, type InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
-import { invalidTrialSlots } from "./rerun-slots.js";
 import { prepareEvalDirectory } from "./directory.js";
 import { buildEvalExecutionPlan, DEFAULT_EVAL_TRIAL_RESOURCES } from "./execution-plan.js";
 import { planLocalEvalInputs } from "./local-eval-planning.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
-import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
+import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
 import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
 import type { EvalExecutionPhase, EvalResult, RunEvalOptions } from "./service-types.js";
@@ -29,7 +28,10 @@ import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import { recoverPromotedEvalTrialPublications } from "./trial-publication-recovery.js";
 import { emitEvalPlanLifecycle } from "./eval-lifecycle-events.js";
 import { materializeEvalPlan, writeEvalPlanningCheckpoint, type EvalLogicalPlanV1 } from "./eval-logical-plan.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
+import { planTaskSchedulingHints, schedulingHintsFromPlan } from "./duration-estimator.js";
+import type { EvalSchedulerSummaryV1 } from "../domain/index.js";
+import { buildCompletedEvalResult } from "./eval-result-builder.js";
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
@@ -45,6 +47,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   let result: EvalResult;
   let trialRefs: import("../domain/index.js").EvalTrialRefV1[] = [];
   let progress: EvalProgressV1 | null = null;
+  let schedulerSummary: EvalSchedulerSummaryV1 | undefined;
   let captureRuntime: Awaited<ReturnType<typeof startEvalModelCaptureRuntime>> | undefined;
   let failureStage: EvalExecutionPhase = "planning";
   try {
@@ -142,6 +145,23 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     captureRuntime = activeCaptureRuntime;
     capture.plan = activeCaptureRuntime.plan;
     const plan = materializeEvalPlan(logicalPlan, capture.persist ? capture.plan : undefined, preparedArtifactPlanFields(preparedAssignments));
+    const taskSlotPlanning = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null;
+    const taskScheduling = taskSlotPlanning
+      ? resume
+        ? schedulingHintsFromPlan(resume.executionPlan)
+        : await planTaskSchedulingHints({
+          root,
+          dataset: normalized.dataset,
+          taskIds: localTaskIds,
+          benchmarkId: normalized.benchmark_id,
+          benchmarkRevision: normalized.benchmark_revision,
+          provider: executionWorker?.provider ?? "local-docker",
+          model: normalized.model,
+          requestTimeoutMs: normalized.timeout_ms,
+          infrastructureRetries: normalized.infrastructure_retries,
+          ...(evolutionBaselineDurations ? { evolutionBaselineDurations } : {}),
+        })
+      : undefined;
     const expectedExecutionPlan = buildEvalExecutionPlan({
       evalId,
       request: normalized,
@@ -166,7 +186,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(localPlanning.environmentImageFallbacks.length > 0 ? { environmentImageFallbacks: localPlanning.environmentImageFallbacks } : {}),
       ...(executionWorker ? { provider: executionWorker.provider } : {}),
       modelCapture: capture.persist ? capture.plan : null,
-      ...((executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null ? { workItemMode: "task-slots" as const } : {}),
+      ...(taskSlotPlanning ? { workItemMode: "task-slots" as const } : {}),
+      ...(taskScheduling ? { taskScheduling } : {}),
       createdAt: logicalPlan.created_at,
     });
     if (resume) assertEvalResumeState({ state: resume, expectedPlan: plan, expectedExecutionPlan, expectedResolutionIdentity: resolvedRevision.identity, plannedTasks, plannedTrials });
@@ -186,6 +207,16 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       planned_trials: plannedTrials,
       work_items: executionPlan.work_items.length,
       membership: executionPlan.membership,
+    });
+    sink.emit({
+      type: "eval.execution-strategy.verified",
+      execution_strategy: taskSlotPlanning ? "local-task-slots-v1" : "legacy-attempt-shards",
+      attempt_execution: plan.attempt_execution,
+      controller_runtime_id: controllerRuntime.runtime_id,
+      harness_revision_identity: resolvedRevision.identity,
+      membership: executionPlan.membership,
+      planned_trials: plannedTrials,
+      work_items: executionPlan.work_items.length,
     });
     emitEvalPlanLifecycle(sink, executionPlan, planningStartedAt);
     failureStage = "running";
@@ -229,6 +260,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         },
         ...(workItemAdmission ? { admission: workItemAdmission } : {}),
         ...(onWorkItemState ? { onWorkItemState } : {}),
+        ...(onWorkItemQueued ? { onWorkItemQueued } : {}),
         ...(dockerResourceReaper ? { dockerResourceReaper } : {}),
         ...(environmentImageManifestLoader ? { environmentImageManifestLoader } : {}),
         ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
@@ -243,6 +275,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         leaseId: entry.leaseId,
       })));
       infrastructureRetryRuns.push(...execution.infrastructureRetryRuns);
+      schedulerSummary = execution.schedulerSummary;
     } else for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
       if (signal?.aborted) break;
       const backendDirectory = normalized.attempts === 1
@@ -380,98 +413,14 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     failureStage = "finalizing";
     await onControlPhase?.("finalizing");
     trialRefs = progress.trials;
-    const cancelled = signal?.aborted === true;
-    const localSourceFailure = localTransport
-      ? backendRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
-        || infrastructureRetryRuns.some(({ run }) => localSourceBackendFailure(run.rawResult))
-      : false;
-    const expectedBackendRuns = plannedTaskExecution ? executionPlan.work_items.length : normalized.attempts;
-    const backendsSucceeded = backendRuns.every(({ run }) => run.backend.process_exit_code === 0 && run.rawResult !== null)
-      && (plannedTaskExecution ? progress.trials.length === plannedTrials : backendRuns.length === expectedBackendRuns);
-    const invalidTrials = localTaskIds === null
-      ? trialRefs.filter((trial) => trial.observation_status !== "valid").map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }))
-      : invalidTrialSlots(localTaskIds, normalized.attempts, progress);
-    const infrastructureFailures = infrastructureFailureTrials(trialRefs);
-    const infrastructureFailureSlots = infrastructureFailures.map((trial) => ({ task_id: trial.task_id, attempt: trial.attempt }));
-    const verifierRetriesExhausted = normalized.infrastructure_retries > 0 && infrastructureFailures.some((trial) => trial.invalid_reason === "verifier_infrastructure_failure");
-    const infrastructureErrorCode = verifierRetriesExhausted || (normalized.infrastructure_retries > 0 && infrastructureRetryRuns.length > 0)
-      ? "eval_infrastructure_retries_exhausted"
-      : "eval_has_infrastructure_failures";
-    const succeeded = !cancelled && !localSourceFailure && backendsSucceeded && invalidTrials.length === 0;
-    const singleBackend = backendRuns.length === 1 ? backendRuns[0]!.run : undefined;
-    result = {
-      schema_version: SCHEMA_VERSION,
-      eval_id: evalId,
-      status: cancelled ? "cancelled" : succeeded ? "succeeded" : "failed",
-      exit_code: cancelled ? 9 : succeeded ? 0 : 13,
-      ...(singleBackend ? { backend: singleBackend.backend, backend_summary: singleBackend.summary } : {}),
-      ...(plannedTaskExecution ? {
-        backend_work_items: backendRuns.map(({ attempt, workId, tasks, leaseId, run }) => ({
-          work_id: workId,
-          lease_id: leaseId,
-          attempt,
-          tasks,
-          backend: run.backend,
-          backend_summary: run.summary,
-        })),
-      } : normalized.attempts > 1 ? {
-        backend_runs: backendRuns.map(({ attempt, run }) => ({
-          attempt,
-          backend: run.backend,
-          backend_summary: run.summary,
-        })),
-      } : {}),
-      infrastructure_retry_policy: {
-        max_retries: normalized.infrastructure_retries,
-        backoff_ms: normalized.infrastructure_retry_backoff_ms,
-        verifier_execution: "same_trial_verifier_only",
-        candidate_rerun_on_verifier_failure: false,
-      },
-      ...(infrastructureRetryRuns.length > 0 ? {
-        infrastructure_retry_runs: infrastructureRetryRuns.map(({ attempt, retry, tasks, triggers, refs, run, leaseId, workId }) => ({
-          execution_kind: "physical-infrastructure-retry", ...(leaseId ? { lease_id: leaseId } : {}), ...(workId ? { work_id: workId } : {}), attempt,
-          retry,
-          tasks,
-          trigger_trials: triggers,
-          trials: refs,
-          backend: run.backend,
-          backend_summary: run.summary,
-        })),
-      } : {}),
-      candidate: plan.candidate,
-      dataset: normalized.dataset,
-      benchmark_id: normalized.benchmark_id,
-      benchmark_revision: normalized.benchmark_revision,
-      generation: progress.generation,
-      trials: trialRefs,
-      summary: summarizeTrialRefs(trialRefs),
-      ...preparedArtifactPlanFields(preparedAssignments),
-      ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
-      ...(succeeded ? {} : {
-        error: {
-          code: cancelled
-            ? "cancelled"
-            : localSourceFailure
-              ? "local_source_materialize_failed"
-              : !backendsSucceeded
-                ? "harbor_failed"
-                : infrastructureFailures.length > 0
-                  ? infrastructureErrorCode
-                : "eval_has_invalid_tasks",
-          message: cancelled
-            ? "eval was cancelled"
-            : localSourceFailure
-              ? "Harbor rejected the transported local Git source before candidate execution"
-              : !backendsSucceeded
-                ? `Harbor work items completed ${backendRuns.length}/${expectedBackendRuns}`
-                : infrastructureFailures.length > 0
-                  ? `${infrastructureErrorCode === "eval_infrastructure_retries_exhausted" ? "infrastructure retries exhausted" : "verifier infrastructure failure"}: ${infrastructureFailureSlots.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`
-                : `eval has invalid or missing trials: ${invalidTrials.map(trial => `${trial.task_id}#${trial.attempt}`).join(", ")}`,
-        },
-      }),
-      started_at: startedAt.toISOString(),
-      completed_at: new Date().toISOString(),
-    };
+    result = buildCompletedEvalResult({
+      evalId, request: normalized, plannedTaskExecution, plannedTrials,
+      executionWorkItems: executionPlan.work_items.length, localTaskIds, backendRuns,
+      infrastructureRetryRuns, candidate: plan.candidate, progress,
+      ...(schedulerSummary ? { schedulerSummary } : {}), preparedAssignments,
+      ...(localTransport ? { localTransport } : {}), startedAt,
+      cancelled: signal?.aborted === true,
+    });
   } catch (error) {
     trialRefs = progress?.trials ?? trialRefs;
     const typed = error instanceof HitchError;

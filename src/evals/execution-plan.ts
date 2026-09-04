@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, SchedulingHintV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
 import { artifactPinFields, opaqueWorkId, parseArtifactAssignments, parseRuntimeContract, workItemId } from "./execution-plan-artifacts.js";
 import type { EvalArtifactAssignmentInputV1, ParsedArtifactAssignment } from "./execution-plan-artifacts.js";
@@ -32,6 +32,7 @@ export interface BuildEvalExecutionPlanOptions {
   modelCapture?: ModelCapturePlanV1 | null;
   createdAt?: string;
   workItemMode?: "attempt-shards" | "task-slots";
+  taskScheduling?: Readonly<Record<string, SchedulingHintV1>>;
 }
 
 export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): EvalExecutionPlanV1 {
@@ -50,6 +51,10 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
     required: false,
   });
   const tasks = options.tasks === null ? null : canonicalTasks(options.tasks);
+  if (options.taskScheduling && (tasks === null || options.workItemMode !== "task-slots")) {
+    throw new TypeError("task scheduling hints require task-slot work items with known membership");
+  }
+  const taskScheduling = tasks === null ? undefined : parseTaskScheduling(options.taskScheduling, tasks);
   const artifactAssignments = parseArtifactAssignments(options.candidate.artifactAssignments, tasks, options.candidate.artifactId);
   const taskResources = tasks === null ? undefined : parseTaskResourceRequirements(options.taskResources, tasks);
   const environmentImages = tasks === null ? [] : parseEnvironmentImageUses(options.environmentImages ?? [], tasks, "execution plan environment images");
@@ -70,7 +75,7 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
   const workItems = tasks === null
     ? [opaqueWorkItem(options.evalId, options.maxParallelism, resources, provider, artifactAssignments[0])]
     : options.workItemMode === "task-slots"
-      ? buildTaskWorkItems(options.evalId, slots, resources, provider, taskResources, environmentImages, artifactAssignments)
+      ? buildTaskWorkItems(options.evalId, slots, resources, provider, taskResources, environmentImages, artifactAssignments, taskScheduling)
       : buildAttemptWorkItems(options.evalId, tasks, slots, options.request.attempts, options.maxParallelism, resources, provider, taskResources, environmentImages, artifactAssignments);
   return parseEvalExecutionPlan({
     schema_version: "1",
@@ -249,7 +254,7 @@ function buildAttemptWorkItems(
   return items;
 }
 
-function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: ResourceVectorV1, provider: string, taskResources?: readonly TaskResourceRequirementV1[], environmentImages: readonly EnvironmentImageUseV1[] = [], artifactAssignments: readonly ParsedArtifactAssignment[] = []): BackendWorkItemV1[] {
+function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: ResourceVectorV1, provider: string, taskResources?: readonly TaskResourceRequirementV1[], environmentImages: readonly EnvironmentImageUseV1[] = [], artifactAssignments: readonly ParsedArtifactAssignment[] = [], taskScheduling?: Readonly<Record<string, SchedulingHintV1>>): BackendWorkItemV1[] {
   return slots.map((slot) => {
     const imageRefs = imagesForTasks(environmentImages, [slot.task_id]);
     const assignment = artifactAssignments.find((entry) => entry.taskIds.includes(slot.task_id));
@@ -267,6 +272,7 @@ function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: Res
       reservation: reservationForTasks([slot.task_id], 1, resources, taskResources),
       provider,
       ...(imageRefs.length > 0 ? { image_refs: imageRefs } : {}),
+      ...(taskScheduling?.[slot.task_id] ? { scheduling: taskScheduling[slot.task_id] } : {}),
       ...artifactPin,
     };
   });
@@ -316,7 +322,7 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
   assertOnlyKeys(value, [
     "schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots",
     "opaque_membership", "requested_parallelism", "reservation", "provider",
-    "image_refs", "artifact_id", "runtime_contract",
+    "image_refs", "artifact_id", "runtime_contract", "scheduling",
   ], `eval execution plan work item ${index}`);
   if (value.schema_version !== "1" || typeof value.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(value.work_id)
     || value.eval_id !== evalId || value.backend !== "harbor"
@@ -333,6 +339,7 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
   const imageRefs = parseEnvironmentImageUses(value.image_refs ?? [], value.task_ids as string[], `eval execution plan work item ${index} image refs`);
   const artifactId = value.artifact_id === undefined ? undefined : isSha256(value.artifact_id) ? value.artifact_id : (() => { throw new TypeError(`eval execution plan work item ${index} artifact id is invalid`); })();
   const runtimeContract = value.runtime_contract === undefined ? undefined : parseRuntimeContract(value.runtime_contract, `eval execution plan work item ${index}`);
+  const scheduling = value.scheduling === undefined ? undefined : parseSchedulingHint(value.scheduling, `eval execution plan work item ${index}`);
   if ((artifactId === undefined) !== (runtimeContract === undefined)) throw new TypeError(`eval execution plan work item ${index} artifact contract is incomplete`);
   return {
     ...value,
@@ -340,7 +347,34 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
     ...(imageRefs.length > 0 ? { image_refs: imageRefs } : {}),
     ...(artifactId ? { artifact_id: artifactId } : {}),
     ...(runtimeContract ? { runtime_contract: runtimeContract } : {}),
+    ...(scheduling ? { scheduling } : {}),
   } as BackendWorkItemV1;
+}
+
+function parseSchedulingHint(value: unknown, label: string): BackendWorkItemV1["scheduling"] {
+  if (!isRecord(value)) throw new TypeError(`${label} scheduling hint is invalid`);
+  assertOnlyKeys(value, ["policy", "estimated_duration_ms", "remaining_path_ms", "estimate_source", "estimate_sample_count"], `${label} scheduling hint`);
+  const sources = new Set(["evolution-baseline", "history-p75", "task-budget", "default"]);
+  if (value.policy !== "critical-path-lpt-v1"
+    || !Number.isSafeInteger(value.estimated_duration_ms) || (value.estimated_duration_ms as number) < 1
+    || !Number.isSafeInteger(value.remaining_path_ms) || (value.remaining_path_ms as number) < (value.estimated_duration_ms as number)
+    || !sources.has(value.estimate_source as string)
+    || !Number.isSafeInteger(value.estimate_sample_count) || (value.estimate_sample_count as number) < 0) {
+    throw new TypeError(`${label} scheduling hint is invalid`);
+  }
+  if (value.estimate_source === "default" || value.estimate_source === "task-budget") {
+    if (value.estimate_sample_count !== 0) throw new TypeError(`${label} scheduling hint sample count is invalid`);
+  } else if ((value.estimate_sample_count as number) < 1) throw new TypeError(`${label} scheduling hint sample count is invalid`);
+  return value as unknown as BackendWorkItemV1["scheduling"];
+}
+
+function parseTaskScheduling(value: Readonly<Record<string, SchedulingHintV1>> | undefined, tasks: readonly string[]): Readonly<Record<string, SchedulingHintV1>> | undefined {
+  if (value === undefined) return undefined;
+  const keys = Object.keys(value).sort(compareBytes);
+  if (keys.length !== tasks.length || keys.some((task, index) => task !== tasks[index])) {
+    throw new TypeError("task scheduling hints must cover every planned task exactly once");
+  }
+  return Object.fromEntries(keys.map((task) => [task, parseSchedulingHint(value[task], `task ${task}`) as SchedulingHintV1]));
 }
 
 function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], workItems: BackendWorkItemV1[], resources: ResourceVectorV1, taskResources?: readonly TaskResourceRequirementV1[]): void {

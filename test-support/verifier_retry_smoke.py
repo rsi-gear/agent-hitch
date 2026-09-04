@@ -115,6 +115,24 @@ def always_infra(verifier_dir: Path, attempt: int) -> FakeVerifierResult:
     return FakeVerifierResult(rewards={"reward": 0})
 
 
+def must_not_verify(_verifier_dir: Path, _attempt: int) -> FakeVerifierResult:
+    raise AssertionError("task verifier ran for an ungradeable candidate")
+
+
+def write_agent_outcome(verifier_dir: Path, *, gradeability: str, bundle: str, status: str) -> None:
+    agent_dir = verifier_dir.parent / "agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "hitch-agent-outcome.json").write_text(json.dumps({
+        "schema_version": "1",
+        "run_id": "run_" + "a" * 32,
+        "status": status,
+        "candidate_bundle": bundle,
+        "submission_snapshot": "not-required",
+        "gradeability": gradeability,
+        **({"reason_code": "hitch_result_missing"} if gradeability == "ungradeable" else {}),
+    }))
+
+
 async def main(source: Path) -> None:
     module = load_wrapper(source)
     with tempfile.TemporaryDirectory() as temporary:
@@ -168,6 +186,33 @@ async def main(source: Path) -> None:
         assert len(diagnostic["attempts"]) == 2
         assert diagnostic["max_retries"] == 1
         assert exhausted._fake_attempt == 2
+
+        ineligible_dir = Path(temporary) / "ineligible" / "verifier"
+        write_agent_outcome(ineligible_dir, gradeability="ungradeable", bundle="invalid", status="failed")
+        ineligible = module.HitchRetryingVerifier(
+            trial_paths=SimpleNamespace(verifier_dir=ineligible_dir),
+            environment=FakeEnvironment(must_not_verify),
+            infrastructure_retries=1,
+            infrastructure_retry_backoff_ms=0,
+        )
+        ineligible_result = await ineligible.verify()
+        assert ineligible_result.rewards == {"reward": 0}
+        assert ineligible._fake_attempt == 0
+        ineligible_diagnostic = json.loads((ineligible_dir / "candidate-ineligible.json").read_text())
+        assert ineligible_diagnostic["code"] == "candidate_evidence_unavailable"
+        assert ineligible_diagnostic["verifier_executed"] is False
+
+        timed_out_dir = Path(temporary) / "timed-out-gradeable" / "verifier"
+        write_agent_outcome(timed_out_dir, gradeability="gradeable", bundle="complete", status="timed_out")
+        timed_out = module.HitchRetryingVerifier(
+            trial_paths=SimpleNamespace(verifier_dir=timed_out_dir),
+            environment=FakeEnvironment(real_test_failure),
+            infrastructure_retries=1,
+            infrastructure_retry_backoff_ms=0,
+        )
+        timed_out_result = await timed_out.verify()
+        assert timed_out_result.rewards == {"reward": 0}
+        assert timed_out._fake_attempt == 1
 
     print("verifier retry smoke OK")
 

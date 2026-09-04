@@ -14,4 +14,15 @@ export function emitEvalPlanLifecycle(sink: EvalEventSink, plan: EvalExecutionPl
     task_ids: workItem.task_ids,
     reservation: workItem.reservation,
   });
+  for (const workItem of plan.work_items) if (workItem.scheduling) sink.emit({
+    type: "eval.work.priority-computed",
+    work_id: workItem.work_id,
+    slot_id: workItem.slots[0],
+    task_id: workItem.task_ids[0],
+    policy: workItem.scheduling.policy,
+    estimated_duration_ms: workItem.scheduling.estimated_duration_ms,
+    remaining_path_ms: workItem.scheduling.remaining_path_ms,
+    estimate_source: workItem.scheduling.estimate_source,
+    estimate_sample_count: workItem.scheduling.estimate_sample_count,
+  });
 }

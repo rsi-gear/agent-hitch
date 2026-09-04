@@ -2,6 +2,7 @@ import type { EvalRequest } from "../domain/index.js";
 import type { WorkItemAdmissionController } from "../evals/index.js";
 import { evalTaskCollisionKey } from "./eval-records.js";
 import type { WorkItemDispatcher } from "./work-dispatcher.js";
+import { workSchedulingPriority } from "../evals/index.js";
 
 export function workItemAdmission(input: {
   dispatcher: WorkItemDispatcher;
@@ -16,6 +17,7 @@ export function workItemAdmission(input: {
         maxParallelism,
         reservation: workItem.reservation,
         collisionKeys: workItem.task_ids.map((taskId) => evalTaskCollisionKey(input.request, taskId, input.collisionDomainId)),
+        priority: workSchedulingPriority(workItem),
         ...(signal ? { signal } : {}),
       });
       return {

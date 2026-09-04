@@ -67,6 +67,7 @@
     "canary:docker-images": "npm run build && node dist/scripts/canary-docker-image-observation.js",
     "canary:resource-load": "npm run build && node dist/scripts/canary-resource-load.js",
     "canary:harbor-load": "npm run build && node dist/scripts/canary-harbor-load.js",
+    "canary:eval-scheduler-throughput": "npm run build && node dist/scripts/canary-eval-scheduler-throughput.js",
     "canary:packaged-harness": "npm run build && node dist/scripts/canary-packaged-harness.js",
     "canary:collision-domains": "npm run build && node dist/scripts/canary-collision-domains.js",
     "canary:gpu-hardware": "npm run build && node dist/scripts/canary-gpu-hardware.js",

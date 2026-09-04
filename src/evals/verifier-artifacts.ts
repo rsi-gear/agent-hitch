@@ -57,11 +57,29 @@ export async function persistTrialVerifierDiagnostics(input: {
   );
   throwIfAborted(input.signal);
   await copyVerifierRetryHistory(input.trialDirectory, input.runDirectory, credentialValues, input.signal);
+  await copyCandidateIneligibleDiagnostic(input.trialDirectory, input.runDirectory, input.signal);
   await captureVerifierDiagnostics(input.trialDirectory, input.runDirectory, {
     ...(input.maxArtifactBytes === undefined ? {} : { maxArtifactBytes: input.maxArtifactBytes }),
     credentialValues,
     ...(input.signal ? { signal: input.signal } : {}),
   });
+}
+
+async function copyCandidateIneligibleDiagnostic(trialDirectory: string, runDirectory: string, signal?: AbortSignal): Promise<void> {
+  const root = await realpath(trialDirectory);
+  throwIfAborted(signal);
+  const safe = await safeArtifact(root, "candidate-ineligible.json", 16 * 1024);
+  if (!safe) return;
+  let bytes: Buffer;
+  try {
+    bytes = await safe.handle.readFile();
+    await safe.assertUnchanged();
+  } finally {
+    await safe.handle.close();
+  }
+  const value = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+  if (value.schema_version !== "1" || value.code !== "candidate_evidence_unavailable" || value.verifier_executed !== false) return;
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "candidate-ineligible.json"), value);
 }
 
 /** Persist bounded, redacted verifier artifacts in the immutable run bundle. */

@@ -771,6 +771,81 @@ test("Harbor bridge diagnostic reader promotes OCI stdout when the legacy messag
   assert.match(diagnostic.raw, /\[REDACTED\]/);
 });
 
+test("Harbor bridge normalizes provider failures before they reach the scheduler", async (t) => {
+  const fixtures = [
+    ["Your account has insufficient balance and quota is exhausted", "provider_quota_exhausted", "never"],
+    ["HTTP 401 Unauthorized: invalid API key", "provider_auth_failed", "operator-required"],
+    ["The requested model does not exist", "provider_configuration_invalid", "never"],
+    ["HTTP 429 Too Many Requests", "provider_rate_limited", "transient"],
+    ["socket hang up: ECONNRESET", "provider_transport_transient", "transient"],
+  ] as const;
+  for (const [message, code, retryability] of fixtures) {
+    const trialDirectory = await mkdtemp(path.join(tmpdir(), "hitch-bridge-provider-classification-"));
+    t.after(() => forceRemove(trialDirectory));
+    await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+    await atomicWriteJSON(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), {
+      schema_version: "1", code: "hitch_process_failed", message,
+    });
+    const diagnostic = await readHarborBridgeError(trialDirectory);
+    assert.equal(diagnostic?.failureClassification?.code, code);
+    assert.equal(diagnostic?.failureClassification?.retryability, retryability);
+  }
+});
+
+test("Harbor diagnostic import publishes stable provider quota reason", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-provider-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "quota-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "lock.json"), { schema_version: 2, task: { name: "quota-task" } });
+  await atomicWriteJSON(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), {
+    schema_version: "1", code: "hitch_process_failed", message: "insufficient balance; quota exhausted",
+  });
+  const refs = await importEvalTrialRuns({
+    root, evalId, evalDirectory,
+    request: { harness_ref: "pi@version:1.2.3", model: "openai/test", timeout_ms: 5_000, agent_args: [] } as never,
+    resolvedRevision: { harness_id: "pi", identity: `sha256:${"a".repeat(64)}` } as never,
+    benchmarkId: "benchmark", benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: { trial_results: [{ task_name: "quota-task", trial_name: trialId, exception_info: { exception_type: "HitchBridgeError" } }] },
+  });
+  assert.equal(refs[0]?.invalid_reason, "provider_quota_exhausted");
+});
+
+test("Harbor importer preserves the verifier eligibility short-circuit", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-candidate-ineligible-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "ineligible-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  await mkdir(path.join(trialDirectory, "verifier"), { recursive: true });
+  await atomicWriteJSON(path.join(trialDirectory, "lock.json"), { schema_version: 2, task: { name: "ineligible-task" } });
+  await atomicWriteJSON(path.join(trialDirectory, "verifier", "candidate-ineligible.json"), {
+    schema_version: "1", code: "candidate_evidence_unavailable", run_id: `run_${"c".repeat(32)}`,
+    candidate_bundle: "invalid", reason_code: "hitch_result_missing", verifier_executed: false,
+  });
+  const refs = await importEvalTrialRuns({
+    root, evalId, evalDirectory,
+    request: { harness_ref: "pi@version:1.2.3", model: "openai/test", timeout_ms: 5_000, agent_args: [] } as never,
+    resolvedRevision: { harness_id: "pi", identity: `sha256:${"a".repeat(64)}` } as never,
+    benchmarkId: "benchmark", benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: { trial_results: [{ task_name: "ineligible-task", trial_name: trialId, verifier_result: { rewards: { reward: 0 } } }] },
+  });
+  assert.equal(refs[0]?.invalid_reason, "candidate_evidence_unavailable");
+  const ref = refs[0]!;
+  assert.ok(!ref.run_group);
+  assert.deepEqual(
+    await readJSON(path.join(root, "runs", ref.run_id, "verifier", "candidate-ineligible.json")),
+    {
+      schema_version: "1", code: "candidate_evidence_unavailable", run_id: `run_${"c".repeat(32)}`,
+      candidate_bundle: "invalid", reason_code: "hitch_result_missing", verifier_executed: false,
+    },
+  );
+});
+
 test("Harbor bridge uploads dedicated-builder artifacts and rejects incompatible handoffs without trial preparation", async (t) => {
   const state = await mkdtemp(path.join(tmpdir(), "hitch-bridge-artifact-"));
   const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
