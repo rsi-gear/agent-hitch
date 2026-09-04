@@ -25,6 +25,17 @@ export interface CredentialRedactionResult {
   redactions: Map<string, number>;
 }
 
+/** Match credential-bearing JSON/header field names independently of current environment values. */
+export function isSensitiveFieldName(value: string): boolean {
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
+  const parts = normalized.split("_").filter(Boolean);
+  return parts.includes("token") || parts.includes("auth")
+    || /authorization|cookie|api_key|client_secret|private_key|password|credential|(?:^|_)secret(?:_|$)/.test(normalized);
+}
+
 export function safeDiagnosticMessage(
   value: unknown,
   credentialValues: readonly string[] = [],

@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/trajectory-analysis.schema.json",
+  "title": "Hitch bounded trajectory analysis",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "run_id", "source", "header", "surface", "events", "chunk_summaries", "omitted_event_types", "coverage"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "trajectory-analysis" },
+    "run_id": { "$ref": "#/$defs/run_id" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fidelity", "session_id", "canonical_sha256", "canonical_bytes", "event_count", "event_types"],
+      "properties": {
+        "fidelity": { "enum": ["provider_native", "normalized", "minimal"] },
+        "provider": { "type": "string", "minLength": 1 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "canonical_sha256": { "$ref": "#/$defs/sha256" },
+        "canonical_bytes": { "type": "integer", "minimum": 0 },
+        "event_count": { "type": "integer", "minimum": 0 },
+        "event_types": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "header": true,
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fidelity", "nodes", "current_node_seqs", "replacements", "request_boundaries", "request_headers"],
+      "properties": {
+        "fidelity": { "enum": ["exact", "normalized", "partial"] },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["seq", "event_type", "surface_op", "message"],
+            "properties": {
+              "seq": { "$ref": "#/$defs/seq" },
+              "event_type": { "enum": ["user/message", "assistant/message", "tool/result"] },
+              "surface_op": { "$ref": "#/$defs/surface_op" },
+              "message": true
+            }
+          }
+        },
+        "current_node_seqs": { "type": "array", "items": { "$ref": "#/$defs/seq" } },
+        "replacements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["seq", "start", "end", "shadowed_seqs"],
+            "properties": {
+              "seq": { "$ref": "#/$defs/seq" },
+              "start": { "$ref": "#/$defs/seq" },
+              "end": { "$ref": "#/$defs/seq" },
+              "shadowed_seqs": { "type": "array", "items": { "$ref": "#/$defs/seq" } }
+            }
+          }
+        },
+        "request_boundaries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turn", "step", "attempt", "boundary_seq", "surface_revision"],
+            "properties": {
+              "turn": { "$ref": "#/$defs/seq" },
+              "step": { "$ref": "#/$defs/seq" },
+              "attempt": { "$ref": "#/$defs/seq" },
+              "retry_id": { "$ref": "#/$defs/projected_string" },
+              "boundary_seq": { "$ref": "#/$defs/seq" },
+              "surface_revision": { "$ref": "#/$defs/seq" },
+              "request_header_seq": { "$ref": "#/$defs/seq" }
+            }
+          }
+        },
+        "request_headers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["seq", "header"],
+            "properties": {
+              "seq": { "$ref": "#/$defs/seq" },
+              "header": true
+            }
+          }
+        }
+      }
+    },
+    "events": { "type": "array", "items": { "$ref": "#/$defs/diagnostic_event" } },
+    "chunk_summaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["turn", "step", "attempt", "first_seq", "last_seq", "count", "types", "model_boundary_seq"],
+        "properties": {
+          "turn": { "$ref": "#/$defs/seq" },
+          "step": { "$ref": "#/$defs/seq" },
+          "attempt": { "$ref": "#/$defs/seq" },
+          "retry_id": { "$ref": "#/$defs/projected_string" },
+          "first_seq": { "$ref": "#/$defs/seq" },
+          "last_seq": { "$ref": "#/$defs/seq" },
+          "count": { "type": "integer", "minimum": 1 },
+          "types": { "$ref": "#/$defs/counts" },
+          "model_boundary_seq": { "$ref": "#/$defs/seq" },
+          "usage": true,
+          "finish_reason": true,
+          "partial": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status", "source_seq_count"],
+            "oneOf": [
+              { "required": ["content"] },
+              { "required": ["streams"] }
+            ],
+            "properties": {
+              "status": { "const": "incomplete" },
+              "content": { "$ref": "#/$defs/content_excerpt" },
+              "streams": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["block_index", "block_start_seq", "kind", "content", "source_seq_count"],
+                  "properties": {
+                    "block_index": { "$ref": "#/$defs/seq" },
+                    "block_start_seq": { "$ref": "#/$defs/seq" },
+                    "kind": { "enum": ["text", "reasoning", "tool_arguments"] },
+                    "content": { "$ref": "#/$defs/content_excerpt" },
+                    "source_seq_count": { "type": "integer", "minimum": 0 }
+                  }
+                }
+              },
+              "source_seq_count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "omitted_event_types": { "$ref": "#/$defs/counts" },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "chunks", "content", "child_sessions"],
+      "properties": {
+        "surface": { "enum": ["complete", "partial"] },
+        "chunks": { "enum": ["coalesced", "omitted", "partial"] },
+        "content": { "enum": ["complete", "excerpted", "partial"] },
+        "child_sessions": { "enum": ["complete", "partial", "none", "unavailable"] }
+      }
+    },
+    "redactions": { "$ref": "#/$defs/redactions" }
+  },
+  "$defs": {
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "surface_op": {
+      "oneOf": [
+        { "const": "append" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "start", "end"],
+          "properties": {
+            "op": { "const": "replace" },
+            "start": { "$ref": "#/$defs/seq" },
+            "end": { "$ref": "#/$defs/seq" }
+          }
+        }
+      ]
+    },
+    "counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "projected_string": {
+      "oneOf": [
+        { "type": "string" },
+        { "$ref": "#/$defs/content_excerpt" }
+      ]
+    },
+    "diagnostic_event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "seq", "time", "data"],
+          "properties": {
+            "type": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "seq": { "$ref": "#/$defs/seq" },
+            "time": { "type": "number" },
+            "data": true,
+            "ignorable": { "const": true },
+            "surfaceOp": { "$ref": "#/$defs/surface_op" },
+            "source_event_seqs_summary": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["count"],
+              "properties": {
+                "count": { "type": "integer", "minimum": 0 },
+                "first": { "$ref": "#/$defs/seq" },
+                "last": { "$ref": "#/$defs/seq" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "seq", "time", "event_excerpt"],
+          "properties": {
+            "type": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "seq": { "$ref": "#/$defs/seq" },
+            "time": { "type": "number" },
+            "event_excerpt": { "$ref": "#/$defs/content_excerpt" }
+          }
+        }
+      ]
+    },
+    "content_excerpt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview", "bytes", "sha256", "truncated", "source"],
+      "properties": {
+        "preview": { "type": "string" },
+        "tail": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "truncated": { "type": "boolean" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_id", "seq", "field"],
+          "properties": {
+            "run_id": { "$ref": "#/$defs/run_id" },
+            "seq": { "$ref": "#/$defs/seq" },
+            "field": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          }
+        }
+      }
+    },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "count"],
+        "properties": {
+          "rule_id": { "type": "string", "minLength": 1 },
+          "count": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

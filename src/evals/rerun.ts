@@ -30,6 +30,7 @@ import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import { verifierOnlyEvalRerun } from "./verifier-only-rerun.js";
+import { restartIncompleteEval } from "./preparation-rerun.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 interface RerunPlan {
@@ -76,6 +77,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     || options.maxConcurrentOverride < 1 || options.maxConcurrentOverride > request.max_concurrent)) {
     throw invalidInput("eval rerun concurrency override is invalid");
   }
+  const restarted = await restartIncompleteEval(options, request, startedAt, rerunDirectory, statePath); if (restarted) return restarted;
   const plan = parseRerunPlan(await readJSON<unknown>(path.join(options.evalDirectory, "plan.json")), options.evalId, request);
   const initialProgress = await readEvalProgress(options.evalDirectory);
   if (initialProgress === null) throw unavailable("eval has no task-level progress");
@@ -118,7 +120,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   let captureRuntime: EvalModelCaptureRuntime | undefined;
   try {
     if (options.rerunType === "verifier-only") return await verifierOnlyEvalRerun({ ...options, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
-    if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials, env: options.env ?? process.env });
+    if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials, env: options.env ?? process.env, ...(options.signal ? { signal: options.signal } : {}) });
     if (selectedTrials.length > 0) {
       const executionPlan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(options.evalDirectory, "execution-plan.json")));
       if (executionPlan.eval_id !== options.evalId) throw unavailable("eval execution plan identity changed");
@@ -214,6 +216,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
                 publicationMode: "replace-invalid",
                 runtimeId: runtime.runtime_id,
                 env: options.env ?? process.env,
+                ...(options.signal ? { signal: options.signal } : {}),
                 modelCapturePlan: activeCaptureRuntime.plan,
                 ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
                 requireCompleteMarker: true,
@@ -241,6 +244,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           publicationMode: "replace-invalid",
           runtimeId: runtime.runtime_id,
           env: options.env ?? process.env,
+          ...(options.signal ? { signal: options.signal } : {}),
           modelCapturePlan: activeCaptureRuntime.plan,
           ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
           rawResult: backendRun.rawResult,
@@ -317,11 +321,9 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     await captureRuntime?.close().catch(() => undefined);
   }
 }
-
 function defaultModelCapturePlan(): ModelCapturePlanV1 {
   return { requested_mode: "native", effective_mode: "native", required: false };
 }
-
 export function groupRerunSlotsByArtifact(
   selected: readonly EvalTrialSlot[],
   plan: EvalExecutionPlanV1,
