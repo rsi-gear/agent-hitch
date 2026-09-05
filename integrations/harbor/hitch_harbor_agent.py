@@ -899,7 +899,7 @@ class HitchHarborAgent(BaseAgent):
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
             *proxy_environment,
-            *(["HITCH_HARBOR_INTERNAL=1"] if self._artifact_uploaded or parent_payload is not None else []),
+            "HITCH_HARBOR_INTERNAL=1",
             f"node {entry} run",
             "--harness",
             shlex.quote(self.harness_ref),
@@ -916,11 +916,11 @@ class HitchHarborAgent(BaseAgent):
             str(timeout_ms),
             "--output",
             "jsonl",
+            "--internal-run-id", run_id,
         ]
         if parent_payload is not None:
             arguments.extend([
                 "--parent-file", "/tmp/hitch-parent.json",
-                "--internal-run-id", run_id,
             ])
             if prepared_phase is None:
                 arguments.append("--internal-defer-benchmark-observation")
@@ -932,13 +932,15 @@ class HitchHarborAgent(BaseAgent):
             arguments.extend(["--agent-arg", shlex.quote(value)])
         for name in self.credential_names:
             arguments.extend(["--internal-credential-name", shlex.quote(name)])
-        command = (
-            "set -o pipefail; "
-            + " ".join(arguments)
-            + " 2> >(tee /logs/agent/hitch-stderr.log >&2)"
-            + " | tee /logs/agent/hitch-events.jsonl"
-        )
-        execution = await environment.exec(command, cwd=workdir)
+        command = self._logged_run_command(" ".join(arguments))
+        try:
+            execution = await environment.exec(command, cwd=workdir)
+        except (Exception, asyncio.CancelledError):
+            # Harbor cancels this await on its agent deadline. Collect what is
+            # already durable before it removes the container, without turning
+            # a cancelled execution into a successful observation.
+            await self._preserve_interrupted_run(environment, assigned_run_id)
+            raise
         collection = self._collect_run(
             environment, context, execution, assigned_run_id=assigned_run_id,
             context_payload=context_payload, parent_payload=parent_payload, prepared_phase=prepared_phase,
@@ -956,6 +958,82 @@ class HitchHarborAgent(BaseAgent):
                        "process_return_code": execution.return_code}
             (self.logs_dir / "hitch-collection-timeout.json").write_text(json.dumps(receipt))
             raise RuntimeError("hitch_run_collection_timeout: terminal evidence export exceeded its allowance") from error
+
+    @staticmethod
+    def _logged_run_command(invocation: str) -> str:
+        # Bash process substitution leaves an extra pipe FD in the harness and
+        # its descendants. A task's background service may outlive the harness.
+        # Regular files keep live logs without tying exec completion to that FD.
+        return (
+            "hitch_run_exit=0; " + invocation
+            + " > /logs/agent/hitch-events.jsonl 2> /logs/agent/hitch-stderr.log || hitch_run_exit=$?; "
+            + "cat /logs/agent/hitch-events.jsonl || exit $?; "
+            + "cat /logs/agent/hitch-stderr.log >&2 || exit $?; "
+            + 'exit "$hitch_run_exit"'
+        )
+
+    async def _preserve_interrupted_run(self, environment: BaseEnvironment, run_id: str) -> None:
+        # This is a diagnostic directory, never a complete/sealed run bundle.
+        # runtime-home contains credentials and must not be copied. Only files
+        # already produced by Hitch's redacted evidence writers are eligible.
+        destination = f"/logs/agent/hitch-interrupted-run-{uuid.uuid4().hex}"
+        script = r"""
+import {lstat,mkdir,open,readFile,writeFile} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import path from 'node:path';
+const [source,target]=process.argv.slice(1);
+let remaining=64*1024*1024;
+const copied=[];
+await mkdir(target,{mode:0o700});
+async function copy(relative){
+  if(copied.includes(relative))return;
+  if(typeof relative!=='string'||relative.includes('\\')||path.isAbsolute(relative)
+    ||relative.split('/').some(p=>!p||p==='.'||p==='..')) return;
+  const file=path.join(source,relative);
+  try {
+    for(let p=path.dirname(file);p!=='/';p=path.dirname(p)) {
+      const info=await lstat(p); if(!info.isDirectory()||info.isSymbolicLink()) return;
+    }
+    if(!(await lstat(file)).isFile())return;
+    const input=await open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    try {
+      const info=await input.stat();
+      if(!info.isFile()||info.size>remaining) return;
+      const bytes=Buffer.alloc(info.size);
+      let offset=0;
+      while(offset<bytes.length){const r=await input.read(bytes,offset,bytes.length-offset,offset);if(!r.bytesRead)break;offset+=r.bytesRead;}
+      remaining-=offset;
+      const output=path.join(target,relative);
+      await mkdir(path.dirname(output),{recursive:true,mode:0o700});
+      await writeFile(output,bytes.subarray(0,offset),{flag:'wx',mode:0o600});
+      copied.push(relative);
+    } finally {await input.close();}
+  } catch(e) {if(!['ENOENT','ELOOP','ENOTDIR'].includes(e.code))throw e;}
+}
+for(const name of ['result.json','manifest.json','events.jsonl','stdout.log','stderr.log','trajectory.ref.json']) await copy(name);
+if(copied.includes('trajectory.ref.json')) {
+  try {
+    const ref=JSON.parse(await readFile(path.join(target,'trajectory.ref.json'),'utf8'));
+    const files=Array.isArray(ref.files)?ref.files.map(f=>f?.path):[ref.path];
+    for(const file of files.slice(0,256)) if(typeof file==='string'&&file.startsWith('trajectory/'))await copy(file);
+  } catch(e) {if(!(e instanceof SyntaxError))throw e;}
+}
+await writeFile(path.join(target,'diagnostic.json'),JSON.stringify({complete:false,copied}),{flag:'wx',mode:0o600});
+""".strip()
+        receipt: dict[str, Any] = {"run_id": run_id, "complete": False, "directory": destination}
+        try:
+            result = await asyncio.wait_for(environment.exec(
+                f"{self._node_prefix()} node --input-type=module -e {shlex.quote(script)} "
+                f"{shlex.quote(f'/tmp/hitch-state/runs/{run_id}')} {shlex.quote(destination)}"
+            ), timeout=5)
+            receipt["export_return_code"] = result.return_code
+        except (Exception, asyncio.CancelledError) as error:
+            # Preserve the original exception, not a best-effort export failure.
+            receipt["export_error"] = type(error).__name__
+        try:
+            (self.logs_dir / "hitch-interrupted-run.json").write_text(json.dumps(receipt) + "\n")
+        except OSError:
+            pass
 
     async def _collect_run(
         self, environment: BaseEnvironment, context: AgentContext, execution: ExecResult, *,
