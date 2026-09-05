@@ -68,7 +68,7 @@ test("frozen regrade uses the saved resolver and rejects changed source or compi
   await atomicWriteJSON(path.join(root, "benchmark/package.json"), { source, tasks, package_digest: lock.package_digest, compiled_digest: digest });
   await atomicWriteJSON(path.join(root, "benchmark/benchmark.lock.json"), lock);
   await atomicWriteJSON(path.join(root, "package/compiled.json"), { digest, tasks_digest: await benchmarkTreeDigest(tasks) });
-  assert.deepEqual(await frozenRerunBenchmark(root), { id: "demo", revision: lock.package_digest, tasks });
+  assert.deepEqual(await frozenRerunBenchmark(root), { id: "demo", revision: lock.package_digest, tasks, standard: false });
   await writeFile(path.join(source, "input"), "edited");
   await assert.rejects(frozenRerunBenchmark(root), /identity changed/);
   await writeFile(path.join(source, "input"), "frozen");

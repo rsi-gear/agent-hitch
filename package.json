@@ -61,8 +61,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
-    "test": "node --test \"dist/test/*.test.js\"",
-    "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test \"dist/test/*.test.js\"",
+    "test": "node --test --test-timeout=120000 \"dist/test/*.test.js\"",
+    "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test --test-timeout=120000 \"dist/test/*.test.js\"",
     "canary:buildkit-secrets": "npm run build && node dist/scripts/canary-buildkit-secrets.js",
     "canary:docker-images": "npm run build && node dist/scripts/canary-docker-image-observation.js",
     "canary:resource-load": "npm run build && node dist/scripts/canary-resource-load.js",
@@ -72,7 +72,7 @@
     "canary:collision-domains": "npm run build && node dist/scripts/canary-collision-domains.js",
     "canary:gpu-hardware": "npm run build && node dist/scripts/canary-gpu-hardware.js",
     "check:architecture": "node dist/scripts/check-architecture.js",
-    "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && node --test \"dist/test/*.test.js\"",
+    "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && npm test",
     "prepublishOnly": "npm run check"
   },
   "engines": {
@@ -83,6 +83,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
+    "ajv": "^8.20.0",
     "typescript": "^5.9.3"
   },
   "license": "Apache-2.0",

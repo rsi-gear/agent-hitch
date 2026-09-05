@@ -56,6 +56,18 @@
         "status": { "enum": ["complete", "result_only", "missing", "corrupt"] },
         "result": {},
         "result_sha256": { "$ref": "#/$defs/sha256" },
+        "scores": { "$ref": "#/$defs/scores" },
+        "process": { "$ref": "#/$defs/process" },
+        "feedback": { "$ref": "#/$defs/feedback" },
+        "structured_artifacts": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "process": { "$ref": "#/$defs/structuredArtifact" },
+            "feedback": { "$ref": "#/$defs/structuredArtifact" }
+          }
+        },
         "diagnostics": { "$ref": "#/$defs/diagnostics" },
         "issues": { "type": "array", "maxItems": 16, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } }
       },
@@ -93,6 +105,106 @@
           "then": { "not": { "required": ["result"] } }
         }
       ]
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_score", "normalization"],
+      "properties": {
+        "total_score": { "type": "number" },
+        "process_score": { "type": "number" },
+        "normalization": { "enum": ["standard", "legacy-reward"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "normalization": { "const": "legacy-reward" } }, "required": ["normalization"] },
+          "then": { "not": { "required": ["process_score"] } }
+        }
+      ]
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "metric", "score", "detail_status"],
+      "properties": {
+        "schema_version": { "const": "1" },
+        "metric": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" },
+        "score": { "type": "number" },
+        "detail_status": { "enum": ["components", "aggregate-only"] },
+        "passed": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "excluded": { "type": "integer", "minimum": 0 },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/processComponent" } }
+      },
+      "oneOf": [
+        {
+          "properties": { "detail_status": { "const": "components" } },
+          "required": ["detail_status", "passed", "total", "excluded", "components"]
+        },
+        {
+          "properties": { "detail_status": { "const": "aggregate-only" } },
+          "required": ["detail_status"],
+          "not": { "anyOf": [{ "required": ["passed"] }, { "required": ["total"] }, { "required": ["excluded"] }, { "required": ["components"] }] }
+        }
+      ]
+    },
+    "processComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "status", "weight"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" },
+        "category": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" },
+        "status": { "enum": ["passed", "failed", "excluded"] },
+        "weight": { "type": "number", "exclusiveMinimum": 0 },
+        "code": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" },
+        "public_details": { "type": "object" },
+        "private_details_ref": { "$ref": "#/$defs/relativePath" },
+        "trajectory_refs": { "type": "array", "items": { "$ref": "#/$defs/trajectoryRef" } }
+      }
+    },
+    "feedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "items"],
+      "properties": {
+        "schema_version": { "const": "1" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "severity", "message"],
+            "properties": {
+              "code": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" },
+              "severity": { "enum": ["info", "warning", "error"] },
+              "message": { "type": "string", "minLength": 1, "maxLength": 16384 },
+              "component_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$" } },
+              "trajectory_refs": { "type": "array", "items": { "$ref": "#/$defs/trajectoryRef" } }
+            }
+          }
+        }
+      }
+    },
+    "trajectoryRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id"],
+      "properties": {
+        "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+        "seq_start": { "type": "integer", "minimum": 0 },
+        "seq_end": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "structuredArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "bytes", "sha256"],
+      "properties": {
+        "ref": { "enum": ["verifier/process.json", "verifier/feedback.json"] },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
     },
     "diagnostics": {
       "type": "object",

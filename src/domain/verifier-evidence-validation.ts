@@ -1,4 +1,10 @@
 import type { HitchVerifierEvidenceV1, JsonValue, VerifierArtifactExcerptV1 } from "./verifier-evidence.js";
+import {
+  assertVerifierScoreEvidenceConsistency,
+  parseVerifierFeedback,
+  parseVerifierProcessEvidence,
+  parseVerifierScores,
+} from "./verifier-score-contract.js";
 import { asArray, asInteger, asRecord, asSha256, asString, validateEvalRunParent, validateRunObservation } from "./validation.js";
 
 const ARTIFACT_NAMES = new Set(["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"]);
@@ -30,11 +36,15 @@ export function validateVerifierEvidence(value: unknown): HitchVerifierEvidenceV
 
 function parseVerifier(value: unknown): HitchVerifierEvidenceV1["verifier"] {
   const record = asRecord(value, "verifier evidence payload");
-  exact(record, ["status", "result", "result_sha256", "diagnostics", "issues"], "verifier evidence payload");
+  exact(record, ["status", "result", "result_sha256", "scores", "process", "feedback", "structured_artifacts", "diagnostics", "issues"], "verifier evidence payload");
   const status = asString(record.status, "verifier evidence status");
   if (!STATUSES.has(status)) throw new TypeError("verifier evidence status is invalid");
   const result = record.result === undefined ? undefined : jsonValue(record.result, "verifier result");
   const resultSha256 = record.result_sha256 === undefined ? undefined : asSha256(record.result_sha256, "verifier result digest");
+  const scores = record.scores === undefined ? undefined : parseScores(record.scores);
+  const process = record.process === undefined ? undefined : parseVerifierProcessEvidence(record.process);
+  const feedback = record.feedback === undefined ? undefined : parseVerifierFeedback(record.feedback, process);
+  const structuredArtifacts = record.structured_artifacts === undefined ? undefined : parseStructuredArtifacts(record.structured_artifacts);
   const diagnostics = record.diagnostics === undefined ? undefined : parseDiagnostics(record.diagnostics);
   const issues = record.issues === undefined ? undefined : asArray(record.issues, "verifier issues").map((issue) => {
     const text = asString(issue, "verifier issue");
@@ -51,13 +61,67 @@ function parseVerifier(value: unknown): HitchVerifierEvidenceV1["verifier"] {
     throw new TypeError("result_only verifier evidence must not include CTRF, stdout, or stderr diagnostics");
   }
   if (status === "missing" && result !== undefined) throw new TypeError("missing verifier evidence must not include a result");
+  if (status !== "corrupt") {
+    const resultScores = parseVerifierScores(result);
+    if (JSON.stringify(resultScores) !== JSON.stringify(scores)) throw new TypeError("verifier scores do not match the result");
+    assertVerifierScoreEvidenceConsistency({
+      scores,
+      ...(process === undefined ? {} : { process }),
+      ...(feedback === undefined ? {} : { feedback }),
+    });
+    if ((process !== undefined) !== (structuredArtifacts?.process !== undefined)
+      || (feedback !== undefined) !== (structuredArtifacts?.feedback !== undefined)) {
+      throw new TypeError("structured verifier artifact metadata is incomplete");
+    }
+  }
   return {
     status: status as HitchVerifierEvidenceV1["verifier"]["status"],
     ...(result === undefined ? {} : { result }),
     ...(resultSha256 === undefined ? {} : { result_sha256: resultSha256 }),
+    ...(scores === undefined ? {} : { scores }),
+    ...(process === undefined ? {} : { process }),
+    ...(feedback === undefined ? {} : { feedback }),
+    ...(structuredArtifacts === undefined ? {} : { structured_artifacts: structuredArtifacts }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
     ...(issues === undefined ? {} : { issues }),
   };
+}
+
+function parseScores(value: unknown): NonNullable<HitchVerifierEvidenceV1["verifier"]["scores"]> {
+  const record = asRecord(value, "verifier scores");
+  exact(record, ["total_score", "process_score", "normalization"], "verifier scores");
+  const total = finite(record.total_score, "verifier total_score");
+  const process = record.process_score === undefined ? undefined : finite(record.process_score, "verifier process_score");
+  if (record.normalization !== "standard" && record.normalization !== "legacy-reward") throw new TypeError("verifier score normalization is invalid");
+  if (record.normalization === "legacy-reward" && process !== undefined) throw new TypeError("legacy verifier scores cannot include process_score");
+  return { total_score: total, ...(process === undefined ? {} : { process_score: process }), normalization: record.normalization };
+}
+
+function parseStructuredArtifacts(value: unknown): NonNullable<HitchVerifierEvidenceV1["verifier"]["structured_artifacts"]> {
+  const record = asRecord(value, "structured verifier artifacts");
+  exact(record, ["process", "feedback"], "structured verifier artifacts");
+  const parse = (raw: unknown, name: "process" | "feedback") => {
+    const artifact = asRecord(raw, `structured verifier ${name} artifact`);
+    exact(artifact, ["ref", "bytes", "sha256"], `structured verifier ${name} artifact`);
+    if (artifact.ref !== `verifier/${name}.json`) throw new TypeError(`structured verifier ${name} ref is invalid`);
+    const bytes = asInteger(artifact.bytes, `structured verifier ${name} bytes`);
+    if (bytes < 0) throw new TypeError(`structured verifier ${name} bytes are invalid`);
+    return {
+      ref: `verifier/${name}.json` as "verifier/process.json" | "verifier/feedback.json",
+      bytes,
+      sha256: asSha256(artifact.sha256, `structured verifier ${name} digest`),
+    };
+  };
+  if (record.process === undefined && record.feedback === undefined) throw new TypeError("structured verifier artifacts must not be empty");
+  return {
+    ...(record.process === undefined ? {} : { process: parse(record.process, "process") }),
+    ...(record.feedback === undefined ? {} : { feedback: parse(record.feedback, "feedback") }),
+  };
+}
+
+function finite(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError(`${label} must be finite`);
+  return value;
 }
 
 function hasArtifactDiagnostics(diagnostics: HitchVerifierEvidenceV1["verifier"]["diagnostics"]): boolean {

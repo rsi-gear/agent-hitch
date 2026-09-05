@@ -1,4 +1,6 @@
 export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, DEFAULT_INFRASTRUCTURE_RETRIES, DEFAULT_INFRASTRUCTURE_RETRY_BACKOFF_MS, newEvalId, resolveBenchmarkReference, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
+export { buildBenchmarkAdapterManifest, loadBenchmarkAdapterManifest, scoreWithinRange } from "./benchmark-adapter-manifest.js";
+export type { BenchmarkAdapterManifestV1, BenchmarkScoreContractV1, BenchmarkScoreDefinitionV1 } from "./benchmark-adapter-manifest.js";
 export type { EvalRequestInput } from "./request.js";
 export type { EvalRequest } from "../domain/index.js";
 export { EvalEventSink, MAX_EVAL_EVENT_BYTES } from "./events.js";
@@ -36,6 +38,9 @@ export { importEvalTrialRun, importEvalTrialRuns, validateEvalTrialReferences } 
 export type { ImportEvalRunsOptions } from "./trial-import.js";
 export { captureVerifierDiagnostics, DEFAULT_VERIFIER_DIAGNOSTIC_MAX_BYTES, MAX_VERIFIER_DIAGNOSTIC_MAX_BYTES, persistTrialVerifierDiagnostics, VERIFIER_ARTIFACT_NAMES, VERIFIER_DIAGNOSTICS_INDEX_REF } from "./verifier-artifacts.js";
 export type { CaptureVerifierDiagnosticsOptions, PersistedVerifierArtifactV1, VerifierDiagnosticsIndexV1 } from "./verifier-artifacts.js";
+export { captureVerifierScoreEvidence } from "./verifier-score-artifacts.js";
+export { MAX_VERIFIER_FEEDBACK_BYTES, MAX_VERIFIER_PROCESS_BYTES } from "../domain/index.js";
+export type { CapturedVerifierScoreEvidenceV1 } from "./verifier-score-artifacts.js";
 export { createEvalProgress, evalTrialKey, mergeEvalProgressTrial, parseEvalTrialRef, readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 export { rerunEval, selectRerunTasks, selectRerunTrialSlots } from "./rerun.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun.js";
@@ -63,5 +68,5 @@ export { loadEvalResumeState } from "./resume-state.js";
 export { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, dockerResourceOwnership, validateDockerResourceOwnership } from "./docker-ownership.js";
 export { reapOwnedDockerResources } from "./docker-reaper.js";
 export type { DockerReaperOptions, DockerReaperReportV1, ReapableDockerResourceKind } from "./docker-reaper.js";
-export { runBenchmarkEval } from "./benchmark-run.js";
+export { compileBenchmark, exportStandardBenchmarkDataset, runBenchmarkEval, STANDARD_BENCHMARK_COMPILER } from "./benchmark-run.js";
 export { prepareVerifierEnvironmentRuntime } from "./verifier-runtime.js";

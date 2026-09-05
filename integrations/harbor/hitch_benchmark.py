@@ -244,4 +244,9 @@ def normalize_rewards(verifier, result):
             raise RuntimeError(f"metric_invalid: {field}")
         mapped[name] = value
     (directory / "benchmark-rewards.json").write_text(json.dumps({"raw": raw, "metrics": mapped, "primary_metric": config["primary_metric"], "source_task_id": config["task"]["source_task_id"], "task_digest": config["task_digest"]}, indent=2))
-    return result.model_copy(update={"rewards": {**raw, "reward": mapped[config["primary_metric"]]}})
+    contract = config.get("score_contract", {"total_score": config["primary_metric"]})
+    if not isinstance(contract, dict) or set(contract) != {"total_score"} or contract["total_score"] not in mapped:
+        raise RuntimeError("invalid standardized score contract")
+    total = mapped[contract["total_score"]]
+    auxiliary = {name: value for name, value in raw.items() if name not in {"reward", "total_score", "process_score"}}
+    return result.model_copy(update={"rewards": {**auxiliary, "reward": total, "total_score": total}})

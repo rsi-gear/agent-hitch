@@ -41,6 +41,10 @@ export async function acquireInstanceLock(file: string, instanceId: string): Pro
           current = JSON.parse(await readFile(candidate, "utf8")) as { pid?: unknown };
         } catch (readError) {
           if ((readError as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+          // A new owner can create the lock before writing its JSON, after
+          // our stale-owner observation. Retry through the acquisition loop;
+          // only a persistently unreadable record is an invalid lock.
+          if (readError instanceof SyntaxError) return false;
           throw new HitchError("daemon lock exists but its owner record is unreadable", {
             code: "daemon_lock_invalid",
             exitCode: 12,

@@ -31,6 +31,7 @@ import { materializeEvalPlan, writeEvalPlanningCheckpoint, type EvalLogicalPlanV
 import { planTaskSchedulingHints, schedulingHintsFromPlan } from "./duration-estimator.js";
 import type { EvalSchedulerSummaryV1 } from "../domain/index.js";
 import { buildCompletedEvalResult } from "./eval-result-builder.js";
+import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
@@ -91,6 +92,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       reference: runtimeRefFile,
     });
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
+    const standardDataset = localTaskIds !== null && await loadBenchmarkAdapterManifest(normalized.dataset) !== null;
     const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
     await withEnvironmentImageReferenceLock(root, () => beginEvalEnvironmentImagePlanning(evalDirectory, evalId));
     const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, harborTaskResourceInspector: path.join(controllerRuntime.directory, "payload", "integrations", "harbor", "hitch_harbor_task_resources.py"), ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
@@ -112,7 +114,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
       attempts: normalized.attempts,
-      attempt_execution: (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null
+      attempt_execution: (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null
         ? "harbor-task-slots-v1"
         : "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
@@ -145,7 +147,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     captureRuntime = activeCaptureRuntime;
     capture.plan = activeCaptureRuntime.plan;
     const plan = materializeEvalPlan(logicalPlan, capture.persist ? capture.plan : undefined, preparedArtifactPlanFields(preparedAssignments));
-    const taskSlotPlanning = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null;
+    const taskSlotPlanning = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null;
     const taskScheduling = taskSlotPlanning
       ? resume
         ? schedulingHintsFromPlan(resume.executionPlan)
@@ -234,7 +236,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     }
     const backendRuns: Array<{ attempt: number; run: HarborBackendResult; workId?: string; tasks?: string[]; leaseId?: string }> = [];
     const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
-    const plannedTaskExecution = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts) && localTaskIds !== null;
+    const plannedTaskExecution = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null;
     if (plannedTaskExecution) {
       const execution = await executePlannedHarborTasks({
         evalId,
