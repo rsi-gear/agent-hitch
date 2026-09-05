@@ -47,7 +47,9 @@ class LifecycleTests(unittest.TestCase):
             'assets_directory': str(self.root / 'assets'),
             **{key: str(self.root / name) for key, name in [('private_root', 'private'), ('session_directory', 'session'), ('evidence_directory', 'evidence'), ('cache_directory', 'cache')]},
             'max_steps': 3, 'max_actions_per_turn': 2, 'max_text_bytes': 16384, 'max_artifact_bytes': 1024 * 1024,
-            'prepare_timeout_sec': 3, 'shutdown_timeout_sec': 1, 'sleep_after_execution': 0, 'native_deadline': True,
+            # Normal shutdown includes flushing evidence and stopping both
+            # transports; allow scheduling/I/O delays on shared CI runners.
+            'prepare_timeout_sec': 3, 'shutdown_timeout_sec': 5, 'sleep_after_execution': 0, 'native_deadline': True,
             'public_endpoint': 'http://controller:8765/', 'website_host_suffix': 'websites.private', 'client_password_file': None,
         }
         self.config_file = self.root / 'controller.json'
@@ -189,6 +191,8 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(outputs[0]['status'], 'error'); self.assertIsNotNone(runtime.worker.poll())
 
     def test_unresponsive_worker_is_killed_and_reaped(self):
+        # Keep the intentional SIGKILL path short and independently covered.
+        self.config['shutdown_timeout_sec'] = 1
         runtime, server = self.start('ignore-stop')
         self.assertEqual(self.call(server, 'prepare')['status'], 'ok')
         self.assertEqual(self.call(server, 'cleanup')['status'], 'ok')
@@ -212,7 +216,8 @@ class LifecycleTests(unittest.TestCase):
         for key in ('evidence_directory', 'cache_directory'):
             self.assertEqual(Path(self.config[key]).stat().st_mode & 0o777, 0o700)
         self.submit(runtime)
-        self.assertEqual(self.call(server, 'quiesce')['status'], 'ok')
+        quiesced = self.call(server, 'quiesce')
+        self.assertEqual(quiesced['status'], 'ok', quiesced)
         self.assertEqual(self.call(server, 'snapshot')['status'], 'ok')
 
     def test_prepare_rejects_prior_volume_evidence_before_spawning_worker(self):
