@@ -6,8 +6,8 @@ the tagged source before publishing it to npm with trusted publishing.
 
 ## Continuous integration
 
-The `CI` workflow runs on pull requests and pushes to `main`. Other branches
-can be checked before opening a pull request with `workflow_dispatch`.
+The `CI` workflow runs on pull requests and pushes to `main` or `dev`. Other
+branches can be checked before opening a pull request with `workflow_dispatch`.
 New runs cancel older runs of the same workflow and ref.
 
 Six jobs cover Node 22 and 24 on Ubuntu, macOS, and Windows. Ubuntu and macOS
