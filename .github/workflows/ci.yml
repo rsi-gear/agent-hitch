@@ -2,28 +2,18 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  packaged-harness:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        node: [22, 24]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-      - run: npm ci
-      - run: npm pack --dry-run
-      - run: npm run canary:packaged-harness
-
   test:
     strategy:
       fail-fast: false
@@ -31,18 +21,33 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         node: [22, 24]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm test
-      - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+      # The build invokes tsc with the same configuration as typecheck.
+      - name: Build and typecheck
+        run: npm run build
+      - name: Check architecture and compiled syntax
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: |
+          npm run check:architecture
+          node dist/scripts/check-syntax.js
+      - name: Test
+        if: matrix.os != 'ubuntu-latest' || matrix.node != 24
+        run: npm test
+      - name: Test with coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run coverage
-      - run: npm pack --dry-run
+      - name: Packaged harness canary
+        if: matrix.os == 'ubuntu-latest'
+        run: node dist/scripts/canary-packaged-harness.js
+      - if: matrix.os != 'ubuntu-latest' || matrix.node != 24
+        run: npm pack --dry-run
       - name: Release validation smoke test
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: |
@@ -75,8 +80,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
+      - name: Build and typecheck
+        run: npm run build
       - run: node --test dist/test/executable.test.js dist/test/windows-support.test.js
+      - name: Packaged harness canary
+        run: node dist/scripts/canary-packaged-harness.js
       - run: npm pack --dry-run

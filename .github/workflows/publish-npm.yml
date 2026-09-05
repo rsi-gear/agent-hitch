@@ -23,10 +23,9 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      # dist/ is not committed (spec §8.3), so compile before running any
-      # validation that executes a compiled script.
+      # check builds dist/ and runs the full repository checks once.
       - run: npm ci
-      - run: npm run build
+      - run: npm run check
 
       - name: Validate release metadata
         env:
@@ -45,12 +44,12 @@ jobs:
             exit 1
           }
 
-      - run: npm run check
-
+      # The complete check already passed above. Skip prepublishOnly here to
+      # avoid rebuilding and testing again; keep the hook for other callers.
       - name: Publish stable release
         if: ${{ !github.event.release.prerelease }}
-        run: npm publish --access public --tag latest
+        run: npm publish --access public --tag latest --ignore-scripts
 
       - name: Publish prerelease
         if: ${{ github.event.release.prerelease }}
-        run: npm publish --access public --tag next
+        run: npm publish --access public --tag next --ignore-scripts
