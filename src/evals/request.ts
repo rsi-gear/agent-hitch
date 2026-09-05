@@ -51,7 +51,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     throw invalidInput("eval requires an immutable harness ref: version:<exact> or commit:<sha>");
   }
   assertExactLocalGitEvalReference(reference);
-  const benchmark = await resolveBenchmarkReference(input.dataset.trim());
+  const benchmark = await resolveDatasetReference(input.dataset.trim());
   const attempts = positiveInteger(input.attempts ?? 1, "attempts");
   const maxConcurrent = positiveInteger(input.max_concurrent ?? 4, "max_concurrent");
   const infrastructureRetries = nonNegativeInteger(
@@ -62,7 +62,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     input.infrastructure_retry_backoff_ms ?? DEFAULT_INFRASTRUCTURE_RETRY_BACKOFF_MS,
     "infrastructure_retry_backoff_ms",
   );
-  const timeout = nonNegativeNumber(input.timeout_ms ?? DEFAULT_EVAL_TIMEOUT_MS, "timeout_ms");
+  const timeout = nonNegativeNumber(input.timeout_ms ?? (benchmark.manifest ? 0 : DEFAULT_EVAL_TIMEOUT_MS), "timeout_ms");
   const setupTimeout = nonNegativeNumber(input.setup_timeout_ms ?? DEFAULT_EVAL_SETUP_TIMEOUT_MS, "setup_timeout_ms");
   if (input.model !== undefined && typeof input.model !== "string") throw invalidInput("model must be a string");
   if (input.agent_args !== undefined && (!Array.isArray(input.agent_args) || input.agent_args.some((value) => typeof value !== "string"))) {
@@ -72,6 +72,9 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     throw invalidInput("pass_env must be an array of strings");
   }
   const agentArgs = Array.isArray(input.agent_args) ? [...input.agent_args] as string[] : [];
+  if (benchmark.manifest) {
+    await assertStandardBenchmarkCandidate(input.dataset.trim(), benchmark.manifest, reference.harness_id, agentArgs);
+  }
   const bypassArg = HARBOR_EVAL_BYPASS_ARG[reference.harness_id];
   if (bypassArg && !agentArgs.includes(bypassArg)) agentArgs.unshift(bypassArg);
   return {
@@ -94,6 +97,15 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
 }
 
 export async function resolveBenchmarkReference(dataset: string): Promise<{ benchmark_id: string; benchmark_revision: string }> {
+  const { benchmark_id, benchmark_revision } = await resolveDatasetReference(dataset);
+  return { benchmark_id, benchmark_revision };
+}
+
+async function resolveDatasetReference(dataset: string): Promise<{
+  benchmark_id: string;
+  benchmark_revision: string;
+  manifest: BenchmarkAdapterManifestV1 | null;
+}> {
   const raw = dataset.trim();
   const local = path.resolve(raw);
   try {
@@ -103,11 +115,13 @@ export async function resolveBenchmarkReference(dataset: string): Promise<{ benc
         return {
           benchmark_id: manifest.benchmark.id,
           benchmark_revision: manifest.dataset_digest,
+          manifest,
         };
       }
       return {
         benchmark_id: `local:${path.basename(local)}`,
         benchmark_revision: await workspaceDigest(local, { excludedTopLevel: new Set([".git"]) }),
+        manifest: null,
       };
     }
   } catch (error) {
@@ -120,7 +134,7 @@ export async function resolveBenchmarkReference(dataset: string): Promise<{ benc
   const benchmarkId = raw.slice(0, separator);
   const revision = raw.slice(separator + 1);
   if (revision.toLowerCase() === "latest") throw invalidInput("dataset revision cannot be latest");
-  return { benchmark_id: benchmarkId, benchmark_revision: revision };
+  return { benchmark_id: benchmarkId, benchmark_revision: revision, manifest: null };
 }
 
 export async function resolveLocalDatasetTaskIds(dataset: string): Promise<string[] | null> {
@@ -173,4 +187,5 @@ import type { EvalId, EvalRequest } from "../domain/index.js";
 import { SCHEMA_VERSION, invalidInput } from "../foundation/index.js";
 import { assertExactLocalGitEvalReference, parseHarnessReference } from "../revisions/index.js";
 import { workspaceDigest } from "../workspaces/index.js";
-import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
+import { loadBenchmarkAdapterManifest, type BenchmarkAdapterManifestV1 } from "./benchmark-adapter-manifest.js";
+import { assertStandardBenchmarkCandidate } from "./benchmark-candidate.js";

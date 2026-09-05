@@ -283,17 +283,17 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
   if (lifecycle.failure || !["prepare", "quiesce", "snapshot"].every(name => object(object(lifecycle.phases)[name]).status === "ok")) throw new Error("native lifecycle snapshot is incomplete");
   const reward = primaryVerifierReward(input.trial);
   const verifier = verifierResult(input.trial);
-  const scores = descriptor.standard_total_range === undefined ? undefined : parseVerifierScores(verifier);
-  if (descriptor.standard_total_range !== undefined && (!scores || scores.normalization !== "standard"
-    || scores.process_score !== undefined || scores.total_score !== reward
-    || scores.total_score < descriptor.standard_total_range[0] || scores.total_score > descriptor.standard_total_range[1])) {
-    throw new Error("native standardized score contract is invalid");
-  }
   const infrastructure = await detectVerifierInfrastructureFailure(input.trialDirectory, reward);
   // The independent native task completed; phase process statuses remain
   // unchanged in their bundles (often cancelled at a native boundary).
   const observation = verifierObservation({ trial: input.trial, runStatus: "succeeded", trajectoryStatus: "valid", recordStatus: "valid",
     verifierRef: verifier ? "evidence/verifier/result.json" : undefined, infrastructure });
+  const scores = observation.status === "valid" && descriptor.standard_total_range !== undefined ? parseVerifierScores(verifier) : undefined;
+  if (observation.status === "valid" && descriptor.standard_total_range !== undefined && (!scores || scores.normalization !== "standard"
+    || scores.process_score !== undefined || scores.total_score !== reward
+    || scores.total_score < descriptor.standard_total_range[0] || scores.total_score > descriptor.standard_total_range[1])) {
+    throw new Error("native standardized score contract is invalid");
+  }
   const publishedScores = observation.status === "valid" ? scores : undefined;
   const contract = metricContract(descriptor);
   if (observation.status === "valid") verifyMetrics(await json(input.trialDirectory, "verifier/benchmark-rewards.json"), contract, reward);

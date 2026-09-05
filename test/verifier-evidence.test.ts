@@ -249,6 +249,96 @@ test("structured verifier channels preserve total-only availability and validate
   assert.match(invalid.issue ?? "", /differs from process_score/);
 });
 
+test("structured verifier artifacts are redacted before persistence and stay safe after credentials expire", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-score-redaction-"));
+  t.after(() => forceRemove(root));
+  const runId = `run_${"e".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, {
+    status: "valid", reward: 1, verifier_result_ref: "verifier/result.json",
+  });
+  const result = { rewards: { reward: 1, total_score: 1, process_score: 1 } };
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "result.json"), result);
+  const trialDirectory = await ensureDir(path.join(root, "score-trial"));
+  const secret = "fixture-opaque-credential-b14826c9";
+  const retiredSecret = "retired-credential-not-in-current-environment";
+  await atomicWriteJSON(path.join(trialDirectory, "verifier", "process.json"), {
+    schema_version: "1", metric: "partial_credit", score: 1, detail_status: "components",
+    passed: 1, total: 1, excluded: 0,
+    components: [{
+      id: "assertion-001", category: "validation", status: "passed", weight: 1,
+      public_details: {
+        observed: `Upstream echoed ${secret}`,
+        nested: [{ api_key: retiredSecret }],
+        [secret]: "credential in a JSON key",
+        path: path.join(root, "private", "test.ts"),
+      },
+    }],
+  });
+  await atomicWriteJSON(path.join(trialDirectory, "verifier", "feedback.json"), {
+    schema_version: "1",
+    items: [{ code: "validation", severity: "warning", message: `Upstream echoed ${secret}`, component_ids: ["assertion-001"] }],
+  });
+  const captured = await persistTrialVerifierDiagnostics({
+    trialDirectory, runDirectory, verifierResult: result,
+    passEnv: ["TEST_VERIFIER_SECRET"], env: { TEST_VERIFIER_SECRET: secret },
+  });
+  assert.equal(captured.issue, undefined);
+  assert.deepEqual(captured.process?.components?.[0]?.public_details, {
+    observed: "Upstream echoed [REDACTED]",
+    nested: [{ api_key: "[REDACTED]" }],
+    "[REDACTED]": "[REDACTED]",
+    path: "[path]",
+  });
+  assert.equal(captured.feedback?.items[0]?.message, "Upstream echoed [REDACTED]");
+  for (const name of ["process", "feedback"] as const) {
+    const bytes = await readFile(path.join(runDirectory, "verifier", `${name}.json`));
+    assert.equal(bytes.includes(secret), false);
+    assert.equal(bytes.includes(retiredSecret), false);
+    assert.deepEqual(JSON.parse(bytes.toString("utf8")), captured[name]);
+    assert.deepEqual(captured.structured_artifacts?.[name], {
+      ref: `verifier/${name}.json`, bytes: bytes.length, sha256: sha256Bytes(bytes),
+    });
+  }
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+  const evidence = await loadVerifierEvidence(root, runId, { env: {} });
+  assert.deepEqual(evidence.verifier.process, captured.process);
+  assert.deepEqual(evidence.verifier.feedback, captured.feedback);
+  assert.deepEqual(evidence.verifier.structured_artifacts, captured.structured_artifacts);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes(retiredSecret), false);
+  assert.deepEqual(validateVerifierEvidence(evidence), evidence);
+});
+
+test("structured verifier redaction rejects invalid identifiers before writing either artifact", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-score-sensitive-id-"));
+  t.after(() => forceRemove(root));
+  const secret = "fixture-opaque-credential-b14826c9";
+  const result = { rewards: { reward: 1, total_score: 1, process_score: 1 } };
+  for (const sensitiveField of ["process", "feedback"] as const) {
+    const trialDirectory = await ensureDir(path.join(root, sensitiveField, "trial"));
+    const runDirectory = await ensureDir(path.join(root, sensitiveField, "run"));
+    await atomicWriteJSON(path.join(trialDirectory, "verifier", "process.json"), {
+      schema_version: "1", metric: sensitiveField === "process" ? secret : "partial_credit",
+      score: 1, detail_status: "aggregate-only",
+    });
+    await atomicWriteJSON(path.join(trialDirectory, "verifier", "feedback.json"), {
+      schema_version: "1",
+      items: [{ code: sensitiveField === "feedback" ? secret : "validation", severity: "warning", message: "Validation detail." }],
+    });
+    const captured = await persistTrialVerifierDiagnostics({
+      trialDirectory, runDirectory, verifierResult: result,
+      passEnv: ["TEST_VERIFIER_SECRET"], env: { TEST_VERIFIER_SECRET: secret },
+    });
+    assert.match(captured.issue ?? "", sensitiveField === "process" ? /process metric is invalid/ : /feedback item 0 code is invalid/);
+    assert.equal(JSON.stringify(captured).includes(secret), false);
+    assert.equal(captured.structured_artifacts, undefined);
+    for (const name of ["process", "feedback"]) {
+      await assert.rejects(stat(path.join(runDirectory, "verifier", `${name}.json`)), { code: "ENOENT" });
+    }
+  }
+});
+
 test("verifier evidence fails closed on eval identity mismatch and unsafe diagnostic sources", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-identity-"));
   t.after(() => forceRemove(root));

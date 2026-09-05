@@ -25,7 +25,8 @@ import { summarizeTrialRefs } from "./result-helpers.js";
 import { validateEvalTrialReferences } from "./trial-import.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult } from "./verifier-diagnostics.js";
 import { verifierRuntimeRepair } from "./verifier-runtime.js";
-import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
+import { loadBenchmarkAdapterManifest, scoreWithinRange } from "./benchmark-adapter-manifest.js";
+import type { BenchmarkScoreContractV1 } from "./benchmark-adapter-manifest.js";
 
 interface Input extends RerunEvalOptions {
   evalDirectory: string; rerunId: string; rerunDirectory: string; startedAt: string;
@@ -36,7 +37,7 @@ interface Input extends RerunEvalOptions {
 
 /** Validate the immutable compiled package, also restoring its public identity
  * when the underlying local Harbor dataset has a different derived identity. */
-export async function frozenRerunBenchmark(evalDirectory: string): Promise<{ id: string; revision: string; tasks: string; standard: boolean } | null> {
+export async function frozenRerunBenchmark(evalDirectory: string): Promise<{ id: string; revision: string; tasks: string; standard: boolean; scoring?: BenchmarkScoreContractV1 } | null> {
   const pkg = await readJSON<{ source: string; tasks: string; package_digest: string; compiled_digest: string } | null>(path.join(evalDirectory, "benchmark/package.json"), null);
   if (!pkg) return null;
   // These tasks were already compiled by the pinned source runtime. Validate
@@ -53,7 +54,7 @@ export async function frozenRerunBenchmark(evalDirectory: string): Promise<{ id:
   if (compiler === "harbor-package@6") {
     const manifest = await loadBenchmarkAdapterManifest(pkg.tasks);
     if (!manifest || manifest.benchmark.id !== lock.benchmark_id) throw unavailable("compiled benchmark manifest changed");
-    return { id: manifest.benchmark.id, revision: manifest.dataset_digest, tasks: pkg.tasks, standard: true };
+    return { id: manifest.benchmark.id, revision: manifest.dataset_digest, tasks: pkg.tasks, standard: true, scoring: manifest.scoring };
   }
   return { id: lock.benchmark_id, revision: lock.package_digest, tasks: pkg.tasks, standard: false };
 }
@@ -158,15 +159,16 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     if (outcome.trial.trial_name !== trialName || outcome.trial.task_name !== taskName
       || sha256JSON(outcome.trial.agent_result) !== sha256JSON(sourceResult.agent_result)) throw unavailable("regrade result candidate identity changed");
     const result = verifierResult(outcome.trial);
-    const scores = benchmark.standard ? parseVerifierScores(result) : undefined;
-    if (benchmark.standard && (!scores || scores.normalization !== "standard" || scores.process_score !== undefined)) {
-      throw unavailable("regraded standardized score contract is invalid");
-    }
     if (result) await atomicWriteJSON(path.join(evidence, "verifier-result.json"), result);
     const observation = verifierObservation({ trial: outcome.backend.process_exit_code === 0 ? outcome.trial : { ...outcome.trial, exception_info: "harbor-process-failed" },
       runStatus: candidate.record.status, trajectoryStatus: candidate.trajectory_status, recordStatus: candidate.record_status,
       verifierRef: result ? "evidence/verifier-result.json" : undefined,
       infrastructure: await detectVerifierInfrastructureFailure(trialDirectory, primaryVerifierReward(outcome.trial)) });
+    const scores = observation.status === "valid" && benchmark.standard ? parseVerifierScores(result) : undefined;
+    if (observation.status === "valid" && benchmark.standard && (!scores || scores.normalization !== "standard" || scores.process_score !== undefined
+      || !benchmark.scoring || !scoreWithinRange(scores.total_score, benchmark.scoring.total_score))) {
+      throw unavailable("regraded standardized score contract is invalid");
+    }
     const assessment = await sealRegradeAssessment(directory, { eval_id: input.evalId, task_id: slot.task_id, attempt: slot.attempt, rerun_id: input.rerunId,
       source, controller_runtime_id: verifierRuntime.runtime_id, ...(runtimeRepair ? { runtime_repair: runtimeRepair } : {}),
       backend: outcome.backend, observation, completed_at: new Date().toISOString() });

@@ -35,6 +35,11 @@ hitch eval run --dataset /absolute/compiled-dataset \
 entry points. They compile with the same standard compiler internally before
 entering eval execution. New Gear integrations must use the explicit compile +
 `--dataset` flow. `benchmark compile` refuses to overwrite its output directory.
+Standard datasets retain each task's agent time budget unless `--timeout` is
+explicitly supplied. Both entry points enforce the compiled task's candidate
+requirements: no-tools tasks require the trusted `model-call` harness without
+agent overrides, and native-image agent tasks require the image-capable Codex
+harness.
 
 Source conversion is optional and separate from Hitch. An author can directly
 write a package or a standard Harbor dataset. Adding a producer does not change

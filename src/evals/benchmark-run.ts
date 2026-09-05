@@ -5,6 +5,8 @@ import { benchmarkTreeDigest, loadBenchmark, loadBenchmarkLock } from "../benchm
 import type { LoadedBenchmarkV1 } from "../domain/index.js";
 import { atomicWriteJSON, ensureDir, invalidInput, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { newEvalId, validateEvalRequest } from "./request.js";
+import { parseHarnessReference } from "../revisions/index.js";
+import { assertBenchmarkCandidate } from "./benchmark-candidate.js";
 import { buildBenchmarkAdapterManifest, loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 import { runEval } from "./service.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
@@ -20,8 +22,8 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
   if (options.request.dataset) throw invalidInput("--dataset and --benchmark are mutually exclusive");
   if (options.resumeExisting || options.precreated || options.remoteWorkExecutor || options.normalizedRequest) throw invalidInput("standard benchmark packages currently support local managed runs only");
   const loaded = options.benchmark ? await loadBenchmark(options.benchmark) : await loadBenchmarkLock(options.benchmarkLock!);
-  if (loaded.tasks.some(t => t.config.driver.kind === "model-call") && (!String(options.request.harness_ref).startsWith("model-call@") || (Array.isArray(options.request.agent_args) && options.request.agent_args.length))) throw invalidInput("no-tools tasks require the trusted model-call harness without agent overrides");
-  if (loaded.tasks.some(t => t.config.driver.kind !== "model-call" && t.config.requirements.includes("native-image-input")) && !String(options.request.harness_ref).startsWith("codex@")) throw invalidInput("native-image agent tasks currently require the Codex image-capable harness");
+  assertBenchmarkCandidate(loaded.tasks.map(task => task.config), parseHarnessReference(String(options.request.harness_ref)).harness_id,
+    Array.isArray(options.request.agent_args) ? options.request.agent_args : []);
   const evalId = options.evalId ?? newEvalId();
   const compiled = await compileBenchmark(loaded, options.root);
   const request = {

@@ -17,6 +17,7 @@ import {
   parseVerifierScores,
 } from "../domain/index.js";
 import { atomicWriteJSON, openContainedRegularFile, safeDiagnosticMessage, sha256Bytes } from "../foundation/index.js";
+import { sanitizeVerifierJson } from "../runs/index.js";
 import { loadBenchmarkAdapterManifest, scoreWithinRange } from "./benchmark-adapter-manifest.js";
 
 export interface CapturedVerifierScoreEvidenceV1 {
@@ -53,8 +54,8 @@ export async function captureVerifierScoreEvidence(input: {
     const processSource = await optionalJson(root, "process.json", MAX_VERIFIER_PROCESS_BYTES, input.signal);
     const feedbackSource = await optionalJson(root, "feedback.json", MAX_VERIFIER_FEEDBACK_BYTES, input.signal);
     const scores = parseVerifierScores(input.verifierResult);
-    const processEvidence = processSource === undefined ? undefined : parseVerifierProcessEvidence(processSource.value);
-    const feedback = feedbackSource === undefined ? undefined : parseVerifierFeedback(feedbackSource.value, processEvidence);
+    let processEvidence = processSource === undefined ? undefined : parseVerifierProcessEvidence(processSource.value);
+    let feedback = feedbackSource === undefined ? undefined : parseVerifierFeedback(feedbackSource.value, processEvidence);
     assertVerifierScoreEvidenceConsistency({
       scores,
       ...(processEvidence === undefined ? {} : { process: processEvidence }),
@@ -74,6 +75,17 @@ export async function captureVerifierScoreEvidence(input: {
         throw new TypeError("process evidence metric differs from the benchmark manifest");
       }
     }
+    // Sanitize while credentials are still available, before sealing the run.
+    // Revalidate both artifacts before writing either: a redacted identifier or
+    // reference must fail closed instead of persisting an invalid contract.
+    const credentials = input.credentialValues ?? [];
+    processEvidence = processEvidence === undefined ? undefined : parseVerifierProcessEvidence(
+      sanitizeVerifierJson(processEvidence as unknown as JsonValue, credentials).value,
+    );
+    feedback = feedback === undefined ? undefined : parseVerifierFeedback(
+      sanitizeVerifierJson(feedback as unknown as JsonValue, credentials).value,
+      processEvidence,
+    );
     const structuredArtifacts: NonNullable<CapturedVerifierScoreEvidenceV1["structured_artifacts"]> = {};
     if (processEvidence) {
       const target = path.join(input.runDirectory, "verifier", "process.json");

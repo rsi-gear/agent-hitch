@@ -35,6 +35,9 @@
     "reward": {
       "type": "number"
     },
+    "scores": {
+      "$ref": "verifier-evidence.schema.json#/$defs/scores"
+    },
     "verifier_result_ref": {
       "type": "string",
       "minLength": 1
@@ -114,7 +117,12 @@
       "then": {
         "required": [
           "invalid_reason"
-        ]
+        ],
+        "not": {
+          "required": [
+            "scores"
+          ]
+        }
       }
     }
   ]

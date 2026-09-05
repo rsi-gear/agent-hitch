@@ -86,7 +86,7 @@ export async function loadBenchmarkAdapterManifest(dataset: string): Promise<Ben
     actualTasks.push({ task_id: task.task_id, task_digest: digest });
   }
   const taskDirectories: string[] = [];
-  for (const entry of (await readdir(root, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     try {
       const taskInfo = await lstat(path.join(root, entry.name, "task.toml"));
@@ -95,7 +95,7 @@ export async function loadBenchmarkAdapterManifest(dataset: string): Promise<Ben
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  if (JSON.stringify(taskDirectories) !== JSON.stringify(actualTasks.map((task) => task.task_id))) {
+  if (JSON.stringify(taskDirectories.sort()) !== JSON.stringify(actualTasks.map((task) => task.task_id))) {
     throw invalidInput("benchmark adapter manifest task set does not match the dataset");
   }
   const body = {

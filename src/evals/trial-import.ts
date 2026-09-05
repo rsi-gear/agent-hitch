@@ -197,7 +197,8 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       || existing.record.context.benchmark_revision !== input.benchmarkRevision
       || existing.record.context.task_id !== input.taskId
       || existing.record.observation === undefined) throw new TrialIdentityConflictError(`existing run destination conflicts: ${record.run_id}`);
-    return evalTrialRef(input, record.run_id, existing.record.observation, parseVerifierScores(verifierResult(input.trial)));
+    return evalTrialRef(input, record.run_id, existing.record.observation,
+      existing.record.observation.status === "valid" ? parseVerifierScores(verifierResult(input.trial)) : undefined);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -233,9 +234,11 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       verifierRef,
       infrastructure: verifierInfrastructure,
     });
+    // Missing or malformed scores after an execution failure must not hide
+    // its cause or make an already completed candidate eligible for a rerun.
     const observation: RunObservationV1 = candidateIneligible
       ? { status: "invalid", invalid_reason: "candidate_evidence_unavailable", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
-      : structured.issue
+      : initialObservation.status === "valid" && structured.issue
       ? { status: "invalid", invalid_reason: "verifier_score_contract_invalid", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
       : initialObservation.status === "invalid"
       && initialObservation.invalid_reason === "infrastructure_failure"
