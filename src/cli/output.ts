@@ -90,13 +90,17 @@ Usage:
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
   hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>] [execution policy]
+  hitch benchmark validate --package <directory>
+  hitch benchmark lock --package <directory> [--out <benchmark.lock.json>]
+  hitch benchmark compile --package <directory> --out <harbor-dataset>
+  hitch eval run --benchmark <directory> | --benchmark-lock <file> --harness <immutable-ref> [--model <id>]
   hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>] [execution policy]
     execution policy: [--provider <id>] [--cpu-per-trial <integer-cpus>] [--memory-per-trial <size>]
       [--build-mode backend|prebuild-preferred|prebuild-required]
       [--model-capture off|native|proxy|hybrid] [--require-model-capture]
   hitch eval watch <eval-id> [--output json|jsonl]
   hitch eval cancel <eval-id>
-  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--daemon] [--rerun-id <id>] [--output json]
+  hitch eval rerun <eval-id> (--invalid | --task <name> [--task <name> ...]) [--type <type>] [--verifier-runtime <sha256:id>] [--daemon] [--rerun-id <id>] [--output json]
   hitch eval rerun-cancel <eval-id> <rerun-id>
   hitch eval list [--json]
   hitch eval inspect <eval-id> [--json]
@@ -107,6 +111,10 @@ Usage:
   hitch images pin <sha256:image-id> [--reason <text>]
   hitch images unpin <sha256:image-id>
   hitch trajectory inspect <run-id> [--json]
+  hitch verifier inspect <run-id> [--json]
+  hitch trajectory project <run-id> [--profile analysis] [--max-bytes <bytes>] [--json]
+  hitch trajectory events <run-id> [--types <a,b>] [--seq-start <n>] [--seq-end <n>] [--field <path>] [--canonical-sha256 <digest>] [--limit <n>] [--cursor <opaque>] [--max-bytes <bytes>] [--json]
+  hitch capabilities [--json]
   hitch feedback list <run-id> [--json]
   hitch feedback put <run-id> --message <id> --rating positive|negative [--note <text>] [--if-version <v>] [--json]
   hitch feedback delete <run-id> --message <id> [--if-version <v>] [--json]
@@ -137,9 +145,13 @@ Eval:
   Verifier infrastructure failures are retried once by default; use --infrastructure-retries 0 to disable.
   --task selects every invalid or missing attempt for the named task.
 
-Trajectory and feedback:
+Trajectory, verifier evidence, and feedback:
   Structured adapters preserve provider-native events plus a DSH-compatible canonical view
   under runs/<run>/trajectory/, bound by trajectory.ref.json V2 checksums.
+  Verifier inspection returns bounded, redacted, run-centered result and diagnostic evidence.
+  Bounded analysis reconstructs the DSH surface, coalesces raw chunks, and exposes
+  source-filtered cursor pages without loading or printing the complete event array.
+  Field drill-down requires an exact seq window and the canonical SHA-256 from a prior view.
   Message feedback is a lifecycle-bound sidecar.
 
 Workspace modes:

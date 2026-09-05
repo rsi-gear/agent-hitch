@@ -22,6 +22,8 @@ export interface RunEvalOptions {
   onEvent?: (event: Record<string, unknown>) => void;
   trialBundleGraceMs?: number;
   precreated?: boolean;
+  /** Replace a terminal result in-place while preserving the eval identity. Internal rerun recovery only. */
+  replaceTerminal?: boolean;
   normalizedRequest?: EvalRequest;
   maxConcurrentOverride?: number;
   executionResources?: ResourceVectorV1;
@@ -33,6 +35,9 @@ export interface RunEvalOptions {
   resumeExisting?: boolean;
   onControlPhase?: (phase: EvalExecutionPhase, work?: EvalWorkStateSnapshot) => Promise<void>;
   onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
+  onWorkItemQueued?: (workId: string) => Promise<void>;
+  /** Trusted per-task durations from the once-materialized Evolution baseline. */
+  evolutionBaselineDurations?: Readonly<Record<string, number>>;
   dockerResourceReaper?: EvalDockerResourceReaper;
   environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
   environmentImageResolver?: EvalEnvironmentImageResolver;

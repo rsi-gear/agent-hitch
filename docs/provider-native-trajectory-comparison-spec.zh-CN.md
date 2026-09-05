@@ -7,13 +7,14 @@
 
 Hitch MUST 将每次实际执行都保存为一个独立的 `RunRecord`。`RunRecord` 是轨迹、执行结果以及比较元数据的唯一事实来源。
 
-每个 run MUST 通过一个 `context` 字段说明它执行的是以下三者之一：
+每个 run MUST 通过一个 `context` 字段说明它执行的任务范围：
 
 1. `benchmark_task`：holdout validation set 中的 benchmark task；
 2. `seed_task`：train set 中允许被 RSI、模型或 harness 看到的 seed task；
 3. `ad_hoc`：不属于上述集合的普通运行。
+4. `benchmark_phase`：多阶段 benchmark 的一次独立候选会话；不单独计整题分数，见第 18 节。
 
-Eval 不定义另一套轨迹存储。一次 eval 中的每个 trial MUST 形成一个普通的 `RunRecord`；`EvalResult` 只保存这些 `run_id` 以及 reward/verifier 结果。
+Eval 不定义另一套轨迹存储。单会话 trial MUST 形成一个普通的 `RunRecord`；多阶段 trial 的每次候选会话仍形成各自的 `RunRecord`。Group 只保存引用，不拼接或复制这些会话的轨迹。现有单 run `EvalResult` 的计分规则保持第 9 节约束，多阶段评分接入另按第 18 节完成验收。
 
 本规范不要求把物理目录组织为 `benchmark/task/model/harness`。物理存储 MUST 以 `run_id` 为主键；benchmark、task、model 和 harness 视图由索引或查询生成。
 
@@ -343,7 +344,7 @@ interface EvalResultV1 {
 }
 ```
 
-每个 `trials[*].run_id` MUST 指向一个存在的 `runs/<run-id>/manifest.json`，且该 run：
+当前单 run `EvalTrialRefV1` 中，每个 `trials[*].run_id` MUST 指向一个存在的 `runs/<run-id>/manifest.json`，且该 run：
 
 - `context.kind` MUST 为 `benchmark_task`；
 - `parent.eval_id` MUST 等于当前 `eval_id`；
@@ -537,3 +538,33 @@ V1 的核心决策是：
 > 一次实际执行就是一个 run；run 保存自己执行的 context、精确 harness/model/protocol identity、result 和 provider-native trajectory。Eval 只聚合 run，比较只是对 run records 的受控查询。
 
 因此，V1 不需要先构建复杂的 experiment hierarchy。以后若需要实验计划、seed set snapshot 或可视化，它们都应引用 `run_id`，而不是创建第二套轨迹事实来源。
+
+## 18. 多阶段候选会话补充（实施中）
+
+OSWorld 等任务的原生 runner 会在同一环境中多次重置候选会话。每次重置后的执行 MUST 保存为独立 run，使用 `benchmark_phase` context：除原有 benchmark/task/verifier identity 外，要求 `run_group_id = run_group_<32 hex>` 和从 1 开始的 `phase_index`，并要求 eval parent。其 context 必须在启动前确定，不能在运行后把普通 task 改成 phase。
+
+阶段 run MUST NOT 带独立 `observation`。成功、失败、超时或取消均保持实际进程状态和自身轨迹，正常封存 bundle；不使用 `defer_benchmark_observation`，也不因没有独立 verifier 而伪造一条 invalid benchmark observation。查询可按 benchmark/task/eval 找到这些 run，但现有单 run strict comparison 和训练候选派生 MUST 排除它们。
+
+`inspectBenchmarkPhaseGroup`、`sealBenchmarkPhaseGroup` 和 `readBenchmarkPhaseGroup` 已提供有序阶段证据集合。Group 文件位于 `evals/<eval-id>/run-groups/<run-group-id>/group.json`，schema 为 `benchmark-phase-group.schema.json`；只引用原 `runs/` 的 bundle digest/index digest 与 native session ID。成员必须从 phase 1 连续排列，属于同一 trial/attempt、benchmark、task ID 与冻结 task digest、verifier、harness/model identity；执行时间不重叠，session ID 不重复，记录与轨迹均通过完整性校验。读取 group 时重新检查全部成员，封存后的 group 不允许用不同成员或证据覆盖。
+
+该集合的 scope 固定为 `candidate-evidence-only`，不含 reward/observation。**连续编号和不同 session ID 不证明原生任务已完成，也不能独自证明没有恢复旧上下文。** 单 run 导入器拒绝把 phase run 当成完整 trial；标准包通过专门的多阶段导入器关联整题评分。Supervisor/导入器必须：
+
+1. 在每次原生 reset 后准备独立候选环境、runtime 和日志挂载，防止后续候选读取旧阶段 prompt、scratch 或轨迹；销毁旧候选进程及其后台子进程后才启动下一会话，保留原生 VM/网站的阶段状态。
+2. 在启动前私有绑定 `run_id`，仅把当前阶段的 instruction、观察和工具绑定交给候选；禁止恢复/分叉旧模型会话，记录实际 native session ID 和运行命令配置。
+3. 按原生 controller 的 reset/gate/terminal 证据核对**全部已执行阶段**，不能把调用者提供的任意 prefix group 当成完整任务。
+4. 将原生最终评分与完整 group 关联为独立 trial assessment；模型中断、阶段边界停止和真实执行错误要依照明确的 native completion 证据区分，不能仅看进程 exit code。
+5. 原 phase bundle 原样导入并保持已封存的 digest；额外的 trial resource、controller 和 grading 证据写入 group/trial assessment，不回写旧 phase manifest。所有 phase bundle 和 group 校验成功后才发布整题结果；不得取第一个 bundle、复制整题分数到每个 phase，或丢掉失败阶段。
+
+当前测试通过实际 Hitch 执行器启动合成 harness 进程，验证独立 copy workspace、独立 session 标识、不可变 group、错误身份/顺序/篡改拒绝和计分排除。它未执行真实模型、OSWorld VM 或官方任务，不计作 benchmark 两题验收。
+
+通用 `NativePhaseSupervisor` API 现已串起私有 native state/bind/cancel、候选 prepare/run/cancel、容器回收、重新 setup 与绑定。它在容器退役后调用 `inspectSealedPhaseRunBundle`，检查原始 task/context/parent、harness revision、bundle、trajectory 及会话/时间一致性；完整阶段列表与原生边界写到候选不可见的 `hitch-native-phases/supervision.json`，scope 仍为 `candidate-evidence-only`。整题预算不会逐阶段重置，退出但尚有待答 observation 的候选不会被另一会话续跑。最后阶段停止 `main` 并走最终 snapshot，异常走整题 cleanup。声明 `native_phases` 的标准包已从默认 Harbor bridge 入口选择该 API。实际 Hitch CLI + 原生函数/RPC 的合成测试通过；容器替换在该编排测试中由本地目录模拟，真实 Docker 的独立 recycler canary 不能替代整体 VM 验收。
+
+第 3–5 项由 `src/evals/native-phase-evidence.ts` 实现：先验证冻结 source/compiled package，再核对完整原生 audit 的 generation、prediction、截图摘要、run 绑定与最终 completed；容器替换回执必须形成连续且身份一致的链。独立 verifier 的指标集合、范围、task identity 和 primary reward 必须吻合。额外证据保存到 `evals/<eval>/assessments/<assessment>/evidence/`，`assessment.json` 封存 group 引用、整题 observation、metric contract 和证据树摘要，原 phase bundle 保持逐字节不变。
+
+`EvalTrialRefV1` 是互斥联合：普通 trial 使用 `run_id`，多阶段 trial 使用 `run_group: {run_group_id, digest}` 和必需的 `assessment: {id, digest}`。Progress/result 按 task/attempt 聚合一次，并以 group ID 去重；发布前与只读加载时均验证全部 group 成员及 assessment。已封存 assessment 可以恢复 publication 写入中断，尚未封存的部分目标保留为诊断，不能自动覆盖。`collect-only` 支持 group；verifier-only regrade、远程单 bundle envelope 以及单 run comparison/training 不支持将 group 当成普通 run。
+
+整题导入测试使用实际 Hitch 执行的两个 synthetic phase，覆盖零分保留、原 bundle 不变、导入重放、发布恢复，以及截断 audit、错绑会话、指标和证据篡改拒绝。它不计作真实 benchmark 验收。授权任务 producer、完整 VM/网站装配与官方两题验证仍需完成。
+
+Control v2 增加私有 `expire_budget` 和有界 finalization：只有整题单调时钟 deadline 耗尽后才能触发，必须匹配冻结任务预算与 native audit。OSWorld 的固定 SDK 控制流通过带身份摘要的 deadline adapter 退出动作循环，再继续原始评分与 gate 逻辑；不伪造候选动作。Group 可引用真实状态为 `timed_out` 的最后一个 run，原 bundle 保持不变，整题 observation 仍在 assessment 中。普通模型/评分失败不能借此转为有效分数。
+
+每个实际绑定的 native generation 必须对应完整 group 成员。预算若耗尽于容器替换后的未绑定阶段，最后一个候选 bundle 可以位于 host 归档，额外的 replacement receipt 记录该替换；完整 audit 必须确认尾部没有新绑定或动作，与 supervisor 的候选记录一致，并最终完成原生评分。回执本身不能证明没有遗漏会话。Read/import 同时核对预算 receipt、全部 binding、终态和替换链，避免将任意 prefix group 当成完成的任务。

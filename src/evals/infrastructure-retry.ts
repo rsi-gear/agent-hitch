@@ -4,26 +4,31 @@ import type { ResolvedRevision } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse, LocalGitTransportUse, RunHarborBackendOptions } from "../backends/index.js";
 import type { ControllerRuntimeUseResult } from "../controller-runtime/index.js";
-import type { EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
+import type { BackendWorkItemV1, EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 import type { EvalInteractionCaptureExporter } from "./service-types.js";
+import { ensurePhysicalRetryDecision, transitionRetryDecision } from "./retry-state.js";
+import { physicalRetryWorkItem } from "./physical-retry-work.js";
+import { classifyTrialFailure, physicalRetryAllowed } from "./failure-classifier.js";
+import { retryBackoffMs } from "./retry-backoff.js";
+import { harborPhaseTimingEvents } from "./harbor-phase-timings.js";
 
 const INFRASTRUCTURE_REASONS = new Set([
   "infrastructure_failure",
   "verifier_infrastructure_failure",
   "verifier_result_missing",
-]);
-
-// Verifier failures are retried inside the original live Harbor trial by the
-// custom verifier wrapper. Starting another Harbor trial would execute the
-// candidate agent again, so only non-verifier trial infrastructure failures
-// are eligible for this outer retry path.
-const RETRYABLE_TRIAL_INFRASTRUCTURE_REASONS = new Set([
-  "infrastructure_failure",
+  "provider_quota_exhausted",
+  "provider_auth_failed",
+  "provider_configuration_invalid",
+  "provider_rate_limited",
+  "provider_transport_transient",
+  "worker_lost_before_candidate",
+  "sandbox_setup_failed",
+  "execution_state_ambiguous",
 ]);
 
 export interface InfrastructureRetryRun {
@@ -35,6 +40,7 @@ export interface InfrastructureRetryRun {
   run: HarborBackendResult;
   leaseId?: string;
   workId?: string;
+  durationMs?: number;
 }
 
 type RetryBackendOverrides = Pick<RunHarborBackendOptions,
@@ -83,6 +89,15 @@ export interface RunInfrastructureRetriesOptions {
   beginRetry?: BeginInfrastructureRetry;
   modelCapturePlan?: ModelCapturePlanV1;
   interactionCaptureExporter?: EvalInteractionCaptureExporter;
+  replaceProgressTrial?: (ref: EvalTrialRefV1, workId: string) => Promise<void>;
+  currentProgress?: () => EvalProgressV1;
+  originWorkItem?: BackendWorkItemV1;
+  firstRetryIndex?: number;
+  onRetryWorkPlanned?: (workId: string) => Promise<void>;
+  onRetryExecutionStarted?: (workId: string) => void;
+  onRetryExecutionFinished?: (workId: string) => number;
+  onRetryBackoff?: (durationMs: number) => void;
+  onVerifierDuration?: (durationMs: number) => void;
 }
 
 export async function runInfrastructureRetries(
@@ -91,25 +106,47 @@ export async function runInfrastructureRetries(
   let progress = options.progress;
   let retryCandidates = retryableInfrastructureTrials(options.initialRefs);
   const runs: InfrastructureRetryRun[] = [];
-  for (let retry = 1; retry <= options.request.infrastructure_retries && retryCandidates.length > 0; retry += 1) {
+  const firstRetryIndex = options.firstRetryIndex ?? 1;
+  if (!Number.isSafeInteger(firstRetryIndex) || firstRetryIndex < 1) throw new TypeError("first infrastructure retry index is invalid");
+  for (let retry = firstRetryIndex; retry <= options.request.infrastructure_retries && retryCandidates.length > 0; retry += 1) {
     if (options.signal?.aborted) break;
     const retryTriggers = [...retryCandidates];
     const taskNames = [...new Set(retryCandidates.map((ref) => ref.task_id))].sort();
-    const backoffMs = options.request.infrastructure_retry_backoff_ms * retry;
+    const retryWork = options.originWorkItem ? physicalRetryWorkItem(options.originWorkItem, retry, retryTriggers) : undefined;
+    const backoffMs = retryBackoffMs(options.request.infrastructure_retry_backoff_ms, retry, retryWork?.work_id ?? retryTriggers.map((trial) => trial.trial_id).join("\0"));
+    const notBefore = new Date(Date.now() + backoffMs).toISOString();
+    const retryDecisions = options.originWorkItem
+      ? await Promise.all(retryTriggers.map((trigger) => ensurePhysicalRetryDecision({
+        evalDirectory: options.evalDirectory, evalId: options.evalId, item: options.originWorkItem as BackendWorkItemV1,
+        retryIndex: retry, trigger, notBefore,
+      })))
+      : [];
+    if (retryWork && retryDecisions.some((decision) => decision.retry_work_id !== retryWork.work_id)) {
+      throw new Error(`persisted retry work identity conflicts with execution: ${retryWork.work_id}`);
+    }
+    if (retryWork) await options.onRetryWorkPlanned?.(retryWork.work_id);
     options.sink.emit({
-      type: "eval.infrastructure-retry.scheduled",
+      type: "eval.retry.decision",
       execution_kind: "physical-infrastructure-retry",
       candidate_executes: true,
+      ...(retryWork ? { work_id: retryWork.work_id } : {}),
+      decision_ids: retryDecisions.map((decision) => decision.decision_id),
       attempt: options.logicalAttempt,
       retry,
       tasks: taskNames,
       backoff_ms: backoffMs,
     });
-    if (backoffMs > 0) {
-      if (options.signal) await delay(backoffMs, undefined, { signal: options.signal });
-      else await delay(backoffMs);
+    const remainingBackoffMs = Math.max(0, Date.parse(retryDecisions[0]?.not_before ?? notBefore) - Date.now());
+    options.onRetryBackoff?.(remainingBackoffMs);
+    if (remainingBackoffMs > 0) {
+      if (options.signal) await delay(remainingBackoffMs, undefined, { signal: options.signal });
+      else await delay(remainingBackoffMs);
     }
     if (options.signal?.aborted) break;
+    if (retryWork) options.sink.emit({
+      type: "eval.retry.ready", work_id: retryWork.work_id, decision_ids: retryDecisions.map((decision) => decision.decision_id),
+      retry, tasks: taskNames, priority: options.originWorkItem?.scheduling?.remaining_path_ms ?? 0,
+    });
 
     const backendDirectory = path.join(
       options.backendBaseDirectory || path.join(options.evalDirectory, "infrastructure-retries"),
@@ -137,13 +174,23 @@ export async function runInfrastructureRetries(
         return;
       }
       retryRefs.push(ref);
+      if (ref.invalid_reason === "candidate_evidence_unavailable") options.sink.emit({
+        type: "eval.verifier.skipped", work_id: retryWork?.work_id, trial_id: ref.trial_id, task_id: ref.task_id,
+        reason: "candidate_evidence_unavailable", candidate_executes: true, verifier_executes: false,
+      });
       await validateEvalTrialReferences(options.root, options.evalId, [ref], {
         benchmarkId: options.request.benchmark_id,
         benchmarkRevision: options.request.benchmark_revision,
       });
       if (ref.observation_status === "valid") {
-        progress = replaceInvalidEvalProgressTrial(progress, ref);
-        await writeEvalProgress(options.evalDirectory, progress);
+        if (options.replaceProgressTrial) {
+          if (!lifecycle) throw new Error("planned infrastructure retry is missing its lifecycle identity");
+          await options.replaceProgressTrial(ref, lifecycle.workId);
+          progress = options.currentProgress?.() ?? progress;
+        } else {
+          progress = replaceInvalidEvalProgressTrial(progress, ref);
+          await writeEvalProgress(options.evalDirectory, progress);
+        }
       }
       options.sink.emit({
         type: ref.observation_status === "valid"
@@ -156,12 +203,24 @@ export async function runInfrastructureRetries(
         run_id: ref.run_id,
         observation_status: ref.observation_status,
         ...(ref.invalid_reason ? { invalid_reason: ref.invalid_reason } : {}),
-        generation: progress.generation,
+        generation: (options.currentProgress?.() ?? progress).generation,
       });
     };
     let run: HarborBackendResult;
+    let nextCandidates: EvalTrialRefV1[] = [];
+    let runRecord: InfrastructureRetryRun | undefined;
+    let executionStarted = false;
     try {
       lifecycle = await options.beginRetry?.({ retry, logicalAttempt: options.logicalAttempt, taskNames, triggers: retryTriggers, backendDirectory });
+      if (retryWork && lifecycle?.workId !== retryWork.work_id) throw new Error(`retry lifecycle work identity conflicts with persisted decision: ${retryWork.work_id}`);
+      for (const decision of retryDecisions) await transitionRetryDecision({
+        evalDirectory: options.evalDirectory, evalId: options.evalId, decisionId: decision.decision_id, state: "running",
+      });
+      if (retryWork) options.sink.emit({ type: "eval.retry.admitted", work_id: retryWork.work_id, decision_ids: retryDecisions.map((decision) => decision.decision_id) });
+      if (retryWork) {
+        options.onRetryExecutionStarted?.(retryWork.work_id);
+        executionStarted = true;
+      }
       run = await runHarborBackend({
         evalId: options.evalId,
         evalDirectory: options.evalDirectory,
@@ -199,6 +258,7 @@ export async function runInfrastructureRetries(
               publicationMode: "replace-invalid",
               runtimeId: options.controllerRuntime.runtime_id,
               env: options.env,
+              ...(options.signal ? { signal: options.signal } : {}),
               ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
               ...(options.interactionCaptureExporter ? {
                 interactionCaptureExporter: options.interactionCaptureExporter,
@@ -216,6 +276,10 @@ export async function runInfrastructureRetries(
           }
         },
       });
+      for (const event of await harborPhaseTimingEvents(harborJobDirectory, run.rawResult)) {
+        options.sink.emit(event);
+        if (event.type === "eval.verifier.completed" && typeof event.duration_ms === "number") options.onVerifierDuration?.(event.duration_ms);
+      }
       const environmentImages = retryEnvironmentImages();
       const terminalRefs = await importEvalTrialRuns({
         root: options.root,
@@ -230,6 +294,7 @@ export async function runInfrastructureRetries(
         publicationMode: "replace-invalid",
         runtimeId: options.controllerRuntime.runtime_id,
         env: options.env,
+        ...(options.signal ? { signal: options.signal } : {}),
         ...(options.modelCapturePlan ? { modelCapturePlan: options.modelCapturePlan } : {}),
         ...(options.interactionCaptureExporter ? {
           interactionCaptureExporter: options.interactionCaptureExporter,
@@ -240,9 +305,30 @@ export async function runInfrastructureRetries(
       }, retryRefs);
       for (const ref of terminalRefs) await publish(ref);
       if (run.rawResult !== null) assertBackendTrialSet(run.rawResult, retryRefs);
-      runs.push({ attempt: options.logicalAttempt, retry, tasks: taskNames, triggers: retryTriggers, refs: retryRefs, run, ...(lifecycle ? { leaseId: lifecycle.leaseId, workId: lifecycle.workId } : {}) });
+      runRecord = { attempt: options.logicalAttempt, retry, tasks: taskNames, triggers: retryTriggers, refs: retryRefs, run, ...(lifecycle ? { leaseId: lifecycle.leaseId, workId: lifecycle.workId } : {}) };
+      runs.push(runRecord);
+      nextCandidates = retryableInfrastructureTrials(retryRefs);
+      if (options.originWorkItem && retry < options.request.infrastructure_retries && nextCandidates.length > 0) {
+        const nextWork = physicalRetryWorkItem(options.originWorkItem, retry + 1, nextCandidates);
+        const nextNotBefore = new Date(Date.now() + retryBackoffMs(options.request.infrastructure_retry_backoff_ms, retry + 1, nextWork.work_id)).toISOString();
+        await Promise.all(nextCandidates.map((trigger) => ensurePhysicalRetryDecision({
+          evalDirectory: options.evalDirectory, evalId: options.evalId, item: options.originWorkItem as BackendWorkItemV1,
+          retryIndex: retry + 1, trigger, notBefore: nextNotBefore,
+        })));
+        await options.onRetryWorkPlanned?.(nextWork.work_id);
+      }
+      const retryState = retryRefs.some((ref) => ref.observation_status === "valid")
+        ? "repaired"
+        : retry < options.request.infrastructure_retries && nextCandidates.length > 0 ? "invalid" : "exhausted";
+      for (const decision of retryDecisions) await transitionRetryDecision({
+        evalDirectory: options.evalDirectory, evalId: options.evalId, decisionId: decision.decision_id, state: retryState,
+      });
     } finally {
       await lifecycle?.close();
+      if (executionStarted && retryWork) {
+        const durationMs = options.onRetryExecutionFinished?.(retryWork.work_id);
+        if (runRecord && durationMs !== undefined) runRecord.durationMs = durationMs;
+      }
     }
     options.sink.emit({
       type: "eval.infrastructure-retry.completed",
@@ -255,15 +341,13 @@ export async function runInfrastructureRetries(
       remaining_tasks: retryableInfrastructureTrials(retryRefs).map((ref) => ref.task_id).sort(),
     });
     if (run.backend.process_exit_code !== 0 || run.rawResult === null || options.stopAfterResult?.(run.rawResult)) break;
-    retryCandidates = retryableInfrastructureTrials(retryRefs);
+    retryCandidates = nextCandidates;
   }
-  return { progress, runs };
+  return { progress: options.currentProgress?.() ?? progress, runs };
 }
 
 export function retryableInfrastructureTrials(trials: readonly EvalTrialRefV1[]): EvalTrialRefV1[] {
-  return trials.filter((trial) => trial.observation_status === "invalid"
-    && trial.invalid_reason !== undefined
-    && RETRYABLE_TRIAL_INFRASTRUCTURE_REASONS.has(trial.invalid_reason));
+  return trials.filter((trial) => physicalRetryAllowed(classifyTrialFailure(trial)));
 }
 
 export function infrastructureFailureTrials(trials: readonly EvalTrialRefV1[]): EvalTrialRefV1[] {

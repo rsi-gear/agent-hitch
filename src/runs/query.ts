@@ -65,7 +65,7 @@ function matchesQuery(record: RunRecordV1, query: RunQuery): boolean {
   if (statuses && !statuses.includes(record.status)) return false;
   if (query.created_from !== undefined && record.created_at < query.created_from) return false;
   if (query.created_to !== undefined && record.created_at > query.created_to) return false;
-  if (record.context.kind === "benchmark_task") {
+  if (record.context.kind === "benchmark_task" || record.context.kind === "benchmark_phase") {
     if (query.benchmark_id !== undefined && record.context.benchmark_id !== query.benchmark_id) return false;
     if (query.benchmark_revision !== undefined && record.context.benchmark_revision !== query.benchmark_revision) return false;
     if (query.task_id !== undefined && record.context.task_id !== query.task_id) return false;

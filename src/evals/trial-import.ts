@@ -1,8 +1,10 @@
+import { validateEvalTrialReferences } from "./trial-reference-validation.js";
+export { validateEvalTrialReferences } from "./trial-reference-validation.js";
 import { cp, lstat, mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage, statePaths, writePrivateFile } from "../foundation/index.js";
 import type { ResolvedRevision } from "../artifacts/index.js";
-import { validateRunContext } from "../domain/index.js";
+import { parseVerifierScores, validateRunContext } from "../domain/index.js";
 import type { EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, RunObservationV1, Sha256 } from "../domain/index.js";
 import { newRunId, safeAgentArgsForPersistence } from "../runs/index.js";
 import {
@@ -16,6 +18,7 @@ import {
 } from "../runs/index.js";
 import { readHarborBridgeError } from "./harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
+import { persistTrialVerifierDiagnostics } from "./verifier-artifacts.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
@@ -24,6 +27,8 @@ import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./intera
 import { lockedHarborTaskId, nonEmptyString, trialAttemptFromId } from "./trial-import-identity.js";
 import { writeEvalTrialPublication } from "./trial-publication.js";
 import type { EvalTrialPublicationMode } from "./trial-publication.js";
+import { importNativePhaseTrial, nativePhaseDescriptor, NativePhaseBundlePendingError } from "./native-phase-evidence.js";
+import { readCandidateIneligibleDiagnostic } from "./verifier-eligibility.js";
 export interface ImportEvalRunsOptions {
   root: string;
   evalId: string;
@@ -42,6 +47,8 @@ export interface ImportEvalRunsOptions {
   interactionCaptureExporter?: EvalInteractionCaptureExporter;
   publicationMode?: EvalTrialPublicationMode;
   env?: NodeJS.ProcessEnv;
+  verifierDiagnosticsMaxBytes?: number;
+  signal?: AbortSignal;
 }
 
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
@@ -84,9 +91,12 @@ export async function importEvalTrialRun(
     });
     return existing;
   }
-  const bundle = await findRunBundle(trialDirectory, 0, options.requireCompleteMarker === true);
+  let bundle: string | null = null;
   let published = false;
   try {
+    const descriptor = await nativePhaseDescriptor(options, taskId);
+    if (descriptor) return await importNativePhaseTrial({ ...options, trial, taskId, trialId, attempt, trialDirectory }, descriptor);
+    bundle = await findRunBundle(trialDirectory, 0, options.requireCompleteMarker === true);
     if (options.requireCompleteMarker && !bundle && !options.allowMissingBundleDiagnostic) throw new TrialBundlePendingError(trialId);
     const ref = bundle
       ? await importRunBundle({ ...options, trial, taskId, trialId, attempt, trialDirectory, bundle })
@@ -94,10 +104,12 @@ export async function importEvalTrialRun(
     published = bundle !== null;
     return ref;
   } catch (error) {
+    if (options.signal?.aborted || (error as Error)?.name === "AbortError") throw error;
+    if (error instanceof NativePhaseBundlePendingError) throw new TrialBundlePendingError(trialId);
     if (error instanceof TrialBundlePendingError || error instanceof TrialIdentityConflictError) throw error;
     const safeMessage = safeDiagnosticMessage(error, credentialValuesFromEnv(options.request.pass_env ?? [], options.env ?? process.env));
-    if (bundle) {
-      await atomicWriteJSON(path.join(path.dirname(bundle), "hitch-run-import-error.json"), {
+    {
+      await atomicWriteJSON(path.join(bundle ? path.dirname(bundle) : trialDirectory, "hitch-run-import-error.json"), {
         schema_version: "1",
         trial_id: trialId,
         code: "run_bundle_import_failed",
@@ -123,14 +135,12 @@ export async function importEvalTrialRun(
     }
   }
 }
-
 export class TrialBundlePendingError extends Error {
   constructor(readonly trialId: string) {
     super(`Harbor trial bundle is not ready: ${trialId}`);
     this.name = "TrialBundlePendingError";
   }
 }
-
 export class TrialIdentityConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -187,7 +197,8 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       || existing.record.context.benchmark_revision !== input.benchmarkRevision
       || existing.record.context.task_id !== input.taskId
       || existing.record.observation === undefined) throw new TrialIdentityConflictError(`existing run destination conflicts: ${record.run_id}`);
-    return evalTrialRef(input, record.run_id, existing.record.observation);
+    return evalTrialRef(input, record.run_id, existing.record.observation,
+      existing.record.observation.status === "valid" ? parseVerifierScores(verifierResult(input.trial)) : undefined);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -208,10 +219,14 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       input.trialDirectory,
       primaryVerifierReward(input.trial),
     );
+    const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(staging, verifierInfrastructure);
-    await copyVerifierRetryHistory(input.trialDirectory, staging);
+    const structured = await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
     const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
-    const observation = verifierObservation({
+    const bridgeError = input.trial.exception_info
+      ? await readHarborBridgeError(input.trialDirectory, credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env))
+      : null;
+    const initialObservation = verifierObservation({
       trial: input.trial,
       runStatus: beforeObservation.record.status,
       trajectoryStatus: beforeObservation.trajectory_status,
@@ -219,6 +234,17 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       verifierRef,
       infrastructure: verifierInfrastructure,
     });
+    // Missing or malformed scores after an execution failure must not hide
+    // its cause or make an already completed candidate eligible for a rerun.
+    const observation: RunObservationV1 = candidateIneligible
+      ? { status: "invalid", invalid_reason: "candidate_evidence_unavailable", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
+      : initialObservation.status === "valid" && structured.issue
+      ? { status: "invalid", invalid_reason: "verifier_score_contract_invalid", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
+      : initialObservation.status === "invalid"
+      && initialObservation.invalid_reason === "infrastructure_failure"
+      && bridgeError?.failureClassification
+      ? { ...initialObservation, invalid_reason: bridgeError.failureClassification.code }
+      : initialObservation;
     const manifest = await readJSON<Record<string, unknown>>(path.join(staging, "manifest.json"));
     const portableManifest = withoutKeys(manifest, [
       "workspace", "source_workspace", "execution_workspace",
@@ -237,7 +263,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       ...(manifest.trajectory_ref ? {} : { trajectory_ref: "trajectory.ref.json" }),
       sealed: true,
     });
-    const ref = evalTrialRef(input, record.run_id, observation);
+    const ref = evalTrialRef(input, record.run_id, observation, structured.issue ? undefined : structured.scores);
     await writeEvalTrialPublication(staging, input.evalId, input.publicationMode ?? "settle", ref);
     await writeResultBundleIndex(staging);
     const verified = await loadRunRecord(staging, { verifyTrajectory: true });
@@ -270,8 +296,9 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
       input.trialDirectory,
       primaryVerifierReward(input.trial),
     );
+    const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-    await copyVerifierRetryHistory(input.trialDirectory, runDirectory);
+    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(
         input.trialDirectory,
@@ -286,10 +313,12 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
         bridgeError.raw.endsWith("\n") ? bridgeError.raw : `${bridgeError.raw}\n`,
       );
     }
-    const reason = verifierInfrastructure
+    const reason = candidateIneligible
+      ? "candidate_evidence_unavailable"
+      : verifierInfrastructure
       ? "verifier_infrastructure_failure"
       : input.trial.exception_info
-      ? "infrastructure_failure"
+      ? bridgeError?.failureClassification?.code ?? "infrastructure_failure"
       : verifier ? "trajectory_missing_or_corrupt" : "verifier_result_missing";
     const observation: RunObservationV1 = {
       status: "invalid",
@@ -387,7 +416,12 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   }
 }
 
-function evalTrialRef(input: TrialInput, runId: string, observation: RunObservationV1): EvalTrialRefV1 {
+function evalTrialRef(
+  input: TrialInput,
+  runId: string,
+  observation: RunObservationV1,
+  scores?: import("../domain/index.js").VerifierScoresV1,
+): EvalTrialRefV1 {
   return {
     trial_id: input.trialId,
     run_id: runId,
@@ -395,6 +429,7 @@ function evalTrialRef(input: TrialInput, runId: string, observation: RunObservat
     attempt: input.attempt,
     observation_status: observation.status,
     ...(observation.reward !== undefined ? { reward: observation.reward } : {}),
+    ...(scores?.normalization !== "standard" || observation.status !== "valid" ? {} : { scores }),
     ...(observation.verifier_result_ref ? { verifier_result_ref: observation.verifier_result_ref } : {}),
     ...(observation.invalid_reason ? { invalid_reason: observation.invalid_reason } : {}),
   };
@@ -453,16 +488,6 @@ function withoutKeys(record: Record<string, unknown>, keys: string[]): Record<st
   return result;
 }
 
-async function copyVerifierRetryHistory(trialDirectory: string, runDirectory: string): Promise<void> {
-  const source = path.join(trialDirectory, "verifier", "infrastructure-retry-history.json");
-  const history = await readJSON<Record<string, unknown> | null>(source, null).catch(() => null);
-  if (history?.schema_version !== "1"
-    || history.code !== "verifier_infrastructure_retry_history"
-    || history.candidate_rerun !== false
-    || !Array.isArray(history.attempts)) return;
-  await atomicWriteJSON(path.join(runDirectory, "verifier", "infrastructure-retry-history.json"), history);
-}
-
 async function validateJSONLines(file: string): Promise<void> {
   const content = await readFile(file, "utf8");
   for (const [index, line] of content.split(/\r?\n/).entries()) {
@@ -470,31 +495,5 @@ async function validateJSONLines(file: string): Promise<void> {
     try { JSON.parse(line); } catch (error) {
       throw new Error(`invalid JSONL at ${path.basename(file)}:${index + 1}: ${(error as Error).message}`);
     }
-  }
-}
-
-export async function validateEvalTrialReferences(
-  root: string,
-  evalId: string,
-  trials: EvalTrialRefV1[],
-  expected?: { benchmarkId: string; benchmarkRevision: string },
-): Promise<void> {
-  for (const trial of trials) {
-    const loaded = await loadRunRecord(path.join(statePaths(root).runs, trial.run_id), { verifyTrajectory: false });
-    const record = loaded.record;
-    if (record.context.kind !== "benchmark_task") throw new Error(`eval trial ${trial.trial_id} references a non-benchmark run`);
-    if (expected && (
-      record.context.benchmark_id !== expected.benchmarkId
-      || record.context.benchmark_revision !== expected.benchmarkRevision
-      || record.context.verifier_identity !== benchmarkVerifierIdentity(expected.benchmarkId, expected.benchmarkRevision)
-    )) throw new Error(`eval trial ${trial.trial_id} benchmark identity mismatch`);
-    if (record.parent?.eval_id !== evalId || record.parent.trial_id !== trial.trial_id || record.parent.attempt !== trial.attempt) {
-      throw new Error(`eval trial ${trial.trial_id} parent mismatch`);
-    }
-    if (record.context.task_id !== trial.task_id) throw new Error(`eval trial ${trial.trial_id} task mismatch`);
-    if (record.observation?.status !== trial.observation_status) throw new Error(`eval trial ${trial.trial_id} observation status mismatch`);
-    if (record.observation?.reward !== trial.reward) throw new Error(`eval trial ${trial.trial_id} reward mismatch`);
-    if (record.observation?.verifier_result_ref !== trial.verifier_result_ref) throw new Error(`eval trial ${trial.trial_id} verifier ref mismatch`);
-    if (record.observation?.invalid_reason !== trial.invalid_reason) throw new Error(`eval trial ${trial.trial_id} invalid reason mismatch`);
   }
 }

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/error.schema.json",
+  "title": "Hitch CLI error envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "error"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "error" },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "exit_code"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$", "maxLength": 128 },
+        "message": { "type": "string" },
+        "exit_code": { "type": "integer", "minimum": 1, "maximum": 255 }
+      }
+    }
+  }
+}

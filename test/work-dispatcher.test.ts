@@ -69,6 +69,27 @@ test("work-item dispatch rejects a vector that can never fit", async () => {
   dispatcher.close();
 });
 
+test("work-item dispatch selects the longest remaining path within an eval lane", async () => {
+  const resources = new ResourceLedger({ ...CAPACITY, container_slots: 1, cpu_millis: 1_000, memory_bytes: 1_024 });
+  const dispatcher = new WorkItemDispatcher({ resources });
+  const blocker = await dispatcher.acquire(work(EVAL_A, "b", "blocker", 1));
+  const shortPromise = dispatcher.acquire({ ...work(EVAL_A, "c", "short", 1), priority: 5_000 });
+  const longPromise = dispatcher.acquire({ ...work(EVAL_A, "d", "long", 1), priority: 60_000 });
+  await delay(5);
+  blocker.release();
+  const winner = await Promise.race([
+    shortPromise.then(() => "short"),
+    longPromise.then(() => "long"),
+  ]);
+  assert.equal(winner, "long");
+  const long = await longPromise;
+  long.release();
+  const short = await shortPromise;
+  short.release();
+  assert.deepEqual(resources.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
+  dispatcher.close();
+});
+
 test("work-item identity and collision-domain keys fence duplicate or conflicting execution", async () => {
   const dispatcher = new WorkItemDispatcher({ resources: new ResourceLedger(CAPACITY) });
   const request = work(EVAL_A, "a", "task", 1);

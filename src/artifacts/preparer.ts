@@ -3,7 +3,7 @@ import { chmod, lstat, readFile, readdir, rm, writeFile } from "node:fs/promises
 import path from "node:path";
 import { getAdapter } from "../adapters/index.js";
 import type { AdapterDefinition, RevisionSourceDefinition } from "../adapters/index.js";
-import { SCHEMA_VERSION, HitchError, atomicWriteJSON, commandExecutable, commandVersion, detectVersion, digest, ensureDir, fingerprintExecutable, readJSON, runCommand, statePaths } from "../foundation/index.js";
+import { SCHEMA_VERSION, HitchError, atomicWriteJSON, commandExecutable, commandVersion, detectVersion, digest, ensureDir, fingerprintExecutable, readJSON, runCommand, selectVersionLine, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
 import { gitCacheDirectory } from "../revisions/index.js";
 import type { ResolvedRevision, VerifiedLocalGitSource } from "../revisions/index.js";
@@ -180,7 +180,12 @@ async function prepareNpmArtifact(
     const toolchain: Record<string, string> = { node: process.version, npm: await commandVersion(npm, env, signal) };
     const launcher = entrypointLauncher(entrypoint);
     const invocation = artifactInvocation({ entrypoint, launcher }, staging);
-    const observedVersion = await detectVersion(invocation.executable, [...invocation.entrypoint_args, ...adapter.version_args]);
+    // A crashing Node launcher prints the Node version in its stack trace.
+    // Require a successful probe before accepting any reported version.
+    const versionProbe = await runCommand(invocation.executable, [...invocation.entrypoint_args, ...adapter.version_args], {
+      env, signal, timeoutMs: 30_000, failureCode: "artifact_version_probe_failed", failureExitCode: 5,
+    });
+    const observedVersion = selectVersionLine(versionProbe.stdout, versionProbe.stderr);
     throwIfAborted(signal);
     assertObservedVersion(observedVersion, (resolved.revision.version as string) || "", resolved.canonical_ref);
     const entrypointIntegrity = await fingerprintExecutable(stagedExecutable);

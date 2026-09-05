@@ -39,7 +39,11 @@ process.stdin.on("end", () => {
 
   assert.equal(result.status, "succeeded");
   assert.equal(result.output, "reply:windows");
-  assert.match(await readFile(path.join(root, "runs", runId, "events.jsonl"), "utf8"), /message\.delta/);
+  const events = (await readFile(path.join(root, "runs", runId, "events.jsonl"), "utf8"))
+    .trim().split("\n").map((line) => JSON.parse(line) as { type: string; text?: string });
+  assert.deepEqual(events.filter((event) => event.type.startsWith("message.")).map(({ type, text }) => ({ type, text })), [
+    { type: "message.completed", text: "reply:windows" },
+  ]);
 });
 
 test("Windows promotes and verifies the controller runtime without POSIX mode evidence", { skip: process.platform !== "win32" }, async (t) => {

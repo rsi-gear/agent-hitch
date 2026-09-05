@@ -20,6 +20,7 @@ import {
 } from "../foundation/index.js";
 import { HARBOR_ARTIFACT_BUILDER_RECIPE_VERSION, ensureHarborArtifactBuilderImage } from "./harbor-artifact-builder-image.js";
 import type { HarborBuilderImage } from "./harbor-artifact-builder-image.js";
+import { HARBOR_NODE_RUNTIME_RECIPE, attachHarborNodeRuntime, prepareHarborNodeRuntime } from "./harbor-node-runtime.js";
 
 export interface HarborArtifactPreparationResult {
   artifact: HarborPreparedArtifactUse;
@@ -79,6 +80,7 @@ export const prepareHarborArtifact: EvalHarborArtifactBuilder = async (input) =>
   const key = digest({
     kind: "harbor-artifact-builder",
     recipe_version: HARBOR_ARTIFACT_BUILDER_RECIPE_VERSION,
+    node_runtime_recipe: HARBOR_NODE_RUNTIME_RECIPE,
     controller_runtime_id: input.runtimeId,
     revision_identity: input.resolvedRevision.identity,
     builder_image_id: builder.id,
@@ -96,7 +98,9 @@ export const prepareHarborArtifact: EvalHarborArtifactBuilder = async (input) =>
     if (cached) return { artifact: cached, cacheHit: true };
     const prepared = await buildArtifact({ ...input, cache, docker, builder });
     try {
-      const promoted = await promoteArtifact(cache, prepared.directory, prepared.manifest, expected);
+      const runtime = await prepareHarborNodeRuntime({ ...input, docker, builder });
+      const composed = await attachHarborNodeRuntime(prepared.directory, prepared.manifest, runtime);
+      const promoted = await promoteArtifact(cache, composed.directory, composed.manifest, expected);
       await atomicWriteJSON(path.join(cache.refs, `${key.slice("sha256:".length)}.json`), {
         schema_version: "1",
         preparation_key: key,
@@ -212,7 +216,7 @@ async function buildArtifact(input: {
       args.push("--env", "HITCH_HARBOR_INTERNAL=1");
       args.push("--mount", bindMount(input.localTransport.directory, "/hitch-local-source-input", true));
     }
-    args.push(input.builder.reference, "sh", "-ceu", builderScript(Boolean(input.localTransport)), "sh", `/opt/hitch/${entrypoint}`, lockedHarnessRef(input.resolvedRevision));
+    args.push(input.builder.id, "sh", "-ceu", builderScript(Boolean(input.localTransport)), "sh", `/opt/hitch/${entrypoint}`, lockedHarnessRef(input.resolvedRevision));
     if (input.localTransport) {
       args.push(
         input.localTransport.manifest.commit,

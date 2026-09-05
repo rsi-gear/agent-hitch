@@ -3,12 +3,13 @@ import path from "node:path";
 
 const SRC_ROOT = path.resolve("src");
 const MODULES = new Set([
-  "domain", "foundation", "adapters", "revisions", "artifacts", "controller-runtime",
+  "domain", "foundation", "benchmarks", "adapters", "revisions", "artifacts", "controller-runtime",
   "images", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
 ]);
 const ALLOWED = new Map<string, Set<string>>([
   ["domain", new Set()],
   ["foundation", new Set(["domain"])],
+  ["benchmarks", new Set(["domain", "foundation"])],
   ["adapters", new Set(["domain", "foundation"])],
   ["revisions", new Set(["domain", "foundation", "adapters"])],
   ["artifacts", new Set(["domain", "foundation", "adapters", "revisions"])],
@@ -20,7 +21,7 @@ const ALLOWED = new Map<string, Set<string>>([
   ["workspaces", new Set(["domain", "foundation"])],
   ["runs", new Set(["domain", "foundation", "adapters", "revisions", "artifacts", "workspaces", "trajectories", "model-access"])],
   ["backends", new Set(["domain", "foundation"])],
-  ["evals", new Set(["domain", "foundation", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
+  ["evals", new Set(["domain", "foundation", "benchmarks", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
   ["control-plane", new Set(["domain", "foundation", "adapters", "model-access", "evals", "images"])],
   ["workers", new Set(["domain", "foundation", "artifacts", "backends", "controller-runtime", "evals", "control-plane"])],
   ["daemon", new Set(["domain", "foundation", "runs", "workspaces", "control-plane"])],

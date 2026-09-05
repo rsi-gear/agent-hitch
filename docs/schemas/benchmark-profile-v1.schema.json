@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hitch.dev/schemas/benchmark-profile-v1.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "track": {
+      "enum": [
+        "custom",
+        "public-subset"
+      ]
+    },
+    "input_mode": {
+      "const": "instruction"
+    },
+    "tool_policy": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "network": {
+          "const": "open"
+        },
+        "enforcement": {
+          "const": "required"
+        }
+      },
+      "required": [
+        "id",
+        "allowed",
+        "network",
+        "enforcement"
+      ],
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "agent_timeout": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "const": "task"
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "setup_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "collection_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cleanup_grace_ms": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "agent_timeout",
+        "setup_timeout_ms",
+        "collection_timeout_ms",
+        "cleanup_grace_ms"
+      ],
+      "additionalProperties": false
+    },
+    "sampling": {
+      "type": "object",
+      "properties": {
+        "attempts_per_task": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "seed": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempts_per_task",
+        "seed"
+      ],
+      "additionalProperties": false
+    },
+    "grading": {
+      "type": "object",
+      "properties": {
+        "on_agent_budget_exhausted": {
+          "const": "grade_final_state"
+        },
+        "on_missing_submission": {
+          "const": "error"
+        },
+        "infrastructure_retries": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "on_agent_budget_exhausted",
+        "on_missing_submission",
+        "infrastructure_retries"
+      ],
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "track",
+    "input_mode",
+    "tool_policy",
+    "budget",
+    "sampling",
+    "grading"
+  ],
+  "additionalProperties": false
+}

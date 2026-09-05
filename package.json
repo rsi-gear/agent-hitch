@@ -1,6 +1,6 @@
 {
   "name": "agent-hitch",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Content-addressed version control and evidence storage for agent harnesses",
   "keywords": [
     "ai-agents",
@@ -22,6 +22,7 @@
     "./adapters": "./dist/src/adapters/index.js",
     "./artifacts": "./dist/src/artifacts/index.js",
     "./backends": "./dist/src/backends/index.js",
+    "./benchmarks": "./dist/src/benchmarks/index.js",
     "./controller-runtime": "./dist/src/controller-runtime/index.js",
     "./control-plane": "./dist/src/control-plane/index.js",
     "./workers": "./dist/src/workers/index.js",
@@ -49,23 +50,29 @@
     "docs/schemas/",
     "integrations/harbor/hitch_harbor_agent.py",
     "integrations/harbor/hitch_harbor_environment.py",
+    "integrations/harbor/hitch_candidate_recycle.py",
+    "integrations/harbor/hitch_phase_supervisor.py",
     "integrations/harbor/hitch_harbor_task_resources.py",
-    "integrations/harbor/hitch_harbor_verifier.py"
+    "integrations/harbor/hitch_harbor_verifier.py",
+    "integrations/harbor/hitch_benchmark.py",
+    "integrations/harbor/hitch_tool_client.mjs",
+    "integrations/model-call/cli.js"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
-    "test": "node --test \"dist/test/*.test.js\"",
-    "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test \"dist/test/*.test.js\"",
+    "test": "node --test --test-timeout=120000 \"dist/test/*.test.js\"",
+    "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test --test-timeout=120000 \"dist/test/*.test.js\"",
     "canary:buildkit-secrets": "npm run build && node dist/scripts/canary-buildkit-secrets.js",
     "canary:docker-images": "npm run build && node dist/scripts/canary-docker-image-observation.js",
     "canary:resource-load": "npm run build && node dist/scripts/canary-resource-load.js",
     "canary:harbor-load": "npm run build && node dist/scripts/canary-harbor-load.js",
+    "canary:eval-scheduler-throughput": "npm run build && node dist/scripts/canary-eval-scheduler-throughput.js",
     "canary:packaged-harness": "npm run build && node dist/scripts/canary-packaged-harness.js",
     "canary:collision-domains": "npm run build && node dist/scripts/canary-collision-domains.js",
     "canary:gpu-hardware": "npm run build && node dist/scripts/canary-gpu-hardware.js",
     "check:architecture": "node dist/scripts/check-architecture.js",
-    "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && node --test \"dist/test/*.test.js\"",
+    "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && npm test",
     "prepublishOnly": "npm run check"
   },
   "engines": {
@@ -76,7 +83,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
+    "ajv": "^8.20.0",
     "typescript": "^5.9.3"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "smol-toml": "1.8.0"
+  }
 }

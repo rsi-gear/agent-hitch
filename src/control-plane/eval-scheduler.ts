@@ -4,24 +4,21 @@ import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSub
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, hitchRootId, readJSON, safeDiagnosticMessage, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { newEvalId, parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
 import type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
-import { ResourceLedger, scaleResources } from "./resources.js";
-import type { ResourceLease } from "./resources.js";
-import { CollisionLockManager } from "./collisions.js";
-import type { CollisionLease } from "./collisions.js";
+import { ResourceLedger, scaleResources, type ResourceLease } from "./resources.js";
+import { CollisionLockManager, type CollisionLease } from "./collisions.js";
 import { assertExecutionPolicySupported, defaultEvalExecutionPolicy, evalTaskCollisionKey, idempotencyIndexPath, isTerminalControl, normalizeEvalSubmissionInput, parseEvalControl, reconcileIdempotencyKeys, terminalControlState, validateIdempotencyKey } from "./eval-records.js";
 import type { EvalSubmissionInputV1 } from "./eval-records.js";
 import { WorkItemDispatcher } from "./work-dispatcher.js";
 import { workItemAdmission } from "./work-admission.js";
 import { localProviderStatusSnapshot, localWorkerSnapshot } from "./local-worker.js";
 import { recoverPersistedEvals } from "./eval-recovery.js";
-import { applyEvalPhase, applyEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
+import { applyEvalPhase, applyEvalWorkItem, queueEvalWorkItem, settleEvalWorkItems } from "./eval-control-work.js";
 import { EvalImageServices } from "./eval-image-services.js";
 import { writeSyntheticEvalResult } from "./synthetic-result.js";
 import { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
 import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
-import { schedulerCapturePlan, schedulerQueuedEval } from "./scheduler-eval-entry.js";
-import type { SchedulerQueuedEval } from "./scheduler-eval-entry.js";
+import { schedulerCapturePlan, schedulerQueuedEval, type SchedulerQueuedEval } from "./scheduler-eval-entry.js";
 import { emitPersistedEvalEvent, updateEvalControl } from "./eval-control-state.js";
 
 type QueuedEval = SchedulerQueuedEval;
@@ -436,6 +433,9 @@ export class EvalScheduler {
       },
       onWorkItemState: async (workId, leaseId, state) => {
         await this.updateControl(entry.directory, (control) => applyEvalWorkItem(control, workId, leaseId, state));
+      },
+      onWorkItemQueued: async (workId) => {
+        await this.updateControl(entry.directory, (control) => queueEvalWorkItem(control, workId));
       },
     });
     if (!await readJSON(path.join(entry.directory, "result.json"), null)) {

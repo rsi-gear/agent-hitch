@@ -8,7 +8,7 @@ import { useControllerRuntimeById } from "../controller-runtime/index.js";
 import type { EvalExecutionPlanV1, EvalProgressV1, EvalRequest, EvalTrialRefV1, ModelCapturePlanV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, invalidInput, readJSON, statePaths, withFileLock } from "../foundation/index.js";
 import { readEvalProgress, replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
-import { validateEvalId, validateEvalRequest } from "./request.js";
+import { validateEvalId } from "./request.js";
 import { assertEvalRerunTypeSupported, evalRerunSemantics, parseEvalRerunType } from "./rerun-types.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions } from "./rerun-types.js";
 import {
@@ -25,10 +25,12 @@ import type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 import { summarizeTrialRefs } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { collectOnlyEvalRerun } from "./collect-only-rerun.js";
-import { loadRerunLocalTransport, loadRerunPreparedArtifacts, loadRerunResolvedRevision } from "./rerun-inputs.js";
+import { loadPersistedRerunRequest, loadRerunLocalTransport, loadRerunPreparedArtifacts, loadRerunResolvedRevision } from "./rerun-inputs.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
+import { verifierOnlyEvalRerun } from "./verifier-only-rerun.js";
+import { restartIncompleteEval } from "./preparation-rerun.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 interface RerunPlan {
@@ -45,6 +47,9 @@ export async function rerunEval(options: RerunEvalOptions): Promise<EvalRerunRes
   if (!options.root) throw invalidInput("a Hitch state root is required for eval rerun");
   const rerunType = parseEvalRerunType(options.rerunType ?? "candidate-restart");
   assertEvalRerunTypeSupported(rerunType);
+  if (options.verifierRuntimeId !== undefined && (rerunType !== "verifier-only" || !/^sha256:[a-f0-9]{64}$/.test(options.verifierRuntimeId))) {
+    throw invalidInput("--verifier-runtime requires verifier-only and an exact runtime digest");
+  }
   const evalId = validateEvalId(options.evalId);
   const rerunId = options.rerunId ?? `rerun_${randomUUID().replaceAll("-", "")}`;
   if (!/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
@@ -67,11 +72,12 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   await ensureDir(rerunDirectory);
   const requestValue = await readJSON<unknown | null>(path.join(options.evalDirectory, "request.json"), null);
   if (requestValue === null) throw new HitchError(`eval not found: ${options.evalId}`, { code: "eval_not_found", exitCode: 3 });
-  const request = await loadPersistedRequest(requestValue);
+  const request = await loadPersistedRerunRequest(requestValue, options.evalDirectory);
   if (options.maxConcurrentOverride !== undefined && (!Number.isSafeInteger(options.maxConcurrentOverride)
     || options.maxConcurrentOverride < 1 || options.maxConcurrentOverride > request.max_concurrent)) {
     throw invalidInput("eval rerun concurrency override is invalid");
   }
+  const restarted = await restartIncompleteEval(options, request, startedAt, rerunDirectory, statePath); if (restarted) return restarted;
   const plan = parseRerunPlan(await readJSON<unknown>(path.join(options.evalDirectory, "plan.json")), options.evalId, request);
   const initialProgress = await readEvalProgress(options.evalDirectory);
   if (initialProgress === null) throw unavailable("eval has no task-level progress");
@@ -80,11 +86,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   const previousResult = await readJSON<Record<string, unknown> | null>(path.join(options.evalDirectory, "result.json"), null);
   if (previousResult?.status === "cancelled") throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 2 });
   const selectedTrials = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector, {
-    // A candidate restart intentionally creates a clean trial and reruns the
-    // Candidate Agent, so verifier-invalid slots are valid selections. Only
-    // rerun modes that promise to preserve the original candidate execution
-    // need the verifier-only guard.
-    allowVerifierFailures: options.rerunType === "candidate-restart" || options.rerunType === "collect-only",
+    // Each executable recovery mode validates its own source prerequisites.
+    allowVerifierFailures: options.rerunType === "candidate-restart" || options.rerunType === "collect-only" || options.rerunType === "verifier-only",
   });
   const selectedTasks = uniqueTasks(selectedTrials);
   await atomicWriteJSON(path.join(rerunDirectory, "request.json"), {
@@ -92,6 +95,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     rerun_id: rerunId,
     eval_id: options.evalId,
     rerun_type: options.rerunType,
+    ...(options.verifierRuntimeId ? { verifier_runtime_id: options.verifierRuntimeId } : {}),
     semantics: evalRerunSemantics(options.rerunType),
     mode: options.selector.mode,
     tasks: selectedTasks,
@@ -115,7 +119,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   const backendRuns: Array<{ attempt: number; run: HarborBackendResult }> = [];
   let captureRuntime: EvalModelCaptureRuntime | undefined;
   try {
-    if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials, env: options.env ?? process.env });
+    if (options.rerunType === "verifier-only") return await verifierOnlyEvalRerun({ ...options, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
+    if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials, env: options.env ?? process.env, ...(options.signal ? { signal: options.signal } : {}) });
     if (selectedTrials.length > 0) {
       const executionPlan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(options.evalDirectory, "execution-plan.json")));
       if (executionPlan.eval_id !== options.evalId) throw unavailable("eval execution plan identity changed");
@@ -211,6 +216,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
                 publicationMode: "replace-invalid",
                 runtimeId: runtime.runtime_id,
                 env: options.env ?? process.env,
+                ...(options.signal ? { signal: options.signal } : {}),
                 modelCapturePlan: activeCaptureRuntime.plan,
                 ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
                 requireCompleteMarker: true,
@@ -238,6 +244,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           publicationMode: "replace-invalid",
           runtimeId: runtime.runtime_id,
           env: options.env ?? process.env,
+          ...(options.signal ? { signal: options.signal } : {}),
           modelCapturePlan: activeCaptureRuntime.plan,
           ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
           rawResult: backendRun.rawResult,
@@ -289,6 +296,12 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     });
     return output;
   } catch (error) {
+    // Read back independently published assessments before finalizing a
+    // partially completed multi-slot regrade.
+    if (options.rerunType === "verifier-only") {
+      progress = await readEvalProgress(options.evalDirectory) ?? progress;
+      for (const slot of selectedTrials) if (progress.trials.some(ref => ref.task_id === slot.task_id && ref.attempt === slot.attempt && ref.assessment && ref.observation_status === "valid")) repaired.set(slotKey(slot), slot);
+    }
     await finalizeRerun(options.evalDirectory, request, plan, progress, previousResult, backendRuns).catch(() => {});
     await writeRerunState(statePath, {
       rerunId,
@@ -308,11 +321,9 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
     await captureRuntime?.close().catch(() => undefined);
   }
 }
-
 function defaultModelCapturePlan(): ModelCapturePlanV1 {
   return { requested_mode: "native", effective_mode: "native", required: false };
 }
-
 export function groupRerunSlotsByArtifact(
   selected: readonly EvalTrialSlot[],
   plan: EvalExecutionPlanV1,
@@ -390,17 +401,6 @@ function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): R
       ? { localSourceTransport: plan.local_source_transport as Record<string, unknown> }
       : {}),
   };
-}
-
-async function loadPersistedRequest(value: unknown): Promise<EvalRequest> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable("eval request is invalid");
-  const persisted = value as Record<string, unknown>;
-  const input = Object.fromEntries(Object.entries(persisted).filter(([key]) => key !== "benchmark_id" && key !== "benchmark_revision"));
-  const request = await validateEvalRequest(input);
-  if (persisted.benchmark_id !== request.benchmark_id || persisted.benchmark_revision !== request.benchmark_revision) {
-    throw unavailable("eval dataset identity changed since the original run");
-  }
-  return request;
 }
 
 async function finalizeRerun(

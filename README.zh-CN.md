@@ -59,11 +59,21 @@ hitch run \
   --output jsonl
 ```
 
-输出中包含 run ID，可以用它查看保存的轨迹：
+输出中包含 run ID。自动化消费者应使用有界的轨迹和 verifier 视图，完整轨迹
+inspect 仅用于显式审计：
 
 ```bash
+hitch trajectory project RUN_ID --profile analysis --json
+hitch trajectory events RUN_ID --types tool/call,tool/result --limit 100 --json
 hitch trajectory inspect RUN_ID
+hitch verifier inspect RUN_ID --json
 ```
+
+`project` 会重建 DSH surface，并按请求 attempt 合并流式 chunk，使 retry 及其
+finish reason 保持独立；`events` 在源端完成过滤和分页。
+使用 `--field` 钻取字段时，还必须传入任一有界视图返回的 `canonical_sha256`。
+对于没有固定 canonical SHA-256 的旧版 trajectory ref，流式视图会 fail closed。
+使用 `--json` 调用的命令失败时，会在 stderr 返回稳定的 JSON 错误 envelope。
 
 每次运行的 manifest、结果、事件、日志和轨迹都会保存在
 `~/.hitch/runs/RUN_ID` 下。
@@ -105,12 +115,13 @@ Hitch 记录从请求到结果的完整链路：
 - 规范化控制面事件与原始进程日志；
 - 支持场景下经过脱敏的 provider-native 事件；
 - 采用 SHA-256 绑定文件、兼容 DSH 的规范化轨迹；
-- 带版本的消息反馈与评测证据。
+- 带版本的消息反馈，以及有界的 verifier/评测证据。
 
 可以通过 CLI 查询运行，并在不改写轨迹的情况下附加反馈：
 
 ```bash
 hitch runs list --json
+hitch verifier inspect RUN_ID --json
 hitch feedback list RUN_ID --json
 hitch feedback put RUN_ID \
   --message MESSAGE_ID \
@@ -159,6 +170,7 @@ hitch run --daemon --harness codex@version:0.92.0 --prompt-file task.md
 
 - [设计与架构](docs/design.md)
 - [Harbor 评测](docs/evals.md)
+- [Verifier evidence](docs/verifier-evidence.md)
 - [工作区隔离](docs/workspaces.md)
 - [守护进程设计](docs/daemon.md)
 - [Hitch 0.2 开发规范](docs/hitch-0.2-development-spec.md)

@@ -1,6 +1,6 @@
 import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "../../backends/index.js";
 import type { EvalExecutionPolicyV1, ResourceVectorV1 } from "../../domain/index.js";
-import { inspectEval, isControlPlaneEval, listEvals, parseEvalRerunType, rerunEval, runEval, validateEvalId } from "../../evals/index.js";
+import { inspectEval, isControlPlaneEval, listEvals, parseEvalRerunType, rerunEval, runEval, runBenchmarkEval, validateEvalId } from "../../evals/index.js";
 import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput, positiveInteger } from "../../foundation/index.js";
 import { assertNoArgs, parseEvalRequest, takeFlag, takeOption, takeRepeatedOption } from "../arguments.js";
@@ -31,6 +31,8 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   let useDaemon = takeFlag(args, "--daemon");
   const taskNames = takeRepeatedOption(args, "--task");
   const rerunType = parseEvalRerunType(takeOption(args, "--type") || "candidate-restart");
+  const verifierRuntimeId = takeOption(args, "--verifier-runtime");
+  if (verifierRuntimeId !== undefined && (rerunType !== "verifier-only" || !/^sha256:[a-f0-9]{64}$/.test(verifierRuntimeId))) throw invalidInput("--verifier-runtime requires verifier-only and an exact runtime digest");
   const rerunId = takeOption(args, "--rerun-id");
   if (rerunId !== undefined && !/^rerun_[a-f0-9]{32}$/.test(rerunId)) throw invalidInput("eval rerun id is invalid");
   const output = takeOption(args, "--output") || "json";
@@ -55,6 +57,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
       body: JSON.stringify({
         ...(rerunId === undefined ? {} : { rerun_id: rerunId }),
         rerun_type: rerunType,
+        ...(verifierRuntimeId ? { verifier_runtime_id: verifierRuntimeId } : {}),
         selector: invalid ? { mode: "invalid" } : { mode: "tasks", task_names: taskNames },
       }),
     });
@@ -71,6 +74,7 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
       evalId,
       root,
       rerunType,
+      ...(verifierRuntimeId ? { verifierRuntimeId } : {}),
       selector: invalid ? { mode: "invalid" } : { mode: "tasks", taskNames },
       ...(harborExecutable === undefined ? {} : { harborExecutable }),
       signal: controller.signal,
@@ -135,16 +139,19 @@ async function evalDoctorCommand(args: string[], root: string): Promise<void> {
 }
 
 async function evalRunCommand(args: string[], root: string): Promise<void> {
+  const benchmark = takeOption(args, "--benchmark");
+  const benchmarkLock = takeOption(args, "--benchmark-lock");
   const useDaemon = takeFlag(args, "--daemon");
   const idempotencyKey = takeOption(args, "--idempotency-key");
   const output = takeOption(args, "--output") || "json";
   const harborExecutable = takeOption(args, "--harbor");
   const requestedEvalId = takeOption(args, "--eval-id");
   const executionOptions = parseEvalExecutionOptions(args);
-  const request = parseEvalRequest(args);
+  const request = parseEvalRequest(args, Boolean(benchmark || benchmarkLock));
   assertNoArgs(args);
   if (!new Set(["json", "jsonl"]).has(output)) throw invalidInput("--output must be json or jsonl");
   if (useDaemon) {
+    if (benchmark || benchmarkLock) throw invalidInput("standard package runs currently require a local root without --daemon");
     if (requestedEvalId !== undefined) throw invalidInput("--eval-id is unavailable with --daemon; submission IDs are server-assigned");
     if (harborExecutable !== undefined) throw invalidInput("--harbor is unavailable with --daemon; configure Harbor for the daemon environment");
     const client = await daemonClient(root);
@@ -171,7 +178,10 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
-    const result = await runEval({
+    const run = benchmark || benchmarkLock ? runBenchmarkEval : runEval;
+    const result = await run({
+      ...(benchmark ? { benchmark } : {}),
+      ...(benchmarkLock ? { benchmarkLock } : {}),
       ...(requestedEvalId !== undefined ? { evalId: validateEvalId(requestedEvalId) } : {}),
       request,
       root,

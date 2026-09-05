@@ -204,7 +204,7 @@ preserved, and an explicitly supplied bypass flag is not duplicated.
 
 The outer Harbor agent timeout is the Hitch timeout plus a 30-second cleanup
 window. Harbor's agent setup timeout is configured separately because a task
-image may need the exact pinned Node.js runtime installed before artifact use.
+image may need the exact pinned Node.js runtime unpacked before artifact use.
 
 Every eval prepares the selected immutable harness outside benchmark task
 containers. Hitch uses a dedicated Docker builder based on exact Node.js
@@ -214,6 +214,56 @@ entrypoint/content digests, source type, platform, and Node version; every trial
 receives the verified directory and runs it without contacting a package
 registry or invoking a package manager. The task container recomputes the
 uploaded artifact integrity before execution.
+
+Trial setup no longer downloads or installs nvm. A matching system Node is
+reused after checking its exact version and platform. Otherwise Hitch verifies
+and uploads an offline Node `v22.23.0` archive, extracts it into a private
+`/opt/hitch-node-runtime-<id>/ready` directory, and prepends that `bin` directory
+only for Hitch commands. The archive includes npm/npx but not the builder's
+pnpm. It never rewrites a system Node, shell profile, or benchmark image, and
+there is no GitHub, package-registry, or OS-package-manager fallback in setup.
+
+The archive is exported with networking disabled from the builder's inspected
+immutable Linux image ID (not from the controller host). A separate cache at
+`<HITCH_ROOT>/store/harbor-artifacts/node-runtimes` keys preparation by recipe,
+image ID, platform, exact Node version and libc family; its content identity
+also covers the archive SHA-256 and byte size. A file lock, staging directory,
+atomic rename and verified cache hits prevent duplicate/partial publication;
+corrupt entries are quarantined and rebuilt. Cold builder-image preparation
+still needs its normal registry/package access **before trial dispatch**.
+
+Each new harness artifact includes this bundle under `.hitch-node-runtime`,
+with a new artifact ID/content digest. Thus existing job pins, remote-worker
+transport and reruns carry the runtime without downloading it in each trial.
+Before bootstrapping Node, the Python bridge authenticates the host artifact
+against its job-pinned content digest and the trial rechecks the uploaded
+archive checksum before extraction. The runtime is activated only after its
+executable passes a version/platform probe. `hitch-node-runtime.json` records
+the selected source and runtime identity, or a specific setup failure.
+
+The offline runtime currently supports Linux x64/arm64 **glibc** images with
+`uname`, `getconf`, `sha256sum`, `tar`, `gzip`, and compatible Node shared
+libraries (including libstdc++). Musl/Alpine, missing loader libraries, missing
+tools, or architecture mismatch fail explicitly; setup does not try to repair
+the image online. A preinstalled matching Node can still be reused without
+these extraction prerequisites. New builds do not change old sealed artifacts
+or controller runtimes: to fix an old nvm-based job, launch a **new eval with
+the updated controller**. A rerun pinned to the old controller keeps its old
+behavior. An old artifact used with the new bridge and no matching system Node
+fails with `hitch_node_runtime_missing` instead of downloading nvm.
+
+The opt-in real-Docker regression uses an existing Linux/amd64
+`node:22.23.0-bookworm-slim` image and never pulls:
+
+```sh
+npm run build
+HITCH_NODE_RUNTIME_DOCKER_TEST=1 node --test dist/test/harbor-node-runtime.integration.test.js
+```
+
+`HITCH_NODE_RUNTIME_TEST_IMAGE` can select an already inspected image ID with
+the same Node version/platform. The test deletes Node only inside disposable
+containers with `--network none`, checks Hitch and npm/npx startup, verifies
+system-Node reuse, and rejects an intentionally corrupted upload.
 
 The builder platform comes from each task environment's planner-owned
 trial-runtime contract, never from the controller host. The task inspector
@@ -431,8 +481,32 @@ backward compatibility. Rerun/recovery operations have distinct semantics:
 | `candidate-restart` | Executes again from the original instruction | New conversation | Clean environment | Supported |
 | `candidate-resume` | Continues an interrupted candidate | Provider-native session | Restored checkpoint | Reserved; rejected until both checkpoint and adapter resume exist |
 | `trajectory-replay` | Starts a new physical execution with prior context | Verified canonical trajectory | Restored checkpoint | Reserved; rejected until replay and checkpoint support exist |
-| `verifier-only` | Does not execute | None | Original retained environment | Automatic only while the original trial is live |
-| `collect-only` | Does not execute | None | None | Reserved for terminal-but-uncollected recovery |
+| `verifier-only` | Does not execute | None | Fresh verifier, recorded artifacts | Harbor 0.21.0, frozen standard package, local Docker, original single-step separate verifier |
+| `collect-only` | Does not execute | None | None | Imports a complete late result from an isolated work item |
+
+For a verifier timeout or missing result after a successful candidate, use
+`hitch eval rerun EVAL_ID --invalid --type verifier-only`. The original run,
+trajectory, task, verifier, image references and budgets are preserved. This
+mode rejects incomplete artifacts, shared-environment graders, multi-step tasks,
+and candidate failures. It never selects an alternative task or calls the model.
+
+Each regrade writes an immutable assessment under
+`evals/EVAL_ID/assessments/assessment_ID/`. Its manifest links the original
+candidate bundle, artifact snapshot, task digest, Harbor result, verifier logs,
+resource lease and cleanup evidence, including the original lifecycle receipt
+that Harbor's built-in regrade does not copy. The original run's invalid observation stays
+sealed. A valid assessment replaces the invalid eval slot with the same run/trial
+identity and an `assessment: {id, digest}` reference. In that case,
+`verifier_result_ref` is relative to the assessment directory; otherwise it is
+relative to the run directory. A real zero counts as valid. Another infrastructure
+failure stays invalid and leaves the original slot intact. Artifact digests are
+captured at regrade preparation; older Harbor manifests did not record them at
+candidate completion, so the capture timestamp is explicit.
+
+The daemon admits regrades serially using a conservative maximum of the original
+work-item reservations. Regrade bookkeeping does not create a new candidate run
+or alter the original run's training-data eligibility. Remote dispatch and
+recovering a partially collected artifact set are not supported by this mode.
 
 A canonical trajectory is evidence, not a process checkpoint. Feeding it back
 to an LLM can reconstruct conversational context, but it cannot restore the
@@ -528,3 +602,31 @@ cancellation response. Use a fresh ID for a new repair. This fence survives daem
 restart. If the daemon itself crashed during execution and cannot prove that the
 backend stopped, cancellation returns `execution_state_ambiguous` instead of
 claiming success; the controller must retain ownership for reconciliation.
+
+## Multiphase candidate evidence (integration in progress)
+
+Tasks that reset the candidate conversation between phases use ordinary Hitch
+runs with `context.kind = benchmark_phase`, an eval parent, `run_group_id` and
+a one-based `phase_index`. Each phase has its own request, process result,
+native session and sealed bundle. Phase manifests cannot contain a standalone
+`observation`: an entire task's score must not be assigned to just one phase.
+They can be queried by benchmark/task/eval identity, while standalone strict
+comparison and training-candidate derivation exclude them.
+
+The `agent-hitch/runs` API exports
+`inspectBenchmarkPhaseGroup`, `sealBenchmarkPhaseGroup` and
+`readBenchmarkPhaseGroup`. The group file is stored at
+`evals/<eval-id>/run-groups/<run-group-id>/group.json` and references the original
+run bundles without copying their trajectories. Inspection requires consecutive
+phase indices, matching trial and candidate identity, terminal non-overlapping
+execution intervals, valid trajectories/bundles and distinct native session IDs.
+Reads revalidate every referenced bundle. A sealed group cannot be replaced by
+different membership or evidence.
+
+This group has scope `candidate-evidence-only`. It does not prove that every
+native task phase ran, that its gates passed, or that a new session received no
+prior context. The runtime supervisor must establish those facts with native
+controller evidence and isolated candidate environments. Dynamic Harbor
+candidate replacement, group import/publication and native score reconciliation
+are not connected yet. The existing single-run importer rejects phase runs;
+these records cannot currently produce a scored eval trial.

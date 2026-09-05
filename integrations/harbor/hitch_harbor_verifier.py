@@ -23,9 +23,15 @@ from harbor.verifier.verifier import Verifier
 
 
 MAX_LOG_BYTES = 256 * 1024
+HITCH_AGENT_OUTCOME_NAME = "hitch-agent-outcome.json"
 LOG_NAMES = ("test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt")
-OUTPUT_NAMES = (*LOG_NAMES, "reward.txt", "reward.json", "ctrf.json")
-CONTROL_NAMES = ("infrastructure-error.json", "infrastructure-retry-history.json")
+OUTPUT_NAMES = (*LOG_NAMES, "reward.txt", "reward.json", "process.json", "feedback.json", "ctrf.json")
+CONTROL_NAMES = (
+    "infrastructure-error.json",
+    "infrastructure-retry-history.json",
+    "candidate-ineligible.json",
+    "eligibility-gate.json",
+)
 
 INFRASTRUCTURE_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = (
     (
@@ -126,8 +132,28 @@ class HitchRetryingVerifier(Verifier):
             self._write_phase_timing(started_ns)
 
     async def _verify_with_retries(self) -> VerifierResult:
+        directory = getattr(getattr(getattr(self, "task", None), "paths", None), "environment_dir", None)
+        if directory and (directory.parent / ".hitch-benchmark.json").is_file():
+            from hitch_benchmark import restore_final_response, validate_collected_submission
+            validate_collected_submission(self)
+            await restore_final_response(self)
         # Do not trust a control file left by the candidate or a prior phase.
         await self._remove_files(CONTROL_NAMES)
+        eligibility = self._read_trusted_agent_outcome()
+        if eligibility is None:
+            self._write_json("eligibility-gate.json", {
+                "schema_version": "1", "status": "unavailable", "verifier_executed": True,
+            })
+        elif eligibility["gradeability"] == "ungradeable":
+            self._write_json("candidate-ineligible.json", {
+                "schema_version": "1",
+                "code": "candidate_evidence_unavailable",
+                "run_id": eligibility["run_id"],
+                "candidate_bundle": eligibility["candidate_bundle"],
+                "reason_code": eligibility.get("reason_code", "candidate_evidence_unavailable"),
+                "verifier_executed": False,
+            })
+            return VerifierResult(rewards={"reward": 0})
         attempts: list[dict[str, Any]] = []
         for attempt in range(1, self.infrastructure_retries + 2):
             result: VerifierResult | None = None
@@ -152,6 +178,10 @@ class HitchRetryingVerifier(Verifier):
                 if attempts:
                     self._write_history("recovered", attempts)
                 assert result is not None
+                directory = getattr(getattr(getattr(self, "task", None), "paths", None), "environment_dir", None)
+                if directory and (directory.parent / ".hitch-benchmark.json").is_file():
+                    from hitch_benchmark import normalize_rewards
+                    return normalize_rewards(self, result)
                 return result
 
             attempts.append(
@@ -187,6 +217,34 @@ class HitchRetryingVerifier(Verifier):
                 await asyncio.sleep(backoff_seconds)
 
         raise AssertionError("unreachable verifier retry state")
+
+    def _read_trusted_agent_outcome(self) -> dict[str, Any] | None:
+        source = self.trial_paths.verifier_dir.parent / "agent" / HITCH_AGENT_OUTCOME_NAME
+        try:
+            if not source.is_file() or source.stat().st_size <= 0 or source.stat().st_size > 16 * 1024:
+                return None
+            value = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(value, dict) or set(value) - {
+            "schema_version", "run_id", "status", "candidate_bundle", "submission_snapshot", "gradeability", "reason_code",
+        }:
+            return None
+        if value.get("schema_version") != "1" or re.fullmatch(r"run_[a-f0-9]{32}", str(value.get("run_id", ""))) is None:
+            return None
+        if value.get("status") not in {"succeeded", "failed", "timed_out", "cancelled"}:
+            return None
+        if value.get("candidate_bundle") not in {"complete", "missing", "invalid"}:
+            return None
+        if value.get("submission_snapshot") not in {"complete", "missing", "not-required"}:
+            return None
+        if value.get("gradeability") not in {"gradeable", "ungradeable"}:
+            return None
+        if value["gradeability"] == "gradeable" and value["candidate_bundle"] != "complete":
+            return None
+        if "reason_code" in value and (not isinstance(value["reason_code"], str) or not value["reason_code"]):
+            return None
+        return value
 
     def _write_phase_timing(self, started_ns: int) -> None:
         self._write_json(

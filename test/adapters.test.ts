@@ -244,3 +244,26 @@ test("DeepSeek adapter preserves multiline plain-text output including JSON-look
     { type: "message.delta", text: '\n{"answer":true}' },
   ]);
 });
+
+
+test("Codex keeps final text separate and records open command outcome as unknown", () => {
+  const adapter = getAdapter("codex");
+  const state = {};
+  adapter.translate?.({ type: "item.started", item: { id: "server", type: "command_execution", command: "npm start", status: "in_progress" } }, state);
+  const complete = adapter.translate?.({ type: "item.completed", item: { id: "msg", type: "agent_message", text: "Final answer" } }, state);
+  assert.deepEqual(complete, [{ type: "message.completed", text: "Final answer" }]);
+  const closed = adapter.translate?.({ type: "turn.completed", usage: { input_tokens: 4 } }, state) ?? [];
+  assert.equal(closed[0]?.type, "tool.completed");
+  assert.equal((closed[0] as {status: string}).status, "unknown");
+  assert.equal((closed[0] as {call_id: string}).call_id, "server");
+  assert.deepEqual(adapter.translate?.({type: "turn.completed"}, state), []);
+});
+
+test("Codex completed command preserves output and exit status", () => {
+  const adapter = getAdapter("codex");
+  const result = adapter.translate?.({type: "item.completed", item: {id:"cmd", type:"command_execution", status:"completed", exit_code:0, aggregated_output:"hello"}}) ?? [];
+  assert.equal((result[0] as {status:string}).status, "succeeded");
+  assert.equal((result[0] as {output:string}).output, "hello");
+  const failed = adapter.translate?.({type: "item.completed", item: {id:"cmd", type:"command_execution", status:"completed", exit_code:1}}) ?? [];
+  assert.equal((failed[0] as {status:string}).status, "failed");
+});

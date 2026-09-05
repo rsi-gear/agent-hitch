@@ -25,6 +25,17 @@ export interface CredentialRedactionResult {
   redactions: Map<string, number>;
 }
 
+/** Match credential-bearing JSON/header field names independently of current environment values. */
+export function isSensitiveFieldName(value: string): boolean {
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
+  const parts = normalized.split("_").filter(Boolean);
+  return parts.includes("token") || parts.includes("auth")
+    || /authorization|cookie|api_key|client_secret|private_key|password|credential|(?:^|_)secret(?:_|$)/.test(normalized);
+}
+
 export function safeDiagnosticMessage(
   value: unknown,
   credentialValues: readonly string[] = [],
@@ -75,7 +86,20 @@ export function credentialValuesFromEnv(names: readonly string[], env: NodeJS.Pr
   for (const name of names) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new TypeError(`invalid credential environment name: ${name}`);
     const value = env[name];
-    if (value !== undefined && value.length > 0) values.push(value);
+    if (value !== undefined && value.length > 0) {
+      values.push(value);
+      // Structured credential files can be handed off as one environment value.
+      // Also redact their opaque strings when a client prints a nested token.
+      if (value.trimStart().startsWith("{")) {
+        try {
+          const collect = (entry: unknown): void => {
+            if (typeof entry === "string" && entry.length >= 16) values.push(entry);
+            else if (entry && typeof entry === "object") Object.values(entry).forEach(collect);
+          };
+          collect(JSON.parse(value));
+        } catch { /* Opaque non-JSON credentials retain the exact-value rule. */ }
+      }
+    }
   }
   return [...new Set(values)].sort((left, right) => right.length - left.length || left.localeCompare(right));
 }

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hitch artifact-only verifier assessment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "candidate_executes", "eval_id", "task_id", "attempt", "rerun_id", "source", "controller_runtime_id", "backend", "observation", "evidence_digest", "completed_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "verifier-only-assessment" },
+    "candidate_executes": { "const": false },
+    "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+    "task_id": { "type": "string", "minLength": 1 },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "rerun_id": { "type": "string", "pattern": "^rerun_[a-f0-9]{32}$" },
+    "controller_runtime_id": { "$ref": "#/$defs/digest" },
+    "runtime_repair": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "source_runtime_id", "replacement_runtime_id", "path", "source_sha256", "replacement_sha256", "unchanged_file_count"],
+      "properties": {
+        "schema_version": { "const": "1" }, "kind": { "const": "verifier-environment-runtime-repair" },
+        "source_runtime_id": { "$ref": "#/$defs/digest" }, "replacement_runtime_id": { "$ref": "#/$defs/digest" },
+        "path": { "const": "integrations/harbor/hitch_harbor_environment.py" },
+        "source_sha256": { "$ref": "#/$defs/digest" }, "replacement_sha256": { "$ref": "#/$defs/digest" },
+        "unchanged_file_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "evidence_digest": { "$ref": "#/$defs/digest" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trial_id", "run_id", "work_id", "backend_directory", "bundle_index_digest", "trial_tree_digest", "artifacts_digest", "task_tree_digest", "artifact_capture_at"],
+      "properties": {
+        "trial_id": { "type": "string", "minLength": 1 },
+        "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+        "controller_runtime_id": { "$ref": "#/$defs/digest" },
+        "work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
+        "backend_directory": { "type": "string", "minLength": 1 },
+        "bundle_index_digest": { "$ref": "#/$defs/digest" },
+        "trial_tree_digest": { "$ref": "#/$defs/digest" },
+        "artifacts_digest": { "$ref": "#/$defs/digest" },
+        "task_tree_digest": { "$ref": "#/$defs/digest" },
+        "artifact_capture_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "identity", "process_exit_code", "signal"],
+      "properties": {
+        "name": { "const": "harbor" },
+        "version": { "const": "0.21.0" },
+        "identity": { "type": "string" },
+        "process_exit_code": { "type": ["integer", "null"] },
+        "signal": { "type": ["string", "null"] }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["valid", "invalid"] },
+        "reward": { "type": "number" },
+        "invalid_reason": { "type": "string", "minLength": 1 },
+        "verifier_result_ref": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [{
+        "if": { "properties": { "status": { "const": "valid" } } },
+        "then": { "required": ["reward", "verifier_result_ref"], "not": { "required": ["invalid_reason"] } },
+        "else": { "required": ["invalid_reason"] }
+      }]
+    }
+  },
+  "allOf": [{ "if": { "required": ["runtime_repair"] }, "then": { "properties": { "source": { "required": ["controller_runtime_id"] } } } }],
+  "$defs": { "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } }
+}

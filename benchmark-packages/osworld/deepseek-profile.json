@@ -1,0 +1,29 @@
+{
+  "protocol": "osworld-model-profile@1",
+  "id": "deepseek-v4-flash-chat-nonthinking-v1",
+  "scope": "controller evaluator and user simulator only",
+  "upstream_defaults_replaced": {"task_031_judge": "gpt-5.2", "task_095_user_simulator": "gpt-4o"},
+  "environment": {
+    "OSWORLD_EVAL_MODEL_PROVIDER": "hitch_deepseek_chat_v1",
+    "OSWORLD_EVAL_MODEL_NAME": "deepseek-v4-flash",
+    "OSWORLD_EVAL_MODEL_BASE_URL": "https://api.deepseek.com/",
+    "OSWORLD_EVAL_MODEL_API_KEY_ENV": "DEEPSEEK_API_KEY",
+    "OSWORLD_USER_SIM_PROVIDER": "hitch_deepseek_chat_v1",
+    "OSWORLD_USER_SIM_MODEL": "deepseek-v4-flash",
+    "OSWORLD_USER_SIM_BASE_URL": "https://api.deepseek.com/",
+    "OSWORLD_USER_SIM_API_KEY_ENV": "DEEPSEEK_API_KEY"
+  },
+  "credential_environment": ["DEEPSEEK_API_KEY"],
+  "transport": {
+    "protocol": "osworld-deepseek-chat@1",
+    "thinking": "disabled",
+    "token_parameter": "max_tokens",
+    "token_budget_source": "unchanged native call config",
+    "retry_source": "upstream ModelBackend",
+    "additional_sdk_retries": 0,
+    "request_timeout_sec": 300,
+    "redirects": "rejected",
+    "incomplete_reply": "invalid_model_dependency"
+  },
+  "limitation": "Provider aliases are mutable; record requested and returned model identity and API usage per call. This is a substituted-judge profile, not Anthropic or upstream-default score reproduction."
+}

@@ -1,53 +1,107 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { BackendWorkItemV1, EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
 import { preparedArtifactForWorkItem } from "./work-item-artifacts.js";
-import { HitchError, sha256JSON } from "../foundation/index.js";
+import { HitchError } from "../foundation/index.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { retryableInfrastructureTrials } from "./infrastructure-retry.js";
 import type { ExecutePlannedHarborOptions, PlannedBackendRun } from "./planned-execution.js";
 import { replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
+import { physicalRetryWorkItem } from "./physical-retry-work.js";
+import { ensurePhysicalRetryDecision, transitionRetryDecision } from "./retry-state.js";
+import { retryBackoffMs } from "./retry-backoff.js";
+import type { EvalSchedulerMetrics } from "./scheduler-metrics.js";
 
 export async function runRemoteInfrastructureRetries(input: {
   options: ExecutePlannedHarborOptions;
   item: BackendWorkItemV1;
-  initial: PlannedBackendRun;
+  initial: Pick<PlannedBackendRun, "refs" | "environmentImages"> | PlannedBackendRun;
   progress: EvalProgressV1;
+  replaceProgressTrial?: (ref: EvalTrialRefV1, workId: string) => Promise<void>;
+  currentProgress?: () => EvalProgressV1;
+  firstRetryIndex?: number;
+  metrics?: EvalSchedulerMetrics;
 }): Promise<{ progress: EvalProgressV1; runs: InfrastructureRetryRun[] }> {
   const executor = input.options.remoteWorkExecutor;
   if (!executor) throw new TypeError("remote work executor is unavailable");
   let progress = input.progress;
   let candidates = retryableInfrastructureTrials(input.initial.refs);
   const runs: InfrastructureRetryRun[] = [];
-  for (let retry = 1; retry <= input.options.request.infrastructure_retries && candidates.length > 0; retry += 1) {
+  const firstRetryIndex = input.firstRetryIndex ?? 1;
+  if (!Number.isSafeInteger(firstRetryIndex) || firstRetryIndex < 1) throw new TypeError("first infrastructure retry index is invalid");
+  for (let retry = firstRetryIndex; retry <= input.options.request.infrastructure_retries && candidates.length > 0; retry += 1) {
     if (input.options.signal?.aborted) break;
     const triggers = [...candidates];
-    const backoffMs = input.options.request.infrastructure_retry_backoff_ms * retry;
+    const work = physicalRetryWorkItem(input.item, retry, triggers);
+    const backoffMs = retryBackoffMs(input.options.request.infrastructure_retry_backoff_ms, retry, work.work_id);
+    const notBefore = new Date(Date.now() + backoffMs).toISOString();
+    const decisions = await Promise.all(triggers.map((trigger) => ensurePhysicalRetryDecision({
+      evalDirectory: input.options.evalDirectory, evalId: input.options.evalId, item: input.item,
+      retryIndex: retry, trigger, notBefore,
+    })));
+    if (decisions.some((decision) => decision.retry_work_id !== work.work_id)) throw new Error(`persisted retry work identity conflicts with execution: ${work.work_id}`);
+    await input.options.onWorkItemQueued?.(work.work_id);
     input.options.sink.emit({
-      type: "eval.infrastructure-retry.scheduled", execution_kind: "physical-infrastructure-retry",
+      type: "eval.retry.decision", execution_kind: "physical-infrastructure-retry", work_id: work.work_id,
+      decision_ids: decisions.map((decision) => decision.decision_id),
       candidate_executes: true, attempt: input.item.logical_attempt, retry,
       tasks: input.item.task_ids, backoff_ms: backoffMs, provider: input.item.provider,
     });
-    if (backoffMs > 0) await delay(backoffMs, undefined, input.options.signal ? { signal: input.options.signal } : undefined);
+    const remainingBackoffMs = Math.max(0, Date.parse(decisions[0]?.not_before ?? notBefore) - Date.now());
+    input.metrics?.addBlocked("backoff", remainingBackoffMs);
+    if (remainingBackoffMs > 0) await delay(remainingBackoffMs, undefined, input.options.signal ? { signal: input.options.signal } : undefined);
     if (input.options.signal?.aborted) break;
-    const work = retryWorkItem(input.item, retry);
+    input.options.sink.emit({
+      type: "eval.retry.ready", work_id: work.work_id, decision_ids: decisions.map((decision) => decision.decision_id),
+      retry, tasks: input.item.task_ids, priority: input.item.scheduling?.remaining_path_ms ?? 0,
+    });
     const refs: EvalTrialRefV1[] = [];
+    let decisionsSettled = false;
+    const settleDecisions = async (): Promise<void> => {
+      if (decisionsSettled || refs.length === 0) return;
+      candidates = retryableInfrastructureTrials(refs);
+      if (retry < input.options.request.infrastructure_retries && candidates.length > 0) {
+        const nextWork = physicalRetryWorkItem(input.item, retry + 1, candidates);
+        const nextNotBefore = new Date(Date.now() + retryBackoffMs(input.options.request.infrastructure_retry_backoff_ms, retry + 1, nextWork.work_id)).toISOString();
+        await Promise.all(candidates.map((trigger) => ensurePhysicalRetryDecision({
+          evalDirectory: input.options.evalDirectory, evalId: input.options.evalId, item: input.item,
+          retryIndex: retry + 1, trigger, notBefore: nextNotBefore,
+        })));
+        await input.options.onWorkItemQueued?.(nextWork.work_id);
+      }
+      const retryState = refs.some((ref) => ref.observation_status === "valid")
+        ? "repaired"
+        : retry < input.options.request.infrastructure_retries && candidates.length > 0 ? "invalid" : "exhausted";
+      for (const decision of decisions) await transitionRetryDecision({
+        evalDirectory: input.options.evalDirectory, evalId: input.options.evalId, decisionId: decision.decision_id, state: retryState,
+      });
+      decisionsSettled = true;
+    };
     const publish = async (ref: EvalTrialRefV1): Promise<void> => {
       assertSelectedTrial(ref, input.item);
-      const existing = refs.find((entry) => entry.trial_id === ref.trial_id || entry.run_id === ref.run_id);
+      const existing = refs.find((entry) => entry.trial_id === ref.trial_id || (entry.run_group ? entry.run_group.run_group_id === ref.run_group?.run_group_id : entry.run_id === ref.run_id));
       if (existing) {
         if (JSON.stringify(existing) !== JSON.stringify(ref)) throw new Error(`remote retry trial identity changed: ${ref.trial_id}`);
         return;
       }
       refs.push(ref);
+      if (ref.invalid_reason === "candidate_evidence_unavailable") input.options.sink.emit({
+        type: "eval.verifier.skipped", work_id: work.work_id, trial_id: ref.trial_id, task_id: ref.task_id,
+        reason: "candidate_evidence_unavailable", candidate_executes: true, verifier_executes: false,
+      });
       if (ref.observation_status === "valid") {
-        progress = replaceInvalidEvalProgressTrial(progress, ref);
-        await writeEvalProgress(input.options.evalDirectory, progress);
+        if (input.replaceProgressTrial) {
+          await input.replaceProgressTrial(ref, work.work_id);
+          progress = input.currentProgress?.() ?? progress;
+        } else {
+          progress = replaceInvalidEvalProgressTrial(progress, ref);
+          await writeEvalProgress(input.options.evalDirectory, progress);
+        }
       }
       input.options.sink.emit({
         type: ref.observation_status === "valid" ? "eval.infrastructure-retry.repaired" : "eval.infrastructure-retry.failed",
         attempt: input.item.logical_attempt, retry, task_id: ref.task_id, trial_id: ref.trial_id,
         run_id: ref.run_id, observation_status: ref.observation_status,
-        ...(ref.invalid_reason ? { invalid_reason: ref.invalid_reason } : {}), generation: progress.generation,
+        ...(ref.invalid_reason ? { invalid_reason: ref.invalid_reason } : {}), generation: (input.currentProgress?.() ?? progress).generation,
       });
     };
     const completed = await executor({
@@ -61,10 +115,24 @@ export async function runRemoteInfrastructureRetries(input: {
       ...(input.options.signal ? { signal: input.options.signal } : {}),
       emit: (event) => input.options.sink.emit({ ...event, execution_kind: "physical-infrastructure-retry", infrastructure_retry: retry }),
       publish,
-      onLeaseState: (leaseId, state) => input.options.onWorkItemState?.(work.work_id, leaseId, state) ?? Promise.resolve(),
+      onLeaseState: async (leaseId, state) => {
+        if (state === "running") {
+          input.metrics?.startWork(work.work_id, "retry");
+          for (const decision of decisions) await transitionRetryDecision({
+            evalDirectory: input.options.evalDirectory, evalId: input.options.evalId, decisionId: decision.decision_id, state: "running",
+          });
+          input.options.sink.emit({ type: "eval.retry.admitted", work_id: work.work_id, decision_ids: decisions.map((decision) => decision.decision_id) });
+        }
+        if (state === "terminal") {
+          await settleDecisions();
+          input.metrics?.finishWork(work.work_id);
+        }
+        await input.options.onWorkItemState?.(work.work_id, leaseId, state);
+      },
     });
     assertPublishedRefs(completed.refs, refs, input.item);
-    candidates = retryableInfrastructureTrials(refs);
+    await settleDecisions();
+    input.metrics?.finishWork(work.work_id);
     runs.push({
       attempt: input.item.logical_attempt as number, retry, tasks: [...input.item.task_ids], triggers,
       refs, run: completed.run, leaseId: completed.leaseId, workId: work.work_id,
@@ -77,7 +145,7 @@ export async function runRemoteInfrastructureRetries(input: {
     });
     if (completed.run.backend.process_exit_code !== 0 || completed.run.rawResult === null) break;
   }
-  return { progress, runs };
+  return { progress: input.currentProgress?.() ?? progress, runs };
 }
 
 function assertSelectedTrial(ref: EvalTrialRefV1, item: BackendWorkItemV1): void {
@@ -95,9 +163,4 @@ function assertPublishedRefs(returned: readonly EvalTrialRefV1[], published: rea
       code: "eval_infrastructure_retry_result_mismatch", exitCode: 12,
     });
   }
-}
-
-function retryWorkItem(item: BackendWorkItemV1, retry: number): BackendWorkItemV1 {
-  const identity = sha256JSON({ work_id: item.work_id, execution_kind: "physical-infrastructure-retry", retry });
-  return { ...item, work_id: `work_${identity.slice("sha256:".length, "sha256:".length + 32)}` };
 }

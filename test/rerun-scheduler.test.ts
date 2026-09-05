@@ -6,7 +6,7 @@ import path from "node:path";
 import { EvalRerunScheduler, ResourceLedger } from "../src/control-plane/index.js";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalRerunResult, RerunEvalOptions } from "../src/evals/index.js";
-import { evalRerunSemantics, validateEvalRequest } from "../src/evals/index.js";
+import { buildEvalExecutionPlan, evalRerunSemantics, validateEvalRequest } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, readJSON, sha256JSON } from "../src/foundation/index.js";
 
@@ -105,6 +105,80 @@ test("candidate rerun inherits the source execution policy", async (t) => {
   await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
   assert.equal(observed?.maxConcurrentOverride, 2);
   assert.deepEqual(observed?.executionResources, sourceTrial);
+  assert.equal(observed?.executionResourceSource, "submission-default");
+  assert.equal(observed?.executionStrategy, "local-task-slots-v1");
+  assert.equal(observed?.environmentBuildMode, "backend");
+  assert.deepEqual(observed?.modelCapturePlan, { requested_mode: "native", effective_mode: "native", required: false });
+});
+
+test("candidate rerun preserves model capture policy from the source submission", async (t) => {
+  const cases = [
+    {
+      id: `eval_${"b".repeat(32)}` as EvalId,
+      harnessRef: "pi@version:1.2.3",
+      policy: { mode: "off" as const, required: false },
+      expected: { requested_mode: "off", effective_mode: "off", required: false },
+    },
+    {
+      id: `eval_${"c".repeat(32)}` as EvalId,
+      harnessRef: "codex@version:1.2.3",
+      policy: { mode: "proxy" as const, required: true },
+      expected: { requested_mode: "proxy", effective_mode: "proxy", required: true, topology: "host-side" },
+    },
+  ];
+
+  for (const fixture of cases) {
+    const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-capture-policy-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const execution: EvalExecutionPolicyV1 = {
+      provider: "local-docker",
+      max_parallelism: 1,
+      resources: { default_trial: TRIAL },
+      build: { mode: "backend" },
+      model_capture: fixture.policy,
+    };
+    await persistTerminalEval(root, fixture.id, execution, fixture.harnessRef);
+    let observed: RerunEvalOptions | undefined;
+    const scheduler = new EvalRerunScheduler({
+      root,
+      resources: new ResourceLedger(TRIAL),
+      trialResources: TRIAL,
+      executor: async (options) => { observed = options; return completedResult(options); },
+    });
+    await scheduler.initialize();
+    await scheduler.submit(fixture.id, { rerun_type: "candidate-restart", selector: { mode: "invalid" } });
+    await waitFor(async () => observed !== undefined);
+    assert.deepEqual(observed?.modelCapturePlan, fixture.expected);
+    await scheduler.shutdown();
+  }
+});
+
+test("verifier-only admission reserves the original work limits and runs serially", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-regrade-admission-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID);
+  const request = await validateEvalRequest({ dataset: "demo@1.0", harness_ref: "pi@version:1.2.3", max_concurrent: 4 });
+  const heavy = { ...TRIAL, cpu_millis: 4000, memory_bytes: 4096, container_slots: 2 };
+  const plan = buildEvalExecutionPlan({ evalId: EVAL_ID, request, candidate: { revisionIdentity: `sha256:${"a".repeat(64)}`, artifactId: `sha256:${"b".repeat(64)}` }, tasks: ["task-a"], maxParallelism: 1, trialResources: heavy, workItemMode: "task-slots" });
+  await atomicWriteJSON(path.join(root, "evals", EVAL_ID, "execution-plan.json"), plan);
+  const small = new EvalRerunScheduler({ root, resources: new ResourceLedger(TRIAL), trialResources: TRIAL });
+  await small.initialize();
+  await assert.rejects(small.submit(EVAL_ID, { rerun_type: "verifier-only", selector: { mode: "invalid" } }), /exceeds the daemon resource capacity/);
+  await small.shutdown();
+  const ledger = new ResourceLedger(heavy), blocker = ledger.tryAcquire("another", "eval", TRIAL)!;
+  const observed: RerunEvalOptions[] = [];
+  const scheduler = new EvalRerunScheduler({ root, resources: ledger, trialResources: TRIAL, executor: async options => { observed.push(options); return completedResult(options); } });
+  await scheduler.initialize(); t.after(() => scheduler.shutdown());
+  const verifierRuntime = `sha256:${"b".repeat(64)}`;
+  const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "verifier-only", verifier_runtime_id: verifierRuntime, selector: { mode: "invalid" } });
+  assert.equal((await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status, "queued");
+  await assert.rejects(scheduler.submit(EVAL_ID, { rerun_id: accepted.rerunId, rerun_type: "verifier-only", verifier_runtime_id: `sha256:${"c".repeat(64)}`, selector: { mode: "invalid" } }), { code: "idempotency_conflict" });
+  assert.equal(observed.length, 0);
+  blocker.release();
+  await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
+  assert.deepEqual(observed[0]?.executionResources, heavy);
+  assert.equal(observed[0]?.maxConcurrentOverride, 1);
+  assert.equal(observed[0]?.verifierRuntimeId, verifierRuntime);
 });
 
 test("daemon rerun API preserves requested semantics and rejects unavailable resume", async (t) => {
@@ -173,10 +247,15 @@ test("rerun scheduler resumes queued operations but never replays ambiguous runn
   assert.equal((interrupted?.state.error as { code?: string }).code, "execution_state_ambiguous");
 });
 
-async function persistTerminalEval(root: string, evalId: EvalId, execution?: EvalExecutionPolicyV1): Promise<EvalRequest> {
+async function persistTerminalEval(
+  root: string,
+  evalId: EvalId,
+  execution?: EvalExecutionPolicyV1,
+  harnessRef = "pi@version:1.2.3",
+): Promise<EvalRequest> {
   const directory = path.join(root, "evals", evalId);
   await mkdir(directory, { recursive: true });
-  const request = await validateEvalRequest({ dataset: "demo@1.0", harness_ref: "pi@version:1.2.3", max_concurrent: 4 });
+  const request = await validateEvalRequest({ dataset: "demo@1.0", harness_ref: harnessRef, max_concurrent: 4 });
   const now = new Date().toISOString();
   await atomicWriteJSON(path.join(directory, "request.json"), request);
   await atomicWriteJSON(path.join(directory, "submission.json"), {

@@ -5,14 +5,23 @@ import { loadEnvironmentImageManifest } from "../images/index.js";
 import {
   DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS,
   acceptExecutionLease,
+  classifyTrialFailure,
+  ensurePhysicalRetryDecision,
   heartbeatExecutionLease,
   loadEvalResumeState,
   loadTrialEnvironmentImages,
   markExecutionLeaseLost,
   markExecutionLeaseRunning,
   mergeEvalProgressTrial,
+  readEvalRetryState,
+  replaceInvalidEvalProgressTrial,
+  resolveRetryWork,
+  physicalRetryAllowed,
+  physicalRetryWorkItem,
   releaseExecutionLease,
   writeEvalProgress,
+  transitionRetryDecision,
+  retryBackoffMs,
 } from "../evals/index.js";
 import type { EvalLeaseRecoveryResult } from "../evals/index.js";
 import { importRemoteResultEnvelope } from "./remote-result-transport.js";
@@ -130,10 +139,16 @@ async function waitForTerminal(
 
 async function collectRemoteResult(input: Parameters<typeof recoverRemoteWorkerEvalLeases>[0], lease: ExecutionLeaseV1, offer: RemoteWorkOfferV1): Promise<void> {
   const state = await loadEvalResumeState(input.evalDirectory);
-  const work = state.executionPlan.work_items.find((entry) => entry.work_id === lease.work_id);
+  const retryState = await readEvalRetryState(input.evalDirectory, input.evalId);
+  const dynamic = resolveRetryWork(state.executionPlan, retryState, lease.work_id);
+  const work = state.executionPlan.work_items.find((entry) => entry.work_id === lease.work_id) ?? dynamic?.item;
   if (!work || work.logical_attempt === null || work.task_ids.length !== 1) throw ambiguous("recovered remote lease does not match one planned task slot");
   const existing = state.progress.trials.find((trial) => trial.task_id === work.task_ids[0] && trial.attempt === work.logical_attempt);
-  if (existing) return;
+  if (existing?.observation_status === "valid") {
+    if (dynamic) for (const decision of dynamic.decisions) await settleRemoteRetryDecision(input.evalDirectory, input.evalId, decision.decision_id, decision.state, "repaired");
+    return;
+  }
+  if (existing && !dynamic) return;
   const artifacts = offer.terminal?.artifacts.filter((artifact) => artifact.kind === "result-bundle") ?? [];
   if (artifacts.length !== 1) throw ambiguous("recovered remote success requires exactly one result bundle");
   const request = await readJSON<EvalRequest>(path.join(input.evalDirectory, "request.json"));
@@ -152,9 +167,42 @@ async function collectRemoteResult(input: Parameters<typeof recoverRemoteWorkerE
     ...(environmentImages ? { environmentImages } : {}),
     ...(state.executionPlan.model_capture ? { modelCapturePlan: state.executionPlan.model_capture } : {}),
   });
-  const progress = mergeEvalProgressTrial(state.progress, imported.ref);
-  await writeEvalProgress(input.evalDirectory, progress);
+  const progress = dynamic
+    ? imported.ref.observation_status === "valid" ? replaceInvalidEvalProgressTrial(state.progress, imported.ref) : state.progress
+    : mergeEvalProgressTrial(state.progress, imported.ref);
+  if (progress.generation !== state.progress.generation) await writeEvalProgress(input.evalDirectory, progress);
+  if (dynamic) {
+    const retryIndex = dynamic.decisions[0]?.retry_index ?? 0;
+    if (imported.ref.observation_status === "invalid" && physicalRetryAllowed(classifyTrialFailure(imported.ref))
+      && retryIndex < state.executionPlan.retry_policy.infrastructure_retries) {
+      const origin = state.executionPlan.work_items.find((item) => item.slots.includes(dynamic.decisions[0]!.slot_id));
+      if (!origin) throw ambiguous("recovered retry origin is absent from execution plan");
+      const nextWork = physicalRetryWorkItem(origin, retryIndex + 1, [imported.ref]);
+      await ensurePhysicalRetryDecision({
+        evalDirectory: input.evalDirectory, evalId: input.evalId, item: origin, retryIndex: retryIndex + 1, trigger: imported.ref,
+        notBefore: new Date(Date.now() + retryBackoffMs(state.executionPlan.retry_policy.infrastructure_retry_backoff_ms, retryIndex + 1, nextWork.work_id)).toISOString(),
+      });
+    }
+    const target = imported.ref.observation_status === "valid" ? "repaired"
+      : retryIndex >= state.executionPlan.retry_policy.infrastructure_retries ? "exhausted" : "invalid";
+    for (const decision of dynamic.decisions) await settleRemoteRetryDecision(input.evalDirectory, input.evalId, decision.decision_id, decision.state, target);
+  }
   input.emit?.({ type: "eval.work-item.recovered", work_id: work.work_id, lease_id: lease.lease_id, trials: 1 });
+}
+
+async function settleRemoteRetryDecision(
+  evalDirectory: string,
+  evalId: string,
+  decisionId: string,
+  current: "planned" | "running" | "repaired" | "invalid" | "skipped" | "exhausted",
+  target: "repaired" | "invalid" | "exhausted",
+): Promise<void> {
+  if (current === target) return;
+  if (current === "planned") {
+    await transitionRetryDecision({ evalDirectory, evalId, decisionId, state: "running" });
+    current = "running";
+  }
+  if (current === "running") await transitionRetryDecision({ evalDirectory, evalId, decisionId, state: target });
 }
 
 async function finishRelease(input: Parameters<typeof recoverRemoteWorkerEvalLeases>[0], lease: ExecutionLeaseV1, terminal: RemoteWorkOfferV1): Promise<void> {

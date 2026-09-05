@@ -1,0 +1,113 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile, rm, stat } from "node:fs/promises";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { codexContainerAuth } from "../src/adapters/providers/codex-auth.js";
+import { credentialValuesFromEnv, redactCredentialText } from "../src/foundation/index.js";
+
+test("tool-server protocol handles idempotent snapshots, failed prepare and cancellation with cleanup", () => {
+  const result = spawnSync("python3", ["test-support/benchmark_protocol_smoke.py", "integrations/harbor/hitch_benchmark.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /failure gates passed/);
+});
+
+test("Codex container auth stays outside result bundles and nested credentials are redacted", async (t) => {
+  const token = "synthetic-opaque-token-long-enough";
+  const encoded = JSON.stringify({ tokens: { access_token: token } });
+  const env = { HITCH_HARBOR_INTERNAL: "1", HITCH_CODEX_AUTH_JSON: encoded };
+  assert.throws(() => codexContainerAuth({ HITCH_CODEX_AUTH_JSON: encoded }), /managed Harbor/);
+  const auth = codexContainerAuth(env)!;
+  const directory = auth.CODEX_HOME!;
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  assert.equal(await readFile(path.join(directory, "auth.json"), "utf8"), encoded);
+  assert.equal((await stat(path.join(directory, "auth.json"))).mode & 0o777, 0o600);
+  assert.ok(!directory.includes("runtime-home"));
+  const values = credentialValuesFromEnv(["HITCH_CODEX_AUTH_JSON"], env);
+  assert.ok(values.includes(token));
+  assert.ok(!redactCredentialText(`value=${token}`, values).text.includes(token));
+});
+
+test("GDPval public rubric handles partial credit, penalties and invalid judge outputs", () => {
+  const result = spawnSync("python3", ["test-support/benchmark_sources_smoke.py"], {encoding:"utf8"});
+  assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/public rubric contract passed/);
+});
+
+test("HLE provider substitution preserves the judge schema and fails closed", () => {
+  const result = spawnSync("python3", ["test-support/hle_judge_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /HLE provider schema and failure gates passed/);
+});
+
+test("OSWorld VM component fences leases and owns child processes without a host Docker socket", () => {
+  const result = spawnSync("python3", ["test-support/osworld_vm_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /failed-boot receipts passed/);
+});
+
+test("OSWorld screenshot transport is explicit and survives SDK resets without changing other calls", () => {
+  const result = spawnSync("python3", ["test-support/osworld_screenshot_transport_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /OSWorld explicit screenshot timeout and reset isolation passed/);
+});
+
+test("OSWorld channel preserves native phase resets, gates and per-prediction budgets", () => {
+  const result = spawnSync("python3", ["test-support/osworld_channel_smoke.py"], { encoding: "utf8", timeout: 20_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /batch-budget channel parity passed/);
+});
+
+test("OSWorld swallowed evaluator model errors cannot become valid native scores", () => {
+  const result = spawnSync("python3", ["test-support/osworld_model_audit_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /swallowed model errors invalidate native completion/);
+});
+
+test("OSWorld DeepSeek preserves token limits and rejects unusable model replies", () => {
+  const result = spawnSync("python3", ["test-support/osworld_deepseek_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /OSWorld DeepSeek token and response contracts passed/);
+});
+
+test("OSWorld grader preserves the native scalar and rejects unsealed or unhealthy evidence", () => {
+  const result = spawnSync("python3", ["test-support/osworld_grade_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /offline scalar score and evidence gates passed/);
+});
+
+test("OSWorld state asset mirror preserves bytes and rejects unverified inputs", () => {
+  const result = spawnSync("python3", ["test-support/osworld_state_assets_smoke.py"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /OSWorld pinned visible asset mirror contract passed/);
+});
+
+test("OSWorld controller separates candidate HTTP tools from lease-fenced Unix management", () => {
+  const result = spawnSync("python3", ["test-support/osworld_controller_smoke.py"], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /phase fencing transport passed/);
+});
+
+test("OSWorld lifecycle owns the SDK child and freezes evidence through standard Harbor hooks", () => {
+  const result = spawnSync("python3", ["test-support/osworld_lifecycle_smoke.py"], { encoding: "utf8", timeout: 45_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /immutable snapshot and failure receipts passed/);
+});
+
+test("OSWorld image export preserves pinned source and checks runtime/dependency identity", () => {
+  const result = spawnSync("python3", ["test-support/osworld_image_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /image integrity gates passed/);
+});
+
+test("OSWorld static website routes preserve ordered paths and HTTPS without a Docker socket", () => {
+  const result = spawnSync("python3", ["test-support/osworld_web_routes_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /routing and private topology gates passed/);
+});
+
+test("OSWorld VM extraction verifies release bytes and refuses external disk dependencies", () => {
+  const result = spawnSync("python3", ["test-support/osworld_vm_artifact_smoke.py"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /archive identity and bounded extraction gates passed/);
+});

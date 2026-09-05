@@ -48,8 +48,8 @@ export function mergeEvalProgressTrial(progress: EvalProgressV1, trial: EvalTria
     if (JSON.stringify(byTrial) !== JSON.stringify(parsed)) throw new TypeError(`eval progress trial identity conflict: ${parsed.trial_id}`);
     return progress;
   }
-  if (progress.trials.some((item) => item.run_id === parsed.run_id)) {
-    throw new TypeError(`eval progress run identity conflict: ${parsed.run_id}`);
+  if (progress.trials.some((item) => evalTrialCandidateKey(item) === evalTrialCandidateKey(parsed))) {
+    throw new TypeError(`eval progress run identity conflict: ${evalTrialCandidateKey(parsed)}`);
   }
   if (progress.trials.some((item) => evalTrialKey(item) === evalTrialKey(parsed))) {
     throw new TypeError(`eval progress logical trial conflict: ${parsed.task_id} attempt ${parsed.attempt}`);
@@ -75,6 +75,10 @@ export function evalTrialKey(trial: Pick<EvalTrialRefV1, "task_id" | "attempt">)
   return `${trial.task_id}\u0000${trial.attempt}`;
 }
 
+export function evalTrialCandidateKey(trial: EvalTrialRefV1): string {
+  return trial.run_group ? trial.run_group.run_group_id : trial.run_id;
+}
+
 /** Replace one invalid logical trial, or fill a missing slot, with a valid verifier result. */
 export function replaceInvalidEvalProgressTrial(
   progress: EvalProgressV1,
@@ -89,8 +93,8 @@ export function replaceInvalidEvalProgressTrial(
     if (JSON.stringify(existing) === JSON.stringify(parsed)) return progress;
     throw new TypeError(`eval rerun cannot replace valid task: ${parsed.task_id}`);
   }
-  if (progress.trials.some((item) => item.run_id === parsed.run_id && evalTrialKey(item) !== key)) {
-    throw new TypeError(`eval progress run identity conflict: ${parsed.run_id}`);
+  if (progress.trials.some((item) => evalTrialCandidateKey(item) === evalTrialCandidateKey(parsed) && evalTrialKey(item) !== key)) {
+    throw new TypeError(`eval progress run identity conflict: ${evalTrialCandidateKey(parsed)}`);
   }
   if (progress.trials.some((item) => item.trial_id === parsed.trial_id && evalTrialKey(item) !== key)) {
     throw new TypeError(`eval progress trial identity conflict: ${parsed.trial_id}`);
@@ -129,7 +133,7 @@ export function parseEvalProgress(value: unknown): EvalProgressV1 {
   if (!Array.isArray(record.trials)) throw new TypeError("eval progress trials are invalid");
   const trials = record.trials.map((trial, index) => parseEvalTrialRef(trial, `eval progress trial ${index}`));
   if (new Set(trials.map((trial) => trial.trial_id)).size !== trials.length
-    || new Set(trials.map((trial) => trial.run_id)).size !== trials.length) throw new TypeError("eval progress trial identities are duplicated");
+    || new Set(trials.map(evalTrialCandidateKey)).size !== trials.length) throw new TypeError("eval progress trial identities are duplicated");
   const sorted = [...trials].sort((left, right) => left.task_id.localeCompare(right.task_id)
     || left.attempt - right.attempt
     || left.trial_id.localeCompare(right.trial_id));
@@ -174,7 +178,6 @@ export function parseEvalTrialRef(value: unknown, label = "eval trial"): EvalTri
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
   const trial = value as Record<string, unknown>;
   if (typeof trial.trial_id !== "string" || !trial.trial_id
-    || typeof trial.run_id !== "string" || !RUN_ID.test(trial.run_id)
     || typeof trial.task_id !== "string" || !trial.task_id
     || !Number.isSafeInteger(trial.attempt) || (trial.attempt as number) < 1
     || (trial.observation_status !== "valid" && trial.observation_status !== "invalid")) {
@@ -183,20 +186,55 @@ export function parseEvalTrialRef(value: unknown, label = "eval trial"): EvalTri
   if (trial.observation_status === "valid" && (typeof trial.reward !== "number" || !Number.isFinite(trial.reward))) {
     throw new TypeError(`${label} valid reward is invalid`);
   }
+  const scores = trial.scores === undefined ? undefined : parseScores(trial.scores, label);
+  if (scores !== undefined && (trial.observation_status !== "valid" || scores.total_score !== trial.reward)) {
+    throw new TypeError(`${label} scores do not match the valid reward`);
+  }
   if (trial.observation_status === "invalid" && (typeof trial.invalid_reason !== "string" || !trial.invalid_reason)) {
     throw new TypeError(`${label} invalid reason is missing`);
   }
   if (trial.verifier_result_ref !== undefined && (typeof trial.verifier_result_ref !== "string" || !trial.verifier_result_ref)) {
     throw new TypeError(`${label} verifier ref is invalid`);
   }
-  return {
+  const assessment = trial.assessment as { id?: unknown; digest?: unknown } | undefined;
+  if (assessment !== undefined && (!assessment || typeof assessment.id !== "string" || !/^assessment_[a-f0-9]{32}$/.test(assessment.id)
+    || typeof assessment.digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(assessment.digest))) throw new TypeError(`${label} assessment is invalid`);
+  const group = trial.run_group as { run_group_id?: unknown; digest?: unknown } | undefined;
+  if (group !== undefined) {
+    if (!group || typeof group !== "object" || Array.isArray(group) || Object.keys(group).some(key => !["run_group_id", "digest"].includes(key))
+      || typeof group.run_group_id !== "string" || !/^run_group_[a-f0-9]{32}$/.test(group.run_group_id)
+      || typeof group.digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(group.digest) || trial.run_id !== undefined || !assessment) {
+      throw new TypeError(`${label} phase group identity is invalid`);
+    }
+  } else if (typeof trial.run_id !== "string" || !RUN_ID.test(trial.run_id)) throw new TypeError(`${label} run identity is invalid`);
+  const common = {
     trial_id: trial.trial_id,
-    run_id: trial.run_id,
     task_id: trial.task_id,
     attempt: trial.attempt as number,
-    observation_status: trial.observation_status,
+    observation_status: trial.observation_status as "valid" | "invalid",
     ...(trial.reward === undefined ? {} : { reward: trial.reward as number }),
+    ...(scores === undefined ? {} : { scores }),
     ...(trial.verifier_result_ref === undefined ? {} : { verifier_result_ref: trial.verifier_result_ref as string }),
     ...(trial.invalid_reason === undefined ? {} : { invalid_reason: trial.invalid_reason as string }),
+  };
+  const reference = assessment ? { id: assessment.id as string, digest: assessment.digest as string } : undefined;
+  return group ? { ...common, run_group: { run_group_id: group.run_group_id as string, digest: group.digest as `sha256:${string}` }, assessment: reference! }
+    : { ...common, run_id: trial.run_id as string, ...(reference ? { assessment: reference } : {}) };
+}
+
+function parseScores(value: unknown, label: string): import("../domain/index.js").VerifierScoresV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} scores are invalid`);
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["total_score", "process_score", "normalization"].includes(key))
+    || typeof record.total_score !== "number" || !Number.isFinite(record.total_score)
+    || record.process_score !== undefined && (typeof record.process_score !== "number" || !Number.isFinite(record.process_score))
+    || record.normalization !== "standard" && record.normalization !== "legacy-reward"
+    || record.normalization === "legacy-reward" && record.process_score !== undefined) {
+    throw new TypeError(`${label} scores are invalid`);
+  }
+  return {
+    total_score: record.total_score,
+    ...(record.process_score === undefined ? {} : { process_score: record.process_score as number }),
+    normalization: record.normalization,
   };
 }

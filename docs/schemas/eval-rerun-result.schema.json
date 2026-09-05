@@ -41,10 +41,15 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_trial_id", "source_run_id", "source_work_id", "source_backend_directory"],
+      "required": ["source_trial_id", "source_work_id", "source_backend_directory"],
+      "oneOf": [
+        { "required": ["source_run_id"], "not": { "required": ["source_run_group_id"] } },
+        { "required": ["source_run_group_id"], "not": { "required": ["source_run_id"] } }
+      ],
       "properties": {
         "source_trial_id": { "type": "string", "minLength": 1 },
         "source_run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+        "source_run_group_id": { "type": "string", "pattern": "^run_group_[a-f0-9]{32}$" },
         "source_work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
         "source_backend_directory": { "type": "string", "pattern": "^harbor/work-items/work_[a-f0-9]{32}/epoch-[0-9]{6}$" }
       }

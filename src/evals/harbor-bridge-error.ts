@@ -1,6 +1,8 @@
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { redactCredentialText } from "../foundation/index.js";
+import type { FailureClassificationV1 } from "./failure-classifier.js";
+import { parseFailureClassification } from "./failure-classifier.js";
 
 const HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024;
 const HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES = 2048;
@@ -23,6 +25,7 @@ export interface HarborBridgeErrorDiagnostic {
   code: string;
   message: string;
   raw: string;
+  failureClassification?: FailureClassificationV1;
 }
 
 /** Read a Harbor bridge diagnostic as untrusted, bounded evidence. */
@@ -39,10 +42,49 @@ export async function readHarborBridgeError(trialDirectory: string, credentialVa
     if (typeof diagnostic.code !== "string" || !HITCH_BRIDGE_ERROR_CODES.has(diagnostic.code)) return null;
     if (typeof diagnostic.message !== "string" || !diagnostic.message.trim()) return null;
     if (Buffer.byteLength(diagnostic.message, "utf8") > HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES) return null;
-    return { code: diagnostic.code, message: bridgeErrorMessage(diagnostic), raw: `${JSON.stringify(diagnostic)}\n` };
+    const failureClassification = bridgeFailureClassification(diagnostic);
+    return {
+      code: diagnostic.code, message: bridgeErrorMessage(diagnostic), raw: `${JSON.stringify(diagnostic)}\n`,
+      ...(failureClassification ? { failureClassification } : {}),
+    };
   } catch {
     return null;
   }
+}
+
+function bridgeFailureClassification(diagnostic: Record<string, unknown>): FailureClassificationV1 | undefined {
+  if (diagnostic.failure_classification !== undefined) {
+    try { return parseFailureClassification(diagnostic.failure_classification); } catch { return undefined; }
+  }
+  if (diagnostic.code !== "hitch_process_failed") return undefined;
+  const text = JSON.stringify(diagnostic);
+  if (/(?:insufficient|exhausted|depleted).{0,40}(?:balance|quota|credit)|(?:balance|quota|credit).{0,40}(?:insufficient|exhausted|depleted)|billing.{0,30}(?:limit|hard)/i.test(text)) {
+    return providerClassification("provider_quota_exhausted", "never", true);
+  }
+  if (/(?:invalid|missing|expired|revoked).{0,30}(?:api[_ -]?key|credential|token)|(?:authentication|authorization)\s+(?:failed|required)|\bunauthorized\b|(?:status|http)\s*401\b/i.test(text)) {
+    return providerClassification("provider_auth_failed", "operator-required", "unknown");
+  }
+  if (/(?:model|parameter|request).{0,40}(?:not found|does not exist|unsupported|invalid)|(?:unknown|invalid)\s+model/i.test(text)) {
+    return providerClassification("provider_configuration_invalid", "never", "unknown");
+  }
+  if (/\brate[ _-]?limit(?:ed|ing)?\b|too many requests|(?:status|http)\s*429\b/i.test(text)) {
+    return providerClassification("provider_rate_limited", "transient", true);
+  }
+  if (/\b(?:econnreset|etimedout|eai_again|socket hang up|connection reset|temporary network|network unreachable)\b/i.test(text)) {
+    return providerClassification("provider_transport_transient", "transient", true);
+  }
+  if (/agent run timed out|"status":"timed_out"|"code":"timed_out"/i.test(text)) {
+    return { schema_version: "1", phase: "agent", code: "agent_timed_out", candidate_started: true, retryability: "never", source: "bridge-evidence" };
+  }
+  return undefined;
+}
+
+function providerClassification(
+  code: string,
+  retryability: FailureClassificationV1["retryability"],
+  candidateStarted: FailureClassificationV1["candidate_started"],
+): FailureClassificationV1 {
+  return { schema_version: "1", phase: "provider", code, candidate_started: candidateStarted, retryability, source: "bridge-evidence" };
 }
 
 function sanitizeEvidence(value: unknown, credentialValues: readonly string[], key = ""): unknown {

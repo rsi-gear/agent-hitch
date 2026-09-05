@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/trajectory-events-page.schema.json",
+  "title": "Hitch source-filtered trajectory event page",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "run_id", "canonical_sha256", "filter", "events", "total_matches", "eof"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "trajectory-events-page" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "canonical_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "filter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "types": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "seq_start": { "type": "integer", "minimum": 0 },
+        "seq_end": { "type": "integer", "minimum": 0 },
+        "field": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      }
+    },
+    "events": { "type": "array" },
+    "total_matches": { "type": "integer", "minimum": 0 },
+    "next_cursor": { "type": "string", "minLength": 1 },
+    "eof": { "type": "boolean" },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "count"],
+        "properties": {
+          "rule_id": { "type": "string", "minLength": 1 },
+          "count": { "type": "integer", "minimum": 1 }
+        }
+      }
+    }
+  }
+}

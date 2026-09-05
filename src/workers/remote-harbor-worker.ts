@@ -103,10 +103,12 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         request: spec.request, resolvedRevision: spec.resolution,
         benchmarkId: spec.request.benchmark_id, benchmarkRevision: spec.request.benchmark_revision,
         runtimeId: runtime.runtime_id, executionEvidence,
+        signal,
         ...(spec.plan.model_capture ? { modelCapturePlan: spec.plan.model_capture } : {}),
         ...(captureRuntime.exporter ? { interactionCaptureExporter: captureRuntime.exporter } : {}),
         requireCompleteMarker: true, allowMissingBundleDiagnostic: true,
       }, trial);
+      if (ref.run_group) throw new Error("remote single-bundle transport cannot export native phase groups");
       const body = await encodeRemoteResultEnvelope({
         evalId: offer.lease.eval_id, workId: offer.work.work_id,
         leaseId: offer.lease.lease_id, leaseEpoch: offer.lease.epoch, trial,

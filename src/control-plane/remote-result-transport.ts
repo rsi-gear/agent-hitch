@@ -57,6 +57,7 @@ export async function importRemoteResultEnvelope(input: {
   environmentImages?: TrialEnvironmentImagesV1;
   modelCapturePlan?: import("../domain/index.js").ModelCapturePlanV1;
   publicationMode?: "settle" | "replace-invalid";
+  signal?: AbortSignal;
 }): Promise<{ ref: EvalTrialRefV1; trial: Record<string, unknown>; backendDirectory: string }> {
   const info = await lstat(input.artifactPath);
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > MAX_ENVELOPE_BYTES) throw transportError("remote result artifact is not a safe bounded file");
@@ -67,6 +68,7 @@ export async function importRemoteResultEnvelope(input: {
   const backendDirectory = path.join(input.evalDirectory, "harbor", "work-items", input.work.work_id, `epoch-${String(input.lease.epoch).padStart(6, "0")}`);
   const trialDirectory = path.join(backendDirectory, "job", trialId);
   const bundleDirectory = path.join(trialDirectory, "hitch-run-bundle");
+  if (input.signal?.aborted) throw input.signal.reason ?? new DOMException("The operation was aborted", "AbortError");
   await rm(backendDirectory, { recursive: true, force: true });
   try {
     await materializeEnvelope(envelope, bundleDirectory);
@@ -94,6 +96,7 @@ export async function importRemoteResultEnvelope(input: {
       executionEvidence: execution,
       ...(input.environmentImages ? { environmentImages: input.environmentImages } : {}),
       ...(input.modelCapturePlan ? { modelCapturePlan: input.modelCapturePlan } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
       requireCompleteMarker: true,
     }, envelope.trial);
     return { ref, trial: envelope.trial, backendDirectory };

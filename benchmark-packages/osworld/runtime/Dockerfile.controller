@@ -1,0 +1,21 @@
+# Build only from an exported, verified SDK commit and this runtime directory.
+# The producer must retain the resulting image digest and installed-package list.
+FROM ghcr.io/astral-sh/uv:0.12.9@sha256:3f47db7d4a0e00a2323de663864d0b75cb53e5708121f44b8add6d598be667b9 AS uv
+FROM python:3.12-slim-bookworm@sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef
+COPY --from=uv /uv /usr/local/bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libgl1 libglib2.0-0 ffmpeg tesseract-ocr libchromaprint1 \
+    file netpbm ca-certificates && rm -rf /var/lib/apt/lists/*
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_NO_DEV=1 \
+    UV_LINK_MODE=copy PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/osworld-sdk PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin
+WORKDIR /opt/osworld-sdk
+COPY sdk/ /opt/osworld-sdk/
+RUN uv sync --locked --no-install-project --no-cache
+COPY runtime/ /opt/osworld/
+COPY source-manifest.json /opt/osworld-source-manifest.json
+RUN uv pip list --python /opt/venv/bin/python --format json > /opt/osworld-python-packages.json \
+    && dpkg-query -W -f='${Package}\t${Version}\n' > /opt/osworld-system-packages.txt
+WORKDIR /run/osworld
+ENTRYPOINT ["/opt/venv/bin/python", "/opt/osworld/image_entrypoint.py"]
+CMD ["--config", "/config/controller.json"]

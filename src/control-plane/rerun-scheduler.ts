@@ -1,19 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { EvalExecutionPolicyV1, EvalId, EvalRequest, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalExecutionPolicyV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import {
   assertEvalRerunTypeSupported,
   evalRerunSemantics,
   rerunEval,
   validateEvalId,
+  parseEvalExecutionPlan,
 } from "../evals/index.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions, RerunSelector } from "../evals/index.js";
 import { EvalEventSink } from "../evals/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, hitchRootId, readJSON, safeDiagnosticMessage, statePaths } from "../foundation/index.js";
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
 import { defaultEvalExecutionPolicy, evalCollisionKeys, isTerminalControl, parseEvalControl, parseEvalSubmission } from "./eval-records.js";
+import { localProviderStatusSnapshot } from "./local-worker.js";
+import { modelCapturePlanForEval } from "./model-capture-planning.js";
 import { ResourceLedger, scaleResources, zeroResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 
@@ -26,6 +29,7 @@ export type EvalRerunExecutor = (options: RerunEvalOptions) => Promise<EvalRerun
 export interface EvalRerunSubmissionInput {
   rerun_id?: string;
   rerun_type?: EvalRerunType;
+  verifier_runtime_id?: string;
   selector: RerunSelector;
 }
 
@@ -38,6 +42,7 @@ export interface EvalRerunSchedulerOptions {
   executor?: EvalRerunExecutor;
   onEvent?: (event: Record<string, unknown>) => void;
   credentialEnv?: NodeJS.ProcessEnv;
+  provider?: string;
 }
 
 export interface EvalRerunStatus {
@@ -50,9 +55,11 @@ interface QueuedRerun {
   evalId: EvalId;
   rerunId: string;
   rerunType: EvalRerunType;
+  verifierRuntimeId?: string;
   selector: RerunSelector;
   request: EvalRequest;
   execution: EvalExecutionPolicyV1;
+  modelCapturePlan?: ModelCapturePlanV1;
   directory: string;
   collisionKeys: string[];
 }
@@ -70,6 +77,8 @@ export class EvalRerunScheduler {
   private readonly trialResources: ResourceVectorV1;
   private readonly collisions: CollisionLockManager;
   private readonly collisionDomainId: string;
+  private readonly provider: string;
+  private readonly workerId: string;
   private readonly executor: EvalRerunExecutor;
   private readonly onEvent: (event: Record<string, unknown>) => void;
   private readonly credentialEnv: NodeJS.ProcessEnv;
@@ -82,13 +91,15 @@ export class EvalRerunScheduler {
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, collisions = new CollisionLockManager(), collisionDomainId = "local-docker", executor = rerunEval, onEvent = () => {}, credentialEnv = process.env }: EvalRerunSchedulerOptions) {
+  constructor({ root, resources, trialResources, collisions = new CollisionLockManager(), collisionDomainId = "local-docker", provider = "local-docker", executor = rerunEval, onEvent = () => {}, credentialEnv = process.env }: EvalRerunSchedulerOptions) {
     this.root = root;
     this.rerunsRoot = statePaths(root).evals;
     this.resources = resources;
     this.trialResources = trialResources;
     this.collisions = collisions;
     this.collisionDomainId = collisionDomainId;
+    this.provider = provider;
+    this.workerId = `worker_${hitchRootId(root)}`;
     this.executor = executor;
     this.onEvent = onEvent;
     this.credentialEnv = credentialEnv;
@@ -116,7 +127,7 @@ export class EvalRerunScheduler {
       const existing = await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null);
       if (existing) {
         const parsed = parsePersistedSubmission(existing, evalId, rerunId);
-        if (parsed.rerun_type !== input.rerun_type || JSON.stringify(parsed.selector) !== JSON.stringify(input.selector)) {
+        if (parsed.rerun_type !== input.rerun_type || parsed.verifier_runtime_id !== input.verifier_runtime_id || JSON.stringify(parsed.selector) !== JSON.stringify(input.selector)) {
           throw new HitchError("rerun identity already belongs to a different request", { code: "idempotency_conflict", exitCode: 12 });
         }
         return { evalId, rerunId, rerunType: input.rerun_type };
@@ -126,12 +137,13 @@ export class EvalRerunScheduler {
   }
 
   private async submitNew(evalId: EvalId, rerunId: string, input: ParsedRerunInput): Promise<{ evalId: EvalId; rerunId: string; rerunType: EvalRerunType }> {
-    const source = await this.loadSource(evalId);
+    const source = await this.loadSource(evalId, input.rerun_type);
     if (!this.resources.canEverFit(rerunResourceUnit(input.rerun_type, source.execution.resources.default_trial))) {
       throw new HitchError("one rerun trial exceeds the daemon resource capacity", { code: "resource_request_unsatisfiable", exitCode: 10 });
     }
     const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
-    const entry = await this.queuedEntry(evalId, rerunId, input.rerun_type, input.selector, source.request, source.execution, directory);
+    const entry = await this.queuedEntry(evalId, rerunId, input.rerun_type, input.selector, source.request, source.execution, source.modelCapturePlan, directory);
+    if (input.verifier_runtime_id) entry.verifierRuntimeId = input.verifier_runtime_id;
     await ensureDir(path.dirname(directory));
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const submittedAt = new Date().toISOString();
@@ -141,6 +153,7 @@ export class EvalRerunScheduler {
         rerun_id: rerunId,
         eval_id: evalId,
         rerun_type: input.rerun_type,
+        ...(input.verifier_runtime_id ? { verifier_runtime_id: input.verifier_runtime_id } : {}),
         semantics: evalRerunSemantics(input.rerun_type),
         selector: serializedSelector(input.selector),
         submitted_at: submittedAt,
@@ -308,10 +321,15 @@ export class EvalRerunScheduler {
       evalId: entry.evalId,
       rerunId: entry.rerunId,
       rerunType: entry.rerunType,
+      ...(entry.verifierRuntimeId ? { verifierRuntimeId: entry.verifierRuntimeId } : {}),
       selector: entry.selector,
       root: this.root,
       maxConcurrentOverride: parallelism,
       executionResources: rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial),
+      executionResourceSource: "submission-default",
+      executionStrategy: "local-task-slots-v1",
+      environmentBuildMode: entry.execution.build.mode,
+      ...(entry.modelCapturePlan ? { modelCapturePlan: entry.modelCapturePlan } : {}),
       env: this.credentialEnv,
       signal: controller.signal,
     });
@@ -360,7 +378,7 @@ export class EvalRerunScheduler {
     await atomicWriteJSON(file, next);
   }
 
-  private async loadSource(evalId: EvalId): Promise<{ request: EvalRequest; execution: EvalExecutionPolicyV1 }> {
+  private async loadSource(evalId: EvalId, rerunType: EvalRerunType): Promise<{ request: EvalRequest; execution: EvalExecutionPolicyV1; modelCapturePlan?: ModelCapturePlanV1 }> {
     const directory = path.join(this.rerunsRoot, evalId);
     const submissionValue = await readJSON<unknown | null>(path.join(directory, "submission.json"), null);
     const controlValue = await readJSON<unknown | null>(path.join(directory, "control.json"), null);
@@ -375,13 +393,31 @@ export class EvalRerunScheduler {
     if (control.state === "cancelled" || result.status === "cancelled") {
       throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 12 });
     }
-    return {
-      request: submission.request,
-      execution: submission.execution || defaultEvalExecutionPolicy(submission.request, { provider: "local-docker", trialResources: this.trialResources, buildMode: "backend" }),
-    };
+    let execution = submission.execution || defaultEvalExecutionPolicy(submission.request, {
+      provider: this.provider,
+      trialResources: this.trialResources,
+      buildMode: "backend",
+    });
+    if (rerunType === "verifier-only") {
+      const plan = parseEvalExecutionPlan(await readJSON(path.join(directory, "execution-plan.json")));
+      const upper = { ...execution.resources.default_trial };
+      for (const item of plan.work_items) for (const key of Object.keys(item.reservation) as Array<keyof ResourceVectorV1>) upper[key] = Math.max(upper[key] ?? 0, item.reservation[key] ?? 0);
+      // Artifact regrades run serially and preserve the source resource limits.
+      execution = { ...execution, max_parallelism: 1, resources: { ...execution.resources, default_trial: upper } };
+    }
+    const modelCapturePlan = execution.provider === this.provider
+      ? modelCapturePlanForEval(submission.request, execution, localProviderStatusSnapshot({
+        workerId: this.workerId,
+        provider: this.provider,
+        collisionDomainId: this.collisionDomainId,
+        accepting: this.accepting,
+        resources: this.resources,
+      }))
+      : undefined;
+    return { request: submission.request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}) };
   }
 
-  private async queuedEntry(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, selector: RerunSelector, request: EvalRequest, execution: EvalExecutionPolicyV1, directory: string): Promise<QueuedRerun> {
+  private async queuedEntry(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, selector: RerunSelector, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string): Promise<QueuedRerun> {
     return {
       evalId,
       rerunId,
@@ -389,6 +425,7 @@ export class EvalRerunScheduler {
       selector,
       request,
       execution,
+      ...(modelCapturePlan ? { modelCapturePlan } : {}),
       directory,
       collisionKeys: rerunType === "collect-only" ? [] : await evalCollisionKeys(request, this.collisionDomainId),
     };
@@ -415,8 +452,9 @@ export class EvalRerunScheduler {
           await atomicWriteJSON(path.join(directory, "state.json"), { ...state, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() });
           continue;
         }
-        const source = await this.loadSource(evalEntry.name as EvalId);
-        const queued = await this.queuedEntry(evalEntry.name as EvalId, entry.name, parsed.rerun_type, parsed.selector, source.request, source.execution, directory);
+        const source = await this.loadSource(evalEntry.name as EvalId, parsed.rerun_type);
+        const queued = await this.queuedEntry(evalEntry.name as EvalId, entry.name, parsed.rerun_type, parsed.selector, source.request, source.execution, source.modelCapturePlan, directory);
+        if (parsed.verifier_runtime_id) queued.verifierRuntimeId = parsed.verifier_runtime_id;
         if (state.status === "queued") this.queue.push(queued);
         else await this.fail(queued, "execution_state_ambiguous", "daemon restarted while rerun execution state was ambiguous");
       }

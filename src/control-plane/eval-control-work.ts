@@ -22,6 +22,11 @@ export function applyEvalWorkItem(control: EvalControlV1, workId: string, leaseI
   return { ...control, queued_work_items: canonical(queued), active_leases: canonical(active), terminal_work_items: canonical(terminal) };
 }
 
+export function queueEvalWorkItem(control: EvalControlV1, workId: string): EvalControlV1 {
+  if (!/^work_[a-f0-9]{32}$/.test(workId) || terminalState(control.state) || control.terminal_work_items.includes(workId)) return control;
+  return { ...control, queued_work_items: canonical([...control.queued_work_items, workId]) };
+}
+
 export function settleEvalWorkItems(control: EvalControlV1): EvalControlV1 {
   return {
     ...control,
