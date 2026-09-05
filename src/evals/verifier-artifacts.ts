@@ -5,6 +5,8 @@ import path from "node:path";
 import type { Sha256, VerifierArtifactExcerptV1 } from "../domain/index.js";
 import { PROVIDER_ENVIRONMENT_NAMES, atomicWriteJSON, credentialValuesFromEnv, openContainedRegularFile, redactCredentialText, writePrivateFile } from "../foundation/index.js";
 import type { ContainedRegularFile } from "../foundation/index.js";
+import { captureVerifierScoreEvidence } from "./verifier-score-artifacts.js";
+import type { CapturedVerifierScoreEvidenceV1 } from "./verifier-score-artifacts.js";
 
 export const DEFAULT_VERIFIER_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
 export const MAX_VERIFIER_DIAGNOSTIC_MAX_BYTES = 16 * 1024 * 1024;
@@ -48,8 +50,11 @@ export async function persistTrialVerifierDiagnostics(input: {
   passEnv?: readonly string[];
   env?: NodeJS.ProcessEnv | undefined;
   maxArtifactBytes?: number | undefined;
+  verifierResult?: Record<string, unknown> | null;
+  dataset?: string | undefined;
+  benchmarkRevision?: string | undefined;
   signal?: AbortSignal | undefined;
-}): Promise<void> {
+}): Promise<CapturedVerifierScoreEvidenceV1> {
   const env = input.env ?? process.env;
   const credentialValues = credentialValuesFromEnv(
     [...PROVIDER_ENVIRONMENT_NAMES, ...(input.passEnv ?? [])],
@@ -58,11 +63,21 @@ export async function persistTrialVerifierDiagnostics(input: {
   throwIfAborted(input.signal);
   await copyVerifierRetryHistory(input.trialDirectory, input.runDirectory, credentialValues, input.signal);
   await copyCandidateIneligibleDiagnostic(input.trialDirectory, input.runDirectory, input.signal);
+  const scores = await captureVerifierScoreEvidence({
+    trialDirectory: input.trialDirectory,
+    runDirectory: input.runDirectory,
+    verifierResult: input.verifierResult ?? null,
+    credentialValues,
+    ...(input.dataset === undefined ? {} : { dataset: input.dataset }),
+    ...(input.benchmarkRevision === undefined ? {} : { benchmarkRevision: input.benchmarkRevision }),
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
   await captureVerifierDiagnostics(input.trialDirectory, input.runDirectory, {
     ...(input.maxArtifactBytes === undefined ? {} : { maxArtifactBytes: input.maxArtifactBytes }),
     credentialValues,
     ...(input.signal ? { signal: input.signal } : {}),
   });
+  return scores;
 }
 
 async function copyCandidateIneligibleDiagnostic(trialDirectory: string, runDirectory: string, signal?: AbortSignal): Promise<void> {

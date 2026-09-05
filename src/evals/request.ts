@@ -98,6 +98,13 @@ export async function resolveBenchmarkReference(dataset: string): Promise<{ benc
   const local = path.resolve(raw);
   try {
     if ((await stat(local)).isDirectory()) {
+      const manifest = await loadBenchmarkAdapterManifest(local);
+      if (manifest) {
+        return {
+          benchmark_id: manifest.benchmark.id,
+          benchmark_revision: manifest.dataset_digest,
+        };
+      }
       return {
         benchmark_id: `local:${path.basename(local)}`,
         benchmark_revision: await workspaceDigest(local, { excludedTopLevel: new Set([".git"]) }),
@@ -166,3 +173,4 @@ import type { EvalId, EvalRequest } from "../domain/index.js";
 import { SCHEMA_VERSION, invalidInput } from "../foundation/index.js";
 import { assertExactLocalGitEvalReference, parseHarnessReference } from "../revisions/index.js";
 import { workspaceDigest } from "../workspaces/index.js";
+import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";

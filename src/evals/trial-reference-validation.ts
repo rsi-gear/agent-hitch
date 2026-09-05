@@ -2,6 +2,8 @@ import path from "node:path";
 import type { EvalTrialRefV1, RunObservationV1 } from "../domain/index.js";
 import { statePaths } from "../foundation/index.js";
 import { benchmarkVerifierIdentity, loadRunRecord } from "../runs/index.js";
+import { parseVerifierScores } from "../domain/index.js";
+import { readJSON } from "../foundation/index.js";
 import { readRegradeObservation } from "./regrade-evidence.js";
 import { readNativePhaseObservation } from "./native-phase-evidence.js";
 
@@ -33,5 +35,11 @@ export async function validateEvalTrialReferences(
     if (observation?.reward !== trial.reward) throw new Error(`eval trial ${trial.trial_id} reward mismatch`);
     if (observation?.verifier_result_ref !== trial.verifier_result_ref) throw new Error(`eval trial ${trial.trial_id} verifier ref mismatch`);
     if (observation?.invalid_reason !== trial.invalid_reason) throw new Error(`eval trial ${trial.trial_id} invalid reason mismatch`);
+    if (trial.scores !== undefined && !trial.run_group) {
+      const result = await readJSON(path.join(statePaths(root).runs, trial.run_id, trial.verifier_result_ref ?? "verifier/result.json"));
+      if (JSON.stringify(parseVerifierScores(result)) !== JSON.stringify(trial.scores)) {
+        throw new Error(`eval trial ${trial.trial_id} score channels mismatch`);
+      }
+    }
   }
 }

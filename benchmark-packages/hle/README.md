@@ -13,11 +13,15 @@ python benchmark-packages/hle/import.py \
   --grader-source /sources/hle \
   --grader-revision 73ae974b1844c3ffa64c3f4343d9f1f259575700 \
   --profile no-tools --seed 20260902 --count 2 --out /packages/hle-no-tools
-hitch benchmark lock --package /packages/hle-no-tools
-hitch eval run --benchmark-lock /packages/hle-no-tools/benchmark.lock.json \
+hitch benchmark compile --package /packages/hle-no-tools \
+  --out /datasets/hle-no-tools
+hitch eval run --dataset /datasets/hle-no-tools \
   --harness model-call@git+file:///sources/agent-hitch#FULL_COMMITTED_REVISION \
   --model YOUR_RESPONSES_MODEL --pass-env OPENAI_API_KEY
 ```
+
+The compiled standard dataset maps the official binary `correct` metric to
+`total_score`. HLE does not declare process-score or feedback channels.
 
 The local source revision must contain `integrations/model-call/cli.js` matching
 the trusted script bundled with the executing Hitch runtime. The adapter refuses

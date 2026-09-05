@@ -15,10 +15,15 @@ python benchmark-packages/harbor-source/import.py \
 python benchmark-packages/harbor-source/import.py \
   --dataset terminal-bench-science/terminal-bench-science@0.1.0 \
   --seed 20260902 --count 2 --out /absolute/packages/science
-hitch benchmark lock --package /absolute/packages/terminal-bench
-hitch eval run --benchmark-lock /absolute/packages/terminal-bench/benchmark.lock.json \
+hitch benchmark compile --package /absolute/packages/terminal-bench \
+  --out /absolute/datasets/terminal-bench
+hitch eval run --dataset /absolute/datasets/terminal-bench \
   --harness codex@version:0.145.0 --model gpt-5.4
 ```
+
+The same compile command applies to the Science package. It produces a
+self-contained standard Harbor dataset whose upstream `reward` is exposed as
+`total_score`; neither benchmark declares a process-score or feedback channel.
 
 The source manifest preserves full registry membership, release hash, task hashes,
 seed, selection, image resolutions and transformations. `--metadata FILE` reuses

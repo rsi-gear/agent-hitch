@@ -184,6 +184,71 @@ test("verifier evidence distinguishes result-only, missing, corrupt, and legacy 
   assert.equal((await loadVerifierEvidence(root, oversizedLegacyId)).verifier.status, "result_only");
 });
 
+test("structured verifier channels preserve total-only availability and validate process plus feedback", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-scores-"));
+  t.after(() => forceRemove(root));
+  const runId = `run_${"c".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, {
+    status: "valid", reward: 0, verifier_result_ref: "verifier/result.json",
+  });
+  const result = { rewards: { reward: 0, total_score: 0, process_score: 0.5 } };
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "result.json"), result);
+  const trialDirectory = await ensureDir(path.join(root, "score-trial"));
+  const verifierDirectory = await ensureDir(path.join(trialDirectory, "verifier"));
+  await atomicWriteJSON(path.join(verifierDirectory, "process.json"), {
+    schema_version: "1",
+    metric: "partial_credit",
+    score: 0.5,
+    detail_status: "components",
+    passed: 1,
+    total: 2,
+    excluded: 1,
+    components: [
+      { id: "assertion-001", category: "email.sent", code: "email.sent", status: "passed", weight: 1 },
+      { id: "assertion-002", category: "email.body", code: "email.body", status: "failed", weight: 1 },
+      { id: "assertion-003", category: "email.optional", code: "email.optional", status: "excluded", weight: 1 },
+    ],
+  });
+  await atomicWriteJSON(path.join(verifierDirectory, "feedback.json"), {
+    schema_version: "1",
+    items: [{ code: "email.body.missing", severity: "warning", message: "Required content was not found.", component_ids: ["assertion-002"] }],
+  });
+  const captured = await persistTrialVerifierDiagnostics({ trialDirectory, runDirectory, verifierResult: result });
+  assert.deepEqual(captured.scores, { total_score: 0, process_score: 0.5, normalization: "standard" });
+  assert.equal(captured.process?.components?.length, 3);
+  assert.equal(captured.feedback?.items.length, 1);
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+  const evidence = await loadVerifierEvidence(root, runId);
+  assert.equal(evidence.verifier.status, "result_only");
+  assert.deepEqual(evidence.verifier.scores, captured.scores);
+  assert.equal(evidence.verifier.process?.score, 0.5);
+  assert.equal(evidence.verifier.feedback?.items[0]?.component_ids?.[0], "assertion-002");
+  assert.match(evidence.verifier.structured_artifacts?.process?.sha256 ?? "", /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(validateVerifierEvidence(evidence), evidence);
+
+  const totalOnlyId = `run_${"d".repeat(32)}`;
+  const totalOnly = await writeRun(root, totalOnlyId, {
+    status: "valid", reward: 1, verifier_result_ref: "verifier/result.json",
+  }, { eval_id: `eval_${"d".repeat(32)}`, trial_id: "terminal-bench__1", attempt: 1 });
+  await atomicWriteJSON(path.join(totalOnly, "verifier", "result.json"), { rewards: { reward: 1 } });
+  const totalOnlyEvidence = await loadVerifierEvidence(root, totalOnlyId);
+  assert.deepEqual(totalOnlyEvidence.verifier.scores, { total_score: 1, normalization: "legacy-reward" });
+  assert.equal(totalOnlyEvidence.verifier.process, undefined);
+  assert.equal(totalOnlyEvidence.verifier.feedback, undefined);
+
+  await atomicWriteJSON(path.join(verifierDirectory, "process.json"), {
+    schema_version: "1", metric: "partial_credit", score: 1, detail_status: "aggregate-only",
+  });
+  await unlink(path.join(verifierDirectory, "feedback.json"));
+  const invalid = await persistTrialVerifierDiagnostics({
+    trialDirectory,
+    runDirectory: await ensureDir(path.join(root, "invalid-score-run")),
+    verifierResult: result,
+  });
+  assert.match(invalid.issue ?? "", /differs from process_score/);
+});
+
 test("verifier evidence fails closed on eval identity mismatch and unsafe diagnostic sources", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-identity-"));
   t.after(() => forceRemove(root));

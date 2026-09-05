@@ -1,12 +1,15 @@
-import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stringify as stringifyTOML } from "smol-toml";
 import { benchmarkTreeDigest, loadBenchmark, loadBenchmarkLock } from "../benchmarks/index.js";
 import type { LoadedBenchmarkV1 } from "../domain/index.js";
 import { atomicWriteJSON, ensureDir, invalidInput, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { newEvalId, validateEvalRequest } from "./request.js";
+import { buildBenchmarkAdapterManifest, loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 import { runEval } from "./service.js";
 import type { EvalResult, RunEvalOptions } from "./service-types.js";
+
+export const STANDARD_BENCHMARK_COMPILER = "harbor-package@6";
 
 export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> & {
   request: Record<string, unknown>;
@@ -31,7 +34,8 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
     infrastructure_retries: options.request.infrastructure_retries ?? loaded.profile.grading.infrastructure_retries,
   };
   const directory = path.join(statePaths(options.root).evals, evalId, "benchmark");
-  const normalizedRequest = { ...await validateEvalRequest(request), benchmark_id: loaded.manifest.id, benchmark_revision: loaded.lock.package_digest };
+  const normalizedRequest = await validateEvalRequest(request);
+  if (normalizedRequest.benchmark_id !== loaded.manifest.id) throw invalidInput("compiled benchmark manifest identity mismatch");
   return runEval({ ...options, evalId, request, normalizedRequest, executionStrategy: "local-task-slots-v1", onControlPhase: async (phase, work) => {
     if (phase === "planning") {
       await ensureDir(directory);
@@ -48,7 +52,7 @@ export async function runBenchmarkEval(options: Omit<RunEvalOptions, "request"> 
 }
 
 export async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string): Promise<{ source: string; tasks: string; digest: string }> {
-  const digest = sha256JSON({ lock: loaded.lock, compiler: "harbor-package@5" });
+  const digest = sha256JSON({ lock: loaded.lock, compiler: STANDARD_BENCHMARK_COMPILER });
   const store = await ensureDir(path.join(root, "store", "benchmarks"));
   const target = path.join(store, digest.slice(7));
   await withFileLock(path.join(store, "locks"), digest, async () => {
@@ -90,16 +94,63 @@ export async function compileBenchmark(loaded: LoadedBenchmarkV1, root: string):
           schema_version: "1", task_id: task.id, task: task.config,
           profile_digest: loaded.lock.profile_digest, profile: loaded.profile,
           primary_metric: loaded.manifest.primary_metric, metrics: loaded.manifest.metrics,
+          score_contract: { total_score: loaded.manifest.primary_metric },
           tools: task.tools, agent_timeout_sec: (task.harbor.agent as Record<string, unknown>).timeout_sec,
           agent_finalization_timeout_ms: finalizationTimeoutMs,
           ...(task.config.driver.kind === "model-call" ? { candidate_input: JSON.parse(await readFile(path.join(snapshot.directory, task.config.driver.config.input), "utf8")) } : {}),
           package_digest: loaded.lock.package_digest, task_digest: loaded.lock.tasks.find((t) => t.task_id === task.id)!.task_digest,
         });
       }
+      const primary = loaded.manifest.metrics[loaded.manifest.primary_metric]!;
+      const standardManifest = await buildBenchmarkAdapterManifest({
+        dataset: path.join(temporary, "tasks"),
+        benchmark: { id: loaded.manifest.id, revision: loaded.lock.package_digest },
+        adapter: { id: "hitch-package-v1-compiler", revision: digest, output_protocol: "gear-harbor-eval-result-v1" },
+        scoring: {
+          total_score: {
+            source_metric: loaded.manifest.primary_metric,
+            direction: primary.direction,
+            range: primary.range,
+            reducer: "task-macro-mean",
+          },
+        },
+        taskIds: snapshot.tasks.map((task) => task.id),
+      });
+      await atomicWriteJSON(path.join(temporary, "tasks", "benchmark.adapter.json"), standardManifest);
       await atomicWriteJSON(path.join(temporary, "source", "benchmark.lock.json"), loaded.lock);
       await atomicWriteJSON(path.join(temporary, "compiled.json"), { digest, tasks_digest: await benchmarkTreeDigest(path.join(temporary, "tasks")) });
       await rename(temporary, target);
     } finally { await rm(temporary, { recursive: true, force: true }); }
   });
   return { source: path.join(target, "source"), tasks: path.join(target, "tasks"), digest };
+}
+
+/** Compile any supported Package v1 benchmark into a standalone Harbor dataset. */
+export async function exportStandardBenchmarkDataset(packageDirectory: string, outputDirectory: string): Promise<Record<string, unknown>> {
+  const output = path.resolve(outputDirectory);
+  await mkdir(path.dirname(output), { recursive: true });
+  await mkdir(output); // Refuse to overwrite any existing path.
+  const temporaryRoot = await mkdtemp(path.join(path.dirname(output), ".hitch-standard-compile-"));
+  try {
+    const loaded = await loadBenchmark(packageDirectory);
+    const compiled = await compileBenchmark(loaded, temporaryRoot);
+    for (const entry of await readdir(compiled.tasks)) {
+      await cp(path.join(compiled.tasks, entry), path.join(output, entry), { recursive: true, errorOnExist: true, force: false });
+    }
+    const manifest = await loadBenchmarkAdapterManifest(output);
+    if (!manifest) throw invalidInput("compiled benchmark did not produce a standard manifest");
+    return {
+      dataset: output,
+      benchmark_id: manifest.benchmark.id,
+      benchmark_revision: manifest.dataset_digest,
+      source_package_digest: loaded.lock.package_digest,
+      tasks: manifest.tasks.map((task) => task.task_id),
+      scoring: manifest.scoring,
+    };
+  } catch (error) {
+    await rm(output, { recursive: true, force: true });
+    throw error;
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
 }

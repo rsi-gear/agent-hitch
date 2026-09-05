@@ -19,5 +19,6 @@ export * from "./images.js";
 export * from "./interactions.js";
 export * from "./verifier-evidence.js";
 export * from "./verifier-evidence-validation.js";
+export * from "./verifier-score-contract.js";
 export * from "./validation.js";
 export type { EvalRequest } from "./evals.js";

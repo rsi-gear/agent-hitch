@@ -1,4 +1,5 @@
 import type { BenchmarkPhaseGroupRefV1 } from "./runs.js";
+import type { VerifierScoresV1 } from "./verifier-evidence.js";
 
 interface EvalTrialObservationV1 {
   trial_id: string;
@@ -6,6 +7,7 @@ interface EvalTrialObservationV1 {
   attempt: number;
   observation_status: "valid" | "invalid";
   reward?: number;
+  scores?: VerifierScoresV1;
   verifier_result_ref?: string;
   invalid_reason?: string;
 }

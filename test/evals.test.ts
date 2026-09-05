@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, readEvalProgress, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval as runEvalProduction, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
+import { buildBenchmarkAdapterManifest, createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, readEvalProgress, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval as runEvalProduction, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { readHarborBridgeError } from "../src/evals/harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure } from "../src/evals/verifier-diagnostics.js";
@@ -341,6 +341,38 @@ test("local eval datasets expose a deterministic immutable task plan", async (t)
   await mkdir(singleTask);
   await writeFile(path.join(singleTask, "task.toml"), "", "utf8");
   assert.deepEqual(await resolveLocalDatasetTaskIds(singleTask), ["single-task"]);
+});
+
+test("a standard benchmark dataset automatically uses task-slot execution", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-standard-task-slots-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "", "utf8");
+  const manifest = await buildBenchmarkAdapterManifest({
+    dataset,
+    benchmark: { id: "standard-fixture", revision: `sha256:${"a".repeat(64)}` },
+    adapter: { id: "fixture-adapter", revision: `sha256:${"b".repeat(64)}`, output_protocol: "gear-harbor-eval-result-v1" },
+    scoring: { total_score: { source_metric: "reward", direction: "maximize", range: [0, 1], reducer: "task-macro-mean" } },
+    taskIds: ["one"],
+  });
+  await atomicWriteJSON(path.join(dataset, "benchmark.adapter.json"), manifest);
+  const fakeHarbor = await writeFakeHarbor(root);
+  const fakeNpm = await writeFakeNpm(root);
+  const result = await runEval({
+    root,
+    harborExecutable: fakeHarbor,
+    env: { ...process.env, HITCH_NPM_PATH: fakeNpm },
+    request: { dataset, harness_ref: "pi@version:1.2.3", model: "openai/test-model", infrastructure_retries: 0 },
+  });
+  const evalDirectory = path.join(root, "evals", result.eval_id);
+  const plan = await readJSON<{ attempt_execution: string }>(path.join(evalDirectory, "plan.json"));
+  assert.equal(plan.attempt_execution, "harbor-task-slots-v1");
+  const execution = await readJSON<{ work_items: Array<{ work_id: string }> }>(path.join(evalDirectory, "execution-plan.json"));
+  assert.equal(execution.work_items.length, 1);
+  const job = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor/work-items", execution.work_items[0]!.work_id, "epoch-000001/job.json"));
+  assert.equal((job.environment as Record<string, unknown>).import_path,
+    "hitch_harbor_environment:HitchHarborDockerEnvironment");
 });
 
 test("one eval prepares and pins artifacts per distinct task runtime contract", async (t) => {

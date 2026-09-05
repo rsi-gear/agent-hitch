@@ -3,7 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { benchmarkTreeDigest } from "../benchmarks/index.js";
 import type { BenchmarkLockV1, BenchmarkManifestV1, BenchmarkPhaseGroupV1, BenchmarkTaskV1, EvalTrialRefV1, RunObservationV1 } from "../domain/index.js";
-import { validateRunObservation } from "../domain/index.js";
+import { parseVerifierScores, validateRunObservation } from "../domain/index.js";
 import { atomicWriteJSON, ensureDir, readJSON, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { benchmarkVerifierIdentity, copySealedPhaseRunBundle, defaultModelIdentity, inspectSealedPhaseRunBundle, readBenchmarkPhaseGroup, sealBenchmarkPhaseGroup } from "../runs/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
@@ -14,6 +14,7 @@ import { importTrialInteractionCapture } from "./interaction-capture-import.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import { writeEvalTrialPublication } from "./trial-publication.js";
+import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 
 type RecordValue = Record<string, unknown>;
 interface PhaseTrialInput extends ImportEvalRunOptions {
@@ -26,6 +27,7 @@ export interface NativePhaseDescriptor {
   metrics: BenchmarkManifestV1["metrics"];
   audit_path: string;
   agent_timeout_ms: number;
+  standard_total_range?: readonly [number, number];
 }
 export class NativePhaseBundlePendingError extends Error {}
 
@@ -47,7 +49,31 @@ async function json(directory: string, relative: string): Promise<RecordValue> {
 /** The private descriptor must belong to the immutable compiled package. */
 export async function nativePhaseDescriptor(input: ImportEvalRunOptions, taskId: string): Promise<NativePhaseDescriptor | null> {
   const pkg = await readJSON<{ tasks: string; source: string; package_digest: string; compiled_digest: string } | null>(path.join(input.evalDirectory, "benchmark/package.json"), null);
-  if (!pkg || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(taskId)) return null;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(taskId)) return null;
+  if (!pkg) {
+    if (typeof input.request.dataset !== "string" || !input.request.dataset) return null;
+    const manifest = await loadBenchmarkAdapterManifest(input.request.dataset);
+    if (!manifest || manifest.benchmark.id !== input.benchmarkId || manifest.dataset_digest !== input.benchmarkRevision) return null;
+    const descriptor = await readJSON<RecordValue | null>(path.join(input.request.dataset, taskId, ".hitch-benchmark.json"), null);
+    if (!descriptor) return null;
+    const task = descriptor.task as BenchmarkTaskV1;
+    if (task?.driver?.kind !== "tool-server" || !task.driver.config.native_phases) return null;
+    const contract = descriptor.score_contract as RecordValue | undefined;
+    if (descriptor.task_id !== taskId || typeof descriptor.task_digest !== "string"
+      || descriptor.primary_metric !== manifest.scoring.total_score.source_metric
+      || !contract || Object.keys(contract).length !== 1 || contract.total_score !== descriptor.primary_metric) {
+      throw new Error("native standardized descriptor is invalid");
+    }
+    return {
+      task,
+      task_digest: descriptor.task_digest,
+      primary_metric: String(descriptor.primary_metric),
+      metrics: descriptor.metrics as BenchmarkManifestV1["metrics"],
+      audit_path: task.driver.config.native_phases.audit_path,
+      agent_timeout_ms: Number(descriptor.agent_timeout_sec) * 1000,
+      standard_total_range: manifest.scoring.total_score.range,
+    };
+  }
   const descriptor = await readJSON<RecordValue | null>(path.join(pkg.tasks, taskId, ".hitch-benchmark.json"), null);
   if (!descriptor) return null;
   const task = descriptor.task as BenchmarkTaskV1;
@@ -55,15 +81,21 @@ export async function nativePhaseDescriptor(input: ImportEvalRunOptions, taskId:
   const lock = await readJSON<BenchmarkLockV1>(path.join(input.evalDirectory, "benchmark/benchmark.lock.json"));
   const compiled = await readJSON<{ digest: string; tasks_digest: string }>(path.join(path.dirname(pkg.tasks), "compiled.json"));
   const lockedTask = lock.tasks.find(item => item.task_id === taskId);
-  if (lock.protocol !== "hitch-benchmark@1" || lock.benchmark_id !== input.benchmarkId || lock.package_digest !== input.benchmarkRevision
+  const standardCompiler = compiled.digest === sha256JSON({ lock, compiler: "harbor-package@6" });
+  const standardManifest = standardCompiler ? await loadBenchmarkAdapterManifest(pkg.tasks) : null;
+  const revisionMatches = standardManifest
+    ? standardManifest.benchmark.id === input.benchmarkId && standardManifest.dataset_digest === input.benchmarkRevision
+    : lock.package_digest === input.benchmarkRevision;
+  if (lock.protocol !== "hitch-benchmark@1" || lock.benchmark_id !== input.benchmarkId || !revisionMatches
     || pkg.package_digest !== lock.package_digest || lock.package_digest !== sha256JSON(lock.files)
     || lock.package_digest !== await benchmarkTreeDigest(pkg.source) || compiled.digest !== pkg.compiled_digest
-    || !["harbor-package@4", "harbor-package@5"].some(compiler => compiled.digest === sha256JSON({ lock, compiler })) || compiled.tasks_digest !== await benchmarkTreeDigest(pkg.tasks)
+    || !["harbor-package@4", "harbor-package@5", "harbor-package@6"].some(compiler => compiled.digest === sha256JSON({ lock, compiler })) || compiled.tasks_digest !== await benchmarkTreeDigest(pkg.tasks)
     || !lockedTask || descriptor.task_digest !== lockedTask.task_digest || descriptor.package_digest !== lock.package_digest
     || descriptor.task_id !== taskId || task.source_task_id !== lockedTask.source_task_id) throw new Error("native compiled benchmark identity changed");
   return { task, task_digest: lockedTask.task_digest, primary_metric: String(descriptor.primary_metric),
     metrics: descriptor.metrics as BenchmarkManifestV1["metrics"], audit_path: task.driver.config.native_phases.audit_path,
-    agent_timeout_ms: Number(descriptor.agent_timeout_sec) * 1000 };
+    agent_timeout_ms: Number(descriptor.agent_timeout_sec) * 1000,
+    ...(standardManifest ? { standard_total_range: standardManifest.scoring.total_score.range } : {}) };
 }
 
 function budgetReceipt(supervision: RecordValue, protocol: unknown): RecordValue | undefined {
@@ -251,11 +283,18 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
   if (lifecycle.failure || !["prepare", "quiesce", "snapshot"].every(name => object(object(lifecycle.phases)[name]).status === "ok")) throw new Error("native lifecycle snapshot is incomplete");
   const reward = primaryVerifierReward(input.trial);
   const verifier = verifierResult(input.trial);
+  const scores = descriptor.standard_total_range === undefined ? undefined : parseVerifierScores(verifier);
+  if (descriptor.standard_total_range !== undefined && (!scores || scores.normalization !== "standard"
+    || scores.process_score !== undefined || scores.total_score !== reward
+    || scores.total_score < descriptor.standard_total_range[0] || scores.total_score > descriptor.standard_total_range[1])) {
+    throw new Error("native standardized score contract is invalid");
+  }
   const infrastructure = await detectVerifierInfrastructureFailure(input.trialDirectory, reward);
   // The independent native task completed; phase process statuses remain
   // unchanged in their bundles (often cancelled at a native boundary).
   const observation = verifierObservation({ trial: input.trial, runStatus: "succeeded", trajectoryStatus: "valid", recordStatus: "valid",
     verifierRef: verifier ? "evidence/verifier/result.json" : undefined, infrastructure });
+  const publishedScores = observation.status === "valid" ? scores : undefined;
   const contract = metricContract(descriptor);
   if (observation.status === "valid") verifyMetrics(await json(input.trialDirectory, "verifier/benchmark-rewards.json"), contract, reward);
   const artifactsDigest = await regradeTreeDigest(path.join(input.trialDirectory, "artifacts"));
@@ -267,7 +306,7 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
     const existing = await readJSON<RecordValue | null>(path.join(directory, "assessment.json"), null);
     if (existing) {
       if (existing.source_digest !== sourceDigest) throw new Error("native assessment source changed after publication");
-      const ref = trialRef(input, reference, { id, digest: sha256Bytes(await bytes(directory, "assessment.json")) }, observation);
+      const ref = trialRef(input, reference, { id, digest: sha256Bytes(await bytes(directory, "assessment.json")) }, observation, publishedScores);
       await readNativePhaseObservation(input.root, input.evalId, ref);
       return ref;
     }
@@ -291,11 +330,12 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
     const record = { schema_version: "1", kind: "native-phase-assessment", eval_id: input.evalId, trial_id: input.trialId,
       task_id: input.taskId, attempt: input.attempt, benchmark_id: input.benchmarkId, benchmark_revision: input.benchmarkRevision,
       task_digest: descriptor.task_digest, verifier_identity: group.verifier_identity, run_group: reference, observation,
+      ...(publishedScores === undefined ? {} : { scores: publishedScores }),
       publication_mode: input.publicationMode ?? "settle",
       metric_contract: contract, controller_service: service, native_control_protocol: control?.protocol, unused_candidate_replacement: unusedReplacement,
       native_audit_path: descriptor.audit_path, source_digest: sourceDigest, evidence_digest: await regradeTreeDigest(evidence), created_at: new Date().toISOString() };
     await atomicWriteJSON(path.join(directory, "assessment.json"), record);
-    const ref = trialRef(input, reference, { id, digest: sha256Bytes(await bytes(directory, "assessment.json")) }, observation);
+    const ref = trialRef(input, reference, { id, digest: sha256Bytes(await bytes(directory, "assessment.json")) }, observation, publishedScores);
     await readNativePhaseObservation(input.root, input.evalId, ref);
     // Publication is separate from every original candidate bundle.
     await writeEvalTrialPublication(directory, input.evalId, input.publicationMode ?? "settle", ref);
@@ -303,9 +343,10 @@ export async function importNativePhaseTrial(input: PhaseTrialInput, descriptor:
   });
 }
 
-function trialRef(input: PhaseTrialInput, group: NonNullable<EvalTrialRefV1["run_group"]>, assessment: NonNullable<EvalTrialRefV1["assessment"]>, observation: RunObservationV1): EvalTrialRefV1 {
+function trialRef(input: PhaseTrialInput, group: NonNullable<EvalTrialRefV1["run_group"]>, assessment: NonNullable<EvalTrialRefV1["assessment"]>, observation: RunObservationV1, scores?: EvalTrialRefV1["scores"]): EvalTrialRefV1 {
   return { trial_id: input.trialId, task_id: input.taskId, attempt: input.attempt, run_group: group, assessment,
     observation_status: observation.status, ...(observation.reward !== undefined ? { reward: observation.reward } : {}),
+    ...(scores === undefined ? {} : { scores }),
     ...(observation.invalid_reason ? { invalid_reason: observation.invalid_reason } : {}),
     ...(observation.verifier_result_ref ? { verifier_result_ref: observation.verifier_result_ref } : {}) };
 }
@@ -332,5 +373,10 @@ export async function readNativePhaseObservation(root: string, evalId: string, t
   verifyReplacements(receipts.receipts.map(object), group, String(record.controller_service), record.unused_candidate_replacement === true);
   const observation = validateRunObservation(record.observation);
   if (observation.status === "valid") verifyMetrics(await json(path.join(directory, "evidence"), "verifier/benchmark-rewards.json"), record.metric_contract as MetricContract, observation.reward);
+  if (!isDeepStrictEqual(record.scores, trial.scores)) throw new Error("native assessment score channels mismatch");
+  if (trial.scores !== undefined) {
+    const result = await json(path.join(directory, "evidence"), "verifier/result.json");
+    if (!isDeepStrictEqual(parseVerifierScores(result), trial.scores)) throw new Error("native assessment score evidence mismatch");
+  }
   return observation;
 }

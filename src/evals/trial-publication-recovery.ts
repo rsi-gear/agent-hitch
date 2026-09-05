@@ -105,6 +105,7 @@ async function readEvalTrialPublications(root: string, evalId: string): Promise<
           trial: { trial_id: record.trial_id, task_id: record.task_id, attempt: record.attempt, run_group: record.run_group,
             assessment: { id: entry.name, digest: sha256Bytes(await readFile(manifestPath)) }, observation_status: observation.status,
             ...(observation.reward !== undefined ? { reward: observation.reward } : {}),
+            ...(record.scores !== undefined ? { scores: record.scores } : {}),
             ...(observation.invalid_reason ? { invalid_reason: observation.invalid_reason } : {}),
             ...(observation.verifier_result_ref ? { verifier_result_ref: observation.verifier_result_ref } : {}) } };
       }

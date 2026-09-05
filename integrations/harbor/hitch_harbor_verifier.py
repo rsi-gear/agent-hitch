@@ -25,7 +25,7 @@ from harbor.verifier.verifier import Verifier
 MAX_LOG_BYTES = 256 * 1024
 HITCH_AGENT_OUTCOME_NAME = "hitch-agent-outcome.json"
 LOG_NAMES = ("test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt")
-OUTPUT_NAMES = (*LOG_NAMES, "reward.txt", "reward.json", "ctrf.json")
+OUTPUT_NAMES = (*LOG_NAMES, "reward.txt", "reward.json", "process.json", "feedback.json", "ctrf.json")
 CONTROL_NAMES = (
     "infrastructure-error.json",
     "infrastructure-retry-history.json",
