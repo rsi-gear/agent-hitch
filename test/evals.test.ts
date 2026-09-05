@@ -1035,6 +1035,60 @@ test("Harbor diagnostic runs retain a validated bridge error without trusting it
   assert.equal(diagnostic.eval_id, "eval_forged", "artifact identity is evidence only");
 });
 
+test("Harbor diagnostic runs retain Node identity failure evidence", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-node-identity-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "node-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+  const evidence = {
+    schema_version: "1",
+    code: "hitch_node_runtime_identity_invalid",
+    message: "container returned an invalid Node.js identity (exit=17)",
+    eval_id: evalId,
+    node_version: "v22.23.0",
+    platform: "linux-x64",
+    artifact_id: `sha256:${"c".repeat(64)}`,
+    probe: {
+      command: "node -e 'process.stdout.write(\"\\n__HITCH_NODE_IDENTITY__\" + process.platform + \"-\" + process.arch + \" \" + process.version + \"\\n\")'",
+      return_code: 17,
+      stdout_tail: "startup banner\n__HITCH_NODE_IDENTITY__linux-x64 v22.23.0\n",
+      stderr_tail: "Node startup failed\n",
+    },
+  };
+  await atomicWriteJSON(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), evidence);
+
+  const refs = await importEvalTrialRuns({
+    root, evalId, evalDirectory,
+    request: {
+      harness_ref: "pi@version:1.2.3", model: "openai/test-model", timeout_ms: 5_000, agent_args: [],
+    } as never,
+    resolvedRevision: { harness_id: "pi", identity: `sha256:${"a".repeat(64)}` } as never,
+    benchmarkId: "benchmark",
+    benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: {
+      trial_results: [{
+        task_name: "node-task", trial_name: trialId,
+        exception_info: { exception_type: "HitchBridgeError" },
+      }],
+    },
+  });
+
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.observation_status, "invalid");
+  assert.equal(refs[0]?.invalid_reason, "infrastructure_failure");
+  const diagnosticTrial = refs[0]!;
+  assert.ok(!diagnosticTrial.run_group);
+  const runDirectory = path.join(root, "runs", diagnosticTrial.run_id);
+  const result = await readJSON<{ error: { code: string; message: string } }>(path.join(runDirectory, "result.json"));
+  assert.deepEqual(result.error, { code: evidence.code, message: evidence.message });
+  const manifest = await readJSON<{ diagnostics: { harbor_bridge_error_ref: string } }>(path.join(runDirectory, "manifest.json"));
+  assert.equal(manifest.diagnostics.harbor_bridge_error_ref, "diagnostics/harbor-bridge-error.json");
+  assert.deepEqual(await readJSON(path.join(runDirectory, manifest.diagnostics.harbor_bridge_error_ref)), evidence);
+});
+
 test("Harbor diagnostic runs safely ignore an invalid bridge error artifact", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-invalid-bridge-diagnostic-"));
   t.after(() => forceRemove(root));

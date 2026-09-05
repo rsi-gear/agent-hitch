@@ -7,6 +7,7 @@ import { parseFailureClassification } from "./failure-classifier.js";
 const HITCH_BRIDGE_ERROR_MAX_BYTES = 64 * 1024;
 const HITCH_BRIDGE_ERROR_MESSAGE_MAX_BYTES = 2048;
 const HITCH_BRIDGE_ERROR_CODES = new Set([
+  "hitch_node_runtime_identity_invalid",
   "hitch_workdir_invalid",
   "hitch_process_failed",
   "hitch_result_missing",
