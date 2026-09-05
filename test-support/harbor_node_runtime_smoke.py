@@ -4,7 +4,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
+import shlex
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +51,18 @@ class Environment:
 
     async def upload_file(self, source: Path, target: str) -> None:
         self.uploads.append(target)
+
+
+class IdentityEnvironment:
+    def __init__(self, stdout: str, stderr: str = "", return_code: int = 0) -> None:
+        self.result = ExecResult(stdout=stdout, stderr=stderr, return_code=return_code)
+        self.commands: list[str] = []
+
+    async def exec(self, command: str, **kwargs: Any) -> ExecResult:
+        self.commands.append(command)
+        if command.startswith("umask 077;"):
+            return ExecResult()
+        return self.result
 
 
 class NodeRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -187,6 +202,96 @@ class NodeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         env = Environment()
         await self.failure(env, "hitch_node_runtime_integrity_mismatch")
         self.assertEqual(env.uploads, [])
+
+    async def test_identity_accepts_warnings_and_banners_around_one_marker(self) -> None:
+        identity = "__HITCH_NODE_IDENTITY__linux-x64 v22.23.0"
+        for stdout, stderr in (
+            (identity + "\n", ""),
+            ("banner\n" + identity + "\n", ""),
+            (identity + "\nbanner\n", ""),
+            ("\x1b[32mbanner\x1b[0m\r\n" + identity + "\r\n", ""),
+            (identity + "\n", "warning\n"),
+            ("warning from merged stderr\n" + identity + "\n", ""),
+        ):
+            with self.subTest(stdout=stdout, stderr=stderr):
+                env = IdentityEnvironment(stdout, stderr)
+                self.assertEqual(await self.agent._container_node_identity(env), ("linux-x64", "v22.23.0"))
+                self.assertEqual(len(env.commands), 1)
+
+    async def test_identity_rejects_missing_duplicate_and_malformed_markers(self) -> None:
+        marker = "__HITCH_NODE_IDENTITY__"
+        valid = marker + "linux-x64 v22.23.0\n"
+        for stdout in (
+            "linux-x64\nv22.23.0\n", "", valid + valid,
+            valid + marker + "invalid\n",
+            marker + "linux-x64 not-a-version\n",
+            marker + "linux-x64 v22.23.0 extra\n",
+            marker + "not-a-platform v22.23.0\n",
+            "\x1b[32m" + valid + "\x1b[0m",
+        ):
+            with self.subTest(stdout=stdout):
+                with self.assertRaises(bridge.HitchBridgeError) as caught:
+                    await self.agent._container_node_identity(IdentityEnvironment(stdout))
+                self.assertEqual(caught.exception.code, "hitch_node_runtime_identity_invalid")
+                evidence = json.loads((self.root / "logs/hitch-node-runtime.json").read_text())
+                self.assertEqual(evidence["probe"]["stdout_tail"], stdout)
+                self.assertEqual(evidence["probe"]["return_code"], 0)
+
+    async def test_identity_nonzero_exit_is_not_hidden_and_diagnostics_are_bounded(self) -> None:
+        stdout = "x" * 20_000 + "\n__HITCH_NODE_IDENTITY__linux-x64 v22.23.0\n"
+        stderr = "y" * 20_000 + "startup failed\n"
+        env = IdentityEnvironment(stdout, stderr, 17)
+        with self.assertRaises(bridge.HitchBridgeError) as caught:
+            await self.agent._container_node_identity(env)
+        evidence = json.loads((self.root / "logs/hitch-node-runtime.json").read_text())
+        self.assertEqual(evidence["probe"]["return_code"], 17)
+        for field in ("stdout_tail", "stderr_tail"):
+            self.assertLessEqual(len(evidence["probe"][field].encode()), bridge.HITCH_DIAGNOSTIC_MAX_BYTES)
+            self.assertIn("[truncated ", evidence["probe"][field])
+        self.assertIn("startup failed", str(caught.exception))
+        self.assertIn("exit=17", str(caught.exception))
+        exported = json.loads(shlex.split(env.commands[-1])[4])
+        self.assertEqual(exported["probe"], evidence["probe"])
+
+    async def test_identity_failure_remains_durable_when_container_log_export_fails(self) -> None:
+        class UnavailableLogs(IdentityEnvironment):
+            async def exec(self, command: str, **kwargs: Any) -> ExecResult:
+                if command.startswith("umask 077;"):
+                    raise RuntimeError("container log export failed")
+                return await super().exec(command, **kwargs)
+
+        with self.assertRaises(bridge.HitchBridgeError):
+            await self.agent._container_node_identity(UnavailableLogs("invalid output"))
+        evidence = json.loads((self.root / "logs/hitch-node-runtime.json").read_text())
+        self.assertEqual(evidence["probe"]["stdout_tail"], "invalid output")
+
+    async def test_real_node_preload_output_with_merged_stderr(self) -> None:
+        preload = self.root / "preload.cjs"
+        preload.write_text(
+            "console.warn('preload warning'); process.stdout.write('banner without newline');"
+            "process.on('exit', () => console.log('trailing banner'));"
+        )
+        child_env = {**os.environ, "NODE_OPTIONS": "--require=" + shlex.quote(str(preload))}
+
+        class ShellEnvironment:
+            async def exec(self, command: str, **kwargs: Any) -> ExecResult:
+                result = subprocess.run(
+                    ["bash", "-c", command], env=child_env, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10,
+                )
+                return ExecResult(stdout=result.stdout, return_code=result.returncode)
+
+        env = ShellEnvironment()
+        legacy = await env.exec('node -p "process.platform + \'-\' + process.arch"')
+        self.assertEqual(legacy.return_code, 0)
+        self.assertIsNone(re.fullmatch(r"(?:linux|darwin|win32)-[a-z0-9_]+", legacy.stdout.strip()))
+        actual = await self.agent._container_node_identity(env)
+        clean = subprocess.run(
+            ["node", "-p", "process.platform + '-' + process.arch + ' ' + process.version"],
+            env={key: value for key, value in os.environ.items() if key != "NODE_OPTIONS"},
+            text=True, capture_output=True, check=True, timeout=10,
+        )
+        self.assertEqual(actual, tuple(clean.stdout.strip().split(" ")))
 
 
 if __name__ == "__main__":

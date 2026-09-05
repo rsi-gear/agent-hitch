@@ -241,8 +241,7 @@ class HitchHarborAgent(BaseAgent):
         # bookkeeping and is not identity (spec §4.2).
         await environment.upload_dir(payload_dir, "/opt/hitch")
         await self._ensure_node(environment)
-        platform = await self._container_platform(environment)
-        node_version = await self._container_node_version(environment)
+        platform, node_version = await self._container_node_identity(environment)
         if self._artifact_manifest is None or not self._artifact_compatible(
             self._artifact_manifest, platform, node_version
         ):
@@ -447,22 +446,43 @@ class HitchHarborAgent(BaseAgent):
             raise RuntimeError(f"{label} exceeds the size limit ({maximum} bytes)")
         return info
 
-    async def _container_platform(self, environment: BaseEnvironment) -> str:
-        result = await self._exec(
-            environment,
-            f'{self._node_prefix()} node -p "process.platform + \'-\' + process.arch"',
+    async def _container_node_identity(self, environment: BaseEnvironment) -> tuple[str, str]:
+        # Harbor may merge stderr into stdout. Frame only the machine value so
+        # startup warnings cannot be mistaken for the platform or version.
+        marker = "__HITCH_NODE_IDENTITY__"
+        script = (
+            f"process.stdout.write('\\n{marker}' + process.platform + '-' + "
+            "process.arch + ' ' + process.version + '\\n')"
         )
-        platform = (result.stdout or "").strip()
-        if not re.fullmatch(r"(?:linux|darwin|win32)-[a-z0-9_]+", platform):
-            raise RuntimeError("container returned an invalid Node.js platform identity")
-        return platform
+        command = f"{self._node_prefix()} node -e {shlex.quote(script)}"
+        result = await environment.exec(command)
+        lines = [line for line in (result.stdout or "").splitlines() if line.startswith(marker)]
+        identity = re.fullmatch(
+            re.escape(marker) + r"((?:linux|darwin|win32)-[a-z0-9_]+) (v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)",
+            lines[0],
+        ) if len(lines) == 1 else None
+        if result.return_code == 0 and identity is not None:
+            return identity.group(1), identity.group(2)
 
-    async def _container_node_version(self, environment: BaseEnvironment) -> str:
-        result = await self._exec(environment, f'{self._node_prefix()} node -p "process.version"')
-        version = (result.stdout or "").strip()
-        if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-            raise RuntimeError("container returned an invalid Node.js version")
-        return version
+        reason = f"exit={result.return_code}" if result.return_code != 0 else "expected one valid identity marker"
+        failure = self._node_runtime_error(
+            "hitch_node_runtime_identity_invalid",
+            f"container returned an invalid Node.js identity ({reason}); "
+            f"stdout={self._bounded_tail(result.stdout or '', 512)!r}; "
+            f"stderr={self._bounded_tail(result.stderr or '', 512)!r}",
+        )
+        failure.evidence["probe"] = {
+            "command": command,
+            "return_code": result.return_code,
+            "stdout_tail": self._bounded_tail(result.stdout or ""),
+            "stderr_tail": self._bounded_tail(result.stderr or ""),
+        }
+        self._record_node_runtime({"source": "failed", "bin_directory": self._node_bin_directory, **failure.evidence})
+        try:
+            await self._write_bridge_error(environment, failure.evidence)
+        except Exception:
+            pass  # Keep the probe failure if the container cannot export logs.
+        raise failure
 
     @staticmethod
     def _artifact_compatible(manifest: dict[str, Any], platform: str, node_version: str) -> bool:

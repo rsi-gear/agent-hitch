@@ -94,6 +94,8 @@ class BaseEnvironment:
         if command.startswith("test -d "):
             target = shlex.split(command)[-1]
             return ExecResult(return_code=0 if target in self.existing_dirs else 1)
+        if "__HITCH_NODE_IDENTITY__" in command:
+            return ExecResult(stdout=f"\n__HITCH_NODE_IDENTITY__{self.platform_identity} {self.node_version}\n")
         if "process.platform" in command and "process.arch" in command:
             return ExecResult(stdout=self.platform_identity + "\n", return_code=0)
         if "process.version" in command:
