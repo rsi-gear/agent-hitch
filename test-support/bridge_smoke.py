@@ -112,6 +112,10 @@ class BaseEnvironment:
                 return ExecResult(stdout=json.dumps({"schema_version": "1", "artifact": artifact}) + "\n", return_code=0)
             return ExecResult(stdout='{"status":"ok"}\n', return_code=0)
         if " run " in command and "hitch-events.jsonl" in command:
+            if self.result_case == "interrupted-cancel":
+                raise asyncio.CancelledError("original cancellation")
+            if self.result_case == "interrupted-exec":
+                raise OSError("original exec failure")
             # The bridge parses run events for a run id, then cats result.json.
             event = '{"type":"run.completed","run_id":"run_' + "a" * 32 + '"}\n'
             if self.result_case == "process-failure-missing":
@@ -543,13 +547,31 @@ def result_matrix_main() -> int:
             benchmark_revision="sha256:" + "b" * 64,
             verifier_identity="sha256:" + "c" * 64,
         )
+        if case == "interrupted-exec":
+            agent.eval_id = None  # Exercise a run without an eval parent.
         await agent.setup(env)
         caught_message = ""
         try:
             await agent.run("do the task", env, context)
             errors.append(f"{case}: run unexpectedly succeeded")
             return
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
+            if case.startswith("interrupted-"):
+                expected_type = asyncio.CancelledError if case == "interrupted-cancel" else OSError
+                if type(error) is not expected_type:
+                    errors.append(f"{case}: original execution failure was replaced")
+                receipt = json.loads((agent_logs_dir / "hitch-interrupted-run.json").read_text())
+                if receipt.get("complete") is not False or receipt.get("export_return_code") != 0:
+                    errors.append(f"{case}: incomplete evidence receipt was not recorded")
+                invocation = next(command for command in env.execs if " run " in command and "hitch-events.jsonl" in command)
+                argv = shlex.split(invocation)
+                if argv.count("--internal-run-id") != 1 or argv[argv.index("--internal-run-id") + 1] != receipt["run_id"]:
+                    errors.append(f"{case}: export identity was not bound to the CLI invocation")
+                if case == "interrupted-exec" and "--parent-file" in argv:
+                    errors.append(f"{case}: no-parent regression did not exercise the ad-hoc path")
+                if context.metadata or any("stage_dir=" in command for command in env.execs):
+                    errors.append(f"{case}: interrupted execution entered normal result collection")
+                return
             caught_message = str(error)
             if not isinstance(error, bridge.HitchBridgeError):
                 errors.append(f"{case}: unexpected exception type {type(error).__name__}: {error}")
@@ -599,6 +621,8 @@ def result_matrix_main() -> int:
     async def drive() -> None:
         for case, expected_code in cases.items():
             await drive_case(case, expected_code)
+        for case in ["interrupted-cancel", "interrupted-exec"]:
+            await drive_case(case, "")
 
     asyncio.run(drive())
     if errors:
