@@ -431,6 +431,9 @@ async function finalizeRerun(
       })),
     } : {}),
     candidate: plan.candidate,
+    // An interrupted eval may never have written a result. The frozen plan
+    // remains the source of the candidate's local transport provenance.
+    ...(plan.localSourceTransport ? { local_source_transport: plan.localSourceTransport } : {}),
     dataset: request.dataset,
     benchmark_id: request.benchmark_id,
     benchmark_revision: request.benchmark_revision,

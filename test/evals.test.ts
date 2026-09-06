@@ -1579,6 +1579,62 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
   }), (error: unknown) => (error as { code?: string }).code === "eval_rerun_id_conflict");
 });
 
+test("eval rerun restores frozen local transport after interruption without re-executing valid trials", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-rerun-provenance-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const request = await validateEvalRequest(evalRequest());
+  const localSourceTransport = {
+    kind: "local-git-commit",
+    resolution_identity: `sha256:${"a".repeat(64)}`,
+    commit: "b".repeat(40),
+    tree: "c".repeat(40),
+    payload_sha256: `sha256:${"d".repeat(64)}`,
+    payload_bytes: 1024,
+    object_count: 3,
+    file_count: 1,
+  };
+  const progress = mergeEvalProgressTrial(createEvalProgress({
+    evalId,
+    benchmarkId: request.benchmark_id,
+    benchmarkRevision: request.benchmark_revision,
+    plannedTasks: 1,
+    plannedTrials: 1,
+    startedAt: new Date(0).toISOString(),
+  }), {
+    task_id: "task-a", trial_id: "task-a__1", attempt: 1,
+    run_id: "run_11111111111111111111111111111111",
+    observation_status: "valid", reward: 0.75, verifier_result_ref: "verifier/result.json",
+  });
+  await atomicWriteJSON(path.join(evalDirectory, "request.json"), request);
+  await atomicWriteJSON(path.join(evalDirectory, "plan.json"), {
+    schema_version: "1", eval_id: evalId, attempts: 1, tasks: ["task-a"],
+    dataset: request.dataset, benchmark_id: request.benchmark_id, benchmark_revision: request.benchmark_revision,
+    candidate: { revision_identity: localSourceTransport.resolution_identity },
+    prepared_artifact: { artifact_id: `sha256:${"e".repeat(64)}` },
+    controller_runtime: { runtime_id: `sha256:${"f".repeat(64)}` },
+    local_source_transport: localSourceTransport,
+  });
+  await atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), {});
+  await atomicWriteJSON(path.join(evalDirectory, "progress.json"), progress);
+
+  for (const previousResult of [null, { status: "succeeded", trials: progress.trials }]) {
+    if (previousResult) await atomicWriteJSON(path.join(evalDirectory, "result.json"), previousResult);
+    const rerun = await rerunEval({
+      root, evalId, selector: { mode: "invalid" },
+      harborExecutable: path.join(root, "must-not-execute-harbor"),
+    });
+    assert.equal(rerun.eval_status, "succeeded");
+    assert.deepEqual(rerun.selected_trials, []);
+    const result = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "result.json"));
+    assert.deepEqual(result.local_source_transport, localSourceTransport);
+    assert.deepEqual(result.trials, progress.trials);
+    assert.equal(result.generation, progress.generation);
+    assert.equal((result.summary as { primary_reward: number }).primary_reward, 0.75);
+  }
+});
+
 test("eval rerun restarts any failed preparation attempt before executable plan creation", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-pre-plan-rerun-"));
   t.after(() => forceRemove(root));
