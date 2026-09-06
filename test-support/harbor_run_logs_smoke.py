@@ -86,16 +86,20 @@ class RunLogsTests(unittest.IsolatedAsyncioTestCase):
         (self.source / "trajectory/session.jsonl").write_text('{"type":"session"}\n')
         (self.source / "runtime-home").mkdir()
         (self.source / "runtime-home/auth.json").write_text('secret')
+        os.link(self.source / "runtime-home/auth.json", self.source / "trajectory/hard-linked.json")
+        os.link(self.source / "runtime-home/auth.json", self.source / "stdout.log")
         (self.source / "trajectory/unsafe.json").symlink_to(self.source / "runtime-home/auth.json")
         (self.source / "trajectory/unsafe-dir").symlink_to(self.source / "runtime-home", target_is_directory=True)
         os.mkfifo(self.source / "trajectory/pipe")
-        ref = {"files": [{"path": p} for p in ["trajectory/session.jsonl", "trajectory/session.jsonl", "trajectory/unsafe.json", "trajectory/unsafe-dir/auth.json", "trajectory/../runtime-home/auth.json", "trajectory/pipe"]]}
+        ref = {"files": [{"path": p} for p in ["trajectory/session.jsonl", "trajectory/session.jsonl", "trajectory/unsafe.json", "trajectory/hard-linked.json", "trajectory/unsafe-dir/auth.json", "trajectory/../runtime-home/auth.json", "trajectory/pipe"]]}
         (self.source / "trajectory.ref.json").write_text(json.dumps(ref))
         await self.agent._preserve_interrupted_run(self, "run_" + "a" * 32)
         dest = self.destinations[0]
         self.assertEqual((dest / "events.jsonl").read_text(), (self.source / "events.jsonl").read_text())
         self.assertTrue((dest / "trajectory/session.jsonl").is_file())
         self.assertFalse((dest / "trajectory/unsafe.json").exists())
+        self.assertFalse((dest / "trajectory/hard-linked.json").exists())
+        self.assertFalse((dest / "stdout.log").exists())
         self.assertFalse((dest / "runtime-home").exists())
         self.assertFalse((dest / "bundle.complete.json").exists())
         self.assertFalse(json.loads((dest / "diagnostic.json").read_text())["complete"])
@@ -106,6 +110,47 @@ class RunLogsTests(unittest.IsolatedAsyncioTestCase):
         dest = self.destinations[0]
         self.assertTrue((dest / "events.jsonl").exists())
         self.assertFalse((dest / "result.json").exists())
+
+    async def test_missing_reference_preserves_known_provider_capture(self):
+        provider = self.source / "trajectory/provider"
+        provider.mkdir(parents=True)
+        capture = {"events.jsonl": '{"type":"message"}\n', "transcript.txt": 'partial transcript\n'}
+        for name, content in capture.items():
+            (provider / name).write_text(content)
+        (provider / "unlisted.txt").write_text('not an allowlisted capture')
+        await self.agent._preserve_interrupted_run(self, "run_" + "d" * 32)
+        dest = self.destinations[0]
+        for name, content in capture.items():
+            self.assertEqual((dest / "trajectory/provider" / name).read_text(), content)
+        self.assertFalse((dest / "trajectory/provider/unlisted.txt").exists())
+        self.assertFalse((dest / "trajectory.ref.json").exists())
+        self.assertFalse((dest / "result.json").exists())
+        self.assertFalse(json.loads((dest / "diagnostic.json").read_text())["complete"])
+
+    async def test_provider_capture_fallback_uses_shared_budget_and_file_checks(self):
+        provider = self.source / "trajectory/provider"
+        provider.mkdir(parents=True)
+        (self.source / "events.jsonl").write_text('existing evidence\n')
+        # The main evidence has already consumed part of the 64 MiB allowance.
+        with (provider / "events.jsonl").open('wb') as capture:
+            capture.truncate(64 * 1024 * 1024)
+        (provider / "transcript.txt").write_text('small capture\n')
+        await self.agent._preserve_interrupted_run(self, "run_" + "e" * 32)
+        dest = self.destinations[-1]
+        self.assertFalse((dest / "trajectory/provider/events.jsonl").exists())
+        self.assertEqual((dest / "trajectory/provider/transcript.txt").read_text(), 'small capture\n')
+
+        (provider / "events.jsonl").unlink()
+        (provider / "transcript.txt").unlink()
+        (self.source / "runtime-home").mkdir()
+        auth = self.source / "runtime-home/auth.json"
+        auth.write_text('synthetic credential')
+        os.link(auth, provider / "events.jsonl")
+        (provider / "transcript.txt").symlink_to(auth)
+        await self.agent._preserve_interrupted_run(self, "run_" + "f" * 32)
+        dest = self.destinations[-1]
+        self.assertFalse((dest / "trajectory/provider/events.jsonl").exists())
+        self.assertFalse((dest / "trajectory/provider/transcript.txt").exists())
 
     async def test_cleanup_timeout_is_bounded_and_not_raised(self):
         class Blocked:

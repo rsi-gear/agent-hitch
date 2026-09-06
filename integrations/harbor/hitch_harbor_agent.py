@@ -998,7 +998,7 @@ async function copy(relative){
     const input=await open(file,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
     try {
       const info=await input.stat();
-      if(!info.isFile()||info.size>remaining) return;
+      if(!info.isFile()||info.nlink!==1||info.size>remaining) return;
       const bytes=Buffer.alloc(info.size);
       let offset=0;
       while(offset<bytes.length){const r=await input.read(bytes,offset,bytes.length-offset,offset);if(!r.bytesRead)break;offset+=r.bytesRead;}
@@ -1018,6 +1018,8 @@ if(copied.includes('trajectory.ref.json')) {
     for(const file of files.slice(0,256)) if(typeof file==='string'&&file.startsWith('trajectory/'))await copy(file);
   } catch(e) {if(!(e instanceof SyntaxError))throw e;}
 }
+// ProviderCaptureWriter persists redacted output before finalization creates the reference.
+for(const name of ['trajectory/provider/events.jsonl','trajectory/provider/transcript.txt']) await copy(name);
 await writeFile(path.join(target,'diagnostic.json'),JSON.stringify({complete:false,copied}),{flag:'wx',mode:0o600});
 """.strip()
         receipt: dict[str, Any] = {"run_id": run_id, "complete": False, "directory": destination}
