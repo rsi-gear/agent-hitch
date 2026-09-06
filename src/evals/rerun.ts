@@ -25,7 +25,8 @@ import type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 import { summarizeTrialRefs } from "./result-helpers.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { collectOnlyEvalRerun } from "./collect-only-rerun.js";
-import { loadPersistedRerunRequest, loadRerunLocalTransport, loadRerunPreparedArtifacts, loadRerunResolvedRevision } from "./rerun-inputs.js";
+import { loadPersistedRerunRequest, loadRerunLocalTransport, loadRerunPreparedArtifacts, loadRerunResolvedRevision, parseRerunPlan } from "./rerun-inputs.js";
+import type { RerunPlan } from "./rerun-inputs.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
@@ -33,15 +34,6 @@ import { verifierOnlyEvalRerun } from "./verifier-only-rerun.js";
 import { restartIncompleteEval } from "./preparation-rerun.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
-interface RerunPlan {
-  tasks: string[];
-  attempts: number;
-  attemptExecution: "legacy-single-attempt-v1" | "harbor-attempt-shards-v1" | "harbor-task-slots-v1";
-  candidate: Record<string, unknown>;
-  preparedArtifacts: Record<string, unknown>[];
-  controllerRuntime: Record<string, unknown>;
-  localSourceTransport?: Record<string, unknown>;
-}
 
 export async function rerunEval(options: RerunEvalOptions): Promise<EvalRerunResult> {
   if (!options.root) throw invalidInput("a Hitch state root is required for eval rerun");
@@ -351,58 +343,6 @@ export function groupRerunSlotsByArtifact(
     .sort((left, right) => left.logicalAttempt - right.logicalAttempt || Buffer.compare(Buffer.from(left.artifactId), Buffer.from(right.artifactId)));
 }
 
-function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): RerunPlan {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable("eval plan is missing");
-  const plan = value as Record<string, unknown>;
-  if (plan.eval_id !== evalId || plan.schema_version !== "1") {
-    throw unavailable("eval rerun requires a schema v1 plan");
-  }
-  if (!Number.isSafeInteger(plan.attempts) || (plan.attempts as number) < 1 || plan.attempts !== request.attempts) {
-    throw unavailable("eval request and attempt plan differ");
-  }
-  let attemptExecution: RerunPlan["attemptExecution"];
-  if (plan.attempt_execution === undefined && plan.attempts === 1) {
-    attemptExecution = "legacy-single-attempt-v1";
-  } else if (plan.attempt_execution === "harbor-attempt-shards-v1") {
-    attemptExecution = "harbor-attempt-shards-v1";
-  } else if (plan.attempt_execution === "harbor-task-slots-v1") {
-    attemptExecution = "harbor-task-slots-v1";
-  } else if (plan.attempt_execution === undefined) {
-    throw new HitchError(
-      "eval was created without explicit logical-attempt identity; create a new eval with agent-hitch >= 0.2.5",
-      { code: "eval_rerun_legacy_attempt_identity", exitCode: 2 },
-    );
-  } else {
-    throw unavailable(`unsupported eval attempt execution: ${String(plan.attempt_execution)}`);
-  }
-  if (plan.dataset !== request.dataset || plan.benchmark_id !== request.benchmark_id
-    || plan.benchmark_revision !== request.benchmark_revision) throw unavailable("eval request and plan identity differ");
-  if (!Array.isArray(plan.tasks) || plan.tasks.length === 0 || plan.tasks.some((task) => typeof task !== "string" || task.length === 0)) {
-    throw unavailable("eval rerun requires a frozen local task plan");
-  }
-  const preparedArtifacts = Array.isArray(plan.prepared_artifacts)
-    ? plan.prepared_artifacts.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
-    : plan.prepared_artifact && typeof plan.prepared_artifact === "object" && !Array.isArray(plan.prepared_artifact)
-      ? [plan.prepared_artifact as Record<string, unknown>]
-      : [];
-  if (!plan.candidate || typeof plan.candidate !== "object" || Array.isArray(plan.candidate)
-    || preparedArtifacts.length === 0 || Array.isArray(plan.prepared_artifacts) && preparedArtifacts.length !== plan.prepared_artifacts.length
-    || !plan.controller_runtime || typeof plan.controller_runtime !== "object" || Array.isArray(plan.controller_runtime)) {
-    throw unavailable("eval plan is incomplete");
-  }
-  return {
-    tasks: [...plan.tasks as string[]],
-    attempts: plan.attempts as number,
-    attemptExecution,
-    candidate: plan.candidate as Record<string, unknown>,
-    preparedArtifacts,
-    controllerRuntime: plan.controller_runtime as Record<string, unknown>,
-    ...(plan.local_source_transport && typeof plan.local_source_transport === "object" && !Array.isArray(plan.local_source_transport)
-      ? { localSourceTransport: plan.local_source_transport as Record<string, unknown> }
-      : {}),
-  };
-}
-
 async function finalizeRerun(
   evalDirectory: string,
   request: EvalRequest,
@@ -431,6 +371,9 @@ async function finalizeRerun(
       })),
     } : {}),
     candidate: plan.candidate,
+    // An interrupted eval may never have written a result. The frozen plan
+    // remains the source of the candidate's local transport provenance.
+    ...(plan.localSourceTransport ? { local_source_transport: plan.localSourceTransport } : {}),
     dataset: request.dataset,
     benchmark_id: request.benchmark_id,
     benchmark_revision: request.benchmark_revision,

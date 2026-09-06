@@ -15,6 +15,65 @@ interface RerunInputPlan {
   localSourceTransport?: Record<string, unknown>;
 }
 
+export interface RerunPlan extends RerunInputPlan {
+  tasks: string[];
+  attempts: number;
+  attemptExecution: "legacy-single-attempt-v1" | "harbor-attempt-shards-v1" | "harbor-task-slots-v1";
+  controllerRuntime: Record<string, unknown>;
+}
+
+export function parseRerunPlan(value: unknown, evalId: string, request: EvalRequest): RerunPlan {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable("eval plan is missing");
+  const plan = value as Record<string, unknown>;
+  if (plan.eval_id !== evalId || plan.schema_version !== "1") {
+    throw unavailable("eval rerun requires a schema v1 plan");
+  }
+  if (!Number.isSafeInteger(plan.attempts) || (plan.attempts as number) < 1 || plan.attempts !== request.attempts) {
+    throw unavailable("eval request and attempt plan differ");
+  }
+  let attemptExecution: RerunPlan["attemptExecution"];
+  if (plan.attempt_execution === undefined && plan.attempts === 1) {
+    attemptExecution = "legacy-single-attempt-v1";
+  } else if (plan.attempt_execution === "harbor-attempt-shards-v1") {
+    attemptExecution = "harbor-attempt-shards-v1";
+  } else if (plan.attempt_execution === "harbor-task-slots-v1") {
+    attemptExecution = "harbor-task-slots-v1";
+  } else if (plan.attempt_execution === undefined) {
+    throw new HitchError(
+      "eval was created without explicit logical-attempt identity; create a new eval with agent-hitch >= 0.2.5",
+      { code: "eval_rerun_legacy_attempt_identity", exitCode: 2 },
+    );
+  } else {
+    throw unavailable(`unsupported eval attempt execution: ${String(plan.attempt_execution)}`);
+  }
+  if (plan.dataset !== request.dataset || plan.benchmark_id !== request.benchmark_id
+    || plan.benchmark_revision !== request.benchmark_revision) throw unavailable("eval request and plan identity differ");
+  if (!Array.isArray(plan.tasks) || plan.tasks.length === 0 || plan.tasks.some((task) => typeof task !== "string" || task.length === 0)) {
+    throw unavailable("eval rerun requires a frozen local task plan");
+  }
+  const preparedArtifacts = Array.isArray(plan.prepared_artifacts)
+    ? plan.prepared_artifacts.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry))
+    : plan.prepared_artifact && typeof plan.prepared_artifact === "object" && !Array.isArray(plan.prepared_artifact)
+      ? [plan.prepared_artifact as Record<string, unknown>]
+      : [];
+  if (!plan.candidate || typeof plan.candidate !== "object" || Array.isArray(plan.candidate)
+    || preparedArtifacts.length === 0 || Array.isArray(plan.prepared_artifacts) && preparedArtifacts.length !== plan.prepared_artifacts.length
+    || !plan.controller_runtime || typeof plan.controller_runtime !== "object" || Array.isArray(plan.controller_runtime)) {
+    throw unavailable("eval plan is incomplete");
+  }
+  return {
+    tasks: [...plan.tasks as string[]],
+    attempts: plan.attempts as number,
+    attemptExecution,
+    candidate: plan.candidate as Record<string, unknown>,
+    preparedArtifacts,
+    controllerRuntime: plan.controller_runtime as Record<string, unknown>,
+    ...(plan.local_source_transport && typeof plan.local_source_transport === "object" && !Array.isArray(plan.local_source_transport)
+      ? { localSourceTransport: plan.local_source_transport as Record<string, unknown> }
+      : {}),
+  };
+}
+
 export async function loadRerunResolvedRevision(evalDirectory: string, plan: RerunInputPlan): Promise<ResolvedRevision> {
   const resolution = await readJSON<ResolvedRevision>(path.join(evalDirectory, "resolution.json"));
   if (!resolution || resolution.identity !== requiredString(plan.candidate.revision_identity, "candidate revision identity")
