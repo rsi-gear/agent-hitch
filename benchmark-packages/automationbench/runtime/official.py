@@ -8,6 +8,7 @@ from automationbench.runner import AutomationBenchEnv
 from automationbench.rubric import create_rubric, partial_credit, task_completed_correctly
 from automationbench.schema.world import WorldState
 from automationbench.tools.api import API_TOOLS
+from score_contract import process_evidence
 
 
 def initialize(row):
@@ -37,7 +38,13 @@ def grade(task_path, snapshot_path, output_dir):
     strict = task_completed_correctly(state)
     output = Path(output_dir); output.mkdir(parents=True, exist_ok=True)
     (output / "assertions.json").write_text(json.dumps(state["_assertion_results"], indent=2))
-    (output / "reward.json").write_text(json.dumps({"partial_credit": partial, "task_completed_correctly": strict}))
+    process = process_evidence(state["_assertion_results"], partial)
+    (output / "process.json").write_text(json.dumps(process, indent=2))
+    (output / "reward.json").write_text(json.dumps({
+        "reward": strict,
+        "total_score": strict,
+        "process_score": partial,
+    }, indent=2))
 
 
 if __name__ == "__main__":

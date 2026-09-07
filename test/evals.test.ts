@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, readEvalProgress, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval as runEvalProduction, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
+import { buildBenchmarkAdapterManifest, createEvalProgress, inspectEval, listEvals, mergeEvalProgressTrial, newEvalId, readEvalProgress, replaceInvalidEvalProgressTrial, rerunEval, resolveLocalDatasetTaskIds, runEval as runEvalProduction, selectRerunTasks, selectRerunTrialSlots, validateEvalRequest } from "../src/evals/index.js";
 import { importEvalTrialRuns } from "../src/evals/index.js";
 import { readHarborBridgeError } from "../src/evals/harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure } from "../src/evals/verifier-diagnostics.js";
@@ -341,6 +341,38 @@ test("local eval datasets expose a deterministic immutable task plan", async (t)
   await mkdir(singleTask);
   await writeFile(path.join(singleTask, "task.toml"), "", "utf8");
   assert.deepEqual(await resolveLocalDatasetTaskIds(singleTask), ["single-task"]);
+});
+
+test("a standard benchmark dataset automatically uses task-slot execution", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-standard-task-slots-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one", "task.toml"), "", "utf8");
+  const manifest = await buildBenchmarkAdapterManifest({
+    dataset,
+    benchmark: { id: "standard-fixture", revision: `sha256:${"a".repeat(64)}` },
+    adapter: { id: "fixture-adapter", revision: `sha256:${"b".repeat(64)}`, output_protocol: "gear-harbor-eval-result-v1" },
+    scoring: { total_score: { source_metric: "reward", direction: "maximize", range: [0, 1], reducer: "task-macro-mean" } },
+    taskIds: ["one"],
+  });
+  await atomicWriteJSON(path.join(dataset, "benchmark.adapter.json"), manifest);
+  const fakeHarbor = await writeFakeHarbor(root);
+  const fakeNpm = await writeFakeNpm(root);
+  const result = await runEval({
+    root,
+    harborExecutable: fakeHarbor,
+    env: { ...process.env, HITCH_NPM_PATH: fakeNpm },
+    request: { dataset, harness_ref: "pi@version:1.2.3", model: "openai/test-model", infrastructure_retries: 0 },
+  });
+  const evalDirectory = path.join(root, "evals", result.eval_id);
+  const plan = await readJSON<{ attempt_execution: string }>(path.join(evalDirectory, "plan.json"));
+  assert.equal(plan.attempt_execution, "harbor-task-slots-v1");
+  const execution = await readJSON<{ work_items: Array<{ work_id: string }> }>(path.join(evalDirectory, "execution-plan.json"));
+  assert.equal(execution.work_items.length, 1);
+  const job = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "harbor/work-items", execution.work_items[0]!.work_id, "epoch-000001/job.json"));
+  assert.equal((job.environment as Record<string, unknown>).import_path,
+    "hitch_harbor_environment:HitchHarborDockerEnvironment");
 });
 
 test("one eval prepares and pins artifacts per distinct task runtime contract", async (t) => {
@@ -1068,6 +1100,60 @@ test("Harbor diagnostic runs retain a validated bridge error without trusting it
   assert.equal(diagnostic.eval_id, "eval_forged", "artifact identity is evidence only");
 });
 
+test("Harbor diagnostic runs retain Node identity failure evidence", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-node-identity-diagnostic-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const trialId = "node-task__random";
+  const trialDirectory = path.join(evalDirectory, "harbor", "job", trialId);
+  await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+  const evidence = {
+    schema_version: "1",
+    code: "hitch_node_runtime_identity_invalid",
+    message: "container returned an invalid Node.js identity (exit=17)",
+    eval_id: evalId,
+    node_version: "v22.23.0",
+    platform: "linux-x64",
+    artifact_id: `sha256:${"c".repeat(64)}`,
+    probe: {
+      command: "node -e 'process.stdout.write(\"\\n__HITCH_NODE_IDENTITY__\" + process.platform + \"-\" + process.arch + \" \" + process.version + \"\\n\")'",
+      return_code: 17,
+      stdout_tail: "startup banner\n__HITCH_NODE_IDENTITY__linux-x64 v22.23.0\n",
+      stderr_tail: "Node startup failed\n",
+    },
+  };
+  await atomicWriteJSON(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), evidence);
+
+  const refs = await importEvalTrialRuns({
+    root, evalId, evalDirectory,
+    request: {
+      harness_ref: "pi@version:1.2.3", model: "openai/test-model", timeout_ms: 5_000, agent_args: [],
+    } as never,
+    resolvedRevision: { harness_id: "pi", identity: `sha256:${"a".repeat(64)}` } as never,
+    benchmarkId: "benchmark",
+    benchmarkRevision: `sha256:${"b".repeat(64)}`,
+    rawResult: {
+      trial_results: [{
+        task_name: "node-task", trial_name: trialId,
+        exception_info: { exception_type: "HitchBridgeError" },
+      }],
+    },
+  });
+
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.observation_status, "invalid");
+  assert.equal(refs[0]?.invalid_reason, "infrastructure_failure");
+  const diagnosticTrial = refs[0]!;
+  assert.ok(!diagnosticTrial.run_group);
+  const runDirectory = path.join(root, "runs", diagnosticTrial.run_id);
+  const result = await readJSON<{ error: { code: string; message: string } }>(path.join(runDirectory, "result.json"));
+  assert.deepEqual(result.error, { code: evidence.code, message: evidence.message });
+  const manifest = await readJSON<{ diagnostics: { harbor_bridge_error_ref: string } }>(path.join(runDirectory, "manifest.json"));
+  assert.equal(manifest.diagnostics.harbor_bridge_error_ref, "diagnostics/harbor-bridge-error.json");
+  assert.deepEqual(await readJSON(path.join(runDirectory, manifest.diagnostics.harbor_bridge_error_ref)), evidence);
+});
+
 test("Harbor diagnostic runs safely ignore an invalid bridge error artifact", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-invalid-bridge-diagnostic-"));
   t.after(() => forceRemove(root));
@@ -1556,6 +1642,62 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
     harborExecutable: harbor,
     env,
   }), (error: unknown) => (error as { code?: string }).code === "eval_rerun_id_conflict");
+});
+
+test("eval rerun restores frozen local transport after interruption without re-executing valid trials", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-rerun-provenance-"));
+  t.after(() => forceRemove(root));
+  const evalId = newEvalId();
+  const evalDirectory = path.join(root, "evals", evalId);
+  const request = await validateEvalRequest(evalRequest());
+  const localSourceTransport = {
+    kind: "local-git-commit",
+    resolution_identity: `sha256:${"a".repeat(64)}`,
+    commit: "b".repeat(40),
+    tree: "c".repeat(40),
+    payload_sha256: `sha256:${"d".repeat(64)}`,
+    payload_bytes: 1024,
+    object_count: 3,
+    file_count: 1,
+  };
+  const progress = mergeEvalProgressTrial(createEvalProgress({
+    evalId,
+    benchmarkId: request.benchmark_id,
+    benchmarkRevision: request.benchmark_revision,
+    plannedTasks: 1,
+    plannedTrials: 1,
+    startedAt: new Date(0).toISOString(),
+  }), {
+    task_id: "task-a", trial_id: "task-a__1", attempt: 1,
+    run_id: "run_11111111111111111111111111111111",
+    observation_status: "valid", reward: 0.75, verifier_result_ref: "verifier/result.json",
+  });
+  await atomicWriteJSON(path.join(evalDirectory, "request.json"), request);
+  await atomicWriteJSON(path.join(evalDirectory, "plan.json"), {
+    schema_version: "1", eval_id: evalId, attempts: 1, tasks: ["task-a"],
+    dataset: request.dataset, benchmark_id: request.benchmark_id, benchmark_revision: request.benchmark_revision,
+    candidate: { revision_identity: localSourceTransport.resolution_identity },
+    prepared_artifact: { artifact_id: `sha256:${"e".repeat(64)}` },
+    controller_runtime: { runtime_id: `sha256:${"f".repeat(64)}` },
+    local_source_transport: localSourceTransport,
+  });
+  await atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), {});
+  await atomicWriteJSON(path.join(evalDirectory, "progress.json"), progress);
+
+  for (const previousResult of [null, { status: "succeeded", trials: progress.trials }]) {
+    if (previousResult) await atomicWriteJSON(path.join(evalDirectory, "result.json"), previousResult);
+    const rerun = await rerunEval({
+      root, evalId, selector: { mode: "invalid" },
+      harborExecutable: path.join(root, "must-not-execute-harbor"),
+    });
+    assert.equal(rerun.eval_status, "succeeded");
+    assert.deepEqual(rerun.selected_trials, []);
+    const result = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "result.json"));
+    assert.deepEqual(result.local_source_transport, localSourceTransport);
+    assert.deepEqual(result.trials, progress.trials);
+    assert.equal(result.generation, progress.generation);
+    assert.equal((result.summary as { primary_reward: number }).primary_reward, 0.75);
+  }
 });
 
 test("eval rerun restarts any failed preparation attempt before executable plan creation", async (t) => {

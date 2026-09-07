@@ -18,7 +18,10 @@ python3 benchmark-packages/osworld/assemble.py \
   --max-steps 100 --agent-timeout-sec 7200 \
   --out /path/to/fresh/package
 hitch benchmark validate --package /path/to/fresh/package
-hitch benchmark lock --package /path/to/fresh/package
+hitch benchmark compile --package /path/to/fresh/package \
+  --out /path/to/fresh/compiled-dataset
+hitch eval run --dataset /path/to/fresh/compiled-dataset \
+  --harness codex@version:0.145.0 --model gpt-5.4
 ```
 
 These prediction/time budgets are explicit Hitch validation settings, not an
@@ -133,6 +136,9 @@ The metric is `native_score`, a scalar in `[0,1]` reduced by task macro mean.
 Task 095 rounds partial credit to two decimal places, so a returned `1.0` is
 not converted into a derived strict-success claim. `native-score.json` records
 `strict_success: null` and `candidate_executes: false`.
+The standard compiler maps `native_score` to `total_score`. Although it can be
+fractional, it is OSWorld's final task metric, not a process score; OSWorld does
+not declare process-score or feedback channels.
 
 Assembly, API probes and boot canaries do not count as scored tasks. Acceptance
 requires both original samples to finish through Hitch with sealed candidate

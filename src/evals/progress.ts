@@ -186,6 +186,10 @@ export function parseEvalTrialRef(value: unknown, label = "eval trial"): EvalTri
   if (trial.observation_status === "valid" && (typeof trial.reward !== "number" || !Number.isFinite(trial.reward))) {
     throw new TypeError(`${label} valid reward is invalid`);
   }
+  const scores = trial.scores === undefined ? undefined : parseScores(trial.scores, label);
+  if (scores !== undefined && (trial.observation_status !== "valid" || scores.total_score !== trial.reward)) {
+    throw new TypeError(`${label} scores do not match the valid reward`);
+  }
   if (trial.observation_status === "invalid" && (typeof trial.invalid_reason !== "string" || !trial.invalid_reason)) {
     throw new TypeError(`${label} invalid reason is missing`);
   }
@@ -209,10 +213,28 @@ export function parseEvalTrialRef(value: unknown, label = "eval trial"): EvalTri
     attempt: trial.attempt as number,
     observation_status: trial.observation_status as "valid" | "invalid",
     ...(trial.reward === undefined ? {} : { reward: trial.reward as number }),
+    ...(scores === undefined ? {} : { scores }),
     ...(trial.verifier_result_ref === undefined ? {} : { verifier_result_ref: trial.verifier_result_ref as string }),
     ...(trial.invalid_reason === undefined ? {} : { invalid_reason: trial.invalid_reason as string }),
   };
   const reference = assessment ? { id: assessment.id as string, digest: assessment.digest as string } : undefined;
   return group ? { ...common, run_group: { run_group_id: group.run_group_id as string, digest: group.digest as `sha256:${string}` }, assessment: reference! }
     : { ...common, run_id: trial.run_id as string, ...(reference ? { assessment: reference } : {}) };
+}
+
+function parseScores(value: unknown, label: string): import("../domain/index.js").VerifierScoresV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} scores are invalid`);
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !["total_score", "process_score", "normalization"].includes(key))
+    || typeof record.total_score !== "number" || !Number.isFinite(record.total_score)
+    || record.process_score !== undefined && (typeof record.process_score !== "number" || !Number.isFinite(record.process_score))
+    || record.normalization !== "standard" && record.normalization !== "legacy-reward"
+    || record.normalization === "legacy-reward" && record.process_score !== undefined) {
+    throw new TypeError(`${label} scores are invalid`);
+  }
+  return {
+    total_score: record.total_score,
+    ...(record.process_score === undefined ? {} : { process_score: record.process_score as number }),
+    normalization: record.normalization,
+  };
 }

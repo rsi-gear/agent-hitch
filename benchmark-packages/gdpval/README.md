@@ -13,11 +13,16 @@ python benchmark-packages/gdpval/import.py \
   --parquet /absolute/gdpval/train.parquet --revision FULL_HF_COMMIT \
   --seed 20260902 --count 2 --judge-model gpt-5.4 \
   --out /absolute/packages/gdpval
-hitch benchmark lock --package /absolute/packages/gdpval
-hitch eval run --benchmark /absolute/packages/gdpval \
+hitch benchmark compile --package /absolute/packages/gdpval \
+  --out /absolute/datasets/gdpval
+hitch eval run --dataset /absolute/datasets/gdpval \
   --harness codex@version:0.145.0 --model gpt-5.4 \
   --pass-env HITCH_CODEX_AUTH_JSON
 ```
+
+The compiled standard dataset maps the official public `rubric_score` to
+`total_score`. `strict_success` remains auxiliary raw evidence and is not a
+process score. This adapter does not declare process-score or feedback channels.
 
 `HITCH_CODEX_AUTH_JSON` is the existing in-memory container credential handoff
 described in `docs/benchmark-packages.md`. This package explicitly uses that

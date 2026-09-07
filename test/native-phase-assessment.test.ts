@@ -8,6 +8,7 @@ import type { EvalExecutionPlanV1, EvalRequest } from "../src/domain/index.js";
 import { loadBenchmark } from "../src/benchmarks/index.js";
 import { atomicWriteJSON, ensureDir, readJSON, sha256Bytes } from "../src/foundation/index.js";
 import { compileBenchmark } from "../src/evals/benchmark-run.js";
+import { resolveBenchmarkReference } from "../src/evals/request.js";
 import { importEvalTrialRun, validateEvalTrialReferences } from "../src/evals/trial-import.js";
 import { readNativePhaseObservation } from "../src/evals/native-phase-evidence.js";
 import { createEvalProgress, mergeEvalProgressTrial, parseEvalTrialRef } from "../src/evals/progress.js";
@@ -71,9 +72,10 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
   const old = process.env.HITCH_CODEX_PATH; process.env.HITCH_CODEX_PATH = executable;
   t.after(() => { if (old === undefined) delete process.env.HITCH_CODEX_PATH; else process.env.HITCH_CODEX_PATH = old; });
   const resolution = await resolveHarness(parseHarnessReference("codex"), { root });
+  const benchmark = await resolveBenchmarkReference(compiled.tasks);
   const request: EvalRequest = { schema_version: "1", backend: "harbor", dataset: compiled.tasks, harness_ref: "codex", model: "synthetic-model",
     attempts: 1, max_concurrent: 1, infrastructure_retries: 0, infrastructure_retry_backoff_ms: 0, timeout_ms: 0, setup_timeout_ms: 10000,
-    agent_args: [], pass_env: [], benchmark_id: loaded.manifest.id, benchmark_revision: loaded.lock.package_digest };
+    agent_args: [], pass_env: [], benchmark_id: benchmark.benchmark_id, benchmark_revision: benchmark.benchmark_revision };
   const cwd = await ensureDir(path.join(directory, "candidate-workspace"));
   const candidateRoot = await ensureDir(path.join(directory, "candidate-state"));
   const supervision: Record<string, any> = { schema_version: "hitch-native-phase-supervision@1", scope: "candidate-evidence-only", status: "completed",
@@ -144,12 +146,13 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
   const rewards = { raw: { passed: 0 }, metrics: { target_reached: 0 }, primary_metric: "target_reached", source_task_id: "add-seven", task_digest: descriptor.task_digest };
   await atomicWriteJSON(path.join(verifierDir, "benchmark-rewards.json"), rewards);
   await atomicWriteJSON(path.join(verifierDir, "reward.json"), rewards.raw);
-  const trial = { task_name: "add-seven", trial_name: trialId, verifier_result: { rewards: { reward: 0, passed: 0 } } };
+  const trial = { task_name: "add-seven", trial_name: trialId, verifier_result: { rewards: { reward: 0, total_score: 0, passed: 0 } } };
   const options = { root, evalId, evalDirectory, request, resolvedRevision: resolution, benchmarkId: request.benchmark_id, benchmarkRevision: request.benchmark_revision };
   const ref = await importEvalTrialRun(options, trial);
   assert.ok(ref.run_group, JSON.stringify(ref.run_group ? ref : await readJSON(path.join(trialDirectory, "hitch-run-import-error.json"))));
   assert.equal(ref.run_id, undefined);
   assert.equal(ref.observation_status, "valid"); assert.equal(ref.reward, 0);
+  assert.deepEqual(ref.scores, { total_score: 0, normalization: "standard" });
   assert.equal(summarizeTrialRefs([ref]).n_completed, 1, "phases must not double count the task");
   await validateEvalTrialReferences(root, evalId, [ref], options);
   assert.deepEqual(await importEvalTrialRun(options, trial), ref, "import replay must keep the original assessment");

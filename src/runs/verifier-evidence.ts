@@ -20,6 +20,7 @@ import {
 import { verifyResultBundleIndex } from "./bundle.js";
 import { loadRunRecord } from "./records.js";
 import { sanitizeVerifierJson, sanitizeVerifierText } from "./verifier-evidence-redaction.js";
+import { loadStructuredVerifierEvidence } from "./verifier-structured-evidence.js";
 
 export const MAX_VERIFIER_RESULT_BYTES = 1024 * 1024;
 export const MAX_VERIFIER_ARTIFACT_OUTPUT_BYTES = 64 * 1024;
@@ -104,6 +105,14 @@ export async function loadVerifierEvidence(
     issues.push(safeIssue("verifier diagnostics are corrupt", error, credentialValues));
   }
 
+  let structured: Awaited<ReturnType<typeof loadStructuredVerifierEvidence>> = {};
+  try {
+    structured = await loadStructuredVerifierEvidence(runRoot, result, credentialValues, redactions);
+  } catch (error) {
+    corrupt = true;
+    issues.push(safeIssue("structured verifier evidence is corrupt", error, credentialValues));
+  }
+
   const completeDiagnostics = diagnostics?.ctrf !== undefined
     || Boolean(diagnostics?.stdout?.length)
     || Boolean(diagnostics?.stderr?.length);
@@ -146,6 +155,10 @@ export async function loadVerifierEvidence(
       status,
       ...(result === undefined ? {} : { result }),
       ...(resultSha256 === undefined ? {} : { result_sha256: resultSha256 }),
+      ...(structured.scores === undefined ? {} : { scores: structured.scores }),
+      ...(structured.process === undefined ? {} : { process: structured.process }),
+      ...(structured.feedback === undefined ? {} : { feedback: structured.feedback }),
+      ...(structured.structured_artifacts === undefined ? {} : { structured_artifacts: structured.structured_artifacts }),
       ...(diagnostics === undefined ? {} : { diagnostics }),
       ...(issues.length === 0 ? {} : { issues: [...new Set(issues)].slice(0, 16) }),
     },

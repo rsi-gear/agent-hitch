@@ -4,7 +4,7 @@ import { cp, lstat, mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs
 import path from "node:path";
 import { atomicWriteJSON, credentialValuesFromEnv, ensureDir, readJSON, safeDiagnosticMessage, statePaths, writePrivateFile } from "../foundation/index.js";
 import type { ResolvedRevision } from "../artifacts/index.js";
-import { validateRunContext } from "../domain/index.js";
+import { parseVerifierScores, validateRunContext } from "../domain/index.js";
 import type { EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1, ModelCapturePlanV1, RunObservationV1, Sha256 } from "../domain/index.js";
 import { newRunId, safeAgentArgsForPersistence } from "../runs/index.js";
 import {
@@ -197,7 +197,8 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       || existing.record.context.benchmark_revision !== input.benchmarkRevision
       || existing.record.context.task_id !== input.taskId
       || existing.record.observation === undefined) throw new TrialIdentityConflictError(`existing run destination conflicts: ${record.run_id}`);
-    return evalTrialRef(input, record.run_id, existing.record.observation);
+    return evalTrialRef(input, record.run_id, existing.record.observation,
+      existing.record.observation.status === "valid" ? parseVerifierScores(verifierResult(input.trial)) : undefined);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -220,7 +221,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     );
     const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(staging, verifierInfrastructure);
-    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, signal: input.signal });
+    const structured = await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
     const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(input.trialDirectory, credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env))
@@ -233,8 +234,12 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       verifierRef,
       infrastructure: verifierInfrastructure,
     });
+    // Missing or malformed scores after an execution failure must not hide
+    // its cause or make an already completed candidate eligible for a rerun.
     const observation: RunObservationV1 = candidateIneligible
       ? { status: "invalid", invalid_reason: "candidate_evidence_unavailable", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
+      : initialObservation.status === "valid" && structured.issue
+      ? { status: "invalid", invalid_reason: "verifier_score_contract_invalid", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
       : initialObservation.status === "invalid"
       && initialObservation.invalid_reason === "infrastructure_failure"
       && bridgeError?.failureClassification
@@ -258,7 +263,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       ...(manifest.trajectory_ref ? {} : { trajectory_ref: "trajectory.ref.json" }),
       sealed: true,
     });
-    const ref = evalTrialRef(input, record.run_id, observation);
+    const ref = evalTrialRef(input, record.run_id, observation, structured.issue ? undefined : structured.scores);
     await writeEvalTrialPublication(staging, input.evalId, input.publicationMode ?? "settle", ref);
     await writeResultBundleIndex(staging);
     const verified = await loadRunRecord(staging, { verifyTrajectory: true });
@@ -293,7 +298,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     );
     const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, signal: input.signal });
+    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(
         input.trialDirectory,
@@ -411,7 +416,12 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
   }
 }
 
-function evalTrialRef(input: TrialInput, runId: string, observation: RunObservationV1): EvalTrialRefV1 {
+function evalTrialRef(
+  input: TrialInput,
+  runId: string,
+  observation: RunObservationV1,
+  scores?: import("../domain/index.js").VerifierScoresV1,
+): EvalTrialRefV1 {
   return {
     trial_id: input.trialId,
     run_id: runId,
@@ -419,6 +429,7 @@ function evalTrialRef(input: TrialInput, runId: string, observation: RunObservat
     attempt: input.attempt,
     observation_status: observation.status,
     ...(observation.reward !== undefined ? { reward: observation.reward } : {}),
+    ...(scores?.normalization !== "standard" || observation.status !== "valid" ? {} : { scores }),
     ...(observation.verifier_result_ref ? { verifier_result_ref: observation.verifier_result_ref } : {}),
     ...(observation.invalid_reason ? { invalid_reason: observation.invalid_reason } : {}),
   };

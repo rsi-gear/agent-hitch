@@ -4,8 +4,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { lockBenchmark, validateBenchmark } from "../src/benchmarks/index.js";
-import { runBenchmarkEval } from "../src/evals/index.js";
+import { validateBenchmark } from "../src/benchmarks/index.js";
+import { exportStandardBenchmarkDataset, runEval } from "../src/evals/index.js";
 import { atomicWriteJSON, runCommand } from "../src/foundation/index.js";
 import { writeBenchmarkFixture } from "../test-support/benchmark-fixture.js";
 
@@ -14,7 +14,8 @@ const directory = await mkdtemp(path.join(tmpdir(), "hitch-benchmark-canary-"));
 const packageDir = path.join(directory, "package");
 await writeBenchmarkFixture(packageDir, { benchmark: "runtime-created-counter", task: "reach-seven", tool: "bump_value", metric: "goal_met" });
 await validateBenchmark(packageDir);
-await lockBenchmark(packageDir);
+const dataset = path.join(directory, "dataset");
+await exportStandardBenchmarkDataset(packageDir, dataset);
 const harnessDir = path.join(directory, "harness");
 await mkdir(harnessDir);
 const metadata = { name: "hitch-benchmark-deterministic-fixture", version: "1.0.0", private: true, scripts: { build: "node build.js" } };
@@ -38,9 +39,9 @@ await runCommand("git", ["-C", harnessDir, "add", "."]);
 await runCommand("git", ["-C", harnessDir, "-c", "user.name=Hitch Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "deterministic tool-server canary"]);
 const revision = (await runCommand("git", ["-C", harnessDir, "rev-parse", "HEAD"])).stdout.trim();
 console.log(JSON.stringify({ directory, candidate: "deterministic-fixture", revision }));
-const result = await runBenchmarkEval({
-  root: path.resolve(".hitch/benchmark-fixture-state"), benchmark: packageDir,
-  request: { harness_ref: `pi@git+${pathToFileURL(harnessDir).href}#${revision}`, model: "fixture", max_concurrent: 1, attempts: 1 },
+const result = await runEval({
+  root: path.resolve(".hitch/benchmark-fixture-state"),
+  request: { dataset, harness_ref: `pi@git+${pathToFileURL(harnessDir).href}#${revision}`, model: "fixture", max_concurrent: 1, attempts: 1 },
   onEvent: (event) => console.log(JSON.stringify(event)),
 });
 await atomicWriteJSON(path.join(directory, "result.json"), result);
@@ -48,4 +49,5 @@ assert.equal(result.exit_code, 0, JSON.stringify(result));
 // A score must be present and one, proving the candidate called the new tool.
 const resultText = await readFile(path.join(directory, "result.json"), "utf8");
 assert.match(resultText, /"reward":\s*1/);
+assert.match(resultText, /"total_score":\s*1/);
 console.log(JSON.stringify({ passed: true, directory, result }, null, 2));

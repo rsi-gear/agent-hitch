@@ -257,6 +257,9 @@ test("concurrent stale-lock recovery elects exactly one daemon", async (t) => {
     new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents }),
     new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {}, discoverHarnesses: discoverAgents }),
   ];
+  // An assertion failure must not leave the winning HTTP server alive and
+  // prevent the test runner from reporting the failure.
+  t.after(() => Promise.all(candidates.map((server) => server.close())));
 
   const settled = await Promise.allSettled(candidates.map((server) => server.start()));
   const winners = settled.filter((result) => result.status === "fulfilled");
@@ -264,5 +267,4 @@ test("concurrent stale-lock recovery elects exactly one daemon", async (t) => {
   assert.equal(winners.length, 1);
   assert.equal(losers.length, 1);
   assert.equal((losers[0] as PromiseRejectedResult).reason.code, "already_running");
-  await (winners[0] as PromiseFulfilledResult<DaemonServer>).value.close();
 });

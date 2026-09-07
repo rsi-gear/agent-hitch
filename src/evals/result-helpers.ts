@@ -25,12 +25,25 @@ export function summarizeTrialRefs(trials: EvalTrialRefV1[]): Record<string, unk
         max: Math.max(...rewards),
       }
     : null;
+  const processScores = valid.flatMap((trial) => trial.scores?.process_score === undefined ? [] : [trial.scores.process_score]);
+  const processAggregate = processScores.length === valid.length && processScores.length > 0
+    ? {
+        count: processScores.length,
+        mean: processScores.reduce((sum, score) => sum + score, 0) / processScores.length,
+        min: Math.min(...processScores),
+        max: Math.max(...processScores),
+      }
+    : null;
   return {
     n_trials: trials.length,
     n_completed: valid.length,
     n_invalid: trials.length - valid.length,
     primary_reward: aggregate?.mean ?? null,
     rewards: aggregate ? { reward: aggregate } : {},
+    scores: aggregate ? {
+      total_score: aggregate,
+      ...(processAggregate === null ? {} : { process_score: processAggregate }),
+    } : {},
   };
 }
 

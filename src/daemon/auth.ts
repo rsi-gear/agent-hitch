@@ -10,7 +10,11 @@ export async function acquireInstanceLock(file: string, instanceId: string): Pro
     pid: process.pid,
     created_at: new Date().toISOString(),
   };
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  // A competing reclaimer may need more than a few polls to sync its guard
+  // on a busy filesystem. Bound contention by elapsed time instead.
+  const deadline = performance.now() + 5_000;
+  let unreadableReads = 0;
+  while (performance.now() < deadline) {
     try {
       const handle = await open(file, "wx", 0o600);
       try {
@@ -25,8 +29,9 @@ export async function acquireInstanceLock(file: string, instanceId: string): Pro
       let existing: { pid?: unknown } | null;
       try {
         existing = JSON.parse(await readFile(file, "utf8")) as { pid?: unknown };
+        unreadableReads = 0;
       } catch (readError) {
-        if (attempt < 3) {
+        if (++unreadableReads < 4) {
           await new Promise((resolve) => setTimeout(resolve, 25));
           continue;
         }
@@ -41,6 +46,10 @@ export async function acquireInstanceLock(file: string, instanceId: string): Pro
           current = JSON.parse(await readFile(candidate, "utf8")) as { pid?: unknown };
         } catch (readError) {
           if ((readError as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+          // A new owner can create the lock before writing its JSON, after
+          // our stale-owner observation. Retry through the acquisition loop;
+          // only a persistently unreadable record is an invalid lock.
+          if (readError instanceof SyntaxError) return false;
           throw new HitchError("daemon lock exists but its owner record is unreadable", {
             code: "daemon_lock_invalid",
             exitCode: 12,

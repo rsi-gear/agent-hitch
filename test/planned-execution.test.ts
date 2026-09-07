@@ -271,7 +271,7 @@ test("terminal provider failures open the retry-only circuit without physical re
   });
 });
 
-test("planned infrastructure retry starts before unrelated initial work finishes", async (t) => {
+test("planned infrastructure retry starts before unrelated initial work finishes", { timeout: 30_000 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-immediate-retry-"));
   t.after(() => forceRemove(root));
   const dataset = path.join(root, "dataset");
@@ -305,8 +305,8 @@ test("planned infrastructure retry starts before unrelated initial work finishes
   });
   const retryStart = activity.findIndex((entry) => entry.type === "start" && entry.task === "one" && entry.call === 2);
   const unrelatedEnd = activity.findIndex((entry) => entry.type === "end" && entry.task === "two" && entry.call === 1);
-  assert.notEqual(retryStart, -1);
-  assert.notEqual(unrelatedEnd, -1);
+  assert.ok(retryStart >= 0, "missing retry start");
+  assert.ok(unrelatedEnd >= 0, "missing unrelated task completion");
   assert.ok(retryStart < unrelatedEnd, "retry waited for the unrelated initial trial barrier");
 });
 
@@ -533,14 +533,14 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exi
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
 const task = config.datasets[0].task_names[0];
 const counter = path.join(${JSON.stringify(directory)}, task + ".count");
-const retryStarted = path.join(${JSON.stringify(directory)}, "retry-started");
 let call = 1;
 try { call = Number(fs.readFileSync(counter, "utf8")) + 1; } catch {}
 fs.writeFileSync(counter, String(call));
 const activity = (type) => fs.appendFileSync(${JSON.stringify(activityLog)}, JSON.stringify({type, task, call, time:Date.now()}) + "\\n");
 const output = path.join(config.jobs_dir, config.job_name);
+const retryStarted = path.join(${JSON.stringify(directory)}, "retry-started");
 activity("start");
-if (task === "one" && call === 2) fs.writeFileSync(retryStarted, "1");
+if (task === "one" && call === 2) fs.writeFileSync(retryStarted, "ready");
 const finish = () => {
   const trialName = task + "__call-" + call;
   const trialDirectory = path.join(output, trialName);
@@ -558,15 +558,16 @@ const finish = () => {
   }));
   activity("end");
 };
-if (task !== "two") setTimeout(finish, 50);
-else {
-  const deadline = Date.now() + 3000;
+if (task === "two") {
+  // Keep unrelated work active until the retry actually starts. A fixed
+  // sleep measures runner load instead of the scheduler's dependency order.
+  const deadline = Date.now() + 15_000;
   const waitForRetry = () => {
     if (fs.existsSync(retryStarted) || Date.now() >= deadline) finish();
-    else setTimeout(waitForRetry, 20);
+    else setTimeout(waitForRetry, 10);
   };
   waitForRetry();
-}
+} else finish();
 `;
   await writeFile(executable, source, { mode: 0o755 });
   return executable;

@@ -123,7 +123,8 @@ async def main():
             except RuntimeError:
                 pass
         (verifier_dir / "reward.json").write_text(json.dumps({"passed": 0}))
-        assert module.normalize_rewards(verifier, result)["rewards"]["reward"] == 0
+        normalized = module.normalize_rewards(verifier, result)["rewards"]
+        assert normalized["reward"] == 0 and normalized["total_score"] == 0
         # Native verifiers use Harbor JSON-first precedence and accept real zero.
         config["task"]["driver"] = {"kind": "terminal", "config": {}}
         config["task"]["grading"] = {"kind": "harbor", "metric_map": {"score": "reward"}}
@@ -131,9 +132,11 @@ async def main():
         (root / "benchmark-lifecycle.json").write_text(json.dumps({"phases": {}, "failure": None}))
         (verifier_dir / "reward.json").unlink()
         (verifier_dir / "reward.txt").write_text("0")
-        assert module.normalize_rewards(verifier, result)["rewards"]["reward"] == 0
+        normalized = module.normalize_rewards(verifier, result)["rewards"]
+        assert normalized["reward"] == 0 and normalized["total_score"] == 0
         (verifier_dir / "reward.json").write_text('{"reward": 1}')
-        assert module.normalize_rewards(verifier, result)["rewards"]["reward"] == 1
+        normalized = module.normalize_rewards(verifier, result)["rewards"]
+        assert normalized["reward"] == 1 and normalized["total_score"] == 1
         config["task"]["submission"]["final_response"] = "/hitch-evidence/final-response.json"
         (task_dir / ".hitch-benchmark.json").write_text(json.dumps(config))
         class EvidenceEnvironment:

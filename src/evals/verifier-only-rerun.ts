@@ -5,6 +5,7 @@ import { parse as parseTOML } from "smol-toml";
 import { buildHarborRegradeConfig, runHarborRegrade } from "../backends/index.js";
 import { benchmarkTreeDigest } from "../benchmarks/index.js";
 import { useControllerRuntimeById } from "../controller-runtime/index.js";
+import { parseVerifierScores } from "../domain/index.js";
 import type { BenchmarkLockV1, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths } from "../foundation/index.js";
 import { loadRunRecord, verifyResultBundleIndex } from "../runs/index.js";
@@ -24,6 +25,8 @@ import { summarizeTrialRefs } from "./result-helpers.js";
 import { validateEvalTrialReferences } from "./trial-import.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult } from "./verifier-diagnostics.js";
 import { verifierRuntimeRepair } from "./verifier-runtime.js";
+import { loadBenchmarkAdapterManifest, scoreWithinRange } from "./benchmark-adapter-manifest.js";
+import type { BenchmarkScoreContractV1 } from "./benchmark-adapter-manifest.js";
 
 interface Input extends RerunEvalOptions {
   evalDirectory: string; rerunId: string; rerunDirectory: string; startedAt: string;
@@ -34,19 +37,26 @@ interface Input extends RerunEvalOptions {
 
 /** Validate the immutable compiled package, also restoring its public identity
  * when the underlying local Harbor dataset has a different derived identity. */
-export async function frozenRerunBenchmark(evalDirectory: string): Promise<{ id: string; revision: string; tasks: string } | null> {
+export async function frozenRerunBenchmark(evalDirectory: string): Promise<{ id: string; revision: string; tasks: string; standard: boolean; scoring?: BenchmarkScoreContractV1 } | null> {
   const pkg = await readJSON<{ source: string; tasks: string; package_digest: string; compiled_digest: string } | null>(path.join(evalDirectory, "benchmark/package.json"), null);
   if (!pkg) return null;
   // These tasks were already compiled by the pinned source runtime. Validate
   // its saved lock and bytes, without re-resolving them with today's loader.
   const lock = await readJSON<BenchmarkLockV1>(path.join(evalDirectory, "benchmark/benchmark.lock.json"));
   const compiled = await readJSON<{ digest: string; tasks_digest: string }>(path.join(path.dirname(pkg.tasks), "compiled.json"));
+  const compiler = ["harbor-package@3", "harbor-package@4", "harbor-package@5", "harbor-package@6"]
+    .find(value => compiled.digest === sha256JSON({ lock, compiler: value }));
   if (lock.protocol !== "hitch-benchmark@1" || pkg.package_digest !== lock.package_digest
     || lock.package_digest !== sha256JSON(lock.files) || lock.package_digest !== await benchmarkTreeDigest(pkg.source)
     || compiled.digest !== pkg.compiled_digest
-    || !["harbor-package@3", "harbor-package@4", "harbor-package@5"].some(compiler => compiled.digest === sha256JSON({ lock, compiler }))
+    || !compiler
     || compiled.tasks_digest !== await benchmarkTreeDigest(pkg.tasks)) throw unavailable("compiled benchmark identity changed");
-  return { id: lock.benchmark_id, revision: lock.package_digest, tasks: pkg.tasks };
+  if (compiler === "harbor-package@6") {
+    const manifest = await loadBenchmarkAdapterManifest(pkg.tasks);
+    if (!manifest || manifest.benchmark.id !== lock.benchmark_id) throw unavailable("compiled benchmark manifest changed");
+    return { id: manifest.benchmark.id, revision: manifest.dataset_digest, tasks: pkg.tasks, standard: true, scoring: manifest.scoring };
+  }
+  return { id: lock.benchmark_id, revision: lock.package_digest, tasks: pkg.tasks, standard: false };
 }
 
 export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResult> {
@@ -154,12 +164,18 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
       runStatus: candidate.record.status, trajectoryStatus: candidate.trajectory_status, recordStatus: candidate.record_status,
       verifierRef: result ? "evidence/verifier-result.json" : undefined,
       infrastructure: await detectVerifierInfrastructureFailure(trialDirectory, primaryVerifierReward(outcome.trial)) });
+    const scores = observation.status === "valid" && benchmark.standard ? parseVerifierScores(result) : undefined;
+    if (observation.status === "valid" && benchmark.standard && (!scores || scores.normalization !== "standard" || scores.process_score !== undefined
+      || !benchmark.scoring || !scoreWithinRange(scores.total_score, benchmark.scoring.total_score))) {
+      throw unavailable("regraded standardized score contract is invalid");
+    }
     const assessment = await sealRegradeAssessment(directory, { eval_id: input.evalId, task_id: slot.task_id, attempt: slot.attempt, rerun_id: input.rerunId,
       source, controller_runtime_id: verifierRuntime.runtime_id, ...(runtimeRepair ? { runtime_repair: runtimeRepair } : {}),
       backend: outcome.backend, observation, completed_at: new Date().toISOString() });
     if (observation.status === "valid") {
       const ref: EvalTrialRefV1 = { trial_id: original.trial_id, run_id: original.run_id, task_id: slot.task_id, attempt: slot.attempt,
-        observation_status: "valid", reward: observation.reward!, verifier_result_ref: observation.verifier_result_ref!, assessment };
+        observation_status: "valid", reward: observation.reward!, verifier_result_ref: observation.verifier_result_ref!, assessment,
+        ...(scores === undefined ? {} : { scores }) };
       await validateEvalTrialReferences(input.root, input.evalId, [ref], { benchmarkId: benchmark.id, benchmarkRevision: benchmark.revision });
       progress = replaceInvalidEvalProgressTrial(progress, ref);
       await writeEvalProgress(input.evalDirectory, progress);
