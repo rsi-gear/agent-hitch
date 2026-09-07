@@ -7,6 +7,7 @@ import type {
 import { HitchError } from "../foundation/index.js";
 import type { InferenceDoctorOptions, InferenceDoctorResultV1 } from "./doctor.js";
 import { resolveLocalInferenceDevice } from "./doctor.js";
+import { reservedInferenceDevices } from "./device-reservation.js";
 import { buildInferenceLock, loadInferenceLock, persistInferenceLock } from "./lock.js";
 import { resolveLocalModel, verifyLocalModel } from "./model-store.js";
 import { loadInferenceRuntime, prepareInferenceRuntime } from "./runtime-store.js";
@@ -59,6 +60,7 @@ export async function prepareLocalInference(options: LocalInferencePreflightOpti
   const weights = model.files.filter((file) => file.path.endsWith(".safetensors")).reduce((sum, file) => sum + file.size, 0);
   const resolved = await resolveLocalInferenceDevice(options.selection.device, {
     ...options.doctor, requiredMemoryMiB: Math.ceil((weights * 1.25 + 1024 ** 3) / 1024 ** 2),
+    excludedDeviceUuids: [...await reservedInferenceDevices(), ...(options.doctor?.excludedDeviceUuids ?? [])],
   });
   if (resolved.backend === "metal") {
     throw new HitchError("Metal local inference is not available in P0", { code: "inference_device_unsupported", exitCode: 3 });

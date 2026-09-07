@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonServer, daemonClient, probeDaemonHealth, readDaemonLogs, startDetachedDaemon } from "../../daemon/index.js";
 import type { DaemonResourcePolicy } from "../../daemon/index.js";
 import { discoverAgents } from "../../adapters/index.js";
+import { localInferenceDaemonEnvironment } from "../../inference/index.js";
 import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger, runCommand } from "../../foundation/index.js";
 import { assertNoArgs, parseRunRequest, takeFlag, takeOption } from "../arguments.js";
 import { waitForDaemonRun } from "../output.js";
@@ -10,15 +11,7 @@ const executable = fileURLToPath(new URL("../../../bin/hitch.js", import.meta.ur
 
 export async function ensureLocalInferenceDaemon(root: string): Promise<void> {
   if ((await probeDaemonHealth(root))?.status === "running") return;
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  if (env.HITCH_CAPACITY_GPUS === undefined) {
-    try {
-      const observed = await runCommand(env.HITCH_NVIDIA_SMI_PATH || "nvidia-smi", ["-L"], {
-        env, timeoutMs: 5_000, failureCode: "gpu_detection_failed",
-      });
-      if (observed.stdout.trim()) env.HITCH_CAPACITY_GPUS = "1";
-    } catch { /* CPU-only daemon capacity remains valid. */ }
-  }
+  const env = await localInferenceDaemonEnvironment(root);
   const resourcePolicy = await parseDaemonResourcePolicy([], DEFAULT_MAX_CONCURRENT, { env });
   const child = await startDetachedDaemon({ root, executable, port: 0, maxConcurrent: DEFAULT_MAX_CONCURRENT, resourcePolicy });
   for (let attempt = 0; attempt < 100; attempt += 1) {

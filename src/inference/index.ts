@@ -3,6 +3,7 @@ export { addLocalModel, gcLocalModels, resolveLocalModel, verifyLocalModel } fro
 export type { AddLocalModelOptions, LocalModelGcResultV1 } from "./model-store.js";
 export { listRuntimeCatalog, runtimeCatalogEntry } from "./runtime-catalog.js";
 export { doctorLocalInference, resolveLocalInferenceDevice } from "./doctor.js";
+export { localInferenceDaemonEnvironment } from "./daemon-capacity.js";
 export type { InferenceDoctorCheckV1, InferenceDoctorOptions, InferenceDoctorResultV1 } from "./doctor.js";
 export { loadInferenceRuntime, prepareInferenceRuntime } from "./runtime-store.js";
 export type { PrepareInferenceRuntimeOptions } from "./runtime-store.js";

@@ -8,7 +8,7 @@ import { HitchError, delay, sha256JSON, statePaths } from "../src/foundation/ind
 import { buildInferenceLock, doctorLocalInference, resolveLocalInferenceDevice, runtimeCatalogEntry, SGLangServiceSupervisor } from "../src/inference/index.js";
 import type { SGLangLauncher, InferenceDoctorOptions } from "../src/inference/index.js";
 import { LocalInferenceManager, ResourceLedger } from "../src/control-plane/index.js";
-import { reserveInferenceDevice, releaseInferenceDevice } from "../src/inference/device-reservation.js";
+import { reserveInferenceDevice, releaseInferenceDevice, reservedInferenceDevices } from "../src/inference/device-reservation.js";
 import { validateRuntimeObservation } from "../src/inference/observation.js";
 
 const model: LocalModelManifestV1 = {
@@ -46,6 +46,7 @@ test("doctor checks all GPUs, driver/SM/free memory, UUID constraints and local 
   const options = doctorOptions("GPU-old, Old GPU, 80000, 80000, 570.1, 9.0\nGPU-full, H100, 80000, 100, 580.1, 9.0\nGPU-ok, H100, 80000, 60000, 580.1, 9.0");
   const selected = await resolveLocalInferenceDevice("auto", { ...options, requiredMemoryMiB: 4000 });
   assert.equal(selected.doctor.gpu?.uuid, "GPU-ok");
+  assert.equal((await resolveLocalInferenceDevice("auto", { ...options, requiredMemoryMiB: 4000, excludedDeviceUuids: ["GPU-ok"] })).backend, "cpu");
   const fallback = await resolveLocalInferenceDevice("auto", { ...options, requiredMemoryMiB: 90000 });
   assert.equal(fallback.backend, "cpu");
   assert.equal((await doctorLocalInference("cuda", { ...options, deviceConstraint: "GPU-missing" })).ready, false);
@@ -69,11 +70,13 @@ test("physical GPU reservations exclude other roots and survive until their owne
   const directory = await temporary(t);
   const results = await Promise.allSettled([reserveInferenceDevice(directory, "/root/a", "service-a", "GPU-1"), reserveInferenceDevice(directory, "/root/b", "service-b", "GPU-1")]);
   assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.deepEqual(await reservedInferenceDevices(directory), ["GPU-1"]);
   const first = results[0]?.status === "fulfilled";
   const owner = first ? "/root/a" : "/root/b", service = first ? "service-a" : "service-b";
   await releaseInferenceDevice(directory, "/root/other", service);
   await assert.rejects(reserveInferenceDevice(directory, "/root/other", "other", "GPU-1"), /reserved/);
   await releaseInferenceDevice(directory, owner, service);
+  assert.deepEqual(await reservedInferenceDevices(directory), []);
   await reserveInferenceDevice(directory, "/root/other", "other", "GPU-1");
 });
 

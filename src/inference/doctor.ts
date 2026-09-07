@@ -25,6 +25,7 @@ export interface InferenceDoctorOptions {
   run?: (executable: string, args: string[]) => Promise<CommandResult>;
   requiredMemoryMiB?: number;
   deviceConstraint?: string;
+  excludedDeviceUuids?: readonly string[];
 }
 
 /** Static eligibility only. Loading, CUDA visibility and the protocol are verified by prepare. */
@@ -72,6 +73,7 @@ export async function doctorLocalInference(backend: LocalInferenceBackend, optio
     const eligible = candidates.filter((entry) => Number(entry.driver_version.split(".")[0]) >= 580
       && [8.0, 8.6, 8.9, 9.0, 10.0, 10.3, 12.0].includes(Number(entry.compute_capability))
       && entry.free_memory_mib >= (options.requiredMemoryMiB ?? 0)
+      && !options.excludedDeviceUuids?.includes(entry.uuid)
       && (!options.deviceConstraint || entry.uuid === options.deviceConstraint));
     gpu = eligible[0];
     checks.cuda = gpu ? pass(`${gpu.name} (${gpu.uuid}), ${gpu.free_memory_mib} MiB free, driver ${gpu.driver_version}`)

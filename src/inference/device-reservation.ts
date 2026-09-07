@@ -6,6 +6,20 @@ import { HitchError, atomicWriteJSON, hitchRootId, readJSON, sha256JSON, withFil
 interface Reservation { root_id: string; service_id: string; gpu_uuid: string }
 export const defaultDeviceReservationDirectory = () => path.join(homedir(), ".cache", "agent-hitch", "inference-devices");
 
+export async function reservedInferenceDevices(directory = defaultDeviceReservationDirectory()): Promise<string[]> {
+  let files: string[];
+  try { files = await readdir(directory); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const devices: string[] = [];
+  for (const name of files.filter((name) => /^[a-f0-9]{64}\.json$/.test(name))) {
+    const record = await readJSON<Reservation | null>(path.join(directory, name), null);
+    if (record?.gpu_uuid) devices.push(record.gpu_uuid);
+  }
+  return devices;
+}
+
 /** Survives daemon death. Only confirmed container cleanup releases a reservation;
  * a dead PID alone is never evidence that a GPU is free. Shared across Hitch roots. */
 export async function reserveInferenceDevice(directory: string, root: string, serviceId: string, gpuUuid: string): Promise<void> {

@@ -15,7 +15,8 @@
 - CPU 固定为 SGLang `0.5.15.post1`（源码 commit `0b3bb0cbe31873994c9f989fddfe2f87ca839fdd`），CUDA 固定为 `0.5.16`（`fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1`）。commit 使用 annotated tag 指向的真实源码 commit；OCI 仍按 digest 固定。
 - 两个固定版本的 Responses 都会从输出预算中扣除两个 token；启动探测使用预算 8，gateway 把锁定的生成预算转换为上游预算 `N+2`。内部 `top_k=0` 转为 SGLang 的 `-1`；FP16 KV 使用合法的 `auto` CLI 参数。
 - 运行证据只保存白名单观测：版本、backend、dtype/KV dtype、attention/sampling backend、context、实际 token pool、最大并发、容器 image ID 和 GPU UUID。CUDA 还验证容器内只有锁定的 GPU 且可执行 CUDA tensor 分配。`server_info` 中的 engine/admin secret 不落盘。持续 RSS/显存、CPU affinity、TTFT/吞吐测量仍是后续目标。
-- 同一 OS 用户的 Hitch roots 共享 `~/.cache/agent-hitch/inference-devices` 下的 GPU UUID 租约。设备租约不会因 daemon PID 消失而自动释放；只有确认归属的容器已删除或不存在才回收。无法确认时保留租约并拒绝重用，重启原 root 的 daemon 执行恢复。这不是跨用户或外部 CUDA 作业的全局调度器。
+- 自动启动 daemon 时探测本地 cache 文件系统的可用磁盘和 GPU 数量，作为 ResourceLedger 容量；显式设置的容量（包括 0）优先。已有 daemon 若未配置临时磁盘或 GPU 容量，会在 admission 明确报错，需要在合适时机用 `--capacity-ephemeral-disk-mib` / `--capacity-gpus` 重启配置。
+- 同一 OS 用户的 Hitch roots 共享 `~/.cache/agent-hitch/inference-devices` 下的 GPU UUID 租约。新建 lock 时跳过已经预留的 GPU。设备租约不会因 daemon PID 消失而自动释放；只有确认归属的容器已删除或不存在才回收。无法确认时保留租约并拒绝重用，重启原 root 的 daemon 执行恢复。这不是跨用户或外部 CUDA 作业的全局调度器。
 - supervisor 每两秒检查容器退出/OOM 状态及 HTTP health。异常立即撤销该服务的 gateway，确认停止后才释放 ResourceLedger；新服务使用新 epoch。一个等待者取消不会取消另一个 owner 的共享启动。
 
 下文中的“认证”、完整性能指标和 P0 release gate 是交付目标；当前支持范围仍以 Preview 状态和实际保存的验证证据为准。

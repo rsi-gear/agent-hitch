@@ -99,7 +99,9 @@ export class LocalInferenceManager implements ManagedInferenceCoordinator {
     let allocation = this.resourceLeases.get(serviceKey);
     if (!allocation && this.resources) {
       if (!this.resources.canEverFit(prepared.lock.resources)) {
-        throw new HitchError("local inference resources exceed daemon capacity", { code: "inference_capacity_exceeded", exitCode: 12 });
+        const missing = Object.entries(prepared.lock.resources).filter(([key, value]) => value > (this.resources!.capacity[key as keyof typeof prepared.lock.resources] ?? 0))
+          .map(([key, value]) => `${key} requires ${value}`);
+        throw new HitchError(`local inference resources exceed daemon capacity (${missing.join(", ")}); restart the daemon with sufficient --capacity-* limits`, { code: "inference_capacity_exceeded", exitCode: 12 });
       }
       allocation = this.resources.tryAcquire(serviceKey, "inference", prepared.lock.resources) ?? undefined;
       if (!allocation) throw new HitchError("local inference resources are currently unavailable", { code: "inference_capacity_exceeded", exitCode: 12 });
