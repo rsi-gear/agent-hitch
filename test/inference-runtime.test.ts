@@ -31,10 +31,11 @@ test("runtime catalog pins immutable official SGLang images and self-validating 
   }
 });
 
-test("device doctor fails closed and auto prefers a certified CUDA device", async () => {
+test("device doctor fails closed and auto prefers an eligible CUDA device", async () => {
   const run = async (executable: string, args: string[]): Promise<CommandResult> => {
-    if (executable === "docker") return { stdout: "27.4.0\n", stderr: "" };
-    if (executable === "nvidia-smi") return { stdout: "GPU-123, NVIDIA H100, 81920, 580.65\n", stderr: "" };
+    if (executable === "docker") return { stdout: args[0] === "info"
+      ? JSON.stringify({ OSType: "linux", Architecture: "x86_64", ServerVersion: "27.4.0" }) : JSON.stringify("unix:///var/run/docker.sock"), stderr: "" };
+    if (executable === "nvidia-smi") return { stdout: "GPU-123, NVIDIA H100, 81920, 81920, 580.65, 9.0\n", stderr: "" };
     throw new Error(`unexpected command: ${executable} ${args.join(" ")}`);
   };
   const options = {
@@ -139,18 +140,33 @@ test("SGLang launcher compiles a locked-down digest-pinned CPU command and probe
   const runtime = runtimeCatalogEntry("cpu");
   const lock = buildInferenceLock(model, runtime, { backend: "cpu", profile: "baseline", cpuThreads: 2 });
   const commands: string[][] = [];
+  let failure: "none" | "http" | "sse" | "oom" = "none";
   const launcher = new DockerSGLangLauncher({
     run: async (_executable, args) => {
       commands.push(args);
       if (args[0] === "run") return { stdout: `${"a".repeat(64)}\n`, stderr: "" };
+      if (args[0] === "container" && args[1] === "ls") return { stdout: "", stderr: "" };
+      if (args[0] === "container" && args[1] === "inspect") return { stdout: JSON.stringify({ Image: `sha256:${"c".repeat(64)}`, State: { Running: failure !== "oom", OOMKilled: failure === "oom", ExitCode: failure === "oom" ? 137 : 0 } }), stderr: "" };
       return { stdout: "{}\n", stderr: "" };
     },
     fetch: async (input, init) => {
       const url = String(input);
-      if (url.endsWith("/health")) return new Response("ok");
+      if (url.endsWith("/health") || url.endsWith("/flush_cache")) return new Response("ok");
+      if (url.endsWith("/server_info")) return Response.json({
+        version: runtime.sglang_version, device: "cpu", dtype: lock.execution.dtype, kv_cache_dtype: lock.execution.kv_cache_dtype,
+        attention_backend: lock.execution.attention_backend, sampling_backend: lock.execution.sampling_backend,
+        context_length: lock.execution.context_tokens_per_request, max_running_requests: lock.execution.max_running_requests,
+        max_total_num_tokens: lock.execution.max_total_tokens, tp_size: 1, dp_size: 1, pp_size: 1,
+        disable_radix_cache: true, disable_overlap_schedule: true, api_key: "must-not-persist",
+      });
       if (url.endsWith("/v1/models")) return Response.json({ data: [{ id: `hitch-${model.model_id.slice(7, 23)}` }] });
       assert.equal(url.endsWith("/v1/responses"), true);
       assert.equal((init?.headers as Record<string, string>).Authorization?.startsWith("Bearer "), true);
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.max_output_tokens, 8, "SGLang reserves two output tokens");
+      if (failure === "http") return new Response("invalid token budget", { status: 400 });
+      if (body.stream && failure === "sse") return new Response('data: {"type":"response.failed"}\n\n', { headers: { "content-type": "text/event-stream" } });
+      if (body.stream) return new Response('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n', { headers: { "content-type": "text/event-stream" } });
       return Response.json({ status: "completed", output: [] });
     },
   });
@@ -163,5 +179,15 @@ test("SGLang launcher compiles a locked-down digest-pinned CPU command and probe
   assert.equal(dockerRun.includes("SGLANG_USE_CPU_ENGINE=1"), true);
   assert.equal(dockerRun.includes("--device"), true);
   assert.equal(dockerRun.includes("--trust-remote-code"), false);
+  assert.equal(launched.observation?.max_total_num_tokens, lock.execution.max_total_tokens);
+  assert.equal(JSON.stringify(launched.observation).includes("must-not-persist"), false);
+  assert.equal(dockerRun.includes("--memory"), true);
+  assert.equal(dockerRun.includes("--rm"), false, "retain exit/OOM evidence until the supervisor observes it");
+  await launched.checkHealth?.();
   await launched.stop();
+  for (const mode of ["http", "sse", "oom"] as const) {
+    failure = mode;
+    await assert.rejects(launcher.start({ root, serviceId: `inference_${"b".repeat(32)}`, lock, model, runtime }),
+      (error: unknown) => (error as { code: string }).code === (mode === "oom" ? "inference_oom" : "inference_protocol_unsupported"));
+  }
 });

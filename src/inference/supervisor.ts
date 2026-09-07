@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
+  InferenceRuntimeObservationV1,
   InferenceLockV1,
   InferenceRuntimeManifestV1,
   InferenceServiceRecordV1,
@@ -29,6 +30,8 @@ export interface SGLangServiceLease {
   base_url: string;
   wire_model: string;
   engine_token: string;
+  observation?: InferenceRuntimeObservationV1;
+  isReady(): boolean;
   release(): Promise<void>;
 }
 
@@ -36,6 +39,7 @@ export interface SGLangServiceSupervisorOptions {
   root: string;
   launcher?: SGLangLauncher;
   onEvent?: (event: Record<string, unknown>) => void;
+  healthIntervalMs?: number;
 }
 
 interface ServiceEntry {
@@ -45,6 +49,9 @@ interface ServiceEntry {
   service: SGLangLaunchedService;
   owners: Map<string, number>;
   idleTimer?: NodeJS.Timeout;
+  healthTimer?: NodeJS.Timeout;
+  checking?: Promise<void>;
+  stopping?: Promise<void>;
 }
 
 export class SGLangServiceSupervisor {
@@ -54,16 +61,25 @@ export class SGLangServiceSupervisor {
   private readonly services = new Map<string, ServiceEntry>();
   private readonly pending = new Map<string, Promise<ServiceEntry>>();
   private epoch = 0;
+  private closed = false;
+  private readonly healthIntervalMs: number;
+  private readonly terminalListeners = new Set<(record: InferenceServiceRecordV1, released: boolean) => Promise<void>>();
+  private readonly startups = new Set<AbortController>();
+  private readonly blocked = new Set<string>();
 
   constructor(options: SGLangServiceSupervisorOptions) {
+    this.healthIntervalMs = options.healthIntervalMs ?? 2_000;
     this.root = options.root;
     this.launcher = options.launcher ?? new DockerSGLangLauncher();
     this.onEvent = options.onEvent;
   }
 
   async acquire(input: AcquireSGLangServiceInput): Promise<SGLangServiceLease> {
+    if (this.closed) throw new HitchError("inference supervisor is closed", { code: "inference_route_unavailable", exitCode: 12 });
     validateAcquire(input);
+    if (input.signal?.aborted) throw new HitchError("inference acquisition cancelled", { code: "cancelled", exitCode: 9 });
     const key = `${input.lock.inference_id}:${input.isolationKey}`;
+    if (this.blocked.has(key)) throw new HitchError("prior startup cleanup is ambiguous; restart the daemon to recover", { code: "inference_recovery_ambiguous", exitCode: 12 });
     let entry = this.services.get(key);
     if (!entry) {
       let startup = this.pending.get(key);
@@ -72,9 +88,11 @@ export class SGLangServiceSupervisor {
         this.pending.set(key, startup);
         startup.finally(() => { if (this.pending.get(key) === startup) this.pending.delete(key); }).catch(() => {});
       }
-      entry = await startup;
+      entry = await waitForStartup(startup, input.signal);
     }
-    if (entry.record.state !== "ready") throw new HitchError("SGLang service is not ready", { code: "inference_route_unavailable", exitCode: 12 });
+    if (input.signal?.aborted) throw new HitchError("inference acquisition cancelled", { code: "cancelled", exitCode: 9 });
+    await this.checkEntry(entry);
+    if (this.closed || entry.record.state !== "ready") throw new HitchError("SGLang service is not ready", { code: "inference_route_unavailable", exitCode: 12 });
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     delete entry.idleTimer;
     entry.owners.set(input.ownerId, (entry.owners.get(input.ownerId) ?? 0) + 1);
@@ -88,12 +106,19 @@ export class SGLangServiceSupervisor {
       base_url: entry.service.base_url,
       wire_model: entry.service.wire_model,
       engine_token: entry.service.engine_token,
+      ...(entry.service.observation ? { observation: entry.service.observation } : {}),
+      isReady: () => !this.closed && this.services.get(key) === entry && entry.record.state === "ready",
       release: async () => {
         if (released) return;
         released = true;
         await this.release(entry as ServiceEntry, input.ownerId);
       },
     };
+  }
+
+  subscribeTerminal(listener: (record: InferenceServiceRecordV1, released: boolean) => Promise<void>): () => void {
+    this.terminalListeners.add(listener);
+    return () => { this.terminalListeners.delete(listener); };
   }
 
   async list(): Promise<InferenceServiceRecordV1[]> {
@@ -110,11 +135,15 @@ export class SGLangServiceSupervisor {
       throw new HitchError("inference service has active leases", { code: "inference_in_use", exitCode: 2 });
     }
     await Promise.all(entries.map((entry) => this.stopEntry(entry)));
+    if (entries.some((entry) => this.services.get(entry.key) === entry)) {
+      throw new HitchError("inference service stop is unconfirmed; reservations retained", { code: "inference_recovery_ambiguous", exitCode: 12 });
+    }
   }
 
   async recover(): Promise<void> {
     for (const record of await readServiceRecords(this.root)) {
-      if (!new Set(["starting", "ready", "draining"]).has(record.state)) continue;
+      if (record.state === "stopped") continue;
+      this.epoch = Math.max(this.epoch, record.epoch);
       const status = this.launcher.stopOrphan ? await this.launcher.stopOrphan(this.root, record) : "ambiguous";
       const now = new Date().toISOString();
       if (status === "ambiguous") {
@@ -125,6 +154,7 @@ export class SGLangServiceSupervisor {
           updated_at: now,
           error: { code: "inference_recovery_ambiguous", message: "could not verify ownership of the prior service" },
         });
+        throw new HitchError("could not recover prior inference service; reservations retained", { code: "inference_recovery_ambiguous", exitCode: 12 });
       } else {
         await writeRecord(this.root, { ...record, state: "stopped", lease_owner_ids: [], updated_at: now });
       }
@@ -132,13 +162,18 @@ export class SGLangServiceSupervisor {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    for (const controller of this.startups) controller.abort();
+    await Promise.allSettled([...this.pending.values()]);
     await Promise.all([...this.services.values()].map((entry) => this.stopEntry(entry)));
   }
 
   private async start(key: string, input: AcquireSGLangServiceInput): Promise<ServiceEntry> {
+    const controller = new AbortController();
+    this.startups.add(controller);
     const now = new Date().toISOString();
     const serviceId = `inference_${randomUUID().replaceAll("-", "")}`;
-    const record: InferenceServiceRecordV1 = {
+    let record: InferenceServiceRecordV1 = {
       schema_version: "1",
       service_id: serviceId,
       inference_id: input.lock.inference_id,
@@ -151,12 +186,17 @@ export class SGLangServiceSupervisor {
       started_at: now,
       updated_at: now,
     };
-    await writeRecord(this.root, record);
-    await this.emitRecord(record, "inference.starting");
+    let launched: SGLangLaunchedService | undefined;
     try {
-      const launched = await this.launcher.start({
+      await writeRecord(this.root, record);
+      await this.emitRecord(record, "inference.starting");
+      launched = await this.launcher.start({
         root: this.root, serviceId, lock: input.lock, model: input.model, runtime: input.runtime,
-        ...(input.signal ? { signal: input.signal } : {}),
+        signal: controller.signal,
+        onCreated: async (containerId) => {
+          record = { ...record, container_id: containerId, updated_at: new Date().toISOString() };
+          await writeRecord(this.root, record);
+        },
       });
       const ready: InferenceServiceRecordV1 = {
         ...record,
@@ -169,18 +209,34 @@ export class SGLangServiceSupervisor {
       this.services.set(key, entry);
       await writeRecord(this.root, ready);
       await this.emit(entry, "inference.ready");
+      if (launched.checkHealth) {
+        entry.healthTimer = setInterval(() => { this.checkEntry(entry).catch(() => {}); }, this.healthIntervalMs);
+        entry.healthTimer.unref?.();
+      }
+      // If every caller cancelled during startup, still retire the unused engine.
+      entry.idleTimer = setTimeout(() => { this.stopEntry(entry).catch(() => {}); }, input.lock.execution.idle_ttl_ms);
+      entry.idleTimer.unref?.();
       return entry;
     } catch (error) {
+      let released = (error as { code?: string }).code !== "inference_recovery_ambiguous";
+      if (launched) {
+        const entry = this.services.get(key);
+        if (entry) this.clearTimers(entry);
+        try { await launched.stop(); } catch { released = false; }
+        this.services.delete(key);
+      }
+      if (!released) this.blocked.add(key);
       const failed: InferenceServiceRecordV1 = {
         ...record,
         state: "failed",
         updated_at: new Date().toISOString(),
-        error: { code: (error as { code?: string }).code || "inference_process_exited", message: (error as Error).message },
+        error: { code: released ? (error as { code?: string }).code || "inference_process_exited" : "inference_recovery_ambiguous", message: (error as Error).message },
       };
       await writeRecord(this.root, failed);
       await this.emitRecord(failed, "inference.failed", { error: failed.error });
+      await Promise.all([...this.terminalListeners].map((listener) => listener(failed, released)));
       throw error;
-    }
+    } finally { this.startups.delete(controller); }
   }
 
   private async release(entry: ServiceEntry, ownerId: string): Promise<void> {
@@ -189,7 +245,7 @@ export class SGLangServiceSupervisor {
     if (count <= 1) entry.owners.delete(ownerId); else entry.owners.set(ownerId, count - 1);
     await this.updateOwners(entry);
     await this.emit(entry, "inference.released", { owner_id: ownerId });
-    if (totalOwners(entry) > 0 || entry.idleTimer) return;
+    if (entry.record.state !== "ready" || totalOwners(entry) > 0 || entry.idleTimer) return;
     entry.idleTimer = setTimeout(() => { this.stopEntry(entry).catch(() => {}); }, entry.lock.execution.idle_ttl_ms);
     entry.idleTimer.unref?.();
   }
@@ -199,21 +255,71 @@ export class SGLangServiceSupervisor {
     await writeRecord(this.root, entry.record);
   }
 
-  private async stopEntry(entry: ServiceEntry): Promise<void> {
-    if (entry.idleTimer) clearTimeout(entry.idleTimer);
-    delete entry.idleTimer;
-    if (!this.services.has(entry.key)) return;
-    entry.record = { ...entry.record, state: "draining", updated_at: new Date().toISOString() };
-    await writeRecord(this.root, entry.record);
-    await this.emit(entry, "inference.draining");
-    try {
-      await entry.service.stop();
-      entry.record = { ...entry.record, state: "stopped", lease_owner_ids: [], updated_at: new Date().toISOString() };
-      await writeRecord(this.root, entry.record);
-      await this.emit(entry, "inference.stopped");
-    } finally {
-      this.services.delete(entry.key);
+  private checkEntry(entry: ServiceEntry): Promise<void> {
+    if (!entry.service.checkHealth || entry.record.state !== "ready") return Promise.resolve();
+    if (!entry.checking) {
+      entry.checking = entry.service.checkHealth().catch(async (error: unknown) => {
+        if (entry.record.state === "ready") await this.failEntry(entry, error);
+      }).finally(() => { delete entry.checking; });
     }
+    return entry.checking;
+  }
+
+  private failEntry(entry: ServiceEntry, error: unknown): Promise<void> {
+    if (entry.stopping) return entry.stopping;
+    if (entry.record.state !== "ready") return Promise.resolve();
+    entry.record = { ...entry.record, state: "failed", lease_owner_ids: [], updated_at: new Date().toISOString(),
+      error: { code: (error as { code?: string }).code || "inference_route_unavailable", message: (error as Error).message } };
+    this.clearTimers(entry);
+    entry.stopping = (async () => {
+      await writeRecord(this.root, entry.record);
+      await this.emit(entry, "inference.failed");
+      // Invalidate routes immediately, but retain reservations until termination is confirmed.
+      await this.notifyTerminal(entry, false);
+      try {
+        await entry.service.stop();
+        await this.notifyTerminal(entry, true);
+        if (this.services.get(entry.key) === entry) this.services.delete(entry.key);
+      } catch { /* Failed entry blocks reuse and keeps the physical/resource lease. */ }
+    })().finally(() => { delete entry.stopping; });
+    return entry.stopping;
+  }
+
+  private stopEntry(entry: ServiceEntry): Promise<void> {
+    if (entry.stopping) return entry.stopping;
+    if (this.services.get(entry.key) !== entry) return Promise.resolve();
+    this.clearTimers(entry);
+    entry.record = { ...entry.record, state: "draining", updated_at: new Date().toISOString() };
+    entry.stopping = (async () => {
+      await writeRecord(this.root, entry.record);
+      await this.emit(entry, "inference.draining");
+      await this.notifyTerminal(entry, false);
+      try {
+        await entry.service.stop();
+        entry.record = { ...entry.record, state: "stopped", lease_owner_ids: [], updated_at: new Date().toISOString() };
+        await writeRecord(this.root, entry.record);
+        await this.emit(entry, "inference.stopped");
+        await this.notifyTerminal(entry, true);
+        if (this.services.get(entry.key) === entry) this.services.delete(entry.key);
+      } catch (error) {
+        entry.record = { ...entry.record, state: "failed", updated_at: new Date().toISOString(),
+          error: { code: "inference_recovery_ambiguous", message: "container stop was not confirmed; reservations retained" } };
+        await writeRecord(this.root, entry.record);
+        throw error;
+      } finally { delete entry.stopping; }
+    })();
+    return entry.stopping;
+  }
+
+  private clearTimers(entry: ServiceEntry): void {
+    if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    if (entry.healthTimer) clearInterval(entry.healthTimer);
+    delete entry.idleTimer;
+    delete entry.healthTimer;
+  }
+
+  private async notifyTerminal(entry: ServiceEntry, released: boolean): Promise<void> {
+    await Promise.all([...this.terminalListeners].map((listener) => listener(entry.record, released)));
   }
 
   private emit(entry: ServiceEntry, type: string, extra: Record<string, unknown> = {}): Promise<void> {
@@ -263,4 +369,14 @@ function validateAcquire(input: AcquireSGLangServiceInput): void {
     || input.lock.model_id !== input.model.model_id || input.lock.runtime_id !== input.runtime.runtime_id) {
     throw new TypeError("SGLang service acquisition identity is invalid");
   }
+}
+
+async function waitForStartup<T>(startup: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return startup;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new HitchError("inference acquisition cancelled", { code: "cancelled", exitCode: 9 }));
+    if (signal.aborted) { abort(); return; }
+    signal.addEventListener("abort", abort, { once: true });
+    startup.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort)).catch(() => {});
+  });
 }

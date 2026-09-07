@@ -205,3 +205,21 @@ export interface ManagedInferenceLeaseV1 {
 export interface ManagedInferenceCoordinator {
   acquire(input: AcquireManagedInferenceInputV1): Promise<ManagedInferenceLeaseV1>;
 }
+
+/** Whitelisted engine-reported values, verified before admitting any candidate. */
+export interface InferenceRuntimeObservationV1 {
+  schema_version: "1";
+  observed_at: string;
+  version: string;
+  device: "cpu" | "cuda";
+  dtype: string;
+  kv_cache_dtype: string;
+  attention_backend: string;
+  sampling_backend: string;
+  context_length: number;
+  max_total_num_tokens: number;
+  max_running_requests: number;
+  container_image_id: string;
+  gpu_uuid: string | null;
+  probe: { api: "responses"; max_output_tokens: number; streaming: boolean };
+}

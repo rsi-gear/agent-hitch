@@ -71,7 +71,7 @@ export function buildInferenceLock(
       max_total_tokens: context * (maxRunning + 1),
       chunked_prefill_size: throughput ? Math.min(4_096, context) : -1,
       max_prefill_tokens: context,
-      kv_cache_dtype: model.dtype,
+      kv_cache_dtype: model.dtype === "bfloat16" || model.dtype === "bf16" ? "bfloat16" : "auto",
       attention_backend: options.backend === "cpu" ? "intel_amx" : "flashinfer",
       sampling_backend: options.backend === "cpu" ? "pytorch" : "flashinfer",
       deterministic_inference: false,

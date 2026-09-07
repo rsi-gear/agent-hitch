@@ -1,12 +1,24 @@
 # Hitch 本地模型推理实现 Spec（SGLang）
 
 - 状态：Preview implementation；核心代码与无硬件 contract tests 已实现，真实 Linux CPU/CUDA/Harbor release gate 尚未执行，因此不能标记为 P0 GA。
-- 日期：2026-09-04；修订：用户确认从 llama.cpp 改为 SGLang。
-- Hitch 基线：`e137518f5529fb9d36655f9a0fa2ffd011b4ac49`，实现分支 `codex/sglang-local-inference`，当前包版本 `0.2.8`。
+- 日期：2026-09-07；修订：补齐实际 prepare、运行时观测、设备互斥和故障监控。
+- Hitch 基线：`1349af010248277109e16aecd5820a08e9f20bc6`，实现分支 `codex/sglang-local-inference-dev`，当前包版本 `0.2.9`。
 - 明确需求：通过集成一个推理框架，同时支持 CPU 和 GPU 本地推理。
 - 决策：仅集成 **SGLang Serving Runtime（SRT）**；Hitch 通过 HTTP 管理其推理服务，不在 Node.js 内嵌 Python，不引入 SGLang 的 Agent 编排语言或第二推理框架。
 
 当前 preview 已落地模型 CAS、digest-pinned CPU/CUDA runtime catalog、doctor/preflight/inference lock、daemon 持有的 SGLang supervisor、run-scoped Responses gateway、Codex/model-call 绑定、普通 run 与本机 Harbor eval 接入、证据和恢复记录。`npm run check` 覆盖的 fake runtime、协议、并发、恢复和回归测试属于实现验收，不替代 §15.3 的真实硬件认证。
+
+当前实现与后续认证的边界：
+
+- `doctor` 只报告静态准入条件：本地 Linux/amd64 Docker、CPU AMX，或 CUDA 13 所需的驱动（保守要求主版本 ≥580）、SM、GPU UUID 和可用显存。它不代表模型已加载或硬件已认证。
+- `local prepare` 通过需要鉴权的 daemon 管理接口拉取固定镜像、加载模型、执行普通 Responses 与 SSE 短生成，读取 `/server_info` 并校验 lock，清除探测留下的 cache，保存 `store/inference-locks/sha256/<id>/validation.json`。临时 lease 在完成或失败时释放；已有其他 owner 的服务继续运行。
+- CPU 固定为 SGLang `0.5.15.post1`（源码 commit `0b3bb0cbe31873994c9f989fddfe2f87ca839fdd`），CUDA 固定为 `0.5.16`（`fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1`）。commit 使用 annotated tag 指向的真实源码 commit；OCI 仍按 digest 固定。
+- 两个固定版本的 Responses 都会从输出预算中扣除两个 token；启动探测使用预算 8，gateway 把锁定的生成预算转换为上游预算 `N+2`。内部 `top_k=0` 转为 SGLang 的 `-1`；FP16 KV 使用合法的 `auto` CLI 参数。
+- 运行证据只保存白名单观测：版本、backend、dtype/KV dtype、attention/sampling backend、context、实际 token pool、最大并发、容器 image ID 和 GPU UUID。CUDA 还验证容器内只有锁定的 GPU 且可执行 CUDA tensor 分配。`server_info` 中的 engine/admin secret 不落盘。持续 RSS/显存、CPU affinity、TTFT/吞吐测量仍是后续目标。
+- 同一 OS 用户的 Hitch roots 共享 `~/.cache/agent-hitch/inference-devices` 下的 GPU UUID 租约。设备租约不会因 daemon PID 消失而自动释放；只有确认归属的容器已删除或不存在才回收。无法确认时保留租约并拒绝重用，重启原 root 的 daemon 执行恢复。这不是跨用户或外部 CUDA 作业的全局调度器。
+- supervisor 每两秒检查容器退出/OOM 状态及 HTTP health。异常立即撤销该服务的 gateway，确认停止后才释放 ResourceLedger；新服务使用新 epoch。一个等待者取消不会取消另一个 owner 的共享启动。
+
+下文中的“认证”、完整性能指标和 P0 release gate 是交付目标；当前支持范围仍以 Preview 状态和实际保存的验证证据为准。
 
 ## 1. 方案摘要
 
@@ -159,9 +171,9 @@ hitch run ... --model local/coder --inference sha256:<inference-id>
 4. 普通 run/eval 默认使用 `baseline` profile；批量评测只有显式 `--local-profile throughput` 才启用更高并发和 Radix cache。高级参数不散落成几十个 CLI flag，而通过版本化 profile 管理。
 5. `--inference` 只接受本 root 中已验证的 inference_id；model 不匹配或同时传 device/profile 时失败。默认路径不要求该参数。
 6. 本地 run/eval（包括 daemon submit）在 preflight 阶段自动准备缺失的认证 runtime，并显示 digest、大小和进度；不得下载权重、tokenizer、模型代码或任意 tag。只有显式 `--offline` 禁止该行为，缺 runtime 时返回可复制的 `hitch local prepare` 命令。
-7. doctor 只读。preview 的 `local prepare` 完成 runtime 拉取、完整性检查和 lock 固化；首次真实 acquire 负责加载模型、Responses 探测和短生成。独立 prewarm operation 属于后续管理面增强。两者都不是 happy path 的必做步骤。
+7. doctor 只读。`local prepare` 与实际 acquire 使用同一 daemon supervisor，完成 runtime 拉取、完整性检查、lock 固化、模型加载、Responses/SSE 探测和运行时配置核验。prepare 完成后释放临时 owner；没有其他 owner 时停止服务。它不是 happy path 的必做步骤。
 8. `local stop` 有活跃租约时报 `inference_in_use`；`--force` 会撤销 gateway 并停止服务，使受影响运行 fail closed。由 daemon 主动给所有关联 run/eval 写入取消状态属于后续增强。GC 默认 dry-run，只有 `--apply` 才删除；alias 或 inference lock 引用的模型不得删除。
-9. `--root` / `HITCH_ROOT` 隔离所有服务记录和缓存；机器输出带 schema_version，不输出 secret。
+9. `--root` / `HITCH_ROOT` 隔离服务记录和缓存；GPU 设备互斥租约在同一 OS 用户的 roots 间共享。机器输出带 schema_version，不输出 secret。
 10. P1 的 `--device metal` 只有对应认证 catalog 存在才开放；P0 返回 `inference_device_unsupported`。
 
 ## 6. 数据契约与身份

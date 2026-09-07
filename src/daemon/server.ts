@@ -1,3 +1,4 @@
+import { prepareInference } from "./inference-prepare.js";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -246,6 +247,10 @@ export class DaemonServer {
         ...(record.revoked_at ? { revoked_at: record.revoked_at } : {}),
       }));
       return json(response, 200, { schema_version: SCHEMA_VERSION, workers: [...(local ? [local] : []), ...remote] });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/inference/prepare") {
+      if (!this.inferenceManager) throw new HitchError("inference manager unavailable", { code: "inference_route_unavailable", exitCode: 12 });
+      return prepareInference(request, response, this.inferenceManager);
     }
     if (request.method === "GET" && url.pathname === "/v1/inference/services") {
       return json(response, 200, { schema_version: SCHEMA_VERSION, services: await this.inferenceManager?.list() ?? [] });

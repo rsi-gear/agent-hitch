@@ -18,6 +18,7 @@ export interface LocalInferencePreflightOptions {
   harnessRef?: string;
   doctor?: InferenceDoctorOptions;
   runtime?: Omit<PrepareInferenceRuntimeOptions, "root" | "backend" | "offline">;
+  reusableLocks?: readonly InferenceLockV1[];
   onProgress?: (message: string) => void;
 }
 
@@ -32,20 +33,33 @@ export interface LocalInferencePreflightResultV1 {
 export async function prepareLocalInference(options: LocalInferencePreflightOptions): Promise<LocalInferencePreflightResultV1> {
   const model = await resolveLocalModel(options.root, options.selection.model);
   await verifyLocalModel(options.root, model);
-  if (options.selection.inference_id) {
-    const lock = await loadInferenceLock(options.root, options.selection.inference_id);
+  const reusable = options.reusableLocks?.find((lock) => lock.model_id === model.model_id
+    && lock.profile === options.selection.profile
+    && (options.selection.device === "auto" || options.selection.device === lock.execution.platform.backend));
+  const inferenceId = options.selection.inference_id ?? reusable?.inference_id;
+  if (inferenceId) {
+    const lock = await loadInferenceLock(options.root, inferenceId);
     if (lock.model_id !== model.model_id) {
       throw new HitchError("prepared inference identity refers to a different model", { code: "inference_lock_mismatch", exitCode: 2 });
     }
+    const resolved = await resolveLocalInferenceDevice(lock.execution.platform.backend, {
+      ...options.doctor,
+      ...(lock.execution.platform.backend === "cuda" && lock.execution.platform.device_constraint
+        ? { deviceConstraint: lock.execution.platform.device_constraint } : {}),
+    });
     assertHarnessCompatibility(options.harnessRef, lock);
     return {
+      doctor: resolved.doctor,
       model,
       runtime: await loadInferenceRuntime(options.root, lock.runtime_id),
       lock,
       runtime_cache_hit: true,
     };
   }
-  const resolved = await resolveLocalInferenceDevice(options.selection.device, options.doctor);
+  const weights = model.files.filter((file) => file.path.endsWith(".safetensors")).reduce((sum, file) => sum + file.size, 0);
+  const resolved = await resolveLocalInferenceDevice(options.selection.device, {
+    ...options.doctor, requiredMemoryMiB: Math.ceil((weights * 1.25 + 1024 ** 3) / 1024 ** 2),
+  });
   if (resolved.backend === "metal") {
     throw new HitchError("Metal local inference is not available in P0", { code: "inference_device_unsupported", exitCode: 3 });
   }
@@ -76,15 +90,15 @@ function assertHarnessCompatibility(harnessRef: string | undefined, lock: Infere
   if (!harnessRef) return;
   const harness = harnessRef.split("@", 1)[0];
   if (harness !== "codex" && harness !== "model-call") {
-    throw new HitchError(`local inference is not certified for ${harness}`, { code: "inference_harness_unsupported", exitCode: 2 });
+    throw new HitchError(`local inference is not supported in the preview for ${harness}`, { code: "inference_harness_unsupported", exitCode: 2 });
   }
   if (harness === "codex" && !lock.protocol.tool_calls) {
-    throw new HitchError("this model type has no certified SGLang tool-call parser for Codex", {
+    throw new HitchError("this model type has no configured SGLang tool-call parser for Codex", {
       code: "inference_protocol_unsupported", exitCode: 2,
     });
   }
   if (harness === "codex" && harnessRef !== "codex@version:0.145.0") {
-    throw new HitchError("local inference is certified only for codex@version:0.145.0", {
+    throw new HitchError("local inference supports only codex@version:0.145.0", {
       code: "inference_harness_unsupported", exitCode: 2,
     });
   }

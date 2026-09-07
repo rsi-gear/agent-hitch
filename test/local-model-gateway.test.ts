@@ -69,11 +69,11 @@ test("local model gateway binds one run, enforces the lock, and hides the engine
   assert.equal(upstreamRequests[0]?.body.model, "wire-model");
   assert.equal(upstreamRequests[0]?.body.temperature, 0);
   assert.equal(upstreamRequests[0]?.body.top_p, 1);
-  assert.equal(upstreamRequests[0]?.body.top_k, 0);
+  assert.equal(upstreamRequests[0]?.body.top_k, -1);
   assert.equal(upstreamRequests[0]?.body.min_p, 0);
   assert.equal(upstreamRequests[0]?.body.repetition_penalty, 1);
   assert.equal(upstreamRequests[0]?.body.parallel_tool_calls, false);
-  assert.equal(upstreamRequests[0]?.body.max_output_tokens, lock.generation.max_output_tokens);
+  assert.equal(upstreamRequests[0]?.body.max_output_tokens, lock.generation.max_output_tokens + 2);
   assert.equal(upstreamRequests[0]?.body.store, false);
   assert.equal(upstreamRequests[0]?.body.truncation, "disabled");
 
@@ -167,4 +167,34 @@ test("local model gateway bounds concurrent and queued requests", async (t) => {
   finishFirst?.();
   assert.equal((await first).status, 200);
   assert.equal((await second).status, 200);
+});
+
+test("revoking one run aborts its active request and lets a different run proceed", async (t) => {
+  const lock = buildInferenceLock(model, runtimeCatalogEntry("cpu"), { backend: "cpu", profile: "baseline" });
+  let started!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+  let calls = 0, aborted = false;
+  const gateway = await LocalModelGateway.start({ upstreamBaseUrl: "http://127.0.0.1:30000", engineToken: "secret", wireModel: "wire", lock,
+    fetch: async (_url, init) => {
+      calls += 1;
+      if (calls === 1) {
+        started();
+        await new Promise<void>((_resolve, reject) => init!.signal!.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); }, { once: true }));
+      }
+      return Response.json({ status: "completed", output: [] });
+    } });
+  t.after(() => gateway.close());
+  const first = gateway.register(`run_${"a".repeat(32)}`), second = gateway.register(`run_${"b".repeat(32)}`);
+  const call = (registration: typeof first) => fetch(new URL("responses", registration.binding.base_url), {
+    method: "POST", headers: { authorization: `Bearer ${registration.credential}` }, body: JSON.stringify({ model: "wire", input: "hello" }),
+  });
+  const pending = call(first);
+  await firstStarted;
+  first.revoke();
+  const cancelled = await pending;
+  assert.equal(cancelled.ok, false); await cancelled.text();
+  const success = await call(second);
+  assert.equal(success.ok, true); await success.text();
+  assert.equal(aborted, true);
+  assert.equal(calls, 2);
 });

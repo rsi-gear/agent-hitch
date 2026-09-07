@@ -3,6 +3,7 @@ import { HitchError, readJSON, statePaths } from "../foundation/index.js";
 
 export interface DaemonClient {
   state: { port?: number; instance_id?: string };
+  prepareInference: (selection: unknown, onProgress?: (message: string) => void) => Promise<Record<string, unknown>>;
   request: (pathname: string, options?: RequestInit) => Promise<Record<string, unknown>>;
   requestWithMetadata: (pathname: string, options?: RequestInit) => Promise<{
     payload: Record<string, unknown> | string;
@@ -52,7 +53,32 @@ export async function daemonClient(root: string): Promise<DaemonClient> {
     return { payload, headers: response.headers, status: response.status };
   };
   const request = async (pathname: string, options?: RequestInit) => (await performRequest(pathname, options)).payload as Record<string, unknown>;
-  return { state, request, requestWithMetadata: performRequest };
+  const prepareInference = async (selection: unknown, onProgress?: (message: string) => void) => {
+    const response = await fetch(`http://127.0.0.1:${state.port}/v1/inference/prepare`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(selection), signal: AbortSignal.timeout(40 * 60_000),
+    });
+    if (!response.ok) throw new HitchError(`daemon inference preparation returned HTTP ${response.status}; upgrade the daemon if necessary`, { code: "daemon_request_failed", exitCode: 12 });
+    let buffer = "";
+    let result: Record<string, unknown> | undefined;
+    const decoder = new TextDecoder();
+    if (!response.body) throw new HitchError("daemon preparation stream is missing");
+    for await (const chunk of response.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      let boundary: number;
+      while ((boundary = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 1);
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as { type?: string; message?: string; result?: Record<string, unknown>; error?: { message: string; code: string; exit_code: number } };
+        if (event.error) throw new HitchError(event.error.message, { code: event.error.code, exitCode: event.error.exit_code });
+        if (event.message) onProgress?.(event.message);
+        if (event.type === "inference.prepared") result = event.result;
+      }
+    }
+    if (!result) throw new HitchError("daemon preparation ended without a result", { code: "inference_route_unavailable", exitCode: 12 });
+    return result;
+  };
+  return { state, request, requestWithMetadata: performRequest, prepareInference };
 }
 
 export async function probeDaemonHealth(root: string): Promise<DaemonHealth | null> {

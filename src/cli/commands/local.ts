@@ -1,6 +1,7 @@
+import { ensureLocalInferenceDaemon } from "./daemon.js";
 import type { LocalInferenceDevice, LocalInferenceProfile } from "../../domain/index.js";
 import { invalidInput } from "../../foundation/index.js";
-import { doctorLocalInference, prepareLocalInference, resolveLocalInferenceDevice } from "../../inference/index.js";
+import { doctorLocalInference, resolveLocalInferenceDevice } from "../../inference/index.js";
 import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
 import { assertNoArgs, takeFlag, takeOption } from "../arguments.js";
 
@@ -14,13 +15,11 @@ export async function localCommand(args: string[], root: string): Promise<void> 
     const json = takeFlag(args, "--json");
     assertNoArgs(args);
     if (!model) throw invalidInput("local prepare requires local/<name>");
-    const prepared = await prepareLocalInference({
-      root,
-      selection: { model, device, profile, offline },
-      ...(json ? {} : { onProgress: (message) => process.stderr.write(`${message}\n`) }),
-    });
+    await ensureLocalInferenceDaemon(root);
+    const prepared = await (await daemonClient(root)).prepareInference({ model, device, profile, offline },
+      json ? undefined : (message) => process.stderr.write(`${message}\n`));
     if (json) process.stdout.write(`${JSON.stringify(prepared, null, 2)}\n`);
-    else process.stdout.write(`Prepared ${model} for ${prepared.lock.execution.platform.backend} (${prepared.lock.inference_id})\n`);
+    else process.stdout.write(`Validated ${model} (${(prepared.lock as { inference_id: string }).inference_id})\n`);
     return;
   }
   if (action === "doctor") {
@@ -32,7 +31,7 @@ export async function localCommand(args: string[], root: string): Promise<void> 
       : await doctorLocalInference(device);
     if (json) process.stdout.write(`${JSON.stringify(doctor, null, 2)}\n`);
     else {
-      process.stdout.write(`Local inference ${doctor.backend}: ${doctor.ready ? "ready" : "unavailable"}\n`);
+      process.stdout.write(`Local inference ${doctor.backend}: ${doctor.ready ? "eligible; run prepare to validate" : "unavailable"}\n`);
       for (const [name, check] of Object.entries(doctor.checks)) process.stdout.write(`  ${name.padEnd(10)} ${check.status}  ${check.message}\n`);
     }
     if (!doctor.ready) process.exitCode = 3;

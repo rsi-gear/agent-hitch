@@ -40,6 +40,7 @@ export interface LocalModelGatewayRegistration {
 interface Registration {
   token: string;
   revoked: boolean;
+  controllers: Set<AbortController>;
 }
 
 interface Waiter {
@@ -97,7 +98,7 @@ export class LocalModelGateway {
     if (!RUN_ID.test(runId)) throw new TypeError("local model gateway run ID is invalid");
     if (this.closed) throw new HitchError("local model gateway is closed", { code: "inference_route_unavailable", exitCode: 12 });
     if (this.registrations.has(runId)) throw new TypeError(`local model gateway run is already registered: ${runId}`);
-    const registration: Registration = { token: randomBytes(32).toString("hex"), revoked: false };
+    const registration: Registration = { token: randomBytes(32).toString("hex"), revoked: false, controllers: new Set() };
     this.registrations.set(runId, registration);
     const baseUrl = `http://${hostForUrl(this.host)}:${this.port}/runs/${runId}/v1/`;
     return {
@@ -118,6 +119,7 @@ export class LocalModelGateway {
       credential: registration.token,
       revoke: () => {
         registration.revoked = true;
+        for (const controller of registration.controllers) controller.abort();
         if (this.registrations.get(runId) === registration) this.registrations.delete(runId);
       },
     };
@@ -133,7 +135,10 @@ export class LocalModelGateway {
       waiter.signal?.removeEventListener("abort", waiter.abort as () => void);
       waiter.reject(new HitchError("local model gateway closed", { code: "inference_route_unavailable", exitCode: 12 }));
     }
-    await new Promise<void>((resolve, reject) => this.server.close((error) => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) => {
+      this.server.close((error) => error ? reject(error) : resolve());
+      this.server.closeAllConnections();
+    });
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -157,10 +162,12 @@ export class LocalModelGateway {
     request.once("aborted", abort);
     response.once("close", responseClosed);
     this.controllers.add(controller);
+    registration.controllers.add(controller);
     const started = Date.now();
     let release: (() => void) | undefined;
     try {
       release = await this.acquirePermit(controller.signal);
+      if (registration.revoked) throw new HitchError("local inference binding was revoked", { code: "inference_binding_revoked", exitCode: 12 });
       const body = validateRequestBody(await readBody(request), this.lock, this.wireModel);
       const upstream = new URL(route.endpoint === "responses" ? "/v1/responses" : "/v1/chat/completions", this.upstream);
       const upstreamResponse = await this.request(upstream, {
@@ -191,6 +198,7 @@ export class LocalModelGateway {
       request.removeListener("aborted", abort);
       response.removeListener("close", responseClosed);
       this.controllers.delete(controller);
+      registration.controllers.delete(controller);
       release?.();
     }
   }
@@ -284,13 +292,15 @@ function validateRequestBody(buffer: Buffer, lock: InferenceLockV1, wireModel: s
   };
   for (const [name, configured] of Object.entries(expected)) {
     if (body[name] !== undefined && body[name] !== configured) throw requestError(`${name} conflicts with the inference lock`);
-    body[name] = configured;
+    body[name] = name === "top_k" && configured === 0 ? -1 : configured;
   }
   const maxOutput = body.max_output_tokens ?? lock.generation.max_output_tokens;
   if (!Number.isSafeInteger(maxOutput) || (maxOutput as number) < 1 || (maxOutput as number) > lock.generation.max_output_tokens) {
     throw requestError("max_output_tokens exceeds the inference lock");
   }
-  body.max_output_tokens = maxOutput;
+  // The pinned SGLang Responses implementation subtracts two reserved tokens.
+  // Keep the lock/client budget in generated tokens, including budgets of one.
+  body.max_output_tokens = (maxOutput as number) + 2;
   body.store = false;
   body.truncation = "disabled";
   if (body.prompt_cache_key !== undefined) {

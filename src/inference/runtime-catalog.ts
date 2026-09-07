@@ -8,7 +8,7 @@ const DEFINITIONS: Readonly<Record<"cpu" | "cuda", RuntimeCatalogDefinition>> = 
     schema_version: "1",
     engine: "sglang",
     sglang_version: "0.5.15.post1",
-    sglang_commit: "658e0a942ec771aeeef1b1adf4180764cacd79b2",
+    sglang_commit: "0b3bb0cbe31873994c9f989fddfe2f87ca839fdd",
     backend: "cpu",
     package: {
       kind: "oci",
@@ -22,7 +22,7 @@ const DEFINITIONS: Readonly<Record<"cpu" | "cuda", RuntimeCatalogDefinition>> = 
     schema_version: "1",
     engine: "sglang",
     sglang_version: "0.5.16",
-    sglang_commit: "d21f3c3a10606ba3c7bf43f981496da0a7d620cd",
+    sglang_commit: "fdebc938f7f4d16fe6b9f55dcd9a767cf0899ea1",
     backend: "cuda",
     package: {
       kind: "oci",
