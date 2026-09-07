@@ -27,6 +27,8 @@ export { encodeRemoteResultEnvelope, importRemoteResultEnvelope, parseRemoteResu
 export type { RemoteResultEnvelopeV1 } from "./remote-result-transport.js";
 export { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
 export type { RemoteWorkCoordinatorOptions } from "./remote-work-coordinator.js";
+export { LocalInferenceManager } from "./inference-manager.js";
+export type { LocalInferenceManagerOptions } from "./inference-manager.js";
 export { DEFAULT_REMOTE_WORKER_RECONNECT_TIMEOUT_MS, recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
 export { RemoteWorkInputStore, materializeRemoteTreeEnvelope, parseRemoteTreeEnvelope, prepareRemoteWorkInputs } from "./remote-work-inputs.js";
 export type { RemoteTreeEnvelopeV1 } from "./remote-work-inputs.js";

@@ -1,6 +1,6 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ManagedInferenceCoordinator, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, hitchRootId, readJSON, safeDiagnosticMessage, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { newEvalId, parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
 import type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
@@ -48,6 +48,7 @@ export interface EvalSchedulerOptions {
   remoteWorkers?: RemoteWorkerRegistry;
   remoteWorkerProtocol?: RemoteWorkerProtocol;
   credentialEnv?: NodeJS.ProcessEnv;
+  inferenceCoordinator?: ManagedInferenceCoordinator;
 }
 
 export interface SubmitEvalOptions {
@@ -88,13 +89,14 @@ export class EvalScheduler {
   private readonly environmentImages: EvalImageServices;
   private readonly remoteWork: RemoteWorkCoordinator | undefined;
   private readonly credentialEnv: NodeJS.ProcessEnv;
+  private readonly inferenceCoordinator: ManagedInferenceCoordinator | undefined;
   private queue: QueuedEval[] = [];
   private active = new Map<EvalId, ActiveEval>();
   private completions = new Map<EvalId, Promise<void>>();
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol, credentialEnv = process.env }: EvalSchedulerOptions) {
+  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol, credentialEnv = process.env, inferenceCoordinator }: EvalSchedulerOptions) {
     this.root = root;
     this.evalsRoot = statePaths(root).evals;
     this.resources = resources;
@@ -109,6 +111,7 @@ export class EvalScheduler {
     this.workItems = new WorkItemDispatcher({ resources, collisions });
     this.dockerResourceReaper = dockerResourceReaper;
     this.credentialEnv = credentialEnv;
+    this.inferenceCoordinator = inferenceCoordinator;
     this.environmentImages = new EvalImageServices({ root, provider, resources, onEvent: this.onEvent, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}) });
     this.remoteWork = remoteWorkers && remoteWorkerProtocol
       ? new RemoteWorkCoordinator({ root, registry: remoteWorkers, protocol: remoteWorkerProtocol, collisions })
@@ -135,6 +138,9 @@ export class EvalScheduler {
     if (!this.accepting) throw new HitchError("daemon is shutting down", { code: "daemon_shutting_down", exitCode: 12 });
     const normalized = await normalizeEvalSubmissionInput(input, { provider: this.provider, trialResources: this.trialResources });
     const remote = normalized.execution.provider !== this.provider;
+    if (remote && normalized.request.local_inference) {
+      throw new HitchError("local inference cannot be dispatched to a remote execution provider", { code: "local_inference_topology_unsupported", exitCode: 10 });
+    }
     assertExecutionPolicySupported(normalized.execution, remote ? normalized.execution.provider : this.provider);
     if (remote && !this.remoteWork) throw new HitchError(`execution provider is unavailable: ${normalized.execution.provider}`, { code: "execution_provider_unavailable", exitCode: 10 });
     if (remote && normalized.execution.build.mode !== "backend") throw new HitchError("remote worker image prebuild is not available yet", { code: "remote_build_mode_unsupported", exitCode: 10 });
@@ -421,6 +427,7 @@ export class EvalScheduler {
         workItemAdmission: workItemAdmission({ dispatcher: this.workItems, request: entry.request, collisionDomainId: this.collisionDomainId }),
       } : {}),
       ...(remote && this.remoteWork ? { remoteWorkExecutor: this.remoteWork.execute } : {}),
+      ...(!remote && this.inferenceCoordinator ? { inferenceCoordinator: this.inferenceCoordinator } : {}),
       precreated: true,
       resumeExisting: entry.resumeExisting,
       root: this.root,
@@ -487,14 +494,7 @@ export class EvalScheduler {
   }
 
   private async queuedEval(evalId: EvalId, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string, resumeExisting = false): Promise<QueuedEval> {
-    return schedulerQueuedEval({ evalId, request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}), directory, collisionDomainId: this.collisionDomainId, resumeExisting });
-  }
-
-  private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> {
-    return updateEvalControl(directory, update);
-  }
-
-  private async emitPersisted(directory: string, evalId: EvalId, event: Record<string, unknown>): Promise<void> {
-    return emitPersistedEvalEvent(directory, evalId, this.onEvent, event);
-  }
+    return schedulerQueuedEval({ evalId, request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}), directory, collisionDomainId: this.collisionDomainId, resumeExisting }); }
+  private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> { return updateEvalControl(directory, update); }
+  private async emitPersisted(directory: string, evalId: EvalId, event: Record<string, unknown>): Promise<void> { return emitPersistedEvalEvent(directory, evalId, this.onEvent, event); }
 }

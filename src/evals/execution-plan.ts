@@ -20,6 +20,7 @@ export interface BuildEvalExecutionPlanOptions {
   candidate: {
     revisionIdentity: string;
     artifactId: string;
+    inferenceId?: Sha256;
     artifactAssignments?: readonly EvalArtifactAssignmentInputV1[];
   };
   tasks: readonly string[] | null;
@@ -65,6 +66,7 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
       ? artifactAssignments.map((entry) => ({ task_ids: entry.taskIds, artifact_id: entry.artifactId, runtime_contract: entry.runtimeContract }))
       : [{ task_ids: tasks ?? [], artifact_id: options.candidate.artifactId }],
     requested_model: options.request.model,
+    ...(options.candidate.inferenceId ? { inference_id: options.candidate.inferenceId } : {}),
     agent_args_sha256: sha256JSON(options.request.agent_args),
     protocol: {
       timeout_ms: options.request.timeout_ms,

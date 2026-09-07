@@ -238,6 +238,7 @@ function persistedRequestInput(request: EvalRequest): EvalRequestInput {
     setup_timeout_ms: request.setup_timeout_ms,
     agent_args: request.agent_args,
     pass_env: request.pass_env,
+    ...(request.local_inference ? { local_inference: request.local_inference } : {}),
   };
 }
 

@@ -1,4 +1,4 @@
-import type { RunId, TrajectoryFidelity } from "../domain/index.js";
+import type { ManagedInferenceLeaseV1, ModelIdentityV1, RunId, TrajectoryFidelity } from "../domain/index.js";
 import { SCHEMA_VERSION } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 
@@ -42,6 +42,31 @@ export function providerModelId(event: Record<string, unknown>): string | undefi
     }
   }
   return undefined;
+}
+
+export function applyEffectiveModelIdentity(input: {
+  manifest: Record<string, unknown>;
+  requested: ModelIdentityV1;
+  result: Record<string, unknown>;
+  inferenceLease?: ManagedInferenceLeaseV1;
+  observed?: string;
+}): Record<string, unknown> {
+  const current = (input.manifest.model || input.requested) as ModelIdentityV1;
+  if (input.inferenceLease) {
+    const lease = input.inferenceLease;
+    input.result.effective_model = lease.lock.model_id;
+    return { ...input.manifest, model: {
+      ...current, provider: "local", effective_id: lease.lock.model_id, identity_resolved: true,
+      inference_id: lease.lock.inference_id,
+    } };
+  }
+  if (!input.observed) return input.manifest;
+  input.result.effective_model = input.observed;
+  return { ...input.manifest, model: {
+    ...current,
+    effective_id: input.observed,
+    identity_resolved: current.identity_resolved === true || /^sha256:[a-f0-9]{64}$/.test(input.observed),
+  } };
 }
 
 export function mergeRedactions(

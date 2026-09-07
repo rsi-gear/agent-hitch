@@ -2,11 +2,27 @@ import { fileURLToPath } from "node:url";
 import { DaemonServer, daemonClient, probeDaemonHealth, readDaemonLogs, startDetachedDaemon } from "../../daemon/index.js";
 import type { DaemonResourcePolicy } from "../../daemon/index.js";
 import { discoverAgents } from "../../adapters/index.js";
+import { localInferenceDaemonEnvironment } from "../../inference/index.js";
 import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger, runCommand } from "../../foundation/index.js";
 import { assertNoArgs, parseRunRequest, takeFlag, takeOption } from "../arguments.js";
 import { waitForDaemonRun } from "../output.js";
 
 const executable = fileURLToPath(new URL("../../../bin/hitch.js", import.meta.url));
+
+export async function ensureLocalInferenceDaemon(root: string): Promise<void> {
+  if ((await probeDaemonHealth(root))?.status === "running") return;
+  const env = await localInferenceDaemonEnvironment(root);
+  const resourcePolicy = await parseDaemonResourcePolicy([], DEFAULT_MAX_CONCURRENT, { env });
+  const child = await startDetachedDaemon({ root, executable, port: 0, maxConcurrent: DEFAULT_MAX_CONCURRENT, resourcePolicy });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await delay(100);
+    const current = await probeDaemonHealth(root);
+    if (current?.status === "running") return;
+  }
+  throw new HitchError(`local inference daemon did not become ready; see ${child.errorLog}`, {
+    code: "daemon_start_failed", exitCode: 12,
+  });
+}
 
 export async function daemonCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();

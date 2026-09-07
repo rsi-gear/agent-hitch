@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/inference-service-record.schema.json",
+  "title": "Hitch inference service record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "service_id", "inference_id", "isolation_key", "state", "epoch", "owner_id", "lease_owner_ids", "backend", "started_at", "updated_at"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "service_id": { "type": "string", "pattern": "^inference_[a-f0-9]{32}$" },
+    "inference_id": { "$ref": "#/$defs/sha256" },
+    "isolation_key": { "$ref": "#/$defs/sha256" },
+    "state": { "enum": ["starting", "ready", "draining", "stopped", "failed"] },
+    "epoch": { "type": "integer", "minimum": 1 },
+    "owner_id": { "type": "string", "minLength": 1 },
+    "lease_owner_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "backend": { "enum": ["cpu", "cuda", "metal"] },
+    "container_id": { "type": "string", "pattern": "^[a-f0-9]{12,64}$" },
+    "pid": { "type": "integer", "minimum": 1 },
+    "base_url": { "type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/?$" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "error": {
+      "type": "object", "additionalProperties": false, "required": ["code", "message"],
+      "properties": { "code": { "type": "string", "minLength": 1 }, "message": { "type": "string", "minLength": 1 } }
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } }
+}

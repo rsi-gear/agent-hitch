@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/local-inference-selection.schema.json",
+  "title": "Hitch local inference selection",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "model": { "type": "string", "pattern": "^local/(?:[a-z0-9][a-z0-9._-]{0,63}|sha256:[a-f0-9]{64})$" },
+    "device": { "enum": ["auto", "cpu", "cuda", "metal"], "default": "auto" },
+    "profile": { "enum": ["baseline", "throughput"], "default": "baseline" },
+    "offline": { "type": "boolean", "default": false },
+    "inference_id": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [{
+    "if": { "required": ["inference_id"] },
+    "then": { "not": { "anyOf": [{ "required": ["device"] }, { "required": ["profile"] }] } }
+  }],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

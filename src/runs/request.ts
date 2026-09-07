@@ -4,7 +4,7 @@ import type { AdapterRequest } from "../adapters/index.js";
 import { SCHEMA_VERSION, invalidInput } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { WORKSPACE_MODES } from "../workspaces/index.js";
-import type { EvalRunParentV1, ModelIdentityV1, ProtocolIdentityV1, RunContextV1, Sha256 } from "../domain/index.js";
+import type { EvalRunParentV1, LocalInferenceSelectionV1, ModelIdentityV1, ProtocolIdentityV1, RunContextV1, Sha256 } from "../domain/index.js";
 import { asBoolean, asOptionalString, asRecord, asSha256, asString, validateEvalRunParent, validateRunContext } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
 import { defaultModelIdentity } from "./identity.js";
@@ -27,6 +27,7 @@ export interface RunRequestInput {
   protocol_identity?: unknown;
   /** Internal eval handoff: the host verifier will seal the observation. */
   defer_benchmark_observation?: unknown;
+  local_inference?: unknown;
 }
 
 export interface ValidatedRunRequest extends AdapterRequest {
@@ -36,6 +37,7 @@ export interface ValidatedRunRequest extends AdapterRequest {
   protocol_identity: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256">;
   defer_benchmark_observation: boolean;
   credential_names: string[];
+  local_inference?: LocalInferenceSelectionV1;
 }
 
 export async function validateRunRequest(input: RunRequestInput): Promise<ValidatedRunRequest> {
@@ -44,7 +46,7 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
   }
   const allowedFields = new Set([
     "schema_version", "harness_ref", "agent", "model", "cwd", "workspace_mode", "prompt", "timeout_ms", "agent_args", "credential_names",
-    "context", "parent", "model_identity", "protocol_identity", "defer_benchmark_observation",
+    "context", "parent", "model_identity", "protocol_identity", "defer_benchmark_observation", "local_inference",
   ]);
   const unexpectedField = Object.keys(input).find((field) => !allowedFields.has(field));
   if (unexpectedField) throw invalidInput(`unknown run request field: ${unexpectedField}`);
@@ -115,10 +117,12 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
     throw invalidInput("defer_benchmark_observation is only valid for eval benchmark runs");
   }
   let modelIdentity: ModelIdentityV1;
+  let localInference: LocalInferenceSelectionV1 | undefined;
   let protocolIdentity: Pick<ProtocolIdentityV1, "environment_identity" | "tool_policy_sha256"> = {};
   try {
     modelIdentity = validateModelIdentity(input.model_identity, request.model, reference.harness_id, request.agent_args);
     protocolIdentity = validateProtocolIdentityInput(input.protocol_identity);
+    localInference = validateLocalInferenceSelection(input.local_inference, request.model);
   } catch (error) {
     throw invalidInput((error as Error).message, { cause: error });
   }
@@ -130,6 +134,35 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
     model_identity: modelIdentity,
     protocol_identity: protocolIdentity,
     defer_benchmark_observation: deferObservation,
+    ...(localInference ? { local_inference: localInference } : {}),
+  };
+}
+
+function validateLocalInferenceSelection(value: unknown, model: string): LocalInferenceSelectionV1 | undefined {
+  const localModel = model.startsWith("local/");
+  if (!localModel) {
+    if (value !== undefined) throw new TypeError("--device, --local-profile, --inference and --offline require a local/<name> model");
+    return undefined;
+  }
+  const record = value === undefined ? {} : asRecord(value, "local_inference");
+  const allowed = new Set(["model", "device", "profile", "inference_id", "offline"]);
+  const unexpected = Object.keys(record).find((field) => !allowed.has(field));
+  if (unexpected) throw new TypeError(`local_inference has unknown field: ${unexpected}`);
+  if (record.model !== undefined && record.model !== model) throw new TypeError("local_inference.model must match model");
+  if (record.inference_id !== undefined && (record.device !== undefined || record.profile !== undefined)) {
+    throw new TypeError("--inference cannot be combined with --device or --local-profile");
+  }
+  const device = record.device === undefined ? "auto" : asString(record.device, "local_inference.device");
+  if (!new Set(["auto", "cpu", "cuda", "metal"]).has(device)) throw new TypeError("local_inference.device must be auto, cpu, cuda, or metal");
+  const profile = record.profile === undefined ? "baseline" : asString(record.profile, "local_inference.profile");
+  if (profile !== "baseline" && profile !== "throughput") throw new TypeError("local_inference.profile must be baseline or throughput");
+  const offline = record.offline === undefined ? false : asBoolean(record.offline, "local_inference.offline");
+  return {
+    model,
+    device: device as LocalInferenceSelectionV1["device"],
+    profile,
+    offline,
+    ...(record.inference_id === undefined ? {} : { inference_id: asSha256(record.inference_id, "local_inference.inference_id") }),
   };
 }
 
@@ -139,7 +172,7 @@ function validateModelIdentity(value: unknown, requestedId: string, harnessId: s
     ...(derivedParameters ? { parametersSha256: derivedParameters } : {}),
   });
   const record = asRecord(value, "model_identity");
-  const allowed = new Set(["provider", "requested_id", "effective_id", "parameters_sha256", "identity_resolved"]);
+  const allowed = new Set(["provider", "requested_id", "effective_id", "parameters_sha256", "identity_resolved", "inference_id"]);
   const unexpected = Object.keys(record).find((field) => !allowed.has(field));
   if (unexpected) throw new TypeError(`model_identity has unknown field: ${unexpected}`);
   const declaredRequested = asString(record.requested_id ?? requestedId, "model_identity.requested_id");
@@ -150,12 +183,14 @@ function validateModelIdentity(value: unknown, requestedId: string, harnessId: s
   const parameters = record.parameters_sha256 === undefined
     ? derivedParameters
     : asSha256(record.parameters_sha256, "model_identity.parameters_sha256");
-  return defaultModelIdentity(requestedId, harnessId, {
+  const result = defaultModelIdentity(requestedId, harnessId, {
     ...(provider ? { provider } : {}),
     effectiveId: effective,
     ...(parameters ? { parametersSha256: parameters } : {}),
     ...(resolved !== undefined ? { resolved } : {}),
   });
+  if (record.inference_id !== undefined) result.inference_id = asSha256(record.inference_id, "model_identity.inference_id");
+  return result;
 }
 
 function modelParameterDigest(agentArgs: string[]): Sha256 | undefined {

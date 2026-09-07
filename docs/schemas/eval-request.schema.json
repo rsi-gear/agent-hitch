@@ -20,6 +20,7 @@
     "timeout_ms": { "type": "number", "minimum": 0 },
     "setup_timeout_ms": { "type": "number", "minimum": 0 },
     "agent_args": { "type": "array", "items": { "type": "string" } },
-    "pass_env": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+    "pass_env": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "local_inference": { "$ref": "local-inference-selection.schema.json" }
   }
 }

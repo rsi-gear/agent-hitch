@@ -237,6 +237,12 @@ async function restoreModelCaptureForRecovery(input: {
   const state = await loadEvalResumeState(input.evalDirectory);
   const plan = state.executionPlan.model_capture;
   if (!plan || plan.effective_mode !== "proxy" && plan.effective_mode !== "hybrid") return undefined;
+  const request = await readJSON<EvalRequest>(path.join(input.evalDirectory, "request.json"));
+  if (request.local_inference) {
+    // Daemon restart deliberately fences the old engine credential and SGLang
+    // process. An already-running Harbor candidate cannot be rebound safely.
+    throw ambiguous("managed local inference was fenced by daemon restart");
+  }
   if (!await readModelProxyRuntimeState(input.evalDirectory, input.evalId, plan)) {
     throw ambiguous("recoverable model proxy has no persisted endpoint identity");
   }

@@ -61,5 +61,18 @@ test("model-call rejects an untrusted executable and agent overrides", async () 
   await assert.rejects(async () => adapter.process(request,process.execPath,{entrypoint_integrity:"sha256:"+"0".repeat(64)}),/trusted implementation/);
   const integrity=sha256Bytes(await readFile(runner));
   assert.equal((await adapter.process(request,process.execPath,{entrypoint_integrity:integrity})).input,"{}");
+  const endpoint = {
+    kind: "managed-local" as const,
+    inference_id: `sha256:${"1".repeat(64)}` as const,
+    api: "responses" as const,
+    base_url: "http://host.docker.internal:4321/capability/run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/openai",
+    wire_model: "hitch-wire-model",
+    credential_env_name: "HITCH_LOCAL_MODEL_TOKEN" as const,
+    capabilities: { streaming: true, tool_calls: false, parallel_tool_calls: false, input_modalities: ["text"] as ["text"] },
+  };
+  const local = await adapter.process(request, process.execPath, {
+    entrypoint_integrity: integrity, model_endpoint: endpoint, model_endpoint_credential: "hitch-managed-local",
+  });
+  assert.equal(local.env?.HITCH_LOCAL_MAX_OUTPUT_TOKENS, undefined);
   await assert.rejects(async () => adapter.process({...request,agent_args:["--tools"]},process.execPath,{entrypoint_integrity:integrity}),/agent arguments/);
 });

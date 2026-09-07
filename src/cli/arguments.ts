@@ -19,6 +19,10 @@ export async function parseRunRequest(args: string[]): Promise<RunRequestInput> 
   const parentFile = takeOption(args, "--parent-file");
   const modelIdentityFile = takeOption(args, "--model-identity-file");
   const protocolIdentityFile = takeOption(args, "--protocol-identity-file");
+  const device = takeOption(args, "--device");
+  const localProfile = takeOption(args, "--local-profile");
+  const inferenceId = takeOption(args, "--inference");
+  const offline = takeFlag(args, "--offline");
   if (harness && agent) throw invalidInput("use only one of --harness and the legacy --agent option");
   if (!harness && !agent) throw invalidInput("--harness is required");
   if (!WORKSPACE_MODES.has(workspaceMode)) throw invalidInput(`--workspace-mode must be one of: ${[...WORKSPACE_MODES].join(", ")}`);
@@ -52,6 +56,14 @@ export async function parseRunRequest(args: string[]): Promise<RunRequestInput> 
     ...(parent !== undefined ? { parent } : {}),
     ...(modelIdentity !== undefined ? { model_identity: modelIdentity } : {}),
     ...(protocolIdentity !== undefined ? { protocol_identity: protocolIdentity } : {}),
+    ...(device !== undefined || localProfile !== undefined || inferenceId !== undefined || offline
+      ? { local_inference: {
+        ...(device !== undefined ? { device } : {}),
+        ...(localProfile !== undefined ? { profile: localProfile } : {}),
+        ...(inferenceId !== undefined ? { inference_id: inferenceId } : {}),
+        ...(offline ? { offline: true } : {}),
+      } }
+      : {}),
   };
 }
 
@@ -70,6 +82,10 @@ export function parseEvalRequest(args: string[], benchmark = false): Record<stri
   const setupTimeoutValue = takeOption(args, "--setup-timeout");
   const agentArgs = takeRepeatedOption(args, "--agent-arg");
   const passEnv = takeRepeatedOption(args, "--pass-env");
+  const device = takeOption(args, "--device");
+  const localProfile = takeOption(args, "--local-profile");
+  const inferenceId = takeOption(args, "--inference");
+  const offline = takeFlag(args, "--offline");
   if (!dataset && !benchmark) throw invalidInput("--dataset is required");
   if (!harness) throw invalidInput("--harness is required");
   return {
@@ -89,6 +105,14 @@ export function parseEvalRequest(args: string[], benchmark = false): Record<stri
     setup_timeout_ms: setupTimeoutValue === undefined ? undefined : parseDuration(setupTimeoutValue),
     agent_args: agentArgs,
     pass_env: passEnv,
+    ...(device !== undefined || localProfile !== undefined || inferenceId !== undefined || offline
+      ? { local_inference: {
+        ...(device !== undefined ? { device } : {}),
+        ...(localProfile !== undefined ? { profile: localProfile } : {}),
+        ...(inferenceId !== undefined ? { inference_id: inferenceId } : {}),
+        ...(offline ? { offline: true } : {}),
+      } }
+      : {}),
   };
 }
 

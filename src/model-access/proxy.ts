@@ -5,12 +5,13 @@ import { isIP } from "node:net";
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from "node:http";
 import { cp, rm } from "node:fs/promises";
 import path from "node:path";
-import type { InteractionCaptureRefV1, ModelProxyRouteV1 } from "../domain/index.js";
+import type { InteractionCaptureRefV1, ModelProxyRouteV1, Sha256 } from "../domain/index.js";
 import { ensureDir } from "../foundation/index.js";
 import { ModelInteractionCapture } from "./capture.js";
 import { loadInteractionCapture } from "./records.js";
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+const MAX_REWRITE_BYTES = 32 * 1024 * 1024;
 const HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]);
 const RUN_ID = /^run_[a-f0-9]{32}$/;
 type Provider = "openai" | "anthropic";
@@ -21,6 +22,11 @@ export interface HostModelProxyOptions {
   mode: "proxy" | "hybrid";
   required: boolean;
   upstreams?: Partial<Record<Provider, string>>;
+  /** Private controller-to-upstream credentials. They are injected after capture and never exposed in the Harbor route. */
+  upstreamAuthorizations?: Partial<Record<Provider, string>>;
+  /** Replaces the caller-facing model name with the exact model alias accepted by a managed upstream. */
+  upstreamWireModels?: Partial<Record<Provider, string>>;
+  credentialValues?: readonly string[];
   env?: NodeJS.ProcessEnv;
   bindHost?: string;
   advertisedHost?: string;
@@ -28,6 +34,7 @@ export interface HostModelProxyOptions {
   capabilityToken?: string;
   resumeExisting?: boolean;
   topology?: "host-side" | "in-sandbox";
+  managedInferenceIdentity?: { inference_id: Sha256; model_id: Sha256 };
 }
 
 export interface HostModelProxyRuntimeIdentity {
@@ -51,6 +58,8 @@ export class HostModelProxy {
   private readonly mode: "proxy" | "hybrid";
   private readonly required: boolean;
   private readonly upstreams: Record<Provider, URL>;
+  private readonly upstreamAuthorizations: Partial<Record<Provider, string>>;
+  private readonly upstreamWireModels: Partial<Record<Provider, string>>;
   private readonly credentials: string[];
   private readonly token: string;
   private readonly port: number;
@@ -71,7 +80,13 @@ export class HostModelProxy {
       openai: modelUpstream(input.upstreams?.openai ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"),
       anthropic: modelUpstream(input.upstreams?.anthropic ?? env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com"),
     };
-    this.credentials = credentialValues(env);
+    this.upstreamAuthorizations = { ...input.upstreamAuthorizations };
+    this.upstreamWireModels = { ...input.upstreamWireModels };
+    this.credentials = [...new Set([
+      ...credentialValues(env),
+      ...(input.credentialValues ?? []),
+      ...Object.values(this.upstreamAuthorizations).filter((value): value is string => typeof value === "string"),
+    ])];
     const advertised = input.advertisedHost ?? "host.docker.internal";
     this.localBaseUrl = `http://127.0.0.1:${port}/${token}`;
     const base = `http://${hostForUrl(advertised)}:${port}/${token}/{run_id}`;
@@ -82,6 +97,7 @@ export class HostModelProxy {
       topology: input.topology ?? "host-side",
       base_url_template: `${base}/{provider}`,
       health_url_template: `${base}/health`,
+      ...(input.managedInferenceIdentity ? { managed_inference: { ...input.managedInferenceIdentity } } : {}),
     };
   }
 
@@ -147,13 +163,22 @@ export class HostModelProxy {
     upstream.pathname = joinUrlPath(upstream.pathname, tail);
     upstream.search = request.url?.includes("?") ? `?${request.url.split("?").slice(1).join("?")}` : "";
     const startedAt = new Date().toISOString();
-    const requestCapture = captureStream(request);
+    const wireModel = this.upstreamWireModels[provider];
+    const rewritten = wireModel ? rewriteModelRequest(await readBoundedRequest(request), request.headers["content-type"], wireModel) : undefined;
+    const requestCapture = rewritten
+      ? Promise.resolve({ body: rewritten.original, truncated: false })
+      : captureStream(request);
     const transport = upstream.protocol === "https:" ? https : http;
+    const headers = forwardedHeaders(request.headers, upstream);
+    const authorization = this.upstreamAuthorizations[provider];
+    if (authorization) headers.authorization = authorization;
+    if (rewritten) headers["content-length"] = String(rewritten.forwarded.length);
     const upstreamRequest = transport.request(upstream, {
       method: request.method,
-      headers: forwardedHeaders(request.headers, upstream),
+      headers,
     });
-    request.pipe(upstreamRequest);
+    if (rewritten) upstreamRequest.end(rewritten.forwarded);
+    else request.pipe(upstreamRequest);
     await new Promise<void>((resolve, reject) => {
       upstreamRequest.once("response", (upstreamResponse) => {
         response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders(upstreamResponse.headers));
@@ -222,6 +247,33 @@ export class HostModelProxy {
     }
     return pending;
   }
+}
+
+async function readBoundedRequest(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_REWRITE_BYTES) throw new Error("managed model request exceeds 32 MiB");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function rewriteModelRequest(
+  original: Buffer,
+  contentType: string | string[] | undefined,
+  wireModel: string,
+): { original: Buffer; forwarded: Buffer } {
+  const type = Array.isArray(contentType) ? contentType[0] : contentType;
+  if (!type?.toLowerCase().includes("json")) throw new Error("managed model request must use JSON");
+  let value: unknown;
+  try { value = JSON.parse(original.toString("utf8")); }
+  catch { throw new Error("managed model request must contain valid JSON"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("managed model request must be a JSON object");
+  const forwarded = Buffer.from(JSON.stringify({ ...(value as Record<string, unknown>), model: wireModel }));
+  return { original, forwarded };
 }
 
 type ParsedRoute = { runId: string; kind: "health" } | { runId: string; kind: "provider"; provider: Provider; tail: string };

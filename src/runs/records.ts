@@ -108,6 +108,8 @@ function projectModelIdentity(manifest: Record<string, unknown>, harnessId: stri
   if (typeof provider === "string" && provider) model.provider = provider;
   const parameters = nested?.parameters_sha256 ?? manifest.parameters_sha256;
   if (parameters !== undefined && parameters !== null) model.parameters_sha256 = asSha256(parameters, "parameters_sha256");
+  const inferenceId = nested?.inference_id ?? manifest.inference_id;
+  if (inferenceId !== undefined && inferenceId !== null) model.inference_id = asSha256(inferenceId, "inference_id");
   const resolved = nested?.identity_resolved ?? manifest.model_identity_resolved;
   model.identity_resolved = resolved === true;
   return model;
