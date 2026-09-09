@@ -242,12 +242,15 @@ export async function writeFakeHarbor(directory: string, {
   postResultDelayMs = 0,
   activityLog,
   leakEnvName,
+  pythonBytecodeLog,
   pythonPathLog,
 }: {
   delayMs?: number;
   candidateStartDelayMs?: number;
   postResultDelayMs?: number;
   activityLog?: string;
+  /** Test-only: persist the inherited bytecode-write setting. */
+  pythonBytecodeLog?: string;
   /** Test-only: persist the inherited PYTHONPATH used to import Harbor plugins. */
   pythonPathLog?: string;
   /** Test-only: print one inherited value so callers can verify host log redaction. */
@@ -270,6 +273,8 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
 const pythonPathLog = ${pythonPathLog === undefined ? "null" : JSON.stringify(pythonPathLog)};
 if (pythonPathLog) fs.writeFileSync(pythonPathLog, process.env.PYTHONPATH || "");
+const pythonBytecodeLog = ${pythonBytecodeLog === undefined ? "null" : JSON.stringify(pythonBytecodeLog)};
+if (pythonBytecodeLog) fs.writeFileSync(pythonBytecodeLog, process.env.PYTHONDONTWRITEBYTECODE || "");
 const leakEnvName = ${leakEnvName === undefined ? "null" : JSON.stringify(leakEnvName)};
 if (leakEnvName) {
   process.stdout.write("inherited=" + (process.env[leakEnvName] || "") + "\\n");
