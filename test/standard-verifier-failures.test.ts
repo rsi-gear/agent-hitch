@@ -174,23 +174,28 @@ for (const score of [-1, 0, 1, 2]) test(`verifier-only regrade enforces the froz
   // Exercise real regrade orchestration; only the external Harbor/Docker commands
   // are replaced. The candidate result and sealed run remain authoritative.
   const harbor = path.join(input.root, "fake-harbor.mjs"), docker = path.join(input.root, "fake-docker.mjs");
+  const environmentLog = path.join(input.root, "regrade-environment.json");
   await writeFile(docker, "#!/usr/bin/env node\n");
   await writeFile(harbor, `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 if (process.argv.includes('--version')) { console.log('harbor 0.21.0'); process.exit(0); }
+writeFileSync(${JSON.stringify(environmentLog)}, JSON.stringify({
+  pythonPath: process.env.PYTHONPATH, dontWriteBytecode: process.env.PYTHONDONTWRITEBYTECODE,
+}));
 const config = JSON.parse(readFileSync(process.argv[process.argv.indexOf('--config') + 1], 'utf8'));
 const source = JSON.parse(readFileSync(path.join(config.source_trial.path, 'result.json'), 'utf8'));
 writeFileSync(path.join(config.trials_dir, config.trial_name, 'result.json'), JSON.stringify({ ...source,
   trial_name: config.trial_name, verifier_result: { rewards: { reward: ${score}, total_score: ${score} } } }));
 `);
   await chmod(harbor, 0o755); await chmod(docker, 0o755);
+  const regradeEnv = { ...process.env, HITCH_DOCKER_PATH: docker, PYTHONPATH: "parent-python-path", PYTHONDONTWRITEBYTECODE: "" };
   const rerunId = `rerun_${"f".repeat(32)}`;
   const rerun = verifierOnlyEvalRerun({ ...input, progress, previousResult: null, rerunId,
     rerunDirectory: path.join(input.evalDirectory, "reruns", rerunId), startedAt: timestamp,
     selector: { mode: "invalid" }, selectedTrials: [{ task_id: taskId, attempt: 1 }],
     plan: { tasks: [taskId], attempts: 1, controllerRuntime: { runtime_id: runtime.runtime_id, manifest_digest: runtime.manifest_digest } },
-    harborExecutable: harbor, env: { ...process.env, HITCH_DOCKER_PATH: docker } });
+    harborExecutable: harbor, env: regradeEnv });
   if (score === -1 || score === 2) {
     await assert.rejects(rerun, { code: "eval_verifier_only_unavailable", message: "regraded standardized score contract is invalid" });
     assert.deepEqual(await readJSON(path.join(input.evalDirectory, "progress.json")), progress);
@@ -200,6 +205,12 @@ writeFileSync(path.join(config.trials_dir, config.trial_name, 'result.json'), JS
     assert.equal(repaired.trials[0]!.reward, score);
     assert.equal(repaired.trials[0]!.run_id, runId);
   }
+  assert.deepEqual(await readJSON(environmentLog), {
+    pythonPath: [path.join(runtime.directory, "payload", "integrations", "harbor"), "parent-python-path"].join(path.delimiter),
+    dontWriteBytecode: "1",
+  });
+  assert.equal(regradeEnv.PYTHONDONTWRITEBYTECODE, "");
+  assert.equal(regradeEnv.PYTHONPATH, "parent-python-path");
   assert.deepEqual(await readFile(path.join(input.root, "runs", runId, "manifest.json")), originalManifest);
 });
 

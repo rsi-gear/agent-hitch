@@ -542,8 +542,9 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-"));
   t.after(() => forceRemove(root));
   const fakeNpm = await writeFakeNpm(root);
+  const pythonBytecodeLog = path.join(root, "harbor-python-bytecode.txt");
   const pythonPathLog = path.join(root, "harbor-python-path.txt");
-  const fakeHarbor = await writeFakeHarbor(root, { leakEnvName: "OPENAI_API_KEY", pythonPathLog });
+  const fakeHarbor = await writeFakeHarbor(root, { leakEnvName: "OPENAI_API_KEY", pythonBytecodeLog, pythonPathLog });
   const evalId = newEvalId();
   const env = {
     ...process.env,
@@ -551,6 +552,8 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
     HITCH_HARBOR_BUILDER_PLATFORM: "linux/arm64",
     DEEPSEEK_API_KEY: "deepseek-must-not-be-written",
     OPENAI_API_KEY: "must-not-be-written",
+    PYTHONDONTWRITEBYTECODE: "",
+    PYTHONPATH: "parent-python-path",
   };
   let plannedRuntimeContract: HarborTrialRuntimeContract | undefined;
   const result = await runEvalProduction({
@@ -648,7 +651,10 @@ test("Harbor eval writes a custom Hitch agent job and normalizes rewards", async
     "integrations",
     "harbor",
   );
-  assert.equal((await readFile(pythonPathLog, "utf8")).split(path.delimiter)[0], frozenBridgeDirectory);
+  assert.deepEqual((await readFile(pythonPathLog, "utf8")).split(path.delimiter), [frozenBridgeDirectory, "parent-python-path"]);
+  assert.equal(await readFile(pythonBytecodeLog, "utf8"), "1");
+  assert.equal(env.PYTHONDONTWRITEBYTECODE, "");
+  assert.equal(env.PYTHONPATH, "parent-python-path");
   assert.ok((await stat(path.join(frozenBridgeDirectory, "hitch_harbor_agent.py"))).isFile());
   await assert.rejects(stat(path.join(directory, "runtime", "bin", "hitch.js")));
 
