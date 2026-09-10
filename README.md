@@ -219,6 +219,7 @@ run the real NVIDIA gate through the manually dispatched
 - [Daemon design](docs/daemon.md)
 - [Hitch 0.2 development spec](docs/hitch-0.2-development-spec.md)
 - [Release process](docs/releasing.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Project status
 
