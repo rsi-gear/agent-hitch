@@ -1059,6 +1059,8 @@ class HitchHarborAgent(BaseAgent):
                 "attempt": attempt,
                 "assigned_run_id": run_id,
             }
+            if context.metadata is None:
+                context.metadata = {}
             context.metadata["hitch_bridge_error_code"] = error.code
             context.metadata["hitch_bridge_error_artifact"] = "hitch-bridge-error.json"
             try:

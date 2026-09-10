@@ -173,12 +173,17 @@ async def main(bridge_path: Path, runtime: Path, logs: Path, artifact_dir: Path,
     original_credential = os.environ.get(CREDENTIAL_NAME)
     os.environ[CREDENTIAL_NAME] = STALE_ACCESS
 
-    def configure(mode: str, *, argv: list[str] | None = None) -> None:
+    def configure(
+        mode: str,
+        *,
+        argv: list[str] | None = None,
+        timeout_ms: int = 5_000,
+    ) -> None:
         os.environ["HITCH_HOST_CREDENTIAL_HELPER_JSON"] = json.dumps({
             "version": 1,
             "argv": argv or [sys.executable, str(helper), "--helper", mode],
             "credentialNames": [CREDENTIAL_NAME],
-            "timeoutMs": 5_000,
+            "timeoutMs": timeout_ms,
         })
 
     def make(
@@ -190,6 +195,7 @@ async def main(bridge_path: Path, runtime: Path, logs: Path, artifact_dir: Path,
         task_config: dict | None = None,
         trial_config: dict | None = None,
         upload_delay_sec: float = 0,
+        context_metadata: dict | None = None,
     ):
         agent_logs, environment_dir, trial_config_path = write_trial(
             logs,
@@ -208,6 +214,7 @@ async def main(bridge_path: Path, runtime: Path, logs: Path, artifact_dir: Path,
             default_workdir="/workspace",
         )
         context = AgentContext()
+        context.metadata = context_metadata
         agent = bridge.HitchHarborAgent(
             logs_dir=agent_logs,
             harness_ref=harness_ref,
@@ -450,23 +457,74 @@ async def main(bridge_path: Path, runtime: Path, logs: Path, artifact_dir: Path,
         assert not unavailable_request.exists()
         assert not unavailable_environment.private_calls
 
-        configure("failure")
-        failed = make("task-a", 2, "task-a__attempt-2-helper-failed")
-        failed_agent, failed_environment, failed_context = failed
-        await failed_agent.setup(failed_environment)
-        try:
-            await failed_agent.run("do the task", failed_environment, failed_context)
-        except bridge.HitchBridgeError as error:
-            assert error.code == "host_credential_helper_failed"
-            diagnostic = f"{error} {error.evidence!r} {failed_context.metadata!r}"
-            assert HELPER_ERROR_SECRET not in diagnostic
-        else:
-            raise AssertionError("helper failure unexpectedly launched the Target")
-        assert not failed_environment.private_calls
-        assert len(failed_environment.bridge_errors) == 1
-        assert failed_environment.bridge_errors[0]["code"] == "host_credential_helper_failed"
-        assert HELPER_ERROR_SECRET not in json.dumps(failed_environment.bridge_errors)
-        assert os.environ[CREDENTIAL_NAME] == STALE_ACCESS
+        assert unavailable_context.metadata == {
+            "hitch_bridge_error_code": "host_credential_helper_request_invalid",
+            "hitch_bridge_error_artifact": "hitch-bridge-error.json",
+        }
+        assert len(unavailable_environment.bridge_errors) == 1
+        assert unavailable_environment.bridge_errors[0]["code"] == "host_credential_helper_request_invalid"
+
+        helper_failures = [
+            (
+                "missing-executable",
+                "success",
+                [str(logs / "missing-host-credential-helper")],
+                5_000,
+                "host_credential_helper_unavailable",
+                None,
+            ),
+            (
+                "nonzero-exit",
+                "failure",
+                None,
+                5_000,
+                "host_credential_helper_failed",
+                None,
+            ),
+            (
+                "existing-metadata",
+                "failure",
+                None,
+                5_000,
+                "host_credential_helper_failed",
+                {"existing": "kept"},
+            ),
+            (
+                "timeout",
+                "timeout",
+                None,
+                500,
+                "host_credential_helper_timed_out",
+                None,
+            ),
+        ]
+        for case, mode, argv, timeout_ms, expected_code, existing_metadata in helper_failures:
+            configure(mode, argv=argv, timeout_ms=timeout_ms)
+            failed = make(
+                f"task-{case}",
+                2,
+                f"task-{case}__attempt-2",
+                context_metadata=existing_metadata,
+            )
+            failed_agent, failed_environment, failed_context = failed
+            await failed_agent.setup(failed_environment)
+            try:
+                await failed_agent.run("do the task", failed_environment, failed_context)
+            except bridge.HitchBridgeError as error:
+                assert error.code == expected_code
+                diagnostic = f"{error} {error.evidence!r} {failed_context.metadata!r}"
+                assert HELPER_ERROR_SECRET not in diagnostic
+            else:
+                raise AssertionError(f"{case} unexpectedly launched the Target")
+            assert failed_context.metadata["hitch_bridge_error_code"] == expected_code
+            assert failed_context.metadata["hitch_bridge_error_artifact"] == "hitch-bridge-error.json"
+            if existing_metadata is not None:
+                assert failed_context.metadata["existing"] == "kept"
+            assert not failed_environment.private_calls
+            assert len(failed_environment.bridge_errors) == 1
+            assert failed_environment.bridge_errors[0]["code"] == expected_code
+            assert HELPER_ERROR_SECRET not in json.dumps(failed_environment.bridge_errors)
+            assert os.environ[CREDENTIAL_NAME] == STALE_ACCESS
 
         for file in logs.rglob("*"):
             if not file.is_file():
