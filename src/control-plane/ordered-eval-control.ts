@@ -69,6 +69,8 @@ export async function orderedEvalControl(root: string, value: unknown, evals: Ev
           || index && index.eval_id !== evalId) fail("eval control identity changed", "eval_control_conflict");
         if (command.sequence < record.sequence) fail("a newer eval command fences this request", "eval_control_stale");
         if (command.sequence === record.sequence && command.action !== record.action) fail("eval control sequence cannot change meaning", "eval_control_conflict");
+        // A newer start cannot erase a pause whose scheduler writes were interrupted.
+        if (record.action === "pause" && command.action === "start") await applyPause(file, record, !!index, evals, reruns);
       }
       record = { schema_version: "2", key_hash: keyHash, subject_digest: command.subject_digest, eval_id: evalId,
         sequence: command.sequence, action: command.action, reruns: record?.reruns ?? {} };
@@ -93,10 +95,7 @@ export async function orderedEvalControl(root: string, value: unknown, evals: Ev
         accepted = { rerun_id: result.rerunId, rerun_type: result.rerunType };
       }
       if (command.action === "pause") {
-        for (const value of Object.values(record.reruns)) value.cancelled_by ??= command.sequence;
-        await atomicWriteJSON(file, record);
-        if (index) await evals.cancel(evalId);
-        for (const id of Object.keys(record.reruns)) await reruns.cancel(evalId, id);
+        await applyPause(file, record, !!index, evals, reruns);
       }
       let pendingReruns = false;
       for (const id of Object.keys(record.reruns)) {
@@ -107,6 +106,34 @@ export async function orderedEvalControl(root: string, value: unknown, evals: Ev
         action: command.action, submitted: !!index, pending_reruns: pendingReruns, ...accepted };
     });
   }, { timeoutCode: "idempotency_locked", timeoutExitCode: 12 });
+}
+
+async function applyPause(file: string, record: CommandRecord, submitted: boolean, evals: EvalScheduler, reruns: EvalRerunScheduler): Promise<void> {
+  for (const value of Object.values(record.reruns)) value.cancelled_by ??= record.sequence;
+  await atomicWriteJSON(file, record);
+  if (submitted) await evals.cancel(record.eval_id);
+  for (const id of Object.keys(record.reruns)) await reruns.cancel(record.eval_id, id);
+}
+
+/** Consult the durable intent before recovery can enqueue or resume execution. */
+export async function orderedEvalCancelled(root: string, evalIdValue: string, rerunId?: string): Promise<boolean> {
+  const evalId = validateEvalId(evalIdValue);
+  const binding = await readJSON<{ key_hash: string } | null>(bindingPath(root, evalId), null);
+  const submission = await readJSON<{ idempotency_key_hash?: string } | null>(path.join(statePaths(root).evals, evalId, "submission.json"), null);
+  const hash = binding?.key_hash ?? submission?.idempotency_key_hash;
+  if (!hash) return false;
+  if (!/^sha256:[a-f0-9]{64}$/.test(hash)) fail("eval control key is invalid", "eval_control_conflict");
+  const record = await readJSON<CommandRecord | null>(evalCommandPath(root, hash), null);
+  if (!record) {
+    if (binding) fail("eval control intent is missing", "eval_control_conflict");
+    return false;
+  }
+  if (record.schema_version !== "2" || record.key_hash !== hash || record.eval_id !== evalId
+    || !["start", "pause"].includes(record.action) || !record.reruns || typeof record.reruns !== "object" || Array.isArray(record.reruns)) {
+    fail("eval control recovery identity changed", "eval_control_conflict");
+  }
+  return rerunId ? !!record.reruns[rerunId] && (record.action === "pause" || record.reruns[rerunId]!.cancelled_by !== undefined)
+    : record.action === "pause";
 }
 
 /** Old daemon requests cannot mutate an eval after ordered control adopts it. */

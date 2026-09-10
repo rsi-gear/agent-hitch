@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -13,6 +14,9 @@ import type { EvalId } from "../src/domain/index.js";
 import type { RunEvalOptions } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, sha256JSON } from "../src/foundation/index.js";
+import { recoverPersistedEvals } from "../src/control-plane/eval-recovery.js";
+import { recoverPersistedReruns } from "../src/control-plane/rerun-recovery.js";
+import { evalRerunSemantics } from "../src/evals/index.js";
 
 const resources = { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 };
 const subject = sha256JSON("frozen Gear evaluation");
@@ -77,6 +81,80 @@ test("an uncancelled pending repair can be observed under a newer start without 
   const rerun = { eval_id: first.eval_id as string, input: { rerun_id: `rerun_${"d".repeat(32)}`, rerun_type: "candidate-restart", selector: { mode: "invalid" } } };
   const old = await s.call({ ...command(0, "start"), rerun });
   assert.equal((await s.call({ ...command(1, "start"), rerun })).rerun_id, old.rerun_id);
+});
+
+test("recovery honors a durable pause interrupted before queued eval cancellation", async t => {
+  const s = await fixture(t), first = await s.call({ ...command(0, "start"), submission });
+  const cancel = s.evals.cancel.bind(s.evals);
+  s.evals.cancel = async () => { throw new Error("crash after durable pause"); };
+  try { await assert.rejects(s.call(command(1, "pause")), /crash after durable pause/); }
+  finally { s.evals.cancel = cancel; }
+  const recovered = await recoverPersistedEvals({ root: s.root, evalsRoot: path.join(s.root, "evals") });
+  assert.deepEqual(recovered, [], "a paused eval must not enter the recovered execution queue");
+  assert.equal((await s.evals.status(first.eval_id as string))?.control.state, "cancelled");
+});
+
+test("a newer start finishes an interrupted pause before replacing its intent", async t => {
+  const s = await fixture(t), first = await s.call({ ...command(0, "start"), submission });
+  const cancel = s.evals.cancel.bind(s.evals);
+  s.evals.cancel = async () => { throw new Error("crash after durable pause"); };
+  try {
+    await assert.rejects(s.call(command(1, "pause")), /crash after durable pause/);
+    await assert.rejects(s.call(command(2, "start")), /crash after durable pause/);
+  } finally { s.evals.cancel = cancel; }
+  await s.call(command(2, "start"));
+  assert.equal((await s.evals.status(first.eval_id as string))?.control.state, "cancelled");
+});
+
+test("a crash during reserved eval persistence leaves the same ordered identity retryable", async t => {
+  const s = await fixture(t), first = await s.call(command(0, "start"));
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    import fs from "node:fs/promises";
+    import { syncBuiltinESMExports } from "node:module";
+    import { persistEvalSubmission } from ${JSON.stringify(new URL("../src/control-plane/eval-submission-persist.js", import.meta.url).href)};
+    import { normalizeEvalSubmissionInput } from ${JSON.stringify(new URL("../src/control-plane/eval-records.js", import.meta.url).href)};
+    import { sha256JSON, sha256Bytes } from ${JSON.stringify(new URL("../src/foundation/index.js", import.meta.url).href)};
+    const { request, execution } = await normalizeEvalSubmissionInput(${JSON.stringify(submission)}, { provider: "local-docker", trialResources: ${JSON.stringify(resources)} });
+    const rename = fs.rename;
+    fs.rename = async (from, to) => {
+      await rename(from, to);
+      if (to.endsWith("/request.json")) { process.kill(process.pid, "SIGKILL"); await new Promise(() => {}); }
+    };
+    syncBuiltinESMExports();
+    await persistEvalSubmission({ evalsRoot: ${JSON.stringify(path.join(s.root, "evals"))}, request, execution,
+      reservedEvalId: ${JSON.stringify(first.eval_id)}, keyHash: sha256Bytes(${JSON.stringify(command(0, "start").key)}),
+      submissionDigest: sha256JSON({ request, execution }), modelCapturePlan: {},
+      emit: async () => {} });
+  `], { stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = ""; child.stderr.on("data", chunk => stderr += chunk);
+  const [, signal] = await once(child, "close"); assert.equal(signal, "SIGKILL", stderr);
+  assert.deepEqual(await recoverPersistedEvals({ root: s.root, evalsRoot: path.join(s.root, "evals") }), []);
+  const admitted = await s.call({ ...command(0, "start"), submission });
+  assert.equal(admitted.eval_id, first.eval_id); assert.equal(admitted.submitted, true);
+  assert.equal((await readdir(path.join(s.root, "evals"))).filter(name => name.startsWith("eval_")).length, 1);
+});
+
+for (const resumed of [false, true]) test(`recovery honors an interrupted rerun pause${resumed ? " after a newer start" : ""}`, async t => {
+  const s = await fixture(t), first = await s.call({ ...command(0, "start"), submission });
+  const evalId = first.eval_id as EvalId, rerunId = `rerun_${"e".repeat(32)}`;
+  const rerun = { eval_id: evalId, input: { rerun_id: rerunId, rerun_type: "candidate-restart", selector: { mode: "invalid" } } };
+  await s.call({ ...command(0, "start"), rerun });
+  const directory = path.join(s.root, "evals", evalId, "reruns", rerunId);
+  const identity = { schema_version: "1", eval_id: evalId, rerun_id: rerunId, rerun_type: "candidate-restart" };
+  await atomicWriteJSON(path.join(directory, "submission.json"), { ...identity, selector: { mode: "invalid" },
+    semantics: evalRerunSemantics("candidate-restart"), submitted_at: new Date().toISOString() });
+  await atomicWriteJSON(path.join(directory, "state.json"), { ...identity, status: "queued" });
+  const cancel = s.evals.cancel.bind(s.evals);
+  s.evals.cancel = async () => { throw new Error("crash after durable pause"); };
+  try { await assert.rejects(s.call(command(1, "pause")), /crash after durable pause/); }
+  finally { s.evals.cancel = cancel; }
+  if (resumed) await s.call(command(2, "start"));
+  await recoverPersistedReruns({ root: s.root, rerunsRoot: path.join(s.root, "evals"), localProvider: "local-docker",
+    loadSource: async () => { throw new Error("a paused queued rerun must not restore execution"); },
+    enqueue: async () => assert.fail("a paused rerun must not execute"),
+    fail: async (_identity, _code, message) => assert.fail(message),
+    complete: async () => assert.fail("queued work has no completion"), onEvent: () => {} });
+  assert.equal(JSON.parse(await readFile(path.join(directory, "state.json"), "utf8")).status, "cancelled");
 });
 
 test("public CLI and authenticated daemon persist cold pause across restart and reject old submit", async t => {

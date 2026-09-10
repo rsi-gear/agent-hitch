@@ -31,12 +31,13 @@ const cancel = () => { abort.abort(); killTool(); };
 process.once('SIGTERM', cancel); process.once('SIGINT', cancel);
 emit({ type: 'session.created', session_id: randomUUID(), policy_version: binding?.policy_version });
 for (let step = 0; step < maxSteps; step++) {
+  abort.signal.throwIfAborted();
   const response = await fetch(new URL('chat/completions', base), {
     method: 'POST', redirect: 'error', headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json', 'Idempotency-Key': `${runId}-${step}` },
     body: JSON.stringify({ model: args[1], messages, tools, stream: false, max_tokens: maxTokens }), signal: abort.signal,
   });
   if (!response.ok) throw new Error(`training gateway returned HTTP ${response.status}`);
-  const body = await response.json(); const choice = body.choices?.[0];
+  const body = await response.json(); abort.signal.throwIfAborted(); const choice = body.choices?.[0];
   if (!choice?.message || body.choices.length !== 1) throw new Error('invalid completion');
   emit({ type: 'provider.response', response: body, receipt_id: response.headers.get('x-gear-receipt-id') });
   emit({ type: 'usage.updated', usage: body.usage || {} });
@@ -49,6 +50,7 @@ for (let step = 0; step < maxSteps; step++) {
   }
   if (choice.finish_reason !== 'tool_calls') throw new Error('missing tool terminal state');
   for (const call of calls) {
+    abort.signal.throwIfAborted();
     if (call.function?.name !== 'bash' || typeof call.id !== 'string') throw new Error('unsupported tool');
     const input = JSON.parse(call.function.arguments);
     if (typeof input.command !== 'string' || Object.keys(input).join(',') !== 'command') throw new Error('invalid bash arguments');
@@ -64,6 +66,7 @@ for (let step = 0; step < maxSteps; step++) {
     });
     messages.push({ role: 'tool', tool_call_id: call.id, content: result });
     emit({ type: 'tool.completed', call_id: call.id, output: result });
+    abort.signal.throwIfAborted();
   }
   if (step === maxSteps - 1) { emit({ type: 'training.terminated', termination: 'truncated' }); process.exitCode = 8; }
 }

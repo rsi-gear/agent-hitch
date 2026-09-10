@@ -437,7 +437,7 @@ export class EvalRerunScheduler {
   }
 
   private async recoverInterrupted(): Promise<void> {
-    await recoverPersistedReruns({ rerunsRoot: this.rerunsRoot, localProvider: this.provider,
+    await recoverPersistedReruns({ root: this.root, rerunsRoot: this.rerunsRoot, localProvider: this.provider,
       ...(this.remoteWork ? { remoteWork: this.remoteWork } : {}),
       loadSource: (evalId, type) => this.loadSource(evalId, type), onEvent: this.onEvent,
       fail: (identity, code, message) => this.fail(identity, code, message),

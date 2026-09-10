@@ -8,12 +8,13 @@ import { parsePersistedSubmission } from "./rerun-submission.js";
 import type { ParsedRerunInput } from "./rerun-submission.js";
 import type { loadRerunSource } from "./rerun-source.js";
 import type { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
+import { orderedEvalCancelled } from "./ordered-eval-control.js";
 
 type Identity = { evalId: EvalId; rerunId: string; rerunType: EvalRerunType; directory: string };
 type Source = Awaited<ReturnType<typeof loadRerunSource>>;
 
 export async function recoverPersistedReruns(input: {
-  rerunsRoot: string; localProvider: string; remoteWork?: RemoteWorkCoordinator;
+  root: string; rerunsRoot: string; localProvider: string; remoteWork?: RemoteWorkCoordinator;
   loadSource(evalId: EvalId, type: EvalRerunType): Promise<Source>;
   enqueue(identity: Identity, parsed: ParsedRerunInput, source: Source, resume: boolean): Promise<void>;
   fail(identity: Identity, code: string, message: string): Promise<void>;
@@ -37,8 +38,10 @@ export async function recoverPersistedReruns(input: {
       const parsed = parsePersistedSubmission(submission, evalId, entry.name);
       assertRerunStateIdentity(state, evalId, entry.name);
       const identity = { evalId, rerunId: entry.name, rerunType: parsed.rerun_type, directory };
-      const cancelled = !!await readJSON(path.join(directory, "cancellation.json"), null);
       try {
+        const cancelled = !!await readJSON(path.join(directory, "cancellation.json"), null)
+          || await orderedEvalCancelled(input.root, evalId, entry.name);
+        if (cancelled) await atomicWriteJSON(path.join(directory, "cancellation.json"), { schema_version: "1", eval_id: evalId, rerun_id: entry.name });
         const pending = await readRemoteRerunCompletion(directory, evalId, entry.name);
         if (pending && ["running", "completed"].includes(String(state.status))) {
           if (!["candidate-restart", "verifier-only"].includes(parsed.rerun_type)) throw ambiguous();

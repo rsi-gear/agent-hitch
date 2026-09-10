@@ -98,3 +98,32 @@ test("fixed training harness appends tool observations and emits a single termin
   const events = output.trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(events.filter(e => e.type === 'training.terminated'), [{ type: 'training.terminated', termination: 'terminated' }]);
 });
+
+test("training cancellation stops the active tool and fences later calls in the same response", { timeout: 10_000 }, async t => {
+  const run = `run_${"1".repeat(32)}`;
+  const server = http.createServer((req, res) => {
+    req.resume(); res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null,
+      tool_calls: ["sleep 30", "printf must-not-run"].map((command, i) => ({ id: `call-${i}`, type: "function",
+        function: { name: "bash", arguments: JSON.stringify({ command }) } })) } }] }));
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const child = spawn(process.execPath, ["integrations/training-tool/cli.js", "--model", "training/binding_test"], { env: { ...process.env,
+    HITCH_HARBOR_INTERNAL: "1", HITCH_TRAINING_EXTERNAL: "1", HITCH_TRAINING_RUN_ID: run,
+    HITCH_TRAINING_BINDING: JSON.stringify({ binding_id: "binding_test", max_output_tokens: 16, max_episode_steps: 1 }),
+    OPENAI_API_KEY: "hitch-training-external",
+    OPENAI_BASE_URL: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/${"f".repeat(48)}/${run}/openai`,
+  }, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(async () => { if (child.exitCode === null) child.kill("SIGKILL"); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  let output = "", cancelled = false;
+  child.stdout.on("data", chunk => {
+    output += chunk;
+    if (!cancelled && output.includes('"type":"tool.started"')) { cancelled = true; child.kill("SIGTERM"); }
+  });
+  child.stderr.resume(); child.stdin.end("run tools");
+  const [exitCode] = await once(child, "close");
+  assert.equal(cancelled, true); assert.notEqual(exitCode, 0);
+  const events = output.trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(events.filter(event => event.type === "tool.started").map(event => event.call_id), ["call-0"]);
+  assert.equal(events.some(event => event.type === "training.terminated"), false, "cancellation must not become a normal terminal sample");
+});

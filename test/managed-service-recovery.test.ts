@@ -6,7 +6,7 @@ import { DaemonServer } from "../src/daemon/index.js";
 import { LocalInferenceManager, RemoteWorkerHttpClient } from "../src/control-plane/index.js";
 import { SGLangServiceSupervisor } from "../src/inference/index.js";
 import type { SGLangRecoveryClaim } from "../src/inference/index.js";
-import { atomicWriteJSON, delay, readJSON, statePaths } from "../src/foundation/index.js";
+import { atomicWriteJSON, delay, readJSON, sha256Bytes, sha256JSON, statePaths } from "../src/foundation/index.js";
 import { managedRecoveryFixture } from "../test-support/managed-service-recovery.js";
 
 async function eventually(check: () => Promise<boolean>) {
@@ -74,6 +74,19 @@ test("expired, revoked and replaced worker generations cannot acquire the old mo
   assert.deepEqual(await f.recovery.select([f.record]), []); await atomicWriteJSON(file, original);
   await f.registry.revoke(f.registration.worker_id); assert.deepEqual(await f.recovery.select([f.record]), []);
   await f.registry.register(f.registration); assert.deepEqual(await f.recovery.select([f.record]), []);
+  assert.deepEqual(f.calls, []);
+});
+
+for (const rerun of [false, true]) test(`durable ordered pause fences ${rerun ? "rerun" : "eval"} model recovery before scheduler cancellation`, async t => {
+  const f = await managedRecoveryFixture(t, { rerun }); await f.crash();
+  const keyHash = sha256Bytes("ordered-model-recovery"), evalId = f.control.eval_id;
+  const indexes = statePaths(f.root).indexes;
+  await atomicWriteJSON(path.join(indexes, "eval-command-bindings", `${evalId}.json`), { schema_version: "2", key_hash: keyHash, eval_id: evalId });
+  await atomicWriteJSON(path.join(indexes, "eval-commands", `${keyHash.slice(7)}.json`), {
+    schema_version: "2", key_hash: keyHash, eval_id: evalId, subject_digest: sha256JSON("model recovery"), sequence: 1, action: "pause",
+    reruns: f.rerunId ? { [f.rerunId]: { sequence: 0, digest: sha256JSON("rerun") } } : {},
+  });
+  assert.deepEqual(await f.recovery.select([f.record]), [], "paused work must not recover its model gateway");
   assert.deepEqual(f.calls, []);
 });
 

@@ -11,6 +11,7 @@ import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import { RemoteWorkInputStore } from "./remote-work-inputs.js";
 import { verifyManagedGateway } from "./managed-gateway-receipt.js";
+import { orderedEvalCancelled } from "./ordered-eval-control.js";
 
 type Target = Extract<RemoteModelTargetV2, { kind: "managed-inference" }>;
 type State = "active" | "waiting" | "finished";
@@ -98,6 +99,7 @@ export class ManagedServiceRecovery {
   }
 
   private async cancelled(owner: ManagedServiceRecoveryPlan["evidenceOwner"]): Promise<boolean> {
+    if (await orderedEvalCancelled(this.root, owner.eval_id, owner.rerun_id)) return true;
     const directory = path.join(statePaths(this.root).evals, owner.eval_id);
     if (owner.rerun_id) {
       const state = await readJSON<Record<string, unknown>>(path.join(directory, "reruns", owner.rerun_id, "state.json"));
