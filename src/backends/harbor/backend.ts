@@ -11,8 +11,8 @@ import { harborEnvironmentConfig } from "./environment-config.js";
 import type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
 import { parseHarborModelProxyRoute } from "./model-proxy-config.js";
 import { HARBOR_NODE_VERSION_WITH_PREFIX } from "./runtime-toolchain.js";
+import { withBridgePythonPath } from "./bridge-environment.js";
 
-const BRIDGE_PAYLOAD_DIRECTORY = path.join("integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
 export interface HarborSettledTrialContext {
   bundleWaitExpired: boolean;
@@ -455,14 +455,6 @@ function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.Process
 
 function credentialEnvironment(names: readonly string[]): Record<string, string> {
   return Object.fromEntries(names.map((name) => [name, `\${${name}}`]));
-}
-
-function withBridgePythonPath(env: NodeJS.ProcessEnv, runtimeDirectory: string): NodeJS.ProcessEnv {
-  const bridgeDirectory = path.join(runtimeDirectory, "payload", BRIDGE_PAYLOAD_DIRECTORY);
-  return {
-    ...env,
-    PYTHONPATH: [bridgeDirectory, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
-  };
 }
 
 function compact(value: Record<string, unknown>): Record<string, unknown> {
