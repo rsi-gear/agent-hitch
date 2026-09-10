@@ -237,6 +237,7 @@ process.exit(2);
 }
 
 export async function writeFakeHarbor(directory: string, {
+  version = "0.1.0",
   delayMs = 0,
   candidateStartDelayMs = 0,
   postResultDelayMs = 0,
@@ -245,6 +246,7 @@ export async function writeFakeHarbor(directory: string, {
   pythonBytecodeLog,
   pythonPathLog,
 }: {
+  version?: string;
   delayMs?: number;
   candidateStartDelayMs?: number;
   postResultDelayMs?: number;
@@ -262,7 +264,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
-  process.stdout.write("harbor 0.1.0\\n");
+  process.stdout.write("harbor ${version}\\n");
   process.exit(0);
 }
 const configIndex = args.indexOf("--config");

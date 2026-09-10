@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -893,17 +894,38 @@ class HitchHarborAgent(BaseAgent):
             if timeout_ms <= 0:
                 raise RuntimeError("candidate whole-task budget expired during phase binding/upload")
         elif session:
-            preparation_ms = (time.monotonic_ns() - invocation_started_ns) // 1_000_000
-            timeout_ms = task_budget_ms - preparation_ms
-            (self.logs_dir / "hitch-agent-budget.json").write_text(json.dumps({
-                "schema_version": "hitch-agent-budget@1", "run_id": run_id,
-                "task_budget_ms": task_budget_ms, "preparation_ms": preparation_ms,
-                "hitch_timeout_ms": max(0, timeout_ms),
-                "collection_timeout_ms": session.config["profile"]["budget"]["collection_timeout_ms"],
-                "scope": "invocation-budget-and-collection-allowance",
-            }))
+            timeout_ms = self._record_session_budget(
+                session, run_id, invocation_started_ns, task_budget_ms
+            )
             if timeout_ms <= 0:
                 raise RuntimeError("candidate budget expired during input preparation; no model was launched")
+        private_environment, native_deadline_ns = await self._host_task_credentials(
+            environment,
+            context,
+            run_id,
+            timeout_ms,
+            invocation_started_ns=(
+                invocation_started_ns
+                if prepared_phase is None and session is None
+                else None
+            ),
+        )
+        if private_environment is not None:
+            if prepared_phase is not None:
+                timeout_ms = (prepared_phase.deadline_ns - time.monotonic_ns()) // 1_000_000
+            if native_deadline_ns is not None:
+                native_remaining_ms = (native_deadline_ns - time.monotonic_ns()) // 1_000_000
+                if native_remaining_ms <= 0:
+                    raise RuntimeError("candidate native Harbor budget expired during host credential preparation; no model was launched")
+            elif timeout_ms <= 0:
+                raise RuntimeError("candidate budget expired during host credential preparation; no model was launched")
+        if prepared_phase is None and session:
+            timeout_ms = self._record_session_budget(
+                session, run_id, invocation_started_ns, task_budget_ms
+            )
+            if timeout_ms <= 0:
+                stage = "host credential preparation" if private_environment is not None else "input preparation"
+                raise RuntimeError(f"candidate budget expired during {stage}; no model was launched")
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
@@ -943,7 +965,14 @@ class HitchHarborAgent(BaseAgent):
             arguments.extend(["--internal-credential-name", shlex.quote(name)])
         command = self._logged_run_command(" ".join(arguments))
         try:
-            execution = await environment.exec(command, cwd=workdir)
+            if private_environment is None:
+                execution = await environment.exec(command, cwd=workdir)
+            else:
+                execution = await environment.hitch_exec_with_private_env(
+                    command,
+                    cwd=workdir,
+                    env=private_environment,
+                )
         except (Exception, asyncio.CancelledError):
             # Harbor cancels this await on its agent deadline. Collect what is
             # already durable before it removes the container, without turning
@@ -967,6 +996,153 @@ class HitchHarborAgent(BaseAgent):
                        "process_return_code": execution.return_code}
             (self.logs_dir / "hitch-collection-timeout.json").write_text(json.dumps(receipt))
             raise RuntimeError("hitch_run_collection_timeout: terminal evidence export exceeded its allowance") from error
+
+    async def _host_task_credentials(
+        self,
+        environment: BaseEnvironment,
+        context: AgentContext,
+        run_id: str,
+        remaining_timeout_ms: int,
+        *,
+        invocation_started_ns: int | None,
+    ) -> tuple[dict[str, str] | None, int | None]:
+        # Preserve the original single-file bridge behavior when this optional
+        # host feature is not configured. An empty value remains configured and
+        # reaches the strict parser below.
+        if "HITCH_HOST_CREDENTIAL_HELPER_JSON" not in os.environ:
+            return None, None
+        from hitch_host_credentials import (
+            HOST_CREDENTIAL_VALIDITY_MARGIN_MS,
+            HostCredentialHelperError,
+            load_host_credential_helper,
+            prepare_host_credentials,
+        )
+
+        try:
+            config = load_host_credential_helper(self.credential_names)
+            if config is None:
+                return None, None
+            if not callable(getattr(environment, "hitch_exec_with_private_env", None)):
+                raise HostCredentialHelperError(
+                    "host_credential_transport_unsupported",
+                    "Harbor environment does not support private Target credentials",
+                )
+            native_deadline_ns: int | None = None
+            if invocation_started_ns is not None and remaining_timeout_ms <= 0:
+                native_timeout_ms = self._native_harbor_agent_timeout_ms(environment)
+                if native_timeout_ms is None:
+                    raise HostCredentialHelperError(
+                        "host_credential_helper_request_invalid",
+                        "native Harbor agent timeout is not finite",
+                    )
+                native_deadline_ns = invocation_started_ns + native_timeout_ms * 1_000_000
+                native_remaining_ms = (native_deadline_ns - time.monotonic_ns()) // 1_000_000
+                if native_remaining_ms <= 0:
+                    raise RuntimeError("candidate native Harbor budget expired during input preparation; no model was launched")
+                remaining_timeout_ms = native_remaining_ms
+            credentials = await prepare_host_credentials(
+                config,
+                remaining_timeout_ms + HOST_CREDENTIAL_VALIDITY_MARGIN_MS,
+            )
+            return credentials, native_deadline_ns
+        except HostCredentialHelperError as error:
+            trial_id, task_id, attempt = self._trial_identity()
+            evidence = {
+                "schema_version": "1",
+                "code": error.code,
+                "message": error.message,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "scope": "host-task-credential-helper",
+                "eval_id": self.eval_id,
+                "trial_id": trial_id,
+                "task_id": task_id,
+                "attempt": attempt,
+                "assigned_run_id": run_id,
+            }
+            if context.metadata is None:
+                context.metadata = {}
+            context.metadata["hitch_bridge_error_code"] = error.code
+            context.metadata["hitch_bridge_error_artifact"] = "hitch-bridge-error.json"
+            try:
+                await self._write_bridge_error(environment, evidence)
+            except Exception:
+                pass
+            raise HitchBridgeError(error.code, error.message, evidence) from None
+
+    def _native_harbor_agent_timeout_ms(self, environment: BaseEnvironment) -> int | None:
+        """Resolve Harbor 0.21's effective native agent timeout from its own inputs."""
+        try:
+            from harbor.models.task.config import TaskConfig
+            from harbor.models.trial.config import TrialConfig
+
+            environment_dir = Path(getattr(environment, "environment_dir"))
+            trial_paths = getattr(environment, "trial_paths")
+            config_path = Path(getattr(trial_paths, "config_path"))
+            task_config = TaskConfig.model_validate_toml(
+                (environment_dir.parent / "task.toml").read_text(encoding="utf-8")
+            )
+            trial_config = TrialConfig.model_validate_json(
+                config_path.read_text(encoding="utf-8")
+            )
+
+            def resolve(default_timeout_sec: float | None) -> float | None:
+                base_timeout_sec = trial_config.agent.override_timeout_sec or default_timeout_sec
+                if base_timeout_sec is None:
+                    return None
+                multiplier = trial_config.agent_timeout_multiplier
+                if multiplier is None:
+                    multiplier = trial_config.timeout_multiplier
+                return min(
+                    base_timeout_sec,
+                    trial_config.agent.max_timeout_sec or float("inf"),
+                ) * multiplier
+
+            if task_config.steps:
+                resolved = [
+                    resolve(
+                        step.agent.timeout_sec
+                        if step.agent.timeout_sec is not None
+                        else task_config.agent.timeout_sec
+                    )
+                    for step in task_config.steps
+                ]
+                # Harbor does not identify the current step in BaseAgent.run().
+                # Requiring the largest finite step budget prevents a credential
+                # from expiring during any native step without guessing order.
+                timeout_sec = None if any(value is None for value in resolved) else max(resolved)
+            else:
+                timeout_sec = resolve(task_config.agent.timeout_sec)
+            if timeout_sec is None:
+                return None
+            timeout_ms = math.ceil(timeout_sec * 1_000)
+            if not math.isfinite(timeout_sec) or not 1 <= timeout_ms <= 9_007_199_254_740_991:
+                raise ValueError("native Harbor timeout is outside the supported range")
+            return timeout_ms
+        except Exception:
+            # Task/config contents and host paths are not safe diagnostic text.
+            from hitch_host_credentials import HostCredentialHelperError
+            raise HostCredentialHelperError(
+                "host_credential_helper_request_invalid",
+                "native Harbor agent timeout could not be resolved",
+            ) from None
+
+    def _record_session_budget(
+        self,
+        session,
+        run_id: str,
+        invocation_started_ns: int,
+        task_budget_ms: int,
+    ) -> int:
+        preparation_ms = (time.monotonic_ns() - invocation_started_ns) // 1_000_000
+        timeout_ms = task_budget_ms - preparation_ms
+        (self.logs_dir / "hitch-agent-budget.json").write_text(json.dumps({
+            "schema_version": "hitch-agent-budget@1", "run_id": run_id,
+            "task_budget_ms": task_budget_ms, "preparation_ms": preparation_ms,
+            "hitch_timeout_ms": max(0, timeout_ms),
+            "collection_timeout_ms": session.config["profile"]["budget"]["collection_timeout_ms"],
+            "scope": "invocation-budget-and-collection-allowance",
+        }))
+        return timeout_ms
 
     @staticmethod
     def _logged_run_command(invocation: str) -> str:

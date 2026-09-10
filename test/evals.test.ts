@@ -12,6 +12,7 @@ import { detectVerifierInfrastructureFailure } from "../src/evals/verifier-diagn
 import { HitchError, atomicWriteJSON, readJSON } from "../src/foundation/index.js";
 import { harborEnvironmentConfig, lockedHarnessRef } from "../src/backends/harbor/index.js";
 import type { HarborTrialRuntimeContract } from "../src/backends/harbor/index.js";
+import { assertHostCredentialRuntimeSupport, helperCredentialNamesForRequest, parseHostCredentialHelperConfig, withHostCredentialPlaceholders } from "../src/backends/harbor/host-credential-helper.js";
 import { prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
 import { benchmarkTaskDigest, benchmarkVerifierIdentity, loadVerifierEvidence } from "../src/runs/index.js";
 import { TrajectoryProjector } from "../src/trajectories/projector.js";
@@ -718,6 +719,119 @@ test("every project-installed version harness is prepared once and handed to Har
   }
 });
 
+test("native attempts use host task credentials without persisting or inheriting stale access", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-host-task-credentials-"));
+  t.after(() => forceRemove(root));
+  const fakeNpm = await writeFakeNpm(root);
+  const fakeHarbor = await writeFakeHarbor(root, {
+    version: "0.21.0",
+    leakEnvName: "DSH_OPENAI_CODEX_ACCESS_B64",
+  });
+  const staleDecodedAccess = "opaque-secret-stale-access-123456789";
+  const staleEnvelope = Buffer.from(JSON.stringify({ access: staleDecodedAccess })).toString("base64");
+  const helperMarker = "/trusted/host-credential-helper-marker";
+  const helperConfig = JSON.stringify({
+    version: 1,
+    argv: [process.execPath, helperMarker],
+    credentialNames: ["DSH_OPENAI_CODEX_ACCESS_B64"],
+    timeoutMs: 5_000,
+  });
+  const evalId = newEvalId();
+  const result = await runEval({
+    evalId,
+    root,
+    harborExecutable: fakeHarbor,
+    env: {
+      ...process.env,
+      HITCH_NPM_PATH: fakeNpm,
+      HITCH_HOST_CREDENTIAL_HELPER_JSON: helperConfig,
+      DSH_OPENAI_CODEX_ACCESS_B64: staleEnvelope,
+    },
+    request: {
+      dataset: "demo@1.0",
+      harness_ref: "pi@version:1.2.3",
+      model: "openai/test-model",
+      pass_env: ["DSH_OPENAI_CODEX_ACCESS_B64"],
+      attempts: 3,
+      max_concurrent: 2,
+      infrastructure_retries: 0,
+      timeout_ms: 5_000,
+    },
+  });
+
+  const trials = result.trials as Array<{ task_name: string; attempt: number }>;
+  assert.equal(trials.length, 6);
+  assert.deepEqual([...new Set(trials.map((trial) => trial.attempt))].sort(), [1, 2, 3]);
+  const evalDirectory = path.join(root, "evals", evalId);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const config = await readJSON<Record<string, unknown>>(path.join(
+      evalDirectory,
+      "harbor",
+      `attempt-${String(attempt).padStart(4, "0")}`,
+      "job.json",
+    ));
+    assert.deepEqual(config.environment, {
+      type: "docker",
+      delete: true,
+      import_path: "hitch_harbor_environment:HitchHarborDockerEnvironment",
+      kwargs: {},
+    });
+    const agent = (config.agents as Record<string, unknown>[])[0] as Record<string, unknown>;
+    assert.equal((agent.env as Record<string, unknown>).DSH_OPENAI_CODEX_ACCESS_B64, "${DSH_OPENAI_CODEX_ACCESS_B64}");
+  }
+  for (const file of await regularFiles(evalDirectory)) {
+    const persisted = await readFile(file, "utf8");
+    assert.equal(persisted.includes(staleEnvelope), false, `stale envelope leaked into ${path.relative(evalDirectory, file)}`);
+    assert.equal(persisted.includes(staleDecodedAccess), false, `stale access leaked into ${path.relative(evalDirectory, file)}`);
+    assert.equal(persisted.includes(helperMarker), false, `helper metadata leaked into ${path.relative(evalDirectory, file)}`);
+  }
+});
+
+test("host credential configuration is strict and old frozen runtimes fail closed", async (t) => {
+  const helper = path.resolve("test-support", "harbor_host_credentials_smoke.py");
+  assert.throws(() => parseHostCredentialHelperConfig({
+    HITCH_HOST_CREDENTIAL_HELPER_JSON: JSON.stringify({
+      version: true,
+      argv: [process.execPath, helper],
+      credentialNames: ["TARGET_ACCESS_B64"],
+      timeoutMs: 5_000,
+    }),
+  }), (error: unknown) => (error as { code?: string }).code === "invalid_input");
+  assert.throws(() => parseHostCredentialHelperConfig({
+    HITCH_HOST_CREDENTIAL_HELPER_JSON: JSON.stringify({
+      version: 1,
+      argv: ["relative-helper"],
+      credentialNames: ["TARGET_ACCESS_B64"],
+      timeoutMs: 5_000,
+    }),
+  }), (error: unknown) => (error as { code?: string }).code === "invalid_input");
+  const config = parseHostCredentialHelperConfig({
+    HITCH_HOST_CREDENTIAL_HELPER_JSON: JSON.stringify({
+      version: 1,
+      argv: [process.execPath, helper],
+      credentialNames: ["TARGET_ACCESS_B64"],
+      timeoutMs: 5_000,
+    }),
+  });
+  assert.ok(config);
+  assert.throws(
+    () => helperCredentialNamesForRequest(config, []),
+    /explicitly requested with --pass-env/,
+  );
+  assert.deepEqual(withHostCredentialPlaceholders({ TARGET_ACCESS_B64: "stale-access", SAFE: "kept" }, ["TARGET_ACCESS_B64"]), {
+    TARGET_ACCESS_B64: "",
+    SAFE: "kept",
+  });
+
+  const oldRuntime = await mkdtemp(path.join(tmpdir(), "hitch-old-controller-runtime-"));
+  t.after(() => forceRemove(oldRuntime));
+  await mkdir(path.join(oldRuntime, "payload", "integrations", "harbor"), { recursive: true });
+  await assert.rejects(
+    assertHostCredentialRuntimeSupport(oldRuntime),
+    (error: unknown) => (error as { code?: string }).code === "host_credential_helper_runtime_unsupported",
+  );
+});
+
 test("DeepSeek eval prepares one immutable artifact and pins it for every Harbor trial", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-dsh-artifact-"));
   t.after(() => forceRemove(root));
@@ -765,12 +879,61 @@ test("Harbor bridge source is valid Python", () => {
   for (const source of [
     path.resolve("integrations/harbor/hitch_harbor_agent.py"),
     path.resolve("integrations/harbor/hitch_harbor_verifier.py"),
+    path.resolve("integrations/harbor/hitch_host_credentials.py"),
+    path.resolve("integrations/harbor/hitch_private_exec.py"),
   ]) {
     const result = spawnSync("python3", ["-c", "import pathlib; compile(pathlib.Path(__import__('sys').argv[1]).read_text(), __import__('sys').argv[1], 'exec')", source], {
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr || undefined);
   }
+});
+
+test("host credential helper and private Compose transport stay bounded and redact output", () => {
+  const cases = [
+    ["harbor_host_credentials_smoke.py", "hitch_host_credentials.py", "Harbor host credential helper smoke OK"],
+    ["harbor_private_exec_smoke.py", "hitch_private_exec.py", "Harbor private exec smoke OK"],
+  ] as const;
+  for (const [smokeName, sourceName, success] of cases) {
+    const smoke = path.resolve("test-support", smokeName);
+    const source = path.resolve("integrations", "harbor", sourceName);
+    const result = spawnSync("python3", [smoke, source], {
+      encoding: "utf8",
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, `${smokeName} failed:\n${result.error || result.stderr || result.stdout}`);
+    assert.match(result.stdout, new RegExp(success));
+  }
+});
+
+test("packaged Harbor agent refreshes credentials for two tasks by three attempts and an invalid rerun", async (t) => {
+  const state = await mkdtemp(path.join(tmpdir(), "hitch-host-credential-agent-"));
+  t.after(() => forceRemove(state));
+  const { ensureControllerRuntime } = await import("../src/controller-runtime/store.js");
+  const use = await ensureControllerRuntime({ root: state });
+  const fakeNpm = await writeFakeNpm(state);
+  const env = { ...process.env, HITCH_NPM_PATH: fakeNpm };
+  const resolved = await resolveHarness("pi@version:1.2.3", { root: state, env });
+  const artifact = await prepareHarness(resolved, { root: state, env });
+  const bridge = path.join(use.directory, "payload", "integrations", "harbor", "hitch_harbor_agent.py");
+  const smoke = path.resolve("test-support", "harbor_host_credential_agent_smoke.py");
+  const helper = path.resolve("test-support", "harbor_host_credentials_smoke.py");
+  const logs = path.join(state, "logs");
+  const result = spawnSync("python3", [
+    smoke,
+    bridge,
+    use.directory,
+    logs,
+    preparedArtifactDirectory(state, artifact.artifact_id),
+    helper,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    timeout: 60_000,
+  });
+  assert.equal(result.status, 0, `host credential agent smoke failed:\n${result.error || result.stderr || result.stdout}`);
+  assert.match(result.stdout, /Harbor host credential agent smoke OK/);
 });
 
 test("Harbor bridge fails closed for required model proxy and degrades optional capture", async (t) => {
@@ -872,6 +1035,38 @@ test("Harbor bridge diagnostic reader promotes OCI stdout when the legacy messag
   assert.equal(diagnostic.raw.includes(secret), false);
   assert.equal(diagnostic.raw.includes("abcdefghijklmnop"), false);
   assert.match(diagnostic.raw, /\[REDACTED\]/);
+});
+
+test("Harbor bridge diagnostic reader preserves fixed host credential errors without leaking helper output", async (t) => {
+  const trialDirectory = await mkdtemp(path.join(tmpdir(), "hitch-bridge-host-credential-diagnostic-"));
+  t.after(() => forceRemove(trialDirectory));
+  await mkdir(path.join(trialDirectory, "agent"), { recursive: true });
+  const secret = "opaque-secret-helper-failure-123456789";
+  const codes = [
+    "host_credential_helper_config_invalid",
+    "host_credential_helper_request_invalid",
+    "host_credential_helper_unavailable",
+    "host_credential_helper_timed_out",
+    "host_credential_helper_response_invalid",
+    "host_credential_helper_failed",
+    "host_credential_helper_insufficient_validity",
+    "host_credential_transport_unsupported",
+  ] as const;
+  for (const code of codes) {
+    await atomicWriteJSON(path.join(trialDirectory, "agent", "hitch-bridge-error.json"), {
+      schema_version: "1",
+      code,
+      message: "Host credential helper failed",
+      helper_stderr: secret,
+      credential_value: secret,
+    });
+
+    const diagnostic = await readHarborBridgeError(trialDirectory, [secret]);
+    assert.equal(diagnostic?.code, code);
+    assert.equal(diagnostic?.message, "Host credential helper failed");
+    assert.equal(diagnostic?.raw.includes(secret), false);
+    assert.match(diagnostic?.raw ?? "", /\[REDACTED\]/);
+  }
 });
 
 test("Harbor bridge normalizes provider failures before they reach the scheduler", async (t) => {
@@ -2092,7 +2287,20 @@ test("multi-attempt rerun repairs only invalid logical slots", async (t) => {
   }
   const harbor = await writeMultiAttemptRerunFakeHarbor(root, trials);
   const npm = await writeFakeNpm(root);
-  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  const helperMarker = path.resolve(root, "trusted-helper-not-executed-by-fake-harbor");
+  const staleAccess = "opaque-secret-stale-rerun-123456789";
+  const staleEnvelope = Buffer.from(JSON.stringify({ access: staleAccess })).toString("base64");
+  const env = {
+    ...process.env,
+    HITCH_NPM_PATH: npm,
+    HITCH_HOST_CREDENTIAL_HELPER_JSON: JSON.stringify({
+      version: 1,
+      argv: [process.execPath, helperMarker],
+      credentialNames: ["DSH_OPENAI_CODEX_ACCESS_B64"],
+      timeoutMs: 5_000,
+    }),
+    DSH_OPENAI_CODEX_ACCESS_B64: staleEnvelope,
+  };
   const initial = await runEval({
     evalId,
     root,
@@ -2104,6 +2312,7 @@ test("multi-attempt rerun repairs only invalid logical slots", async (t) => {
       harness_ref: "pi@version:1.2.3",
       model: "openai/test-model",
       attempts: 2,
+      pass_env: ["DSH_OPENAI_CODEX_ACCESS_B64"],
       timeout_ms: 5_000,
       infrastructure_retries: 0,
     },
@@ -2139,7 +2348,23 @@ test("multi-attempt rerun repairs only invalid logical slots", async (t) => {
   );
   assert.equal(rerunConfig.n_attempts, 1);
   assert.equal(((rerunConfig.agents as Array<{ kwargs: Record<string, unknown> }>)[0]!.kwargs).logical_attempt, 2);
+  assert.deepEqual(rerunConfig.environment, {
+    type: "docker",
+    delete: true,
+    import_path: "hitch_harbor_environment:HitchHarborDockerEnvironment",
+    kwargs: {},
+  });
+  assert.equal(
+    ((rerunConfig.agents as Array<{ env: Record<string, unknown> }>)[0]!.env).DSH_OPENAI_CODEX_ACCESS_B64,
+    "${DSH_OPENAI_CODEX_ACCESS_B64}",
+  );
   assert.deepEqual(rerunConfig.datasets, [{ path: dataset, task_names: ["task-a"] }]);
+  for (const file of await regularFiles(path.join(root, "evals", evalId))) {
+    const persisted = await readFile(file, "utf8");
+    assert.equal(persisted.includes(staleEnvelope), false, `stale rerun envelope leaked into ${file}`);
+    assert.equal(persisted.includes(staleAccess), false, `stale rerun access leaked into ${file}`);
+    assert.equal(persisted.includes(helperMarker), false, `host helper metadata leaked into ${file}`);
+  }
 });
 
 test("Harbor bridge rejects a job-pinned controller_runtime_id mismatch before uploading", async (t) => {
@@ -2563,6 +2788,8 @@ if (args.includes("--version")) {
 const configIndex = args.indexOf("--config");
 if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) process.exit(2);
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
+if (process.env.DSH_OPENAI_CODEX_ACCESS_B64 !== "") process.exit(6);
+if (!process.env.HITCH_HOST_CREDENTIAL_HELPER_JSON) process.exit(7);
 const output = path.join(config.jobs_dir, config.job_name);
 const logicalAttempt = config.agents[0].kwargs.logical_attempt;
 const selected = config.datasets[0].task_names;

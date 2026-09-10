@@ -28,6 +28,17 @@ test("Codex container auth stays outside result bundles and nested credentials a
   assert.ok(!redactCredentialText(`value=${token}`, values).text.includes(token));
 });
 
+test("base64 JSON credential envelopes redact both the envelope and decoded access", () => {
+  const access = "opaque-secret-without-provider-prefix-123456";
+  const envelope = Buffer.from(JSON.stringify({ version: 1, access, expires: Date.now() + 600_000 })).toString("base64");
+  const values = credentialValuesFromEnv(["DSH_OPENAI_CODEX_ACCESS_B64"], { DSH_OPENAI_CODEX_ACCESS_B64: envelope });
+  assert.ok(values.includes(envelope));
+  assert.ok(values.includes(access));
+  const redacted = redactCredentialText(`encoded=${envelope}\ndecoded=${access}`, values).text;
+  assert.equal(redacted.includes(envelope), false);
+  assert.equal(redacted.includes(access), false);
+});
+
 test("GDPval public rubric handles partial credit, penalties and invalid judge outputs", () => {
   const result = spawnSync("python3", ["test-support/benchmark_sources_smoke.py"], {encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
