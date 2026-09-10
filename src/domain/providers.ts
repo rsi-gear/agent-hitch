@@ -24,6 +24,12 @@ export interface ExecutionProviderStatusV1 {
     docker: boolean;
     buildkit: boolean;
     model_proxy: boolean;
+    training_external_binding?: "2";
+    managed_model_node?: "2";
+    physical_work?: "2";
+    execution_observation?: "2";
+    verifier_source?: "2";
+    verifier_only?: "2";
     isolated_same_task_attempts: boolean;
   };
   capacity: {

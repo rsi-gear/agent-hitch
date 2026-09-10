@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { listPreparedArtifacts, loadPreparedArtifact, prepareHarness, preparedArtifactDirectory, resolveHarness } from "../src/artifacts/index.js";
+import { listPreparedArtifacts, loadPreparedArtifact, prepareHarness, preparedArtifactDirectory, resolveHarness, verifyPreparedArtifact } from "../src/artifacts/index.js";
 import { executeRun, newRunId } from "../src/runs/index.js";
 import { readJSON } from "../src/foundation/index.js";
 import { parseHarnessReference } from "../src/revisions/index.js";
@@ -127,6 +127,22 @@ test("DeepSeek versions use an integrity-checked isolated global npm prefix", as
     }),
   });
   assert.equal(transportedRun.status, "succeeded");
+  const foreignDirectory = path.join(root, "foreign-artifact");
+  await cp(preparedArtifactDirectory(root, artifact.artifact_id), foreignDirectory, { recursive: true });
+  const manifestFile = path.join(foreignDirectory, "artifact.json");
+  const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+  manifest.platform = process.platform === "linux" ? "darwin-arm64" : "linux-x64";
+  await chmod(manifestFile, 0o600);
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  const foreignIdentity = { artifact_id: artifact.artifact_id, artifact_integrity: artifact.artifact_integrity as string,
+    entrypoint_integrity: artifact.entrypoint_integrity as string, harness_id: artifact.harness_id,
+    revision_identity: artifact.revision_identity, platform: manifest.platform as string };
+  const verified = await verifyPreparedArtifact(foreignDirectory, foreignIdentity);
+  assert.equal(verified.platform, manifest.platform);
+  assert.equal("executable" in verified, false, "transport verification must not expose a host invocation");
+  await assert.rejects(loadPreparedArtifact(foreignDirectory, foreignIdentity), { code: "artifact_platform_mismatch" });
+  await assert.rejects(verifyPreparedArtifact(foreignDirectory, { ...foreignIdentity, platform: artifact.platform }), { code: "artifact_integrity_mismatch" });
+  await assert.rejects(verifyPreparedArtifact(foreignDirectory, { ...foreignIdentity, artifact_integrity: `sha256:${"f".repeat(64)}` }), { code: "artifact_integrity_mismatch" });
   await assert.rejects(
     loadPreparedArtifact(preparedArtifactDirectory(root, artifact.artifact_id), {
       artifact_id: artifact.artifact_id,

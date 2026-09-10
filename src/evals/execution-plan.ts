@@ -1,5 +1,6 @@
 import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, SchedulingHintV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
+import { parseTrainingBinding } from "../model-access/index.js";
 import { artifactPinFields, opaqueWorkId, parseArtifactAssignments, parseRuntimeContract, workItemId } from "./execution-plan-artifacts.js";
 import type { EvalArtifactAssignmentInputV1, ParsedArtifactAssignment } from "./execution-plan-artifacts.js";
 import { imagesForTasks, parseEnvironmentImageFallbacks, parseEnvironmentImageUses } from "./execution-plan-images.js";
@@ -66,7 +67,9 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
       ? artifactAssignments.map((entry) => ({ task_ids: entry.taskIds, artifact_id: entry.artifactId, runtime_contract: entry.runtimeContract }))
       : [{ task_ids: tasks ?? [], artifact_id: options.candidate.artifactId }],
     requested_model: options.request.model,
+    ...(options.request.training_binding ? { training_binding: options.request.training_binding } : {}),
     ...(options.candidate.inferenceId ? { inference_id: options.candidate.inferenceId } : {}),
+    ...(options.request.local_inference?.model_node ? { model_node: options.request.local_inference.model_node } : {}),
     agent_args_sha256: sha256JSON(options.request.agent_args),
     protocol: {
       timeout_ms: options.request.timeout_ms,
@@ -97,6 +100,7 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
     },
     provider,
     ...(modelCapture ? { model_capture: modelCapture } : {}),
+    ...(options.request.training_binding ? { training_binding: options.request.training_binding } : {}),
     max_parallelism: options.maxParallelism,
     default_trial_resources: resources,
     ...(taskResources ? { task_resources: taskResources } : {}),
@@ -117,7 +121,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
   if (!isRecord(value)) throw new TypeError("eval execution plan must be an object");
   const plan = value;
   assertOnlyKeys(plan, [
-    "schema_version", "planner", "eval_id", "membership", "candidate_identity", "benchmark", "provider", "model_capture",
+    "schema_version", "planner", "eval_id", "membership", "candidate_identity", "benchmark", "provider", "model_capture", "training_binding",
     "max_parallelism", "default_trial_resources", "task_resources", "image_fallbacks", "slots", "work_items", "retry_policy", "created_at",
   ], "eval execution plan");
   if (plan.schema_version !== "1" || plan.planner !== "hitch-local-v1" || !isEvalId(plan.eval_id)
@@ -129,6 +133,9 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
   }
   const benchmark = parseBenchmark(plan.benchmark);
   const modelCapture = plan.model_capture === undefined ? undefined : parseModelCapturePlan(plan.model_capture);
+  const trainingBinding = plan.training_binding === undefined ? undefined : parseTrainingBinding(plan.training_binding);
+  if (trainingBinding && (!modelCapture?.required || modelCapture.effective_mode !== "proxy"
+    || modelCapture.topology !== (plan.provider === "local-docker" ? "host-side" : "in-sandbox"))) throw new TypeError("training plan requires a mandatory generation proxy on its execution provider");
   const resources = parseResourceVector(plan.default_trial_resources, "execution plan default trial resources");
   if (!Array.isArray(plan.slots) || !Array.isArray(plan.work_items)) throw new TypeError("eval execution plan work graph is invalid");
   const slots = plan.slots.map((slot, index) => parseSlot(slot, plan.eval_id as string, plan.candidate_identity as Sha256, index));
@@ -153,6 +160,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
     benchmark,
     provider: plan.provider,
     ...(modelCapture ? { model_capture: modelCapture } : {}),
+    ...(trainingBinding ? { training_binding: trainingBinding } : {}),
     max_parallelism: plan.max_parallelism as number,
     default_trial_resources: resources,
     ...(taskResources ? { task_resources: taskResources } : {}),

@@ -2,3 +2,6 @@ export { ControllerRuntimeIntegrityError, RUNTIME_CLI_ENTRYPOINT, RUNTIME_NODE_R
 export type { DeclaredFile, RuntimeHashInput, RuntimeHashResult, RuntimePayloadRule } from "./hash.js";
 export { PACKAGE_ROOT, ensureControllerRuntime, inspectEvalRuntimeKind, useControllerRuntimeById, useControllerRuntimeDirectory, writeRuntimeReference } from "./store.js";
 export type { ControllerRuntimeOptions, ControllerRuntimeReference, ControllerRuntimeUseResult } from "./store.js";
+export { observeControllerRuntime } from "./observation.js";
+export type { ControllerRuntimeObservationV2 } from "./observation.js";
+export { ResidentRuntimeObserver } from "./resident.js";

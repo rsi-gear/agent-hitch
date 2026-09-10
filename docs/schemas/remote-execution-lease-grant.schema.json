@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-execution-lease-grant.schema.json",
+  "title": "Hitch current remote execution lease V2",
+  "description": "An authenticated no-store snapshot of the current controller execution lease for an accepted offer; reading never renews it. Worker, offer, generation, epoch and immutable resource identity must match.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "offer_id",
+    "generation",
+    "lease"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2"
+    },
+    "offer_id": {
+      "type": "string",
+      "pattern": "^offer_[a-f0-9]{32}$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "lease": {
+      "allOf": [
+        {
+          "$ref": "execution-lease.schema.json"
+        },
+        {
+          "properties": {
+            "state": {
+              "enum": [
+                "offered",
+                "accepted",
+                "running"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

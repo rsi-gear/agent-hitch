@@ -28,7 +28,7 @@ export function modelCaptureDegradationEvent(plan?: ModelCapturePlanV1): Record<
 }
 
 /** Local inference necessarily crosses the controller-owned Harbor bridge, so routing is fail-closed and captured. */
-export function forceLocalInferenceCapturePlan(plan: ModelCapturePlanV1): ModelCapturePlanV1 {
+export function forceLocalInferenceCapturePlan(plan: ModelCapturePlanV1, topology: "host-side" | "in-sandbox" = "host-side"): ModelCapturePlanV1 {
   return {
     // The current capture plan contract also carries Harbor routing. Managed
     // local inference therefore has an effective required proxy policy even
@@ -36,6 +36,6 @@ export function forceLocalInferenceCapturePlan(plan: ModelCapturePlanV1): ModelC
     requested_mode: "proxy",
     effective_mode: "proxy",
     required: true,
-    topology: "host-side",
+    topology,
   };
 }

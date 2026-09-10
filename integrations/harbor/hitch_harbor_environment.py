@@ -375,7 +375,8 @@ def _validate_labels(value: Mapping[str, str] | None) -> dict[str, str]:
     labels = dict(value)
     if (
         not re.fullmatch(r"[a-f0-9]{24}", labels.get(_LABEL_ROOT, ""))
-        or labels.get(_LABEL_PROVIDER) != "local-docker"
+        or not isinstance(labels.get(_LABEL_PROVIDER), str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", labels[_LABEL_PROVIDER])
         or not re.fullmatch(r"eval_[a-f0-9]{32}", labels.get(_LABEL_EVAL, ""))
         or not re.fullmatch(r"work_[a-f0-9]{32}", labels.get(_LABEL_WORK, ""))
         or not re.fullmatch(r"lease_[a-f0-9]{32}", labels.get(_LABEL_LEASE, ""))

@@ -36,6 +36,23 @@ export async function addLocalModel(options: AddLocalModelOptions): Promise<Loca
   return withFileLock(statePaths(options.root).inferenceOperationLocks, "model-store", () => addLocalModelLocked(options));
 }
 
+/** Persist a manifest only after the caller has verified its content on an explicit model node. */
+export async function addModelManifest(options: { root: string; manifest: LocalModelManifestV1; name: string; force?: boolean }): Promise<LocalModelManifestV1> {
+  if (!ALIAS.test(options.name)) throw invalidInput("model name must use lowercase letters, digits, '.', '_' or '-'");
+  const manifest = parseLocalModelManifest(options.manifest), paths = statePaths(options.root);
+  return withFileLock(paths.inferenceOperationLocks, "model-store", async () => {
+    const directory = path.join(paths.models, manifest.model_id.slice(7));
+    let existing: LocalModelManifestV1 | undefined;
+    try { existing = parseLocalModelManifest(await readJSON(path.join(directory, "manifest.json"))); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (existing && existing.model_id !== manifest.model_id) throw integrityError("stored model identity differs");
+    await ensureDir(directory);
+    await atomicWriteJSON(path.join(directory, "manifest.json"), existing ?? manifest);
+    await writeAlias(paths.modelAliases, paths.inferenceOperationLocks, options.name, manifest.model_id, options.force === true);
+    return existing ?? manifest;
+  });
+}
+
 async function addLocalModelLocked(options: AddLocalModelOptions): Promise<LocalModelManifestV1> {
   if (!ALIAS.test(options.name)) throw invalidInput("model name must use lowercase letters, digits, '.', '_' or '-'");
   const source = path.resolve(options.directory);
@@ -71,7 +88,7 @@ async function addLocalModelLocked(options: AddLocalModelOptions): Promise<Local
     files,
     architecture: firstString(config.architectures) || "unknown",
     model_type: stringValue(config.model_type) || "unknown",
-    dtype: stringValue(config.torch_dtype) || "unknown",
+    dtype: stringValue(config.torch_dtype) || stringValue(config.dtype) || "unknown",
     quantization,
     context_tokens: positiveIntegerValue(config.max_position_embeddings),
     tokenizer_digest: sha256JSON(tokenizerFiles.map(({ path: filePath, sha256 }) => ({ path: filePath, sha256 }))),

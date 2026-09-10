@@ -1,15 +1,18 @@
 import { chmod, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { loadPreparedArtifact } from "../artifacts/index.js";
+import { verifyPreparedArtifact } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
 import type { HarborPreparedArtifactUse } from "../backends/index.js";
 import { useControllerRuntimeDirectory } from "../controller-runtime/index.js";
-import type { ExecutionLeaseV1, RemoteWorkInputRefV1, RemoteWorkOfferV1 } from "../domain/index.js";
-import { atomicWriteJSON, ensureDir, statePaths } from "../foundation/index.js";
-import { dockerResourceOwnership, importEvalTrialRun, reapOwnedDockerResources, releaseExecutionLease, resolvedImageMapping, runtimeResourcesForTask, startDockerResourceObserver, startEvalModelCaptureRuntime } from "../evals/index.js";
-import { encodeRemoteResultEnvelope, materializeRemoteTreeEnvelope } from "../control-plane/index.js";
+import type { RemoteWorkInputRefV1, RemoteWorkOfferV1 } from "../domain/index.js";
+import { ensureDir, sha256JSON, statePaths } from "../foundation/index.js";
+import { captureRemoteVerifierSource, dockerResourceOwnership, importEvalTrialRun, resolvedImageMapping, runtimeResourcesForTask, startDockerResourceObserver, startEvalModelCaptureRuntime } from "../evals/index.js";
+import { encodeRemoteResultEnvelope, materializeRemoteTreeEnvelope, startWorkerModelRelay } from "../control-plane/index.js";
 import type { RemoteWorkerExecutor, RemoteWorkerExecutionResult } from "../control-plane/index.js";
 import { parseRemoteHarborWorkSpec } from "./remote-harbor-work-spec.js";
+import { scrubLocalInferenceEnvironment } from "../model-access/index.js";
+import { executeRemoteHarborVerifier } from "./remote-harbor-verifier.js";
+import { beginRemoteHarborOffer, cleanRemoteHarborOffer, prepareRemoteHarborOffer, remoteHarborProcessHooks, settleRemoteHarborOffer } from "./remote-harbor-ownership.js";
 
 export interface RemoteHarborWorkerOptions {
   root: string;
@@ -23,15 +26,18 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
   if (!options.root) throw new TypeError("remote Harbor worker root is required");
   const root = path.resolve(options.root);
   const env = options.env ?? process.env;
-  return async ({ offer, inputs, credentials, signal, emit }): Promise<RemoteWorkerExecutionResult> => {
+  const execute: RemoteWorkerExecutor = async ({ offer, inputs, credentials, signal, emit, relayModel, readExecutionLease, authorizeProcess }) => {
     const workspace = path.join(statePaths(root).workerStaging, offer.lease.lease_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
     await removeWorkerWorkspace(workspace);
     await mkdir(workspace, { recursive: true, mode: 0o700 });
     const spec = parseRemoteHarborWorkSpec(parseJSON(required(inputs, "work-spec")), offer);
+    if (spec.schema_version === "2" && spec.verifier_only && !readExecutionLease) throw new TypeError("remote verifier requires current controller execution lease grants");
     if (JSON.stringify([...credentials.keys()].sort()) !== JSON.stringify(spec.credential_names)) {
       throw new TypeError("remote credential envelope does not match its work spec");
     }
-    const executionEnv: NodeJS.ProcessEnv = { ...env, ...Object.fromEntries(credentials) };
+    const binding = spec.schema_version === "2" ? spec.model_binding : undefined;
+    if (binding && !relayModel) throw new TypeError("remote worker lacks the v2 model relay protocol");
+    const executionEnv: NodeJS.ProcessEnv = { ...(binding || spec.schema_version === "2" && spec.verifier_only ? scrubLocalInferenceEnvironment(env) : env), ...Object.fromEntries(credentials) };
     const harnessDirectory = path.join(workspace, "harness-artifact");
     const runtimeDirectory = path.join(workspace, "controller-runtime");
     const datasetDirectory = await ensureDir(path.join(workspace, "dataset"));
@@ -40,12 +46,17 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       materializeRemoteTreeEnvelope(parseJSON(required(inputs, "controller-runtime")), runtimeDirectory),
       materializeRemoteTreeEnvelope(parseJSON(required(inputs, "task-input")), path.join(datasetDirectory, spec.task.task_id)),
     ]);
-    const prepared = await loadPreparedArtifact(harnessDirectory, spec.harness_artifact);
+    const prepared = await verifyPreparedArtifact(harnessDirectory, spec.harness_artifact);
     if (JSON.stringify(prepared.resolved_revision) !== JSON.stringify(spec.resolution)
       || prepared.toolchain.node !== spec.harness_artifact.node_version) throw new TypeError("remote prepared artifact evidence does not match its work spec");
     const runtime = await useControllerRuntimeDirectory(runtimeDirectory, spec.controller_runtime.runtime_id);
     const evalDirectory = await ensureDir(path.join(statePaths(root).evals, offer.lease.eval_id));
-    await persistRunningLease(evalDirectory, offer.lease);
+    const release = () => releaseRemoteHarborOffer(options, offer);
+    const processHooks = remoteHarborProcessHooks(options, offer, authorizeProcess);
+    if (spec.schema_version === "2" && spec.verifier_only) return executeRemoteHarborVerifier({
+      root, workspace, runtimeDirectory, taskDirectory: path.join(datasetDirectory, spec.task.task_id), spec,
+      offer, inputs, credentials, signal, emit, readExecutionLease: readExecutionLease!, env: executionEnv, release, processHooks,
+      ...(options.harborExecutable ? { harborExecutable: options.harborExecutable } : {}) });
     const taskId = spec.task.task_id;
     const runtimeResources = runtimeResourcesForTask(spec.plan, taskId, offer.lease.reservation);
     const ownership = dockerResourceOwnership(root, offer.lease, taskId);
@@ -55,6 +66,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       sidecarLimits: runtimeResources.sidecarLimits, env, signal,
     });
     const backendDirectory = path.join(evalDirectory, "remote-work", offer.work.work_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
+    const relay = binding ? await startWorkerModelRelay({ binding, relay: relayModel!, signal }) : undefined;
     const captureRuntime = await startEvalModelCaptureRuntime({
       plan: spec.plan.model_capture ?? { requested_mode: "native", effective_mode: "native", required: false },
       evalId: offer.lease.eval_id,
@@ -64,13 +76,10 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       env: executionEnv,
       runtimeTopology: "in-sandbox",
       preservePlanOnOptionalFailure: true,
-    });
+      ...(relay ? { remoteRelay: relay } : {}),
+    }).catch(async error => { await relay?.close(); await observer.stop(); throw error; });
     let stoppedEvidence: Awaited<ReturnType<typeof observer.stop>> | undefined;
     const stopObserver = async () => stoppedEvidence ??= await observer.stop();
-    const release = releaseRemoteResources({
-      root, evalDirectory, lease: offer.lease, workspace, env,
-      ...(options.dockerExecutable ? { dockerExecutable: options.dockerExecutable } : {}),
-    });
     let eventTail = Promise.resolve();
     const publishEvent = (event: Record<string, unknown>): void => {
       eventTail = eventTail.then(() => emit(String(event.type ?? "harbor.event"), event));
@@ -88,7 +97,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         ...(captureRuntime.exporter ? { modelProxy: captureRuntime.exporter.route } : {}),
         env: executionEnv, ...(options.harborExecutable ? { harborExecutable: options.harborExecutable } : {}), signal,
         ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
-        emit: publishEvent,
+        emit: publishEvent, ...processHooks,
       });
       await eventTail;
       const executionEvidence = await stopObserver();
@@ -109,10 +118,15 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         requireCompleteMarker: true, allowMissingBundleDiagnostic: true,
       }, trial);
       if (ref.run_group) throw new Error("remote single-bundle transport cannot export native phase groups");
+      const bundleDirectory = path.join(statePaths(root).runs, ref.run_id);
+      const verifierSource = spec.schema_version === "2" && spec.verifier_source === "2" ? await captureRemoteVerifierSource({
+        taskId, taskDirectory: path.join(datasetDirectory, taskId), trialDirectory: path.join(backendDirectory, "job", ref.trial_id),
+        bundleDirectory, runId: ref.run_id, runtimeId: runtime.runtime_id, trial, destination: path.join(workspace, "verifier-source"),
+      }) : undefined;
       const body = await encodeRemoteResultEnvelope({
         evalId: offer.lease.eval_id, workId: offer.work.work_id,
         leaseId: offer.lease.lease_id, leaseEpoch: offer.lease.epoch, trial,
-        bundleDirectory: path.join(statePaths(root).runs, ref.run_id),
+        bundleDirectory, ...(verifierSource ? { verifierSource } : {}),
       });
       return { status: "succeeded", artifacts: [{ kind: "result-bundle", body }], release };
     } catch (error) {
@@ -121,48 +135,33 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       return { status: signal.aborted ? "cancelled" : "failed", artifacts: [failureDiagnostic(errorCode(error))], release };
     } finally {
       await captureRuntime.close().catch(() => undefined);
+      await relay?.close().catch(() => undefined);
       for (const name of spec.credential_names) delete executionEnv[name];
     }
   };
+  const owned: RemoteWorkerExecutor = async input => {
+    const spec = parseRemoteHarborWorkSpec(parseJSON(required(input.inputs, "work-spec")), input.offer);
+    if (spec.schema_version === "2" && spec.verifier_only && !input.readExecutionLease) throw new TypeError("remote verifier requires current controller execution lease grants");
+    // Also admit direct in-process callers. The packaged runner calls prepare
+    // before acceptance, so its crash window already has durable ownership.
+    const ownership = await prepareRemoteHarborOffer(options, input.offer);
+    if (input.ownership && (!input.authorizeProcess || sha256JSON(input.ownership) !== sha256JSON(ownership))) {
+      throw new TypeError("remote execution ownership differs from its controller admission");
+    }
+    await beginRemoteHarborOffer(options, input.offer);
+    try { return await execute(input); }
+    finally { await settleRemoteHarborOffer(options, input.offer); }
+  };
+  owned.prepare = offer => prepareRemoteHarborOffer(options, offer);
+  return owned;
 }
 
 /** Recover cleanup after a worker restart without re-executing accepted work. */
 export async function releaseRemoteHarborOffer(options: RemoteHarborWorkerOptions, offer: RemoteWorkOfferV1): Promise<void> {
   const root = path.resolve(options.root);
-  const evalDirectory = path.join(statePaths(root).evals, offer.lease.eval_id);
+  await cleanRemoteHarborOffer(options, offer);
   const workspace = path.join(statePaths(root).workerStaging, offer.lease.lease_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
-  await releaseRemoteResources({
-    root, evalDirectory, lease: offer.lease, workspace, env: options.env ?? process.env,
-    ...(options.dockerExecutable ? { dockerExecutable: options.dockerExecutable } : {}),
-  })();
-}
-
-function releaseRemoteResources(input: {
-  root: string;
-  evalDirectory: string;
-  lease: ExecutionLeaseV1;
-  workspace: string;
-  env: NodeJS.ProcessEnv;
-  dockerExecutable?: string;
-}): () => Promise<void> {
-  let done = false;
-  return async () => {
-    if (done) return;
-    const leaseFile = path.join(input.evalDirectory, "leases", `${input.lease.lease_id}.json`);
-    if (!(await lstat(leaseFile).catch(() => null))?.isFile()) {
-      await removeWorkerWorkspace(input.workspace);
-      done = true;
-      return;
-    }
-    await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: input.lease.lease_id, expectedEpoch: input.lease.epoch });
-    const report = await reapOwnedDockerResources({
-      root: input.root, leaseIds: [input.lease.lease_id], env: input.env,
-      ...(input.dockerExecutable ? { dockerExecutable: input.dockerExecutable } : {}),
-    });
-    if (report.issues.length > 0 || report.retained.length > 0) throw new Error("remote Harbor resource cleanup is incomplete");
-    await removeWorkerWorkspace(input.workspace);
-    done = true;
-  };
+  await removeWorkerWorkspace(workspace);
 }
 
 async function removeWorkerWorkspace(directory: string): Promise<void> {
@@ -184,15 +183,7 @@ async function makeTreeWritable(directory: string): Promise<void> {
   await chmod(directory, 0o700);
 }
 
-async function persistRunningLease(evalDirectory: string, lease: ExecutionLeaseV1): Promise<void> {
-  const now = new Date().toISOString();
-  await atomicWriteJSON(path.join(await ensureDir(path.join(evalDirectory, "leases")), `${lease.lease_id}.json`), {
-    ...lease, state: "running", accepted_at: lease.accepted_at ?? now, heartbeat_at: now,
-    resource_epochs: lease.resource_epochs ?? [lease.epoch],
-  });
-}
-
-function preparedUse(prepared: Awaited<ReturnType<typeof loadPreparedArtifact>>, directory: string, pinned: HarborPreparedArtifactUse): HarborPreparedArtifactUse {
+function preparedUse(prepared: Awaited<ReturnType<typeof verifyPreparedArtifact>>, directory: string, pinned: HarborPreparedArtifactUse): HarborPreparedArtifactUse {
   return {
     directory,
     artifact_id: prepared.artifact_id, artifact_integrity: prepared.artifact_integrity as string,

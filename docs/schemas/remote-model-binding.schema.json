@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-model-binding.schema.json",
+  "title": "Hitch remote worker public model binding V2",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false, "required": ["schema_version", "kind", "training"],
+      "properties": { "schema_version": { "const": "2" }, "kind": { "const": "training-external" }, "training": { "$ref": "training-external-binding.schema.json" } }
+    },
+    {
+      "type": "object", "additionalProperties": false, "required": ["schema_version", "kind", "inference_id", "model_id", "model_node", "api", "max_output_tokens"],
+      "properties": {
+        "schema_version": { "const": "2" }, "kind": { "const": "managed-inference" },
+        "inference_id": { "$ref": "#/$defs/sha256" }, "model_id": { "$ref": "#/$defs/sha256" },
+        "model_node": { "$ref": "model-node-binding.schema.json" }, "api": { "enum": ["responses", "chat-completions"] },
+        "max_output_tokens": { "type": "integer", "minimum": 1 }
+      }
+    }
+  ],
+  "$defs": { "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } }
+}

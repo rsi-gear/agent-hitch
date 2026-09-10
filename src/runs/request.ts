@@ -1,3 +1,4 @@
+import { parseModelNodeBinding } from "../domain/index.js";
 import { stat } from "node:fs/promises";
 import { getAdapter, normalizeRequest } from "../adapters/index.js";
 import type { AdapterRequest } from "../adapters/index.js";
@@ -145,11 +146,14 @@ function validateLocalInferenceSelection(value: unknown, model: string): LocalIn
     return undefined;
   }
   const record = value === undefined ? {} : asRecord(value, "local_inference");
-  const allowed = new Set(["model", "device", "profile", "inference_id", "offline"]);
+  const allowed = new Set(["model", "device", "profile", "inference_id", "offline", "model_node"]);
   const unexpected = Object.keys(record).find((field) => !allowed.has(field));
   if (unexpected) throw new TypeError(`local_inference has unknown field: ${unexpected}`);
   if (record.model !== undefined && record.model !== model) throw new TypeError("local_inference.model must match model");
-  if (record.inference_id !== undefined && (record.device !== undefined || record.profile !== undefined)) {
+  const modelNode = record.model_node === undefined ? undefined : parseModelNodeBinding(record.model_node);
+  if (modelNode && record.inference_id === undefined) throw new TypeError("model-node selection requires a planned inference lock");
+  const normalizedNodeSelection = modelNode && (record.device === undefined || record.device === "auto") && (record.profile === undefined || record.profile === "baseline");
+  if (record.inference_id !== undefined && !normalizedNodeSelection && (record.device !== undefined || record.profile !== undefined)) {
     throw new TypeError("--inference cannot be combined with --device or --local-profile");
   }
   const device = record.device === undefined ? "auto" : asString(record.device, "local_inference.device");
@@ -162,6 +166,7 @@ function validateLocalInferenceSelection(value: unknown, model: string): LocalIn
     device: device as LocalInferenceSelectionV1["device"],
     profile,
     offline,
+    ...(modelNode ? { model_node: modelNode } : {}),
     ...(record.inference_id === undefined ? {} : { inference_id: asSha256(record.inference_id, "local_inference.inference_id") }),
   };
 }
@@ -172,7 +177,7 @@ function validateModelIdentity(value: unknown, requestedId: string, harnessId: s
     ...(derivedParameters ? { parametersSha256: derivedParameters } : {}),
   });
   const record = asRecord(value, "model_identity");
-  const allowed = new Set(["provider", "requested_id", "effective_id", "parameters_sha256", "identity_resolved", "inference_id"]);
+  const allowed = new Set(["provider", "requested_id", "effective_id", "parameters_sha256", "identity_resolved", "inference_id", "model_node"]);
   const unexpected = Object.keys(record).find((field) => !allowed.has(field));
   if (unexpected) throw new TypeError(`model_identity has unknown field: ${unexpected}`);
   const declaredRequested = asString(record.requested_id ?? requestedId, "model_identity.requested_id");
@@ -190,6 +195,10 @@ function validateModelIdentity(value: unknown, requestedId: string, harnessId: s
     ...(resolved !== undefined ? { resolved } : {}),
   });
   if (record.inference_id !== undefined) result.inference_id = asSha256(record.inference_id, "model_identity.inference_id");
+  if (record.model_node !== undefined) {
+    if (!result.inference_id) throw new TypeError("model node identity requires an inference lock");
+    result.model_node = parseModelNodeBinding(record.model_node);
+  }
   return result;
 }
 
@@ -220,4 +229,11 @@ function validateProtocolIdentityInput(value: unknown): Pick<ProtocolIdentityV1,
   if (record.environment_identity !== undefined) result.environment_identity = asSha256(record.environment_identity, "environment_identity");
   if (record.tool_policy_sha256 !== undefined) result.tool_policy_sha256 = asSha256(record.tool_policy_sha256, "tool_policy_sha256");
   return result;
+}
+
+export function validateCandidateDeadline(request: ValidatedRunRequest, deadline: bigint | undefined): void {
+  if (deadline !== undefined && (typeof deadline !== "bigint" || deadline <= 0n
+    || request.context.kind !== "benchmark_task" || !request.defer_benchmark_observation)) {
+    throw invalidInput("candidate deadline requires a managed benchmark task");
+  }
 }

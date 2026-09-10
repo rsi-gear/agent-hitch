@@ -2,17 +2,18 @@ import { randomUUID } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import type {
-  InferenceRuntimeObservationV1,
+  InferenceRuntimeObservation,
   InferenceLockV1,
   InferenceRuntimeManifestV1,
   InferenceServiceRecordV1,
   LocalModelManifestV1,
   Sha256,
 } from "../domain/index.js";
-import { HitchError, appendLine, atomicWriteJSON, readJSON, statePaths } from "../foundation/index.js";
+import { HitchError, appendLine, atomicWriteJSON, readJSON, sha256JSON, statePaths } from "../foundation/index.js";
 import type { SGLangLaunchedService, SGLangLauncher } from "./sglang.js";
-import { DockerSGLangLauncher } from "./sglang.js";
+import { ManagedSGLangLauncher } from "./managed-launcher.js";
 import { parseInferenceServiceRecord } from "./manifest.js";
+import { readServiceAttachment, writeServiceAttachment } from "./service-attachment.js";
 
 export interface AcquireSGLangServiceInput {
   lock: InferenceLockV1;
@@ -30,7 +31,7 @@ export interface SGLangServiceLease {
   base_url: string;
   wire_model: string;
   engine_token: string;
-  observation?: InferenceRuntimeObservationV1;
+  observation?: InferenceRuntimeObservation;
   isReady(): boolean;
   release(): Promise<void>;
 }
@@ -40,6 +41,14 @@ export interface SGLangServiceSupervisorOptions {
   launcher?: SGLangLauncher;
   onEvent?: (event: Record<string, unknown>) => void;
   healthIntervalMs?: number;
+}
+
+/** The controller must first verify these owners against durable active work. */
+export interface SGLangRecoveryClaim { service_id: string; owner_ids: string[] }
+export interface ReattachedSGLangService {
+  record: InferenceServiceRecordV1;
+  lock: InferenceLockV1;
+  owners: Map<string, SGLangServiceLease>;
 }
 
 interface ServiceEntry {
@@ -66,16 +75,18 @@ export class SGLangServiceSupervisor {
   private readonly terminalListeners = new Set<(record: InferenceServiceRecordV1, released: boolean) => Promise<void>>();
   private readonly startups = new Set<AbortController>();
   private readonly blocked = new Set<string>();
+  private recovering: Promise<ReattachedSGLangService[]> | undefined;
 
   constructor(options: SGLangServiceSupervisorOptions) {
     this.healthIntervalMs = options.healthIntervalMs ?? 2_000;
     this.root = options.root;
-    this.launcher = options.launcher ?? new DockerSGLangLauncher();
+    this.launcher = options.launcher ?? new ManagedSGLangLauncher();
     this.onEvent = options.onEvent;
   }
 
   async acquire(input: AcquireSGLangServiceInput): Promise<SGLangServiceLease> {
     if (this.closed) throw new HitchError("inference supervisor is closed", { code: "inference_route_unavailable", exitCode: 12 });
+    if (this.recovering) throw new HitchError("inference recovery is still coordinating prior ownership", { code: "inference_recovery_ambiguous", exitCode: 12 });
     validateAcquire(input);
     if (input.signal?.aborted) throw new HitchError("inference acquisition cancelled", { code: "cancelled", exitCode: 9 });
     const key = `${input.lock.inference_id}:${input.isolationKey}`;
@@ -98,6 +109,10 @@ export class SGLangServiceSupervisor {
     entry.owners.set(input.ownerId, (entry.owners.get(input.ownerId) ?? 0) + 1);
     await this.updateOwners(entry);
     await this.emit(entry, "inference.acquired", { owner_id: input.ownerId });
+    return this.lease(entry, input.ownerId);
+  }
+
+  private lease(entry: ServiceEntry, ownerId: string): SGLangServiceLease {
     let released = false;
     return {
       service_id: entry.record.service_id,
@@ -107,11 +122,11 @@ export class SGLangServiceSupervisor {
       wire_model: entry.service.wire_model,
       engine_token: entry.service.engine_token,
       ...(entry.service.observation ? { observation: entry.service.observation } : {}),
-      isReady: () => !this.closed && this.services.get(key) === entry && entry.record.state === "ready",
+      isReady: () => !this.closed && this.services.get(entry.key) === entry && entry.record.state === "ready",
       release: async () => {
         if (released) return;
         released = true;
-        await this.release(entry as ServiceEntry, input.ownerId);
+        await this.release(entry, ownerId);
       },
     };
   }
@@ -130,7 +145,14 @@ export class SGLangServiceSupervisor {
 
   async stop(serviceId?: string, force = false): Promise<void> {
     const entries = [...this.services.values()].filter((entry) => serviceId === undefined || entry.record.service_id === serviceId);
-    if (serviceId && entries.length === 0) throw new HitchError(`inference service not found: ${serviceId}`, { code: "inference_route_unavailable", exitCode: 2 });
+    if (serviceId && entries.length === 0) {
+      const record = (await readServiceRecords(this.root)).find(item => item.service_id === serviceId);
+      if (!record?.model_node) throw new HitchError(`inference service not found: ${serviceId}`, { code: "inference_route_unavailable", exitCode: 2 });
+      if (!force && record.lease_owner_ids.length) throw new HitchError("inference service has active leases", { code: "inference_in_use", exitCode: 2 });
+      if (await this.launcher.stopOrphan?.(this.root, record) !== "stopped") throw new HitchError("model-node stop is unconfirmed; ownership retained", { code: "inference_recovery_ambiguous", exitCode: 12 });
+      await writeRecord(this.root, { ...record, state: "stopped", lease_owner_ids: [], updated_at: new Date().toISOString() });
+      return;
+    }
     if (!force && entries.some((entry) => totalOwners(entry) > 0)) {
       throw new HitchError("inference service has active leases", { code: "inference_in_use", exitCode: 2 });
     }
@@ -140,10 +162,47 @@ export class SGLangServiceSupervisor {
     }
   }
 
-  async recover(): Promise<void> {
-    for (const record of await readServiceRecords(this.root)) {
-      if (record.state === "stopped") continue;
+  async recover(claims: readonly SGLangRecoveryClaim[] = []): Promise<ReattachedSGLangService[]> {
+    if (this.closed || this.recovering || this.services.size || this.pending.size) throw new TypeError("inference recovery requires an unused supervisor");
+    const recovery = this.recoverRecords(structuredClone(claims));
+    this.recovering = recovery;
+    try { return await recovery; } finally { if (this.recovering === recovery) this.recovering = undefined; }
+  }
+
+  private async recoverRecords(claims: readonly SGLangRecoveryClaim[]): Promise<ReattachedSGLangService[]> {
+    const records = await readServiceRecords(this.root);
+    const requested = new Map(claims.map(claim => [claim.service_id, claim.owner_ids]));
+    if (requested.size !== claims.length || claims.some(claim => {
+      const record = records.find(item => item.service_id === claim.service_id);
+      return !record || record.state !== "ready" || !record.model_node || !Array.isArray(claim.owner_ids) || !claim.owner_ids.length
+        || new Set(claim.owner_ids).size !== claim.owner_ids.length || claim.owner_ids.some(owner => !record.lease_owner_ids.includes(owner));
+    })) throw new HitchError("active service recovery claims differ from persisted owners", { code: "inference_recovery_ambiguous", exitCode: 12 });
+    const recovered: ReattachedSGLangService[] = [];
+    for (const record of records) {
       this.epoch = Math.max(this.epoch, record.epoch);
+      if (record.state === "stopped") continue;
+      const owners = requested.get(record.service_id);
+      if (owners) {
+        const key = `${record.inference_id}:${record.isolation_key}`;
+        this.blocked.add(key);
+        if (!this.launcher.attach || this.services.has(key)) throw new HitchError("live service attachment is unavailable", { code: "inference_recovery_ambiguous", exitCode: 12 });
+        const input = await readServiceAttachment(this.root, record);
+        const service = await this.launcher.attach(input);
+        if (this.closed) throw new HitchError("inference recovery was closed before attachment completed; prior ownership retained", { code: "inference_recovery_ambiguous", exitCode: 12 });
+        if (sha256JSON(service.service_handle ?? null) !== sha256JSON(record.service_handle) || service.container_id) {
+          throw new HitchError("attached process differs from its original service handle", { code: "inference_recovery_ambiguous", exitCode: 12 });
+        }
+        const entry: ServiceEntry = { key, lock: input.lock, record: { ...record, base_url: service.base_url }, service, owners: new Map(owners.map(owner => [owner, 1])) };
+        await this.updateOwners(entry);
+        this.services.set(key, entry); this.blocked.delete(key);
+        if (service.checkHealth) {
+          entry.healthTimer = setInterval(() => { this.checkEntry(entry).catch(() => {}); }, this.healthIntervalMs);
+          entry.healthTimer.unref?.();
+        }
+        await this.emit(entry, "inference.reattached");
+        recovered.push({ record: entry.record, lock: entry.lock, owners: new Map(owners.map(owner => [owner, this.lease(entry, owner)])) });
+        continue;
+      }
       const status = this.launcher.stopOrphan ? await this.launcher.stopOrphan(this.root, record) : "ambiguous";
       const now = new Date().toISOString();
       if (status === "ambiguous") {
@@ -159,11 +218,13 @@ export class SGLangServiceSupervisor {
         await writeRecord(this.root, { ...record, state: "stopped", lease_owner_ids: [], updated_at: now });
       }
     }
+    return recovered;
   }
 
   async close(): Promise<void> {
     this.closed = true;
     for (const controller of this.startups) controller.abort();
+    if (this.recovering) await this.recovering.catch(() => {});
     await Promise.allSettled([...this.pending.values()]);
     await Promise.all([...this.services.values()].map((entry) => this.stopEntry(entry)));
   }
@@ -183,6 +244,7 @@ export class SGLangServiceSupervisor {
       owner_id: input.ownerId,
       lease_owner_ids: [],
       backend: input.lock.execution.platform.backend,
+      ...(input.lock.model_node ? { model_node: input.lock.model_node } : {}),
       started_at: now,
       updated_at: now,
     };
@@ -197,15 +259,24 @@ export class SGLangServiceSupervisor {
           record = { ...record, container_id: containerId, updated_at: new Date().toISOString() };
           await writeRecord(this.root, record);
         },
+        onServiceCreated: async (serviceHandle) => {
+          record = { ...record, service_handle: serviceHandle, updated_at: new Date().toISOString() };
+          await writeRecord(this.root, record);
+        },
       });
       const ready: InferenceServiceRecordV1 = {
         ...record,
         state: "ready",
-        container_id: launched.container_id,
+        ...(launched.container_id ? { container_id: launched.container_id } : {}),
+        ...(launched.service_handle ? { service_handle: launched.service_handle } : {}),
         base_url: launched.base_url,
         updated_at: new Date().toISOString(),
       };
       const entry: ServiceEntry = { key, lock: input.lock, record: ready, service: launched, owners: new Map() };
+      if (ready.model_node) {
+        if (launched.observation?.schema_version !== "2") throw new TypeError("model-node service lacks its validated startup observation");
+        await writeServiceAttachment(this.root, ready, { lock: input.lock, model: input.model, runtime: input.runtime }, launched.observation);
+      }
       this.services.set(key, entry);
       await writeRecord(this.root, ready);
       await this.emit(entry, "inference.ready");
@@ -219,6 +290,13 @@ export class SGLangServiceSupervisor {
       return entry;
     } catch (error) {
       let released = (error as { code?: string }).code !== "inference_recovery_ambiguous";
+      // Even preparation can fail before the node has a service record. Seal a
+      // stop tombstone so both usage inspection and a delayed start reconcile
+      // the same durable identity instead of treating absence as release.
+      if (record.model_node && !launched) {
+        try { released = await this.launcher.stopOrphan?.(this.root, record) === "stopped"; }
+        catch { released = false; }
+      }
       if (launched) {
         const entry = this.services.get(key);
         if (entry) this.clearTimers(entry);
@@ -303,7 +381,7 @@ export class SGLangServiceSupervisor {
         if (this.services.get(entry.key) === entry) this.services.delete(entry.key);
       } catch (error) {
         entry.record = { ...entry.record, state: "failed", updated_at: new Date().toISOString(),
-          error: { code: "inference_recovery_ambiguous", message: "container stop was not confirmed; reservations retained" } };
+          error: { code: "inference_recovery_ambiguous", message: "service stop was not confirmed; reservations retained" } };
         await writeRecord(this.root, entry.record);
         throw error;
       } finally { delete entry.stopping; }
@@ -336,7 +414,7 @@ export class SGLangServiceSupervisor {
   }
 }
 
-async function readServiceRecords(root: string): Promise<InferenceServiceRecordV1[]> {
+export async function readServiceRecords(root: string): Promise<InferenceServiceRecordV1[]> {
   const directory = statePaths(root).inferenceServices;
   let entries;
   try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) {
@@ -347,13 +425,18 @@ async function readServiceRecords(root: string): Promise<InferenceServiceRecordV
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^inference_[a-f0-9]{32}$/.test(entry.name)) continue;
     const file = path.join(directory, entry.name, "state.json");
-    try { if ((await lstat(file)).isFile()) records.push(parseInferenceServiceRecord(await readJSON(file))); } catch {}
+    try { if ((await lstat(file)).isFile()) records.push(parseInferenceServiceRecord(await readJSON(file))); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new HitchError("persisted inference ownership is invalid; repair its record before recovery", {
+        code: "inference_recovery_ambiguous", exitCode: 12, cause: error,
+      });
+    }
   }
   return records;
 }
 
 function writeRecord(root: string, record: InferenceServiceRecordV1): Promise<void> {
-  return atomicWriteJSON(path.join(serviceDirectory(root, record.service_id), "state.json"), record);
+  return atomicWriteJSON(path.join(serviceDirectory(root, record.service_id), "state.json"), parseInferenceServiceRecord(record));
 }
 
 function serviceDirectory(root: string, serviceId: string): string {

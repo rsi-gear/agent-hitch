@@ -32,8 +32,9 @@ import { planTaskSchedulingHints, schedulingHintsFromPlan } from "./duration-est
 import type { EvalSchedulerSummaryV1 } from "../domain/index.js";
 import { buildCompletedEvalResult } from "./eval-result-builder.js";
 import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, inferenceCoordinator, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, inferenceCoordinator, inferenceRerunId, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
+  if (inferenceRerunId && !/^rerun_[a-f0-9]{32}$/.test(inferenceRerunId)) throw invalidInput("invalid inference repair scope");
   evalId = validateEvalId(evalId);
   const persistedRequest = normalizedRequest || await validateEvalRequest(request);
   if (maxConcurrentOverride !== undefined && (!Number.isSafeInteger(maxConcurrentOverride) || maxConcurrentOverride < 1 || maxConcurrentOverride > persistedRequest.max_concurrent)) {
@@ -104,8 +105,15 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     if (plannedTrials !== null && !Number.isSafeInteger(plannedTrials)) throw invalidInput("planned trial count exceeds the safe integer range");
     if (resume) startedAt = new Date(resume.progress.started_at);
     const capture = resolveEvalModelCapturePlan({ requested: modelCapturePlan, resumed: resume?.executionPlan.model_capture, resuming: Boolean(resume) });
+    if (normalized.training_binding) {
+      if (localTaskIds?.length !== 1 || standardDataset) {
+        throw new HitchError("training-external requires one enumerable Harbor dataset task", { code: "training_topology_unsupported", exitCode: 12 });
+      }
+      capture.plan = forceLocalInferenceCapturePlan(capture.plan, remoteWorkExecutor ? "in-sandbox" : "host-side");
+      capture.persist = true;
+    }
     if (normalized.local_inference) {
-      capture.plan = forceLocalInferenceCapturePlan(capture.plan);
+      capture.plan = forceLocalInferenceCapturePlan(capture.plan, remoteWorkExecutor ? "in-sandbox" : "host-side");
       capture.persist = true;
       if (!inferenceCoordinator) throw new HitchError("local eval inference requires the Hitch daemon", { code: "inference_route_unavailable", exitCode: 12 });
       const resumedInferenceId = (resume?.plan.candidate as Record<string, unknown> | undefined)?.inference_id;
@@ -113,13 +121,13 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         throw new HitchError("persisted local inference identity is invalid", { code: "inference_lock_mismatch", exitCode: 12 });
       }
       inferenceLease = await inferenceCoordinator.acquire({
-        run_id: `run_${evalId.slice("eval_".length)}`,
+        run_id: inferenceRerunId ? `run_${inferenceRerunId.slice("rerun_".length)}` : `run_${evalId.slice("eval_".length)}`,
         harness_ref: normalized.harness_ref,
         selection: resumedInferenceId
           ? { ...normalized.local_inference, inference_id: resumedInferenceId as import("../domain/index.js").Sha256 }
           : normalized.local_inference,
-        cache_scope_owner: evalId,
-        evidence_owner: { kind: "eval", eval_id: evalId },
+        cache_scope_owner: inferenceRerunId ? `${evalId}:${inferenceRerunId}` : evalId,
+        evidence_owner: { kind: "eval", eval_id: evalId, ...(inferenceRerunId ? { rerun_id: inferenceRerunId } : {}) },
         ...(signal ? { signal } : {}),
         on_event: (event) => sink.emit(event),
       });
@@ -135,6 +143,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         harness_ref: lockedHarnessRef(resolvedRevision), harness_id: resolvedRevision.harness_id,
         revision_identity: resolvedRevision.identity, model: normalized.model || null,
         ...(inferenceLease ? { inference_id: inferenceLease.lock.inference_id } : {}),
+        ...(inferenceLease?.lock.model_node ? { model_node: inferenceLease.lock.model_node } : {}),
+        ...(normalized.training_binding ? { training_binding: normalized.training_binding } : {}),
       },
       dataset: normalized.dataset,
       benchmark_id: normalized.benchmark_id,
@@ -145,6 +155,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         : "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
       ...(capture.persist ? { model_capture: capture.plan } : {}),
+      ...(normalized.training_binding ? { training_binding: normalized.training_binding } : {}),
       infrastructure_retries: normalized.infrastructure_retries,
       infrastructure_retry_backoff_ms: normalized.infrastructure_retry_backoff_ms,
       ...(localTaskIds === null ? {} : { tasks: localTaskIds }),
@@ -171,6 +182,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     const preparedArtifacts = prepared.artifactsById;
     const activeCaptureRuntime = await startEvalModelCaptureRuntime({
       plan: capture.plan, evalId, evalDirectory, env,
+      ...(normalized.training_binding ? { trainingBinding: normalized.training_binding } : {}),
       ...(inferenceLease ? { managedInference: {
         binding: inferenceLease.binding, credential: inferenceLease.credential, modelId: inferenceLease.lock.model_id,
       } } : {}),
@@ -298,7 +310,13 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(dockerResourceReaper ? { dockerResourceReaper } : {}),
         ...(environmentImageManifestLoader ? { environmentImageManifestLoader } : {}),
         ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
-        ...(remoteWorkExecutor ? { remoteWorkExecutor } : {}),
+        ...(remoteWorkExecutor ? { remoteWorkExecutor: (execution) => remoteWorkExecutor({
+          ...execution,
+          ...(inferenceLease ? { modelTarget: {
+            kind: "managed-inference", binding: inferenceLease.binding, credential: inferenceLease.credential,
+            modelId: inferenceLease.lock.model_id, maxOutputTokens: inferenceLease.lock.generation.max_output_tokens,
+          } } : {}),
+        }) } : {}),
       });
       progress = execution.progress;
       backendRuns.push(...execution.backendRuns.map((entry) => ({

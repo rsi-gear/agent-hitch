@@ -1,35 +1,7 @@
-import type { ModelEndpointBindingV1, RunId, Sha256 } from "../domain/index.js";
-import { HitchError } from "../foundation/index.js";
-
-const LOCAL_MODEL_ENVIRONMENT_NAMES = new Set([
-  "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-  "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION",
-  "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-  "HITCH_LOCAL_MAX_OUTPUT_TOKENS", "HITCH_LOCAL_MODEL_BASE_URL", "HITCH_LOCAL_MODEL_TOKEN",
-  "HUGGING_FACE_HUB_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_ORGANIZATION",
-]);
-
-const LOCAL_MODEL_ENVIRONMENT_PREFIXES = [
-  "ANTHROPIC_", "AZURE_OPENAI_", "CLAUDE_", "CODEX_", "COHERE_", "DEEPSEEK_", "FIREWORKS_",
-  "GEMINI_", "GOOGLE_GENERATIVE_AI_", "GROQ_", "HF_", "HUGGING_FACE_", "MISTRAL_", "OPENAI_",
-  "SGLANG_", "TOGETHER_", "TORCH_", "TRANSFORMERS_", "XAI_",
-] as const;
-
-/**
- * Build the inherited portion of a managed-local harness environment. Adapter
- * values are intentionally merged afterwards so only a Hitch-issued endpoint
- * credential can re-enter the child environment.
- */
-export function scrubLocalInferenceEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const scrubbed = { ...env };
-  for (const name of Object.keys(scrubbed)) {
-    if (LOCAL_MODEL_ENVIRONMENT_NAMES.has(name)
-      || LOCAL_MODEL_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix))) {
-      delete scrubbed[name];
-    }
-  }
-  return scrubbed;
-}
+import type { ModelEndpointBindingV1, RunId, Sha256, ModelNodeBindingV2 } from "../domain/index.js";
+import { HitchError, sha256JSON } from "../foundation/index.js";
+import { parseModelNodeBinding } from "../domain/index.js";
+import { scrubLocalInferenceEnvironment } from "../model-access/index.js";
 
 /**
  * Harbor exposes one run-bound capture route inside the trial container. It is
@@ -39,9 +11,11 @@ export function scrubLocalInferenceEnvironment(env: NodeJS.ProcessEnv): NodeJS.P
 export function managedHarborModelRuntime(
   env: NodeJS.ProcessEnv,
   runId: RunId,
-  identity: { inference_id: Sha256; model_id: Sha256 },
+  identity: { inference_id: Sha256; model_id: Sha256; model_node?: ModelNodeBindingV2 },
 ): { model_endpoint: ModelEndpointBindingV1; model_endpoint_credential: string } {
   const base = env.OPENAI_BASE_URL;
+  const modelNode = env.HITCH_MANAGED_NODE_BINDING ? parseModelNodeBinding(JSON.parse(env.HITCH_MANAGED_NODE_BINDING)) : undefined;
+  if (sha256JSON(modelNode ?? null) !== sha256JSON(identity.model_node ?? null)) throw invalidHandoff();
   if (env.HITCH_HARBOR_INTERNAL !== "1" || env.HITCH_MANAGED_LOCAL_INFERENCE !== "1"
     || env.HITCH_MANAGED_RUN_ID !== runId || env.HITCH_MANAGED_INFERENCE_ID !== identity.inference_id
     || env.HITCH_MANAGED_MODEL_ID !== identity.model_id || env.OPENAI_API_KEY !== "hitch-managed-local"
@@ -56,7 +30,8 @@ export function managedHarborModelRuntime(
   }
   return {
     model_endpoint: {
-      kind: "managed-local",
+      kind: modelNode ? "managed-node" : "managed-local",
+      ...(modelNode ? { model_node: modelNode } : {}),
       inference_id: identity.inference_id,
       api: "responses",
       base_url: base,

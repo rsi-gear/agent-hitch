@@ -36,6 +36,28 @@ test("remote tree materialization preserves executable mode and rejects unsafe e
   assert.throws(() => parseRemoteTreeEnvelope(corrupt), (error: unknown) => (error as { code?: string }).code === "remote_input_invalid");
 });
 
+test("remote tree materializes runtime-sized binary input without overflowing the stack", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-large-tree-"));
+  t.after(() => forceRemove(root));
+  const content = Buffer.alloc(32 * 1024 * 1024, 0xfb);
+  const destination = path.join(root, "materialized");
+  await materializeRemoteTreeEnvelope(tree("bin/node", content), destination);
+  assert.deepEqual(await readFile(path.join(destination, "bin/node")), content);
+});
+
+test("remote tree rejects malformed Base64 before its permissive decoder", () => {
+  for (const encoded of ["Zg", "Zg=", "Zg===", "=g==", "Z===", "====", "Zg==AAAA", "Zm9v\n", "Zm v", "Zm_v", "Zm-v", "Zmø="]) {
+    const value = tree("file", Buffer.from(encoded, "base64"));
+    value.files[0]!.content_base64 = encoded;
+    assert.throws(() => parseRemoteTreeEnvelope(value), { code: "remote_input_invalid" }, encoded);
+  }
+  for (const encoded of ["", "Zg==", "Zm8=", "Zm9v", "+/8=", "Zh=="]) {
+    const value = tree("file", Buffer.from(encoded, "base64"));
+    value.files[0]!.content_base64 = encoded;
+    assert.doesNotThrow(() => parseRemoteTreeEnvelope(value), encoded);
+  }
+});
+
 function tree(file: string, content: Buffer) {
   return {
     schema_version: "1",

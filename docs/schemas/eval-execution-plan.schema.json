@@ -26,6 +26,7 @@
     },
     "provider": { "type": "string", "minLength": 1 },
     "model_capture": { "$ref": "#/$defs/modelCapture" },
+    "training_binding": { "$ref": "training-external-binding.schema.json" },
     "max_parallelism": { "type": "integer", "minimum": 1 },
     "default_trial_resources": { "$ref": "#/$defs/resources" },
     "task_resources": {

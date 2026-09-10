@@ -6,16 +6,19 @@ import type {
   LocalInferenceBackend,
   LocalInferenceProfile,
   LocalModelManifestV1,
+  ModelNodeBindingV2,
   Sha256,
 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, readJSON, sha256JSON, statePaths } from "../foundation/index.js";
-import { inferenceLockIdentity } from "./manifest.js";
+import { inferenceLockIdentity, parseModelNodeBinding } from "./manifest.js";
 
 export interface BuildInferenceLockOptions {
   backend: Exclude<LocalInferenceBackend, "metal">;
   profile: LocalInferenceProfile;
   deviceConstraint?: string;
   cpuThreads?: number;
+  api?: "responses" | "chat-completions";
+  modelNode?: ModelNodeBindingV2;
 }
 
 export function buildInferenceLock(
@@ -23,8 +26,12 @@ export function buildInferenceLock(
   runtime: InferenceRuntimeManifestV1,
   options: BuildInferenceLockOptions,
 ): InferenceLockV1 {
-  if (runtime.backend !== options.backend || runtime.package.kind !== "oci") {
+  if (runtime.backend !== options.backend || (runtime.package.kind !== "oci" && runtime.schema_version !== "2")) {
     throw new TypeError("runtime backend does not match the lock request");
+  }
+  if (options.modelNode && (options.backend !== "cuda" || !options.deviceConstraint || runtime.schema_version !== "2"
+    || runtime.package.kind !== "python-env" || runtime.package.environment_digest !== options.modelNode.runtime_digest)) {
+    throw new TypeError("model node lock requires its observed Python CUDA runtime and explicit GPU");
   }
   if (model.dtype === "unknown") {
     throw new HitchError("model config must declare torch_dtype", { code: "inference_model_unsupported", exitCode: 2 });
@@ -52,7 +59,8 @@ export function buildInferenceLock(
       cuda_graph: throughput ? "enabled" as const : "disabled" as const,
     };
   const withoutIdentity: Omit<InferenceLockV1, "inference_id"> = {
-    schema_version: "1",
+    schema_version: options.modelNode ? "2" : "1",
+    ...(options.modelNode ? { model_node: parseModelNodeBinding(options.modelNode) } : {}),
     engine: "sglang",
     model_id: model.model_id,
     runtime_id: runtime.runtime_id,
@@ -99,7 +107,7 @@ export function buildInferenceLock(
       override_policy: "reject-conflicts",
     },
     protocol: {
-      api: "responses",
+      api: options.api ?? "responses",
       streaming: true,
       tool_calls: parser !== null,
       parallel_tool_calls: false,
@@ -111,14 +119,14 @@ export function buildInferenceLock(
         runtime_id: runtime.runtime_id,
         model_type: model.model_type,
         template_digest: model.template_digest,
-        api: "responses",
+        api: options.api ?? "responses",
         tool_call_parser: parser,
       }),
     },
     resources: {
       cpu_millis: options.backend === "cpu" ? cpuThreads * 1_000 : 2_000,
       memory_bytes: memoryBytes,
-      container_slots: 1,
+      container_slots: options.modelNode ? 0 : 1,
       build_slots: 0,
       ...(options.backend === "cuda" ? { gpu_count: 1 } : {}),
       ephemeral_disk_bytes: 4 * 1024 ** 3,
@@ -147,16 +155,19 @@ export async function loadInferenceLock(root: string, inferenceId: Sha256): Prom
 }
 
 export function validateInferenceLockShape(value: unknown): InferenceLockV1 {
-  const record = exact(value, ["schema_version", "engine", "model_id", "runtime_id", "inference_id", "profile", "execution", "generation", "protocol", "resources"], "inference lock");
-  if (record.schema_version !== "1" || record.engine !== "sglang"
+  const record = exact(value, ["schema_version", "engine", "model_id", "runtime_id", "inference_id", "profile", "execution", "generation", "protocol", "resources", "model_node"], "inference lock");
+  if (!["1", "2"].includes(String(record.schema_version)) || record.engine !== "sglang"
     || !digest(record.model_id) || !digest(record.runtime_id) || !digest(record.inference_id)
     || (record.profile !== "baseline" && record.profile !== "throughput")) throw lockError("inference lock identity is invalid");
   const execution = parseExecution(record.execution);
   const generation = parseGeneration(record.generation);
   const protocol = parseProtocol(record.protocol);
-  const resources = parseResources(record.resources, execution.platform.backend);
+  const modelNode = record.schema_version === "2" ? parseModelNodeBinding(record.model_node) : undefined;
+  if (!modelNode && record.model_node !== undefined) throw lockError("legacy inference lock cannot contain a model node");
+  if (modelNode && (execution.platform.backend !== "cuda" || !execution.platform.device_constraint)) throw lockError("model node requires an explicit physical CUDA device");
+  const resources = parseResources(record.resources, execution.platform.backend, !!modelNode);
   const lock: InferenceLockV1 = {
-    schema_version: "1", engine: "sglang", model_id: record.model_id, runtime_id: record.runtime_id,
+    schema_version: modelNode ? "2" : "1", ...(modelNode ? { model_node: modelNode } : {}), engine: "sglang", model_id: record.model_id, runtime_id: record.runtime_id,
     inference_id: record.inference_id, profile: record.profile, execution, generation, protocol, resources,
   };
   validateProfile(lock);
@@ -270,17 +281,17 @@ function parseProtocol(value: unknown): InferenceLockV1["protocol"] {
     reasoning_parser: record.reasoning_parser as string | null, compatibility_profile_id: record.compatibility_profile_id };
 }
 
-function parseResources(value: unknown, backend: "cpu" | "cuda" | "metal"): InferenceLockV1["resources"] {
+function parseResources(value: unknown, backend: "cpu" | "cuda" | "metal", processNode: boolean): InferenceLockV1["resources"] {
   const record = exact(value, ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count", "ephemeral_disk_bytes"], "inference resources");
   const resources = {
     cpu_millis: positiveInteger(record.cpu_millis, "inference CPU reservation"),
     memory_bytes: positiveInteger(record.memory_bytes, "inference memory reservation"),
-    container_slots: positiveInteger(record.container_slots, "inference container reservation"),
+    container_slots: processNode ? nonNegativeInteger(record.container_slots, "inference container reservation") : positiveInteger(record.container_slots, "inference container reservation"),
     build_slots: nonNegativeInteger(record.build_slots, "inference build reservation"),
     ...(record.gpu_count === undefined ? {} : { gpu_count: nonNegativeInteger(record.gpu_count, "inference GPU reservation") }),
     ...(record.ephemeral_disk_bytes === undefined ? {} : { ephemeral_disk_bytes: nonNegativeInteger(record.ephemeral_disk_bytes, "inference disk reservation") }),
   };
-  if (resources.build_slots !== 0 || backend === "cuda" && resources.gpu_count !== 1
+  if (resources.build_slots !== 0 || processNode && resources.container_slots !== 0 || backend === "cuda" && resources.gpu_count !== 1
     || backend !== "cuda" && (resources.gpu_count ?? 0) !== 0) throw lockError("inference resource/backend combination is invalid");
   return resources;
 }

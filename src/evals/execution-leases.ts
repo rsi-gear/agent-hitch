@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { ExecutionLeaseStateV1, ExecutionLeaseV1, ResourceVectorV1 } from "../domain/index.js";
+import type { ExecutionLeaseStateV1, ExecutionLeaseV1, RemoteWorkOfferV1, ResourceVectorV1, RemoteWorkerCleanupReceipt } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, withFileLock } from "../foundation/index.js";
+import { assertRemoteLeaseRelease, parseRemoteReleaseConfirmation } from "./remote-lease-release.js";
 
 const ACTIVE_STATES = new Set<ExecutionLeaseStateV1>(["offered", "accepted", "running", "releasing"]);
 export const DEFAULT_EXECUTION_LEASE_TTL_MS = 45_000;
@@ -186,6 +187,17 @@ export async function reissueExecutionLease(input: {
   });
 }
 
+export async function confirmRemoteExecutionLeaseReleased(input: {
+  evalDirectory: string; leaseId: string; expectedEpoch: number; offer: RemoteWorkOfferV1; cleanupReceipt?: RemoteWorkerCleanupReceipt;
+}): Promise<ExecutionLeaseV1> {
+  const { file } = leaseMutationInput(input);
+  return mutateLease(file, input.leaseId, input.expectedEpoch, async current => {
+    const confirmation = assertRemoteLeaseRelease(current, input.offer, input.cleanupReceipt);
+    if (current.state === "released" && current.release_confirmation) return current;
+    return writeLease(file, { ...current, state: "released", terminal_at: new Date().toISOString(), release_confirmation: confirmation });
+  });
+}
+
 export async function markExecutionLeaseLost(input: {
   evalDirectory: string;
   leaseId: string;
@@ -241,7 +253,7 @@ export function parseExecutionLease(value: unknown): ExecutionLeaseV1 {
   assertOnlyKeys(value, [
     "schema_version", "lease_id", "work_id", "eval_id", "worker_id", "provider", "collision_domain_id",
     "parent_allocation_id", "reservation", "state", "epoch", "issued_at", "accepted_at", "heartbeat_at",
-    "expires_at", "terminal_at", "resource_epochs",
+    "expires_at", "terminal_at", "resource_epochs", "release_confirmation",
   ]);
   const states = new Set<ExecutionLeaseStateV1>(["offered", "accepted", "running", "releasing", "released", "expired", "lost"]);
   if (value.schema_version !== "1" || typeof value.lease_id !== "string" || !/^lease_[a-f0-9]{32}$/.test(value.lease_id)
@@ -262,7 +274,9 @@ export function parseExecutionLease(value: unknown): ExecutionLeaseV1 {
   const terminal = value.state === "released" || value.state === "expired" || value.state === "lost";
   if (terminal !== (value.terminal_at !== undefined)) throw new TypeError("execution lease terminal state is inconsistent");
   const resourceEpochs = parseResourceEpochs(value.resource_epochs, value.epoch as number);
-  if (resourceEpochs && value.state !== "lost" && !resourceEpochs.includes(value.epoch as number)) {
+  const releaseConfirmation = parseRemoteReleaseConfirmation(value.release_confirmation, { state: value.state, epoch: value.epoch as number, provider: value.provider,
+    ...(resourceEpochs ? { resourceEpochs } : {}) });
+  if (resourceEpochs && value.state !== "lost" && !releaseConfirmation && !resourceEpochs.includes(value.epoch as number)) {
     throw new TypeError("execution lease current epoch is not authorized for resources");
   }
   return {
@@ -283,6 +297,7 @@ export function parseExecutionLease(value: unknown): ExecutionLeaseV1 {
     ...(value.heartbeat_at === undefined ? {} : { heartbeat_at: value.heartbeat_at as string }),
     expires_at: value.expires_at,
     ...(value.terminal_at === undefined ? {} : { terminal_at: value.terminal_at as string }),
+    ...(releaseConfirmation ? { release_confirmation: releaseConfirmation } : {}),
   };
 }
 

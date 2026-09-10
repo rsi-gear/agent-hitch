@@ -19,7 +19,7 @@ import {
 import { TrajectoryProjector, TrajectoryWriter, canonicalTrajectoryFileRef, importDeepseekNativeSession, trajectoryRefPath, trajectoryRefV2 } from "../trajectories/index.js";
 import { ProviderCaptureWriter, redactProviderText } from "../trajectories/index.js";
 import type { ManagedInferenceLeaseV1 } from "../domain/index.js";
-import { validateRunRequest } from "./request.js";
+import { validateRunRequest, validateCandidateDeadline } from "./request.js";
 import type { RunRequestInput } from "./request.js";
 import { buildManifest, safeAgentArgsForPersistence } from "./manifest.js";
 import { assertQueuedRunIdentity } from "./queued.js";
@@ -30,6 +30,7 @@ import { completedRunManifest } from "./finalizer.js";
 import { harnessChildEnvironment, managedHarborModelRuntime } from "./local-inference-environment.js";
 import type { ExecuteRunOptions } from "./executor-types.js";
 import { acquireRunInference, bindManagedModelProxy } from "./local-inference-run.js";
+import { trainingHarborIdentity } from "./training-runtime.js";
 export async function executeRun({
   runId,
   request,
@@ -47,13 +48,12 @@ export async function executeRun({
   managedModelProxy,
 }: ExecuteRunOptions): Promise<Record<string, unknown>> {
   let normalized = await validateRunRequest(request);
+  const trainingIdentity = trainingHarborIdentity(process.env, runId, normalized.model, normalized.harness_ref);
+  if (trainingIdentity) normalized.model_identity = { provider: "slime-training", requested_id: normalized.model, effective_id: trainingIdentity.policy_version, identity_resolved: true };
   const usesManagedLocalInference = Boolean(normalized.local_inference);
   normalized = bindManagedModelProxy(normalized, managedModelProxy, process.env);
   const managedProxyRuntime = managedModelProxy ? managedHarborModelRuntime(process.env, runId, managedModelProxy) : undefined;
-  if (candidateDeadlineNs !== undefined && (typeof candidateDeadlineNs !== "bigint" || candidateDeadlineNs <= 0n
-    || normalized.context.kind !== "benchmark_task" || !normalized.defer_benchmark_observation)) {
-    throw new HitchError("candidate deadline requires a managed benchmark task", { code: "invalid_input", exitCode: 2 });
-  }
+  validateCandidateDeadline(normalized, candidateDeadlineNs);
   const credentialValues = credentialValuesFromEnv(normalized.credential_names, process.env);
   if (managedProxyRuntime) credentialValues.push(managedProxyRuntime.model_endpoint.base_url, managedProxyRuntime.model_endpoint_credential);
   if (normalized.local_inference && !inferenceCoordinator) {
@@ -74,7 +74,7 @@ export async function executeRun({
   await atomicWriteJSON(workspacePath, workspacePlan);
   const manifestPath = path.join(runDirectory, "manifest.json");
   const resultPath = path.join(runDirectory, "result.json");
-  const existingManifest = priorManifest || buildManifest(runId, normalized, workspacePlan);
+  const existingManifest = priorManifest || { ...buildManifest(runId, normalized, workspacePlan), ...(trainingIdentity ? { training_external: trainingIdentity } : {}) };
   let manifest: Record<string, unknown> = existingManifest;
   const startedAt = new Date();
   await atomicWriteJSON(path.join(runDirectory, "request.json"), {
@@ -212,7 +212,7 @@ export async function executeRun({
       stage = "launch";
       workspaceLease = await markWorkspaceRunning(workspaceLease, { recordPath: workspacePath });
       const childEnvironment = harnessChildEnvironment({ parent: process.env, ...(specification.env ? { adapter: specification.env } : {}),
-        cwd: workspaceLease.execution_workspace, managedLocal: usesManagedLocalInference });
+        cwd: workspaceLease.execution_workspace, managedLocal: usesManagedLocalInference || Boolean(trainingIdentity) });
       const invocation = prepareSpawnCommand(specification.executable, specification.args);
       const remainingMs = candidateDeadlineNs === undefined ? normalized.timeout_ms
         : Number((candidateDeadlineNs - process.hrtime.bigint()) / 1_000_000n);
@@ -490,7 +490,7 @@ export async function executeRun({
       error_code: ((result as { error?: { code?: string } }).error?.code) || "resolution_unavailable",
     });
   }
-  manifest = applyEffectiveModelIdentity({ manifest, requested: normalized.model_identity, result,
+  manifest = applyEffectiveModelIdentity({ manifest, requested: normalized.model_identity, result, ...(managedModelProxy ? { managedModelProxy } : {}),
     ...(inferenceLease ? { inferenceLease } : {}), ...(observedEffectiveModel ? { observed: observedEffectiveModel } : {}) });
   await atomicWriteJSON(resultPath, result);
   const terminalManifest = completedRunManifest(manifest, result as Record<string, unknown>, normalized);

@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-worker-generation-cleanup.schema.json",
+  "title": "Hitch independently authenticated worker generation cleanup V2/V3",
+  "description": "A current worker proves physical cleanup of its original admitted execution. Challenge/admission digests, original offer identity, generation ordering, freshness and process identities require semantic validation. This record never rewrites the old v1 offer. V3 requires original ownership V3 on the same stable host with a different boot; no old PID or process-group claim is made.",
+  "$defs": {
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "cleanup_id",
+        "nonce",
+        "worker_id",
+        "generation",
+        "issued_at",
+        "expires_at",
+        "admission"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2"
+        },
+        "cleanup_id": {
+          "type": "string",
+          "pattern": "^cleanup_[a-f0-9]{32}$"
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "worker_id": {
+          "type": "string",
+          "pattern": "^worker_[a-z0-9][a-z0-9_-]{0,62}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "admission": {
+          "$ref": "remote-worker-execution-admission.schema.json"
+        }
+      }
+    },
+    "receiptV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "challenge",
+        "observed_at",
+        "observation"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2"
+        },
+        "challenge": {
+          "$ref": "#/$defs/challenge"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ownership",
+            "execution_process",
+            "worker_status",
+            "process_group_empty",
+            "docker_resources_empty"
+          ],
+          "properties": {
+            "ownership": {
+              "$ref": "remote-worker-execution-admission.schema.json#/$defs/ownership"
+            },
+            "execution_process": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "remote-worker-execution-admission.schema.json#/$defs/process"
+                }
+              ]
+            },
+            "worker_status": {
+              "enum": [
+                "terminal",
+                "identity-mismatch"
+              ]
+            },
+            "process_group_empty": {
+              "const": true
+            },
+            "docker_resources_empty": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "receiptV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "challenge",
+        "observed_at",
+        "observation"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "3"
+        },
+        "challenge": {
+          "$ref": "#/$defs/rebootChallenge"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ownership",
+            "execution_process",
+            "worker_status",
+            "docker_resources_empty",
+            "host_identity"
+          ],
+          "properties": {
+            "ownership": {
+              "$ref": "remote-worker-execution-admission.schema.json#/$defs/ownershipV3"
+            },
+            "execution_process": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "remote-worker-execution-admission.schema.json#/$defs/process"
+                }
+              ]
+            },
+            "worker_status": {
+              "const": "previous-boot"
+            },
+            "docker_resources_empty": {
+              "const": true
+            },
+            "host_identity": {
+              "$ref": "remote-worker-execution-admission.schema.json#/$defs/hostIdentity"
+            }
+          }
+        }
+      }
+    },
+    "rebootChallenge": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/challenge"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "admission": {
+              "type": "object",
+              "properties": {
+                "ownership": {
+                  "$ref": "remote-worker-execution-admission.schema.json#/$defs/ownershipV3"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/receiptV2"
+    },
+    {
+      "$ref": "#/$defs/receiptV3"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import { SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, readJSON, saf
 import { EvalEventSink, parseEvalExecutionPlan, readExecutionLeases, recoverLocalDockerEvalLeases } from "../evals/index.js";
 import type { EvalLeaseRecoveryResult } from "../evals/index.js";
 import { idempotencyIndexPath, isTerminalControl, parseEvalControl, parseEvalSubmission, terminalControlState } from "./eval-records.js";
+import { orderedEvalCancelled } from "./ordered-eval-control.js";
 
 export interface RecoveredEvalEntry {
   evalId: EvalId;
@@ -38,7 +39,7 @@ export async function recoverPersistedEvals(input: {
     if (!submissionValue || !controlValue) continue;
     const submission = await parseEvalSubmission(submissionValue, evalId);
     const credentialValues = credentialValuesFromEnv(submission.request.pass_env, input.credentialEnv ?? process.env);
-    const control = parseEvalControl(controlValue);
+    let control = parseEvalControl(controlValue);
     if (await repairIdempotencyIndex(input.root, submission)) {
       const sink = new EvalEventSink(directory, evalId, input.onEvent);
       await sink.open();
@@ -49,6 +50,11 @@ export async function recoverPersistedEvals(input: {
     if (result) {
       if (!isTerminalControl(control.state)) await updateControl(directory, (current) => ({ ...withoutAllocation(current), state: terminalControlState(result.status) }));
       continue;
+    }
+    if (!isTerminalControl(control.state) && control.state !== "cancelling" && await orderedEvalCancelled(input.root, evalId)) {
+      await updateControl(directory, current => ({ ...current, state: "cancelling",
+        cancel_requested_at: current.cancel_requested_at ?? new Date().toISOString() }));
+      control = parseEvalControl(await readJSON(path.join(directory, "control.json")));
     }
     if (control.state === "queued") {
       queue.push({ evalId, request: submission.request, ...(submission.execution ? { execution: submission.execution } : {}), directory, resumeExisting: false });

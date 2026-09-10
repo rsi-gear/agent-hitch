@@ -27,3 +27,4 @@ export { deriveTrainingDataCandidate, parseTrainingDataCandidate } from "./train
 export type { TrainingDataCandidatePolicyV1 } from "./training-candidate.js";
 export { inspectBenchmarkPhaseGroup, sealBenchmarkPhaseGroup, readBenchmarkPhaseGroup } from "./phase-group.js";
 export type { BenchmarkPhaseGroupV1, BenchmarkPhaseGroupRefV1 } from "../domain/index.js";
+export { loadTrainingEvidence } from "./training-evidence.js";

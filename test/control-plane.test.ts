@@ -433,17 +433,21 @@ test("local evals dispatch work items fairly across evals without exceeding the 
   const order: string[] = [];
   let releaseLarge!: () => void;
   let largeReady!: () => void;
+  let smallReady!: () => void;
   const largeGate = new Promise<void>((resolve) => { releaseLarge = resolve; });
   const ready = new Promise<void>((resolve) => { largeReady = resolve; });
+  const smallQueued = new Promise<void>((resolve) => { smallReady = resolve; });
   const executor = async (options: RunEvalOptions): Promise<EvalResult> => {
     const admission = options.workItemAdmission;
     if (!admission || !options.evalId) throw new Error("fine-grained work admission was not provided");
     const acquire = async (taskId: string) => {
-      const permit = await admission.acquire({
+      const pending = admission.acquire({
         evalId: options.evalId as never,
         workItem: workItem(options.evalId as string, taskId),
         maxParallelism: options.request.model === "large" ? 2 : 1,
       });
+      if (options.request.model === "small") smallReady();
+      const permit = await pending;
       order.push(`${options.request.model}-${taskId}`);
       assert.ok(ledger.snapshot().allocated.container_slots <= 2);
       return permit;
@@ -473,7 +477,9 @@ test("local evals dispatch work items fairly across evals without exceeding the 
   const large = await scheduler.submit({ ...request(2), dataset, model: "large" });
   await ready;
   const small = await scheduler.submit({ ...request(1), dataset, model: "small" });
-  await waitFor(() => scheduler.status(small).then((status) => status?.control.state === "planning"));
+  // Planning is published before the executor enqueues its first work item.
+  // Release capacity only after both evals are actually waiting for it.
+  await smallQueued;
   releaseLarge();
   await waitFor(() => scheduler.status(large).then((status) => status?.result !== null));
   await waitFor(() => scheduler.status(small).then((status) => status?.result !== null));

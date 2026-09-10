@@ -9,6 +9,8 @@ import type { InteractionCaptureRefV1, ModelProxyRouteV1, Sha256 } from "../doma
 import { ensureDir } from "../foundation/index.js";
 import { ModelInteractionCapture } from "./capture.js";
 import { loadInteractionCapture } from "./records.js";
+import { bindTrainingRun, trainingProxyIdentity } from "./training.js";
+import type { RegisteredTrainingEndpoint } from "./training.js";
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_REWRITE_BYTES = 32 * 1024 * 1024;
@@ -34,7 +36,11 @@ export interface HostModelProxyOptions {
   capabilityToken?: string;
   resumeExisting?: boolean;
   topology?: "host-side" | "in-sandbox";
-  managedInferenceIdentity?: { inference_id: Sha256; model_id: Sha256 };
+  managedInferenceIdentity?: { inference_id: Sha256; model_id: Sha256; model_node?: import("../domain/index.js").ModelNodeBindingV2 };
+  trainingEndpoint?: RegisteredTrainingEndpoint;
+  trainingBinding?: import("../domain/index.js").TrainingExternalBindingV1;
+  /** A worker relay claims its canonical run at the controller before any model call. */
+  onRun?: (runId: string) => Promise<void>;
 }
 
 export interface HostModelProxyRuntimeIdentity {
@@ -65,6 +71,10 @@ export class HostModelProxy {
   private readonly port: number;
   private readonly resumeExisting: boolean;
   private closed = false;
+  private readonly trainingEndpoint: RegisteredTrainingEndpoint | undefined;
+  private readonly trainingBinding: import("../domain/index.js").TrainingExternalBindingV1 | undefined;
+  private readonly onRun: HostModelProxyOptions["onRun"];
+  private trainingRunId: string | undefined;
 
   private constructor(input: HostModelProxyOptions, server: Server, token: string, port: number) {
     this.server = server;
@@ -74,6 +84,10 @@ export class HostModelProxy {
     this.evalId = input.evalId;
     this.mode = input.mode;
     this.required = input.required;
+    this.trainingEndpoint = input.trainingEndpoint;
+    this.trainingBinding = input.trainingEndpoint?.binding ?? input.trainingBinding;
+    this.onRun = input.onRun;
+    if (input.trainingBinding && (!input.onRun || input.trainingEndpoint)) throw new TypeError("remote training proxy requires one controlled run binder");
     this.resumeExisting = input.resumeExisting === true;
     const env = input.env ?? process.env;
     this.upstreams = {
@@ -98,6 +112,7 @@ export class HostModelProxy {
       base_url_template: `${base}/{provider}`,
       health_url_template: `${base}/health`,
       ...(input.managedInferenceIdentity ? { managed_inference: { ...input.managedInferenceIdentity } } : {}),
+      ...(this.trainingBinding ? { training_external: trainingProxyIdentity(this.trainingBinding) } : {}),
     };
   }
 
@@ -122,7 +137,8 @@ export class HostModelProxy {
       proxy?.handle(request, response).catch((error) => respondError(response, 502, "model_proxy_failed", error));
     });
     const port = await listen(server, bindHost, input.listenPort ?? 0);
-    proxy = new HostModelProxy(input, server, token, port);
+    try { proxy = new HostModelProxy(input, server, token, port); }
+    catch (error) { await new Promise<void>(resolve => server.close(() => resolve())); throw error; }
     return proxy;
   }
 
@@ -152,6 +168,20 @@ export class HostModelProxy {
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const route = parseRoute(request.url, this.token);
     if (!route) return respondJSON(response, 404, { error: { code: "model_proxy_route_not_found" } });
+    if (this.route.managed_inference && route.kind === "provider"
+      && (route.provider !== "openai" || request.method !== "POST" || !/^\/(?:v1\/)?(?:responses|chat\/completions)$/.test(route.tail))) {
+      return respondJSON(response, 404, { error: { code: "managed_generation_only" } });
+    }
+    if (this.trainingBinding) {
+      if (this.trainingRunId && this.trainingRunId !== route.runId) return respondJSON(response, 409, { error: { code: "training_run_fenced" } });
+      if (Date.parse(this.trainingBinding.expiresAt) <= Date.now()) return respondJSON(response, 409, { error: { code: "training_lease_expired" } });
+      if (this.trainingEndpoint) await bindTrainingRun(this.trainingEndpoint, route.runId);
+      this.trainingRunId = route.runId;
+      if (route.kind === "provider" && (route.provider !== "openai" || !/^\/(?:v1\/)?chat\/completions$/.test(route.tail) || request.method !== "POST")) {
+        return respondJSON(response, 404, { error: { code: "training_generation_only" } });
+      }
+    }
+    await this.onRun?.(route.runId);
     const entry = await this.captureFor(route.runId);
     if (route.kind === "health") return respondJSON(response, 200, { status: "ok" });
     if (entry.finalized) return respondJSON(response, 409, { error: { code: "model_capture_finalized" } });

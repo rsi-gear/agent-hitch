@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-harbor-work-spec.schema.json",
+  "title": "Hitch remote Harbor work spec V1/V2",
+  "description": "The worker additionally validates equality with its offer and the complete request/plan/model graph before execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request",
+    "plan",
+    "work",
+    "resolution",
+    "harness_artifact",
+    "controller_runtime",
+    "task"
+  ],
+  "properties": {
+    "schema_version": {
+      "enum": [
+        "1",
+        "2"
+      ]
+    },
+    "request": {
+      "allOf": [
+        {
+          "$ref": "eval-request.schema.json"
+        },
+        {
+          "properties": {
+            "dataset": {
+              "const": "task-input"
+            }
+          }
+        }
+      ]
+    },
+    "plan": {
+      "$ref": "eval-execution-plan.schema.json"
+    },
+    "work": {
+      "$ref": "eval-execution-plan.schema.json#/properties/work_items/items"
+    },
+    "resolution": {
+      "$ref": "resolved-revision.schema.json"
+    },
+    "harness_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directory",
+        "artifact_id",
+        "artifact_integrity",
+        "entrypoint_integrity",
+        "harness_id",
+        "revision_identity",
+        "adapter_version",
+        "recipe_version",
+        "platform",
+        "node_version",
+        "source_type"
+      ],
+      "properties": {
+        "directory": {
+          "const": "harness-artifact"
+        },
+        "artifact_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifact_integrity": {
+          "$ref": "#/$defs/sha256"
+        },
+        "entrypoint_integrity": {
+          "$ref": "#/$defs/sha256"
+        },
+        "harness_id": {
+          "$ref": "#/$defs/text"
+        },
+        "revision_identity": {
+          "$ref": "#/$defs/sha256"
+        },
+        "adapter_version": {
+          "$ref": "#/$defs/text"
+        },
+        "recipe_version": {
+          "$ref": "#/$defs/text"
+        },
+        "platform": {
+          "$ref": "#/$defs/text"
+        },
+        "node_version": {
+          "$ref": "#/$defs/text"
+        },
+        "source_type": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "controller_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_id",
+        "directory"
+      ],
+      "properties": {
+        "runtime_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "directory": {
+          "const": "controller-runtime"
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "directory"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/text"
+        },
+        "directory": {
+          "const": "task-input"
+        }
+      }
+    },
+    "credential_names": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      }
+    },
+    "model_binding": {
+      "$ref": "remote-model-binding.schema.json"
+    },
+    "physical_execution": {
+      "$ref": "remote-physical-execution.schema.json"
+    },
+    "verifier_source": {
+      "const": "2"
+    },
+    "verifier_only": {
+      "$ref": "remote-verifier-work.schema.json"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": "2"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "credential_names"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "model_binding"
+            ]
+          },
+          {
+            "required": [
+              "physical_execution"
+            ]
+          },
+          {
+            "required": [
+              "verifier_source"
+            ]
+          }
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "model_binding"
+              ]
+            },
+            {
+              "required": [
+                "physical_execution"
+              ]
+            },
+            {
+              "required": [
+                "verifier_source"
+              ]
+            },
+            {
+              "required": [
+                "verifier_only"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "request": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "training_binding"
+                  ]
+                },
+                {
+                  "required": [
+                    "local_inference"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "model_binding"
+        ]
+      },
+      "then": {
+        "properties": {
+          "credential_names": {
+            "maxItems": 0
+          },
+          "request": {
+            "properties": {
+              "pass_env": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "verifier_only"
+        ]
+      },
+      "then": {
+        "required": [
+          "physical_execution",
+          "credential_names"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": "2"
+          },
+          "physical_execution": {
+            "properties": {
+              "kind": {
+                "const": "verifier-only"
+              }
+            }
+          },
+          "credential_names": {
+            "maxItems": 0
+          },
+          "request": {
+            "not": {
+              "required": [
+                "training_binding"
+              ]
+            }
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "model_binding"
+              ]
+            },
+            {
+              "required": [
+                "verifier_source"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "properties": {
+          "physical_execution": {
+            "properties": {
+              "kind": {
+                "not": {
+                  "const": "verifier-only"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  }
+}

@@ -21,6 +21,7 @@
     "setup_timeout_ms": { "type": "number", "minimum": 0 },
     "agent_args": { "type": "array", "items": { "type": "string" } },
     "pass_env": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-    "local_inference": { "$ref": "local-inference-selection.schema.json" }
+    "local_inference": { "$ref": "local-inference-selection.schema.json" },
+    "training_binding": { "$ref": "training-external-binding.schema.json" }
   }
 }

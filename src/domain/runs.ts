@@ -72,6 +72,7 @@ export interface ModelIdentityV1 {
   /** False when effective_id is only a provider alias rather than a snapshot. */
   identity_resolved?: boolean;
   inference_id?: Sha256;
+  model_node?: import("./inference.js").ModelNodeBindingV2;
 }
 
 export interface ProtocolIdentityV1 {

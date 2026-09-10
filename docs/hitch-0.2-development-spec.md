@@ -793,8 +793,9 @@ dist/
 - The published package includes compiled runtime files, JSON schemas, the
   Harbor Python bridge, README, and license.
 - It excludes TypeScript source, tests, fixtures, and development dependencies.
-- V1 keeps zero runtime npm dependencies so the controller runtime payload is
-  self-contained after compilation.
+- The controller runtime payload includes its runtime dependencies (currently
+  `smol-toml`) in content hashing and packaging so it remains self-contained.
+  New dependencies follow [the contribution guidelines](../CONTRIBUTING.md#documentation-and-dependencies).
 - `typescript` and `@types/node` are development dependencies.
 - `package-lock.json` is committed and CI uses `npm ci`.
 

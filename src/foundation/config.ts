@@ -34,6 +34,7 @@ export interface StatePaths {
   modelAliases: string;
   inferenceRuntimes: string;
   inferenceLocks: string;
+  inferenceNodes: string;
   inferenceServices: string;
   inferencePrivate: string;
   inferenceOperationLocks: string;
@@ -103,6 +104,7 @@ export function statePaths(root: string): StatePaths {
     modelAliases: path.join(root, "indexes", "models", "aliases.json"),
     inferenceRuntimes: path.join(root, "store", "inference-runtimes", "sha256"),
     inferenceLocks: path.join(root, "store", "inference-locks", "sha256"),
+    inferenceNodes: path.join(root, "private", "inference-nodes"),
     inferenceServices: path.join(root, "inference", "services"),
     inferencePrivate: path.join(root, "inference", "private"),
     inferenceOperationLocks: path.join(root, "locks", "inference"),

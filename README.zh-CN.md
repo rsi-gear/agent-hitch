@@ -202,6 +202,7 @@ hitch run --daemon --harness codex@version:0.92.0 --prompt-file task.md
 - [守护进程设计](docs/daemon.md)
 - [Hitch 0.2 开发规范](docs/hitch-0.2-development-spec.md)
 - [发布流程](docs/releasing.md)
+- [贡献指南](CONTRIBUTING.md)
 
 ## 项目状态
 

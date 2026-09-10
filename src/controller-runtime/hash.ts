@@ -57,6 +57,7 @@ export interface RuntimePayloadRule {
 export const RUNTIME_PAYLOAD_RULES: RuntimePayloadRule[] = [
   { path: "package.json" },
   { path: "integrations/model-call/cli.js" },
+  { path: "integrations/training-tool/cli.js" },
   ...RUNTIME_PAYLOAD_DIRECTORIES.map((directory) => ({ directory })),
   ...RUNTIME_HARBOR_BRIDGE_FILES.map((bridge) => ({ path: bridge })),
 ];

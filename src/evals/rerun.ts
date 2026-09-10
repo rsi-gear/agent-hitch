@@ -31,8 +31,12 @@ import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { startEvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import type { EvalModelCaptureRuntime } from "./model-capture-runtime.js";
 import { verifierOnlyEvalRerun } from "./verifier-only-rerun.js";
+import { remoteVerifierOnlyEvalRerun } from "./remote-verifier-rerun.js";
 import { restartIncompleteEval } from "./preparation-rerun.js";
 import { writeRerunState } from "./rerun-state.js";
+import { assertRemoteRerunQuiescent, executeRemoteRerunGroup } from "./remote-rerun-execution.js";
+import { remoteRerunNeedsExecution, restoreRemoteRerunSelection } from "./rerun-resume.js";
+import { stageRemoteRerunCompletion } from "./rerun-completion.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 
@@ -56,7 +60,7 @@ export async function rerunEval(options: RerunEvalOptions): Promise<EvalRerunRes
 }
 
 async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; rerunType: EvalRerunType; evalId: string; evalDirectory: string }): Promise<EvalRerunResult> {
-  const startedAt = new Date().toISOString();
+  let startedAt = new Date().toISOString();
   const rerunId = options.rerunId;
   const rerunDirectory = path.join(options.evalDirectory, "reruns", rerunId);
   const statePath = path.join(rerunDirectory, "state.json");
@@ -66,6 +70,17 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   const requestValue = await readJSON<unknown | null>(path.join(options.evalDirectory, "request.json"), null);
   if (requestValue === null) throw new HitchError(`eval not found: ${options.evalId}`, { code: "eval_not_found", exitCode: 3 });
   const request = await loadPersistedRerunRequest(requestValue, options.evalDirectory);
+  if (request.training_binding) throw new HitchError("training slots are repaired by the frozen Gear batch coordinator, not eval rerun", { code: "training_rerun_fenced", exitCode: 12 });
+  const submission = await readJSON<{ execution?: { provider?: string } } | null>(path.join(options.evalDirectory, "submission.json"), null);
+  if (options.resumeRemoteRerun && (!["candidate-restart", "verifier-only"].includes(options.rerunType) || !submission?.execution?.provider
+    || submission.execution.provider === "local-docker")) throw unavailable("only a reconciled remote rerun can restore its selection");
+  if (submission?.execution?.provider && submission.execution.provider !== "local-docker" && options.rerunType !== "collect-only") {
+    await assertRemoteRerunQuiescent(options.evalDirectory, submission.execution.provider);
+  }
+  if (submission?.execution?.provider && submission.execution.provider !== "local-docker" && options.rerunType !== "collect-only"
+    && (!["candidate-restart", "verifier-only"].includes(options.rerunType) || !options.remoteWorkExecutor || options.executionWorker?.provider !== submission.execution.provider)) {
+    throw new HitchError("remote candidate/verifier rerun requires worker dispatch; local fallback is not supported", { code: "remote_rerun_unavailable", exitCode: 12 });
+  }
   if (options.maxConcurrentOverride !== undefined && (!Number.isSafeInteger(options.maxConcurrentOverride)
     || options.maxConcurrentOverride < 1 || options.maxConcurrentOverride > request.max_concurrent)) {
     throw invalidInput("eval rerun concurrency override is invalid");
@@ -78,12 +93,16 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   validateProgressPlan(progress, plan, request, options.evalId);
   const previousResult = await readJSON<Record<string, unknown> | null>(path.join(options.evalDirectory, "result.json"), null);
   if (previousResult?.status === "cancelled") throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 2 });
-  const selectedTrials = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector, {
+  const restored = options.resumeRemoteRerun ? await restoreRemoteRerunSelection({ directory: rerunDirectory,
+    evalId: options.evalId, rerunId, selector: options.selector, tasks: plan.tasks, attempts: plan.attempts, progress,
+    rerunType: options.rerunType, ...(options.verifierRuntimeId ? { verifierRuntimeId: options.verifierRuntimeId } : {}) }) : undefined;
+  if (restored) startedAt = restored.startedAt;
+  const selectedTrials = restored?.trials ?? selectRerunTrialSlots(plan.tasks, plan.attempts, progress, options.selector, {
     // Each executable recovery mode validates its own source prerequisites.
     allowVerifierFailures: options.rerunType === "candidate-restart" || options.rerunType === "collect-only" || options.rerunType === "verifier-only",
   });
   const selectedTasks = uniqueTasks(selectedTrials);
-  await atomicWriteJSON(path.join(rerunDirectory, "request.json"), {
+  if (!restored) await atomicWriteJSON(path.join(rerunDirectory, "request.json"), {
     schema_version: SCHEMA_VERSION,
     rerun_id: rerunId,
     eval_id: options.evalId,
@@ -113,12 +132,19 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
   let captureRuntime: EvalModelCaptureRuntime | undefined;
   let inferenceLease: Awaited<ReturnType<import("../domain/index.js").ManagedInferenceCoordinator["acquire"]>> | undefined;
   try {
-    if (options.rerunType === "verifier-only") return await verifierOnlyEvalRerun({ ...options, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
+    if (options.rerunType === "verifier-only") {
+      const execute = submission?.execution?.provider && submission.execution.provider !== "local-docker" ? remoteVerifierOnlyEvalRerun : verifierOnlyEvalRerun;
+      return await execute({ ...options, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials });
+    }
     if (options.rerunType === "collect-only") return collectOnlyEvalRerun({ root: options.root, evalId: options.evalId, evalDirectory: options.evalDirectory, rerunId, rerunDirectory, startedAt, request, plan, progress, previousResult, selectedTrials, env: options.env ?? process.env, ...(options.signal ? { signal: options.signal } : {}) });
     if (selectedTrials.length > 0) {
       const executionPlan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(options.evalDirectory, "execution-plan.json")));
       if (executionPlan.eval_id !== options.evalId) throw unavailable("eval execution plan identity changed");
-      if (request.local_inference) {
+      const remote = executionPlan.provider !== "local-docker";
+      if (remote && (!options.remoteWorkExecutor || options.executionWorker?.provider !== executionPlan.provider)) throw unavailable("remote rerun has no executor for its frozen provider");
+      const needsExecution = !remote || await remoteRerunNeedsExecution({ evalDirectory: options.evalDirectory, directory: rerunDirectory,
+        rerunId, plan: executionPlan, request, slots: selectedTrials });
+      if (request.local_inference && needsExecution) {
         if (!options.inferenceCoordinator) throw new HitchError("local eval rerun inference requires the Hitch daemon", { code: "inference_route_unavailable", exitCode: 12 });
         const inferenceId = plan.candidate.inference_id;
         if (typeof inferenceId !== "string" || !/^sha256:[a-f0-9]{64}$/.test(inferenceId)) {
@@ -133,7 +159,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           ...(options.signal ? { signal: options.signal } : {}),
         });
       }
-      captureRuntime = await startEvalModelCaptureRuntime({
+      if (needsExecution) captureRuntime = await startEvalModelCaptureRuntime({
         plan: executionPlan.model_capture ?? defaultModelCapturePlan(),
         evalId: options.evalId,
         evalDirectory: rerunDirectory,
@@ -142,7 +168,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           binding: inferenceLease.binding, credential: inferenceLease.credential, modelId: inferenceLease.lock.model_id,
         } } : {}),
       });
-      const activeCaptureRuntime = captureRuntime;
+      const activeCaptureRuntime = captureRuntime!;
       const resolvedRevision = await loadRerunResolvedRevision(options.evalDirectory, plan);
       const preparedArtifacts = await loadRerunPreparedArtifacts(options.root, plan);
       const runtimeId = requiredString(plan.controllerRuntime.runtime_id, "plan controller runtime id");
@@ -151,7 +177,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
         || runtime.manifest_digest !== requiredString(plan.controllerRuntime.manifest_digest, "plan controller runtime digest")) {
         throw unavailable("controller runtime identity changed");
       }
-      const localTransport = await loadRerunLocalTransport(options.evalDirectory, plan, resolvedRevision, options.env, options.signal);
+      const localTransport = remote ? undefined : await loadRerunLocalTransport(options.evalDirectory, plan, resolvedRevision, options.env, options.signal);
       const groups = groupRerunSlotsByArtifact(selectedTrials, executionPlan, [...preparedArtifacts.keys()]);
       for (const { logicalAttempt, slots, artifactId, splitAttempt } of groups) {
         if (options.signal?.aborted) throw new HitchError("eval rerun was aborted", { code: "eval_rerun_aborted", exitCode: 9 });
@@ -180,8 +206,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           });
           const previousGeneration = progress.generation;
           progress = replaceInvalidEvalProgressTrial(progress, ref);
-          if (progress.generation === previousGeneration) return;
           repaired.set(key, slot);
+          if (progress.generation === previousGeneration) return;
           await writeEvalProgress(options.evalDirectory, progress);
           await writeRerunState(statePath, {
             rerunId,
@@ -195,6 +221,16 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
             startedAt,
           });
         };
+        if (remote) {
+          backendRuns.push(...await executeRemoteRerunGroup({
+            root: options.root, evalId: validateEvalId(options.evalId), evalDirectory: options.evalDirectory, rerunId, rerunDirectory,
+            request, plan: executionPlan, slots, resolvedRevision,
+            artifact: preparedArtifacts.get(artifactId) ?? (() => { throw unavailable(`rerun artifact is unavailable: ${artifactId}`); })(),
+            runtimeDirectory: runtime.directory, runtimeId: runtime.runtime_id, executor: options.remoteWorkExecutor!,
+            ...(inferenceLease ? { inferenceLease } : {}), ...(options.signal ? { signal: options.signal } : {}), publish,
+          }));
+          continue;
+        }
         const backendRun = await runHarborBackend({
           evalId: options.evalId,
           evalDirectory: options.evalDirectory,
@@ -291,6 +327,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
       started_at: startedAt,
       completed_at: completedAt,
     };
+    if (submission?.execution?.provider && submission.execution.provider !== "local-docker") await stageRemoteRerunCompletion(options.evalDirectory, rerunDirectory, output);
     await writeRerunState(statePath, {
       rerunId,
       evalId: options.evalId,

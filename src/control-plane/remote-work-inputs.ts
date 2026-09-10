@@ -2,8 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalRequest, RemoteWorkInputRefV1, ResolvedRevision, Sha256 } from "../domain/index.js";
-import { HitchError, ensureDir, statePaths, withFileLock } from "../foundation/index.js";
+import { HitchError, ensureDir, isBase64, statePaths, withFileLock } from "../foundation/index.js";
 import type { EvalRemoteWorkExecutor } from "../evals/index.js";
+import { assertPhysicalWork, assertRemoteVerifierWork } from "../evals/index.js";
+import { encodeVerifierSource } from "./remote-verifier-source-transport.js";
 
 const MAX_INPUT_BYTES = 256 * 1024 * 1024;
 const MAX_FILES = 100_000;
@@ -79,7 +81,16 @@ export async function prepareRemoteWorkInputs(input: {
   runtimeDirectory: string;
   runtimeId: string;
   credentialNames?: readonly string[];
+  modelBinding?: import("../domain/index.js").RemoteModelBindingV2;
+  physicalExecution?: import("../domain/index.js").RemotePhysicalExecutionV2;
+  captureVerifierSource?: boolean;
+  verifierOnly?: { descriptor: import("../domain/index.js").RemoteVerifierWorkV2; sourceSnapshotDirectory: string; verifierRuntimeDirectory: string };
 }): Promise<RemoteWorkInputRefV1[]> {
+  assertPhysicalWork(input.plan, input.work, input.physicalExecution);
+  const verifier = input.verifierOnly && assertRemoteVerifierWork({ verifier: input.verifierOnly.descriptor,
+    plan: input.plan, work: input.work, physical: input.physicalExecution, runtimeId: input.runtimeId });
+  if ((input.physicalExecution?.kind === "verifier-only") !== !!verifier
+    || verifier && (input.modelBinding || input.captureVerifierSource || input.credentialNames?.length || input.request.training_binding)) throw inputError("verifier-only requires isolated scoring inputs and no model credentials");
   const store = new RemoteWorkInputStore(input.root);
   await store.initialize();
   const taskId = input.work.task_ids[0];
@@ -87,7 +98,12 @@ export async function prepareRemoteWorkInputs(input: {
   const taskDirectory = await resolveTaskDirectory(input.request.dataset, taskId);
   const { storage: _hostStorage, ...portableArtifact } = input.preparedArtifact;
   const spec = Buffer.from(`${JSON.stringify({
-    schema_version: "1", request: { ...input.request, dataset: "task-input" }, plan: input.plan,
+    schema_version: input.modelBinding || input.physicalExecution || input.captureVerifierSource ? "2" : "1",
+    ...(input.modelBinding ? { model_binding: input.modelBinding } : {}),
+    ...(input.physicalExecution ? { physical_execution: input.physicalExecution } : {}),
+    ...(input.captureVerifierSource ? { verifier_source: "2" } : {}),
+    ...(verifier ? { verifier_only: verifier } : {}),
+    request: { ...input.request, dataset: "task-input" }, plan: input.plan,
     work: input.work, resolution: input.resolvedRevision,
     harness_artifact: { ...portableArtifact, directory: "harness-artifact" },
     controller_runtime: { runtime_id: input.runtimeId, directory: "controller-runtime" },
@@ -100,7 +116,12 @@ export async function prepareRemoteWorkInputs(input: {
     encodeTree(input.runtimeDirectory).then((body) => store.put("controller-runtime", "hitch-tree-v1", body)),
     encodeTree(taskDirectory).then((body) => store.put("task-input", "hitch-tree-v1", body)),
   ]);
-  return [workSpec, harness, runtime, task];
+  if (!verifier || !input.verifierOnly) return [workSpec, harness, runtime, task];
+  const source = await encodeVerifierSource({ manifest: verifier.source_manifest, directory: input.verifierOnly.sourceSnapshotDirectory });
+  if (!source.tree) throw inputError("verifier-only requires an available source snapshot");
+  const snapshot = await store.put("verifier-source", "hitch-tree-v1", Buffer.from(`${JSON.stringify(source.tree)}\n`));
+  const verifierRuntime = await store.put("verifier-runtime", "hitch-tree-v1", await encodeTree(input.verifierOnly.verifierRuntimeDirectory));
+  return [workSpec, harness, runtime, task, snapshot, verifierRuntime];
 }
 
 export function parseRemoteTreeEnvelope(value: unknown): RemoteTreeEnvelopeV1 {
@@ -142,7 +163,7 @@ export async function materializeRemoteTreeEnvelope(value: unknown, destination:
 }
 
 function validateRef(ref: RemoteWorkInputRefV1): void {
-  if (!new Set(["work-spec", "harness-artifact", "controller-runtime", "task-input"]).has(ref.kind)
+  if (!new Set(["work-spec", "harness-artifact", "controller-runtime", "task-input", "verifier-source", "verifier-runtime"]).has(ref.kind)
     || !new Set(["json", "hitch-tree-v1"]).has(ref.format) || !SHA256.test(ref.digest)
     || !Number.isSafeInteger(ref.size) || ref.size < 1 || ref.size > MAX_INPUT_BYTES) throw inputError("remote work input ref is invalid");
 }
@@ -153,6 +174,8 @@ async function encodeTree(root: string): Promise<Buffer> {
   if (body.length > MAX_INPUT_BYTES) throw inputError("remote work input tree exceeds its size limit");
   return body;
 }
+
+export { encodeTree as encodeRemoteTreeEnvelope, removeMaterializedTree };
 
 async function walk(root: string, relative = ""): Promise<Omit<RemoteTreeEnvelopeV1, "schema_version">> {
   const directory = relative ? path.join(root, ...relative.split("/")) : root;
@@ -190,7 +213,7 @@ function parseFile(value: unknown): RemoteTreeFileV1 {
   const relative = safePath(file.path);
   if (!validMode(file.mode) || !Number.isSafeInteger(file.size) || (file.size as number) < 0 || (file.size as number) > MAX_INPUT_BYTES
     || typeof file.sha256 !== "string" || !SHA256.test(file.sha256)
-    || typeof file.content_base64 !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.content_base64)) throw inputError("remote tree file is invalid");
+    || typeof file.content_base64 !== "string" || !isBase64(file.content_base64)) throw inputError("remote tree file is invalid");
   const content = Buffer.from(file.content_base64, "base64");
   if (content.length !== file.size || hash(content) !== file.sha256) throw inputError(`remote tree file integrity failed: ${relative}`);
   return { path: relative, mode: file.mode as number, size: file.size as number, sha256: file.sha256 as Sha256, content_base64: file.content_base64 };

@@ -1,4 +1,5 @@
 import { DEFAULT_HARBOR_VERSION, doctorHarbor, setupHarbor } from "../../backends/index.js";
+import { readOrderedEvalIntent as readControl } from "../../control-plane/index.js";
 import type { EvalExecutionPolicyV1, ResourceVectorV1 } from "../../domain/index.js";
 import { inspectEval, isControlPlaneEval, listEvals, parseEvalRerunType, rerunEval, runEval, runBenchmarkEval, validateEvalId } from "../../evals/index.js";
 import { daemonClient, probeDaemonHealth } from "../../daemon/index.js";
@@ -12,6 +13,7 @@ export async function evalCommand(args: string[], root: string): Promise<void> {
   switch (action) {
     case "run": return evalRunCommand(args, root);
     case "submit": return evalSubmitCommand(args, root);
+    case "control": return evalControlCommand(args, root);
     case "watch": return evalWatchCommand(args, root);
     case "cancel": return evalCancelCommand(args, root);
     case "rerun": return evalRerunCommand(args, root);
@@ -25,11 +27,13 @@ export async function evalCommand(args: string[], root: string): Promise<void> {
 }
 
 async function evalRerunCommand(args: string[], root: string): Promise<void> {
+  const controlFile = takeOption(args, "--control-file");
   const evalIdValue = args.shift();
   if (!evalIdValue) throw invalidInput("eval rerun requires an eval ID");
   const evalId = validateEvalId(evalIdValue);
   const invalid = takeFlag(args, "--invalid");
   let useDaemon = takeFlag(args, "--daemon");
+  if (controlFile) useDaemon = true;
   const taskNames = takeRepeatedOption(args, "--task");
   const rerunType = parseEvalRerunType(takeOption(args, "--type") || "candidate-restart");
   const verifierRuntimeId = takeOption(args, "--verifier-runtime");
@@ -53,14 +57,14 @@ async function evalRerunCommand(args: string[], root: string): Promise<void> {
   if (useDaemon) {
     if (harborExecutable !== undefined) throw invalidInput("eval rerun --harbor cannot be combined with --daemon");
     const client = await daemonClient(root);
-    const accepted = await client.request(`/v1/evals/${evalId}/reruns`, {
+    const input = {
+      ...(rerunId === undefined ? {} : { rerun_id: rerunId }), rerun_type: rerunType,
+      ...(verifierRuntimeId ? { verifier_runtime_id: verifierRuntimeId } : {}),
+      selector: invalid ? { mode: "invalid" } : { mode: "tasks", task_names: taskNames },
+    };
+    const accepted = await client.request(controlFile ? "/v1/eval-controls" : `/v1/evals/${evalId}/reruns`, {
       method: "POST",
-      body: JSON.stringify({
-        ...(rerunId === undefined ? {} : { rerun_id: rerunId }),
-        rerun_type: rerunType,
-        ...(verifierRuntimeId ? { verifier_runtime_id: verifierRuntimeId } : {}),
-        selector: invalid ? { mode: "invalid" } : { mode: "tasks", task_names: taskNames },
-      }),
+      body: JSON.stringify(controlFile ? { ...await readControl(controlFile), rerun: { eval_id: evalId, input } } : input),
     });
     await waitForDaemonEvalRerun(client, evalId, accepted.rerun_id as string);
     return;
@@ -209,18 +213,28 @@ async function evalRunCommand(args: string[], root: string): Promise<void> {
 }
 
 async function evalSubmitCommand(args: string[], root: string): Promise<void> {
+  const controlFile = takeOption(args, "--control-file");
   const idempotencyKey = takeOption(args, "--idempotency-key");
+  if (controlFile && idempotencyKey) throw invalidInput("--control-file supplies its own immutable key");
   const executionOptions = parseEvalExecutionOptions(args);
   const request = parseEvalRequest(args);
   assertNoArgs(args);
   const client = await daemonClient(root);
   const submission = await daemonEvalSubmission(client, request, executionOptions);
-  const accepted = await client.request("/v1/evals", {
+  const accepted = await client.request(controlFile ? "/v1/eval-controls" : "/v1/evals", {
     method: "POST",
-    body: JSON.stringify(submission),
+    body: JSON.stringify(controlFile ? { ...await readControl(controlFile), submission: Object.hasOwn(submission, "request") ? submission : { schema_version: "1", request: submission } } : submission),
     ...(idempotencyKey ? { headers: { "idempotency-key": idempotencyKey } } : {}),
   });
   process.stdout.write(`${JSON.stringify(accepted, null, 2)}\n`);
+}
+
+async function evalControlCommand(args: string[], root: string): Promise<void> {
+  const file = takeOption(args, "--file"); assertNoArgs(args);
+  if (!file) throw invalidInput("eval control requires --file");
+  const client = await daemonClient(root);
+  const result = await client.request("/v1/eval-controls", { method: "POST", body: JSON.stringify(await readControl(file)) });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
 export interface EvalCliExecutionOptions {
