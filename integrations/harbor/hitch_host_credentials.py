@@ -6,6 +6,9 @@ import asyncio
 import json
 import os
 import re
+import signal
+import subprocess
+import sys
 import time
 from typing import Any, NamedTuple
 
@@ -19,6 +22,8 @@ _MAX_ARGUMENTS = 32
 _MAX_ARGUMENT_LENGTH = 4_096
 _MAX_CREDENTIAL_BYTES = 256 * 1024
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_WINDOWS_JOB_LAUNCHER = "--hitch-host-credential-helper-job"
+_WINDOWS_JOB_HANDLE = None
 
 
 class _HelperOutputTooLarge(RuntimeError):
@@ -103,13 +108,23 @@ async def prepare_host_credentials(
         sort_keys=True,
     ).encode("utf-8") + b"\n"
 
+    spawn_options: dict[str, Any]
+    argv: tuple[str, ...]
+    if os.name == "nt":
+        argv = (sys.executable, os.path.abspath(__file__), _WINDOWS_JOB_LAUNCHER, *config.argv)
+        spawn_options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        argv = config.argv
+        spawn_options = {"start_new_session": True}
+
     try:
         process = await asyncio.create_subprocess_exec(
-            *config.argv,
+            *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=dict(os.environ),
+            **spawn_options,
         )
     except (OSError, ValueError):
         raise HostCredentialHelperError(
@@ -210,8 +225,19 @@ async def _communicate_limited(process, request: bytes) -> tuple[bytes, bytes]:
 
 async def _terminate_helper(process) -> None:
     """Kill a failed helper and drain both pipes without retaining their contents."""
-    if process.returncode is None:
-        process.kill()
+    if os.name == "nt":
+        # The launcher owns a kill-on-close Job, so killing it closes the only
+        # Job handle and terminates the helper tree even if its leader exited.
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    else:
+        # The group may outlive its leader while a descendant keeps a pipe open.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
     async def discard(stream) -> None:
         while await stream.read(64 * 1024):
@@ -233,3 +259,96 @@ def invalid_response() -> HostCredentialHelperError:
         "host_credential_helper_response_invalid",
         "host credential helper returned an invalid response",
     )
+
+
+def _run_windows_job_launcher(argv: list[str]) -> int:
+    """Run one helper in a Job that owns every non-breakaway descendant."""
+    if os.name != "nt" or not argv:
+        return 125
+    try:
+        _create_windows_kill_on_close_job()
+        return subprocess.call(argv)
+    except (OSError, ValueError):
+        return 125
+
+
+def _create_windows_kill_on_close_job() -> None:
+    # Importing ctypes only inside the Windows launcher keeps the Harbor runtime
+    # importable on every supported POSIX Python.
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimitInformation),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.argtypes = ()
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    information = ExtendedLimitInformation()
+    information.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(handle, 9, ctypes.byref(information), ctypes.sizeof(information)):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(handle)
+        raise ctypes.WinError(error)
+    if not kernel32.AssignProcessToJobObject(handle, kernel32.GetCurrentProcess()):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(handle)
+        raise ctypes.WinError(error)
+
+    # Deliberately retain the sole non-inheritable Job handle until ExitProcess.
+    # Its automatic close then terminates any helper descendants still running.
+    global _WINDOWS_JOB_HANDLE
+    _WINDOWS_JOB_HANDLE = handle
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == _WINDOWS_JOB_LAUNCHER:
+        raise SystemExit(_run_windows_job_launcher(sys.argv[2:]))
+    raise SystemExit(125)

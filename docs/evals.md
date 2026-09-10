@@ -382,6 +382,12 @@ expiry, and credentials that remain valid beyond the requested interval:
 {"version":1,"env":{"TARGET_ACCESS_B64":"value"},"expiresAtMs":1790000000000}
 ```
 
+`minimumValidityMs` is the finite remaining execution allowance plus a five-minute
+margin. For a native Harbor task, Hitch preserves `--timeout 0` as the inner CLI
+sentinel and derives the allowance from Harbor's effective task configuration.
+If neither Hitch nor Harbor supplies a finite agent timeout, configure one before
+using the helper; Hitch rejects the trial before calling the helper or Target.
+
 Hitch supplies that response only to the pending Target exec. It does not modify
 the host process environment or persist the helper configuration, request,
 response, or credential values. Helper stderr and malformed output produce fixed
