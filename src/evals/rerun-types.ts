@@ -39,6 +39,10 @@ export interface RerunEvalOptions {
   modelCapturePlan?: ModelCapturePlanV1;
   harborArtifactBuilder?: EvalHarborArtifactBuilder;
   inferenceCoordinator?: ManagedInferenceCoordinator;
+  remoteWorkExecutor?: import("./service-types.js").EvalRemoteWorkExecutor;
+  executionWorker?: import("./execution-leases.js").ExecutionWorkerIdentity;
+  /** Internal: daemon has reconciled the original remote leases before resuming. */
+  resumeRemoteRerun?: boolean;
 }
 
 export interface EvalRerunResult {

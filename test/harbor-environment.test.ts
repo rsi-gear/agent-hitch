@@ -100,6 +100,16 @@ assert '"devices": !override [{"capabilities": ["gpu"], "count": 1}]' in gpu_sid
 try: module._validate_labels({**labels, "unexpected": "x"})
 except ValueError: pass
 else: raise AssertionError("unknown ownership label accepted")
+for provider in ["local-docker", "remote-docker", "remote.us-1"]:
+    assert module._validate_labels({**labels, "io.hitch.provider": provider})["io.hitch.provider"] == provider
+for provider in ["Remote", "remote/docker", "bad provider", "a" * 129, "", None]:
+    try: module._validate_labels({**labels, "io.hitch.provider": provider})
+    except ValueError: pass
+    else: raise AssertionError("invalid provider ownership label accepted")
+remote_labels = {**labels, "io.hitch.provider": "remote-docker"}
+remote_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=remote_labels)
+for resources in json.loads(remote_env._hitch_ownership_compose_path.read_text()).values():
+    for resource in resources.values(): assert resource["labels"]["io.hitch.provider"] == "remote-docker"
 try: module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels, hitch_service_resource_limits={"other": limits["database"]})
 except ValueError: pass
 else: raise AssertionError("unbounded sidecar accepted")

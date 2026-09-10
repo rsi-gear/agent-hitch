@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import {
   loadRemoteWorkerCredential,
   loadRemoteWorkerRegistration,
@@ -7,15 +8,35 @@ import {
   RemoteWorkerRunner,
   writeRemoteWorkerCredential,
 } from "../../control-plane/index.js";
-import { releaseRemoteHarborOffer, remoteHarborWorker } from "../../workers/index.js";
+import { LocalExecutionObserver, releaseRemoteHarborOffer, remoteHarborWorker, cleanPreviousRemoteHarborGeneration } from "../../workers/index.js";
 import { invalidInput, parseDuration } from "../../foundation/index.js";
 import { assertNoArgs, takeFlag, takeOption } from "../arguments.js";
+import { daemonClient } from "../../daemon/index.js";
 
 export async function workerCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();
+  if (action === "list") {
+    takeFlag(args, "--json"); assertNoArgs(args);
+    process.stdout.write(`${JSON.stringify(await (await daemonClient(root)).request("/v1/workers"), null, 2)}\n`);
+    return;
+  }
   if (action === "register") return registerWorker(args);
   if (action === "run") return runWorker(args, root);
-  throw invalidInput("worker requires register or run");
+  if (action === "observe") {
+    const provider = args.shift();
+    const nonce = takeOption(args, "--nonce") ?? randomBytes(16).toString("hex");
+    takeFlag(args, "--json"); assertNoArgs(args);
+    if (!provider || !/^[a-f0-9]{32}$/.test(nonce)) throw invalidInput("worker observe requires PROVIDER and an optional 32-hex --nonce");
+    const client = await daemonClient(root);
+    const result = await client.request("/v2/execution-observation", { method: "POST",
+      body: JSON.stringify({ schema_version: "2", provider, nonce }), signal: AbortSignal.timeout(50_000) });
+    if (result.nonce !== nonce || result.provider !== provider || result.daemon_instance_id !== client.state.instance_id) {
+      throw invalidInput("execution observation does not belong to the requested daemon/provider/nonce");
+    }
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  throw invalidInput("worker requires list, observe, register or run");
 }
 
 async function registerWorker(args: string[]): Promise<void> {
@@ -54,14 +75,17 @@ async function runWorker(args: string[], root: string): Promise<void> {
     ...(harborExecutable ? { harborExecutable: path.resolve(harborExecutable) } : {}),
     ...(dockerExecutable ? { dockerExecutable: path.resolve(dockerExecutable) } : {}),
   };
+  const executionObserver = registration.features.execution_observation === "2" ? new LocalExecutionObserver(execution) : undefined;
   const runner = new RemoteWorkerRunner({
     client, capacity: registration.capacity.allocatable, execute: remoteHarborWorker(execution),
     releaseUnknown: (offer) => releaseRemoteHarborOffer(execution, offer),
+    releasePreviousGeneration: (offer, admission) => cleanPreviousRemoteHarborGeneration(execution, offer, admission),
     signal: controller.signal, once, pollIntervalMs, heartbeatIntervalMs,
     onError: (error) => process.stderr.write(`hitch worker: ${safeMessage(error)}\n`),
+    ...(executionObserver ? { executionObserver } : {}),
   });
   process.stdout.write(`Running ${credential.worker_id} generation ${credential.generation}\n`);
-  try { await runner.run(); }
+  try { await executionObserver?.initialize(); await runner.run(); }
   finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);

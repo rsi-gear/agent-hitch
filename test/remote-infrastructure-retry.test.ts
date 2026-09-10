@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EvalRequest, EvalTrialRefV1 } from "../src/domain/index.js";
-import { buildEvalExecutionPlan, createEvalProgress, mergeEvalProgressTrial, runRemoteInfrastructureRetries, validateEvalId } from "../src/evals/index.js";
+import { assertPhysicalWork, buildEvalExecutionPlan, createEvalProgress, mergeEvalProgressTrial, runRemoteInfrastructureRetries, validateEvalId } from "../src/evals/index.js";
 import type { EvalEventSink, EvalRemoteWorkExecutor } from "../src/evals/index.js";
 import { forceRemove } from "../test-support/helpers.js";
 
@@ -54,6 +54,9 @@ test("physical infrastructure retry stays on the remote provider with a new work
     remoteWorkExecutor: async (input: Parameters<EvalRemoteWorkExecutor>[0]) => {
       remoteCalls += 1;
       assert.notEqual(input.workItem.work_id, item.work_id);
+      assert.strictEqual(input.plan, plan);
+      assert.deepEqual(input.physicalExecution, { schema_version: "2", kind: "physical-infrastructure-retry", source_work_id: item.work_id, retry_index: 1, trigger_trial_ids: [failed.trial_id] });
+      assertPhysicalWork(input.plan, input.workItem, input.physicalExecution);
       assert.equal(input.workItem.provider, "remote-docker");
       assert.equal(input.publicationMode, "replace-invalid");
       await input.onLeaseState("lease_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "running");

@@ -17,5 +17,6 @@ export { delay, terminateProcess } from "./process.js";
 export { commandExecutable, commandVersion, detectVersion, fingerprintExecutable, prepareSpawnCommand, resolveExecutable, runCommand, selectVersionLine } from "./executable.js";
 export type { CommandResult, RunCommandOptions, SpawnCommand } from "./executable.js";
 export { canonicalJSON, digest, sha256Bytes, sha256JSON } from "./hash.js";
+export { isBase64 } from "./base64.js";
 export { CREDENTIAL_REDACTION_MARKER, PROVIDER_ENVIRONMENT_NAMES, createCredentialRedactionTransform, credentialValuesFromEnv, isSensitiveFieldName, redactCredentialText, safeDiagnosticMessage } from "./credential-redaction.js";
 export type { CredentialRedactionResult } from "./credential-redaction.js";

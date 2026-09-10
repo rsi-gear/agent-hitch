@@ -1,5 +1,5 @@
 export { listPreparedArtifacts, prepareHarness } from "./preparer.js";
-export { loadPreparedArtifact, preparedArtifactDirectory } from "./store.js";
+export { loadPreparedArtifact, preparedArtifactDirectory, verifyPreparedArtifact } from "./store.js";
 export { artifactDirectoryIntegrity, artifactMatches } from "./integrity.js";
 export { assertPreparedArtifactRevision } from "./handoff.js";
 export type { ArtifactInvocation, ArtifactManifest, ListedArtifact, PreparedArtifact, PreparedArtifactExpectation } from "./types.js";

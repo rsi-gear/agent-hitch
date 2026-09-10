@@ -82,9 +82,16 @@ Usage:
   hitch resolve <harness-ref> [--json]
   hitch prepare <harness-ref> [--json]
   hitch models add <checkpoint-directory> --name <name> [--force] [--json]
+  hitch models add-node <snapshot-ref.json> --model-node-file <binding.json> --name <name> [--force] [--json]
   hitch models inspect local/<name> [--verify] [--json]
   hitch models gc [--dry-run | --apply] [--json]
-  hitch local prepare local/<name> [--device auto|cpu|cuda] [--profile baseline|throughput] [--offline] [--json]
+  hitch model-node register --file <connection.json> [--json]
+  hitch model-node inspect --file <binding.json> [--json]
+  hitch model-node recover-service <service-id> --file <current-binding.json> [--json]
+  hitch local plan local/<name> --harness <immutable-ref> --gpu <GPU-UUID> [--model-node-file <binding.json>] [--offline] [--json]
+  hitch local inspect <inference-digest> [--json]
+  hitch local inspect-service <model-node-service-id> [--json]
+  hitch local prepare local/<name> [--device auto|cpu|cuda] [--profile baseline|throughput] [--inference <digest> --model-node-file <binding.json>] [--offline] [--json]
   hitch local doctor [--device auto|cpu|cuda] [--json]
   hitch local status [--json]
   hitch local stop [<service-id>] [--force]
@@ -102,6 +109,7 @@ Usage:
   hitch benchmark compile --package <directory> --out <harbor-dataset>
   hitch eval run --benchmark <directory> | --benchmark-lock <file> --harness <immutable-ref> [--model <id>]
   hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>] [execution policy]
+    managed model node: --model local/<name> --inference <digest> --model-node-file <binding.json>
     execution policy: [--provider <id>] [--cpu-per-trial <integer-cpus>] [--memory-per-trial <size>]
       [--build-mode backend|prebuild-preferred|prebuild-required]
       [--model-capture off|native|proxy|hybrid] [--require-model-capture]
@@ -121,6 +129,9 @@ Usage:
   hitch verifier inspect <run-id> [--json]
   hitch trajectory project <run-id> [--profile analysis] [--max-bytes <bytes>] [--json]
   hitch trajectory events <run-id> [--types <a,b>] [--seq-start <n>] [--seq-end <n>] [--field <path>] [--canonical-sha256 <digest>] [--limit <n>] [--cursor <opaque>] [--max-bytes <bytes>] [--json]
+  hitch training register --file <PATH|->
+  hitch training runtime [--json]
+  hitch training evidence <run-id> [--json]
   hitch capabilities [--json]
   hitch feedback list <run-id> [--json]
   hitch feedback put <run-id> --message <id> --rating positive|negative [--note <text>] [--if-version <v>] [--json]
@@ -135,6 +146,8 @@ Usage:
   hitch daemon stop | status [--json] | logs [-n <lines>]
   hitch daemon submit --harness <ref> --prompt <text> [--workspace-mode <mode>] [--wait]
   hitch daemon cancel <run-id>
+  hitch worker list [--json]
+  hitch worker observe PROVIDER [--nonce HEX] [--json]
   hitch worker register --server <url> --registration <json> --admin-token-file <file> --credential-file <file>
   hitch worker run --server <url> --registration <json> --credential-file <file> [--harbor <path>] [--docker <path>] [--once]
 

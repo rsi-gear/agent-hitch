@@ -49,7 +49,11 @@ test("SGLang supervisor coalesces concurrent starts and releases an idle service
   await delay(20);
   assert.equal(stops, 0, "other leases keep the shared service alive");
   await Promise.all(leases.slice(1).map((lease) => Promise.all([lease.release(), lease.release()])));
-  await delay(30);
+  const stoppedDeadline = Date.now() + 2_000;
+  while (!events.some(event => event.type === "inference.stopped")) {
+    assert.ok(Date.now() < stoppedDeadline, "idle service did not publish its confirmed stop");
+    await delay(5);
+  }
   assert.equal(stops, 1);
   const records = await supervisor.list();
   assert.equal(records[0]?.state, "stopped");

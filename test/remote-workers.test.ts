@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { RemoteWorkInputStore, RemoteWorkerProtocol, RemoteWorkerRegistry, recoverRemoteWorkerEvalLeases } from "../src/control-plane/index.js";
-import { createExecutionLease, readExecutionLeases } from "../src/evals/index.js";
+import { assertRemoteLeaseRelease, createExecutionLease, heartbeatExecutionLease, parseExecutionLease, readExecutionLeases } from "../src/evals/index.js";
 import { sha256Bytes, statePaths } from "../src/foundation/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import type { EvalId } from "../src/domain/index.js";
@@ -271,6 +271,56 @@ test("remote recovery withdraws an unaccepted offer before it can be safely requ
   assert.equal(recovered.status, "resumable", JSON.stringify(recovered));
   assert.equal((await protocol.getOffer("worker_remote_a", offer.offer_id))?.state, "expired");
   assert.equal((await readExecutionLeases(evalDirectory))[0]?.state, "released");
+});
+
+test("remote recovery cannot acknowledge cleanup or retry a lease after release times out", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-release-timeout-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const registry = new RemoteWorkerRegistry({ root }), protocol = new RemoteWorkerProtocol({ root, registry });
+  await registry.initialize(); await protocol.initialize(); await registry.register(registration());
+  const { work } = remoteWork(), evalDirectory = path.join(root, "evals", work.eval_id);
+  await mkdir(evalDirectory, { recursive: true });
+  const handle = await createExecutionLease({ evalDirectory, evalId: work.eval_id, workId: work.work_id,
+    worker: { workerId: "worker_remote_a", provider: "remote-docker", collisionDomainId: "docker-engine:remote-a" },
+    reservation: work.reservation, ttlMs: 60_000, initialState: "offered" });
+  const offer = await protocol.createOffer("worker_remote_a", handle.current(), work);
+  await protocol.acceptOffer(offer.worker_id, { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
+    generation: offer.generation, accepted: true, sent_at: new Date().toISOString() });
+  await protocol.completeOffer(offer.worker_id, { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
+    generation: offer.generation, lease_id: handle.leaseId, epoch: 1, status: "failed", artifacts: [], sent_at: new Date().toISOString() });
+  const events: Array<Record<string, unknown>> = [];
+  const recover = async () => recoverRemoteWorkerEvalLeases({ root, evalId: work.eval_id as EvalId, evalDirectory,
+    leases: await readExecutionLeases(evalDirectory), registry, protocol, cancelRequested: true,
+    pollIntervalMs: 5, releaseTimeoutMs: 10, emit: event => { events.push(event); } });
+  const first = await recover();
+  assert.equal(first.status, "ambiguous"); assert.equal(first.code, "worker_release_timeout");
+  assert.deepEqual(first.recovered_lease_ids, []);
+  const fenced = (await readExecutionLeases(evalDirectory))[0]!;
+  assert.equal(fenced.state, "lost"); assert.equal(fenced.epoch, 2);
+  assert.equal((await protocol.getOffer(offer.worker_id, offer.offer_id))!.state, "release-requested");
+  const again = await recover();
+  assert.equal(again.status, "ambiguous"); assert.equal(again.code, "execution_state_ambiguous");
+  assert.deepEqual(await readExecutionLeases(evalDirectory), [fenced]);
+  assert.equal(events.some(event => event.type === "sandbox.cleanup.completed"), false);
+  const receipt = { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
+    generation: offer.generation, lease_id: handle.leaseId, epoch: 1, sent_at: new Date().toISOString() };
+  await assert.rejects(protocol.releaseOffer(offer.worker_id, { ...receipt, epoch: 2 }));
+  const acknowledged = await protocol.releaseOffer(offer.worker_id, receipt);
+  for (const changed of [{ ...acknowledged, generation: acknowledged.generation + 1 },
+    { ...acknowledged, release_receipt_digest: `sha256:${"f".repeat(64)}` as const },
+    { ...acknowledged, lease: { ...acknowledged.lease, reservation: { ...work.reservation, container_slots: 0 } } }]) {
+    assert.throws(() => assertRemoteLeaseRelease(fenced, changed), { code: "execution_state_ambiguous" });
+  }
+  const late = await recover(); assert.equal(late.status, "resumable", JSON.stringify(late));
+  const confirmed = (await readExecutionLeases(evalDirectory))[0]!;
+  assert.equal(confirmed.state, "released"); assert.equal(confirmed.epoch, 2);
+  assert.deepEqual(confirmed.resource_epochs, [1]); assert.equal(confirmed.release_confirmation!.execution_epoch, 1);
+  assert.equal(confirmed.release_confirmation!.receipt_digest, acknowledged.release_receipt_digest);
+  assert.throws(() => parseExecutionLease({ ...confirmed, state: "running", terminal_at: undefined }), { code: "execution_state_ambiguous" });
+  await assert.rejects(handle.heartbeat(1), { code: "lease_epoch_mismatch" });
+  await assert.rejects(heartbeatExecutionLease({ evalDirectory, leaseId: handle.leaseId, expectedEpoch: 2 }), { code: "lease_not_active" });
+  await assert.rejects(protocol.authorizeModelRequest(offer.worker_id, handle.leaseId, offer.generation, 1));
+  await recover(); assert.deepEqual(await readExecutionLeases(evalDirectory), [confirmed]);
 });
 
 test("accepted remote work reconnects with exact lease proof instead of being replayed", async (t) => {

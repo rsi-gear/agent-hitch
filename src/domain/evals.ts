@@ -1,4 +1,5 @@
 import type { LocalInferenceSelectionV1 } from "./inference.js";
+import type { TrainingExternalBindingV1 } from "./training.js";
 
 export interface EvalRequest {
   schema_version: string;
@@ -17,4 +18,5 @@ export interface EvalRequest {
   benchmark_id: string;
   benchmark_revision: string;
   local_inference?: LocalInferenceSelectionV1;
+  training_binding?: TrainingExternalBindingV1;
 }

@@ -156,7 +156,7 @@ async function simulateCrashAfterRemoteCompletion(
     queued_work_items: [], terminal_work_items: [], updated_at: new Date().toISOString(),
   });
   for (const lease of leases) {
-    const { terminal_at: _terminalAt, ...active } = lease;
+    const { terminal_at: _terminalAt, release_confirmation: _confirmation, ...active } = lease;
     await atomicWriteJSON(path.join(directory, "leases", `${lease.lease_id}.json`), {
       ...active, state: "running", heartbeat_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(),
     });

@@ -20,5 +20,5 @@ export interface ExecuteRunOptions {
   candidateDeadlineNs?: bigint;
   inferenceCoordinator?: ManagedInferenceCoordinator;
   /** Harbor-only: the controller has already bound this run through its authenticated model proxy. */
-  managedModelProxy?: { inference_id: Sha256; model_id: Sha256 };
+  managedModelProxy?: { inference_id: Sha256; model_id: Sha256; model_node?: import("../domain/index.js").ModelNodeBindingV2 };
 }

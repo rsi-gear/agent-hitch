@@ -2,13 +2,14 @@ import { randomBytes } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
-import type { InferenceRuntimeObservationV1, InferenceLockV1, InferenceRuntimeManifestV1, InferenceServiceRecordV1, LocalModelManifestV1 } from "../domain/index.js";
+import type { InferenceRuntimeObservation, InferenceRuntimeObservationV1, InferenceRuntimeObservationV2, InferenceLockV1, InferenceRuntimeManifestV1, InferenceServiceRecordV1, InferenceServiceHandleV2, LocalModelManifestV1 } from "../domain/index.js";
 import { HitchError, delay, ensureDir, hitchRootId, runCommand, statePaths } from "../foundation/index.js";
 import type { CommandResult } from "../foundation/index.js";
 import { defaultDeviceReservationDirectory, releaseInferenceDevice, reserveInferenceDevice } from "./device-reservation.js";
 import { validateRuntimeObservation } from "./observation.js";
 import { doctorLocalInference } from "./doctor.js";
 import { materializeLocalModel } from "./materialize.js";
+import { probeSGLangProtocol } from "./protocol-probe.js";
 
 export interface SGLangLaunchInput {
   root: string;
@@ -18,22 +19,33 @@ export interface SGLangLaunchInput {
   runtime: InferenceRuntimeManifestV1;
   signal?: AbortSignal;
   onCreated?: (containerId: string) => Promise<void>;
+  onServiceCreated?: (handle: InferenceServiceHandleV2) => Promise<void>;
 }
 
-export interface SGLangLaunchedService {
-  container_id: string;
+interface SGLangServiceConnection {
   base_url: string;
   wire_model: string;
   engine_token: string;
   admin_token: string;
-  observation?: InferenceRuntimeObservationV1;
+  observation?: InferenceRuntimeObservation;
   checkHealth?(): Promise<void>;
   stop(): Promise<void>;
 }
+export type SGLangLaunchedService = SGLangServiceConnection & (
+  | { container_id: string; service_handle?: Extract<InferenceServiceHandleV2, { kind: "docker" }> }
+  | { container_id?: never; service_handle: Extract<InferenceServiceHandleV2, { kind: "process" }> }
+);
 
 export interface SGLangLauncher {
   start(input: SGLangLaunchInput): Promise<SGLangLaunchedService>;
+  attach?(input: SGLangAttachInput): Promise<SGLangLaunchedService>;
   stopOrphan?(root: string, record: InferenceServiceRecordV1): Promise<"stopped" | "missing" | "ambiguous">;
+}
+
+/** Explicit original startup evidence. Attachment never creates a new service. */
+export interface SGLangAttachInput extends Pick<SGLangLaunchInput, "root" | "lock" | "model" | "runtime" | "signal"> {
+  record: InferenceServiceRecordV1;
+  observation: InferenceRuntimeObservationV2;
 }
 
 export interface DockerSGLangLauncherOptions {
@@ -96,8 +108,9 @@ export class DockerSGLangLauncher implements SGLangLauncher {
       containerId = (await this.invoke(this.docker, args, 60_000)).stdout.trim();
       if (!/^[a-f0-9]{12,64}$/.test(containerId)) throw new TypeError("Docker returned an invalid SGLang container ID");
       await input.onCreated?.(containerId);
+      await input.onServiceCreated?.({ schema_version: "2", kind: "docker", container_id: containerId });
       await this.waitUntilReady(`http://127.0.0.1:${port}`, engineToken, wireModel, input.lock, containerId, input.signal);
-      observation = await this.observe(input, containerId, `http://127.0.0.1:${port}`, adminToken);
+      observation = await this.observe(input, containerId, `http://127.0.0.1:${port}`, engineToken);
       // Warmup must not seed a candidate's prefix cache.
       const cleared = await this.request(`http://127.0.0.1:${port}/flush_cache`, {
         headers: { Authorization: `Bearer ${adminToken}` }, signal: AbortSignal.timeout(10_000),
@@ -119,6 +132,7 @@ export class DockerSGLangLauncher implements SGLangLauncher {
     let stopping: Promise<void> | undefined;
     return {
       container_id: containerId,
+      service_handle: { schema_version: "2", kind: "docker", container_id: containerId },
       base_url: `http://127.0.0.1:${port}`,
       wire_model: wireModel,
       engine_token: engineToken,
@@ -137,7 +151,8 @@ export class DockerSGLangLauncher implements SGLangLauncher {
     };
   }
 
-  async stopOrphan(root: string, record: Pick<InferenceServiceRecordV1, "service_id" | "inference_id" | "container_id">): Promise<"stopped" | "missing" | "ambiguous"> {
+  async stopOrphan(root: string, record: Pick<InferenceServiceRecordV1, "service_id" | "inference_id" | "container_id" | "service_handle">): Promise<"stopped" | "missing" | "ambiguous"> {
+    if (record.service_handle?.kind === "process") return "ambiguous";
     try {
       const selector = record.container_id ? ["--filter", `id=${record.container_id}`]
         : ["--filter", `label=io.hitch.root-id=${hitchRootId(root)}`, "--filter", `label=io.hitch.service-id=${record.service_id}`];
@@ -222,7 +237,7 @@ export class DockerSGLangLauncher implements SGLangLauncher {
             headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000),
           });
           if (!models.ok || !JSON.stringify(await models.json()).includes(wireModel)) throw new Error("served model alias is absent");
-          await this.probeResponses(baseUrl, token, wireModel);
+          await probeSGLangProtocol(this.request, baseUrl, token, wireModel, lock.protocol.api);
           return;
         }
         last = `health returned HTTP ${health.status}`;
@@ -235,27 +250,7 @@ export class DockerSGLangLauncher implements SGLangLauncher {
     throw new HitchError(`SGLang startup timed out: ${last}`, { code: "inference_start_timeout", exitCode: 12 });
   }
 
-  private async probeResponses(baseUrl: string, token: string, wireModel: string): Promise<void> {
-    for (const stream of [false, true]) {
-      const response = await this.request(`${baseUrl}/v1/responses`, {
-        method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-        // These pinned versions reserve two tokens. A budget of one becomes -1.
-        body: JSON.stringify({ model: wireModel, input: "Reply with one word.", max_output_tokens: 8, temperature: 0, store: false, stream }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!response.ok) throw new HitchError(`SGLang Responses probe returned HTTP ${response.status}`, {
-        code: "inference_protocol_unsupported", exitCode: 12,
-      });
-      let body: { status?: unknown };
-      if (stream) {
-        if (!response.headers.get("content-type")?.includes("text/event-stream")) throw new HitchError("SGLang Responses streaming probe did not return SSE", { code: "inference_protocol_unsupported", exitCode: 12 });
-        const events = (await response.text()).split(/\r?\n/).filter((line) => line.startsWith("data: ") && !line.includes("[DONE]"))
-          .map((line) => JSON.parse(line.slice(6)) as { type?: string; response?: { status?: unknown } });
-        body = events.findLast((event) => event.type === "response.completed" || event.type === "response.incomplete")?.response ?? {};
-      } else body = await response.json() as { status?: unknown };
-      if (body.status !== "completed" && body.status !== "incomplete") throw new HitchError("SGLang Responses probe lacks a successful terminal payload", { code: "inference_protocol_unsupported", exitCode: 12 });
-    }
-  }
+
 }
 
 function dockerArguments(input: {
@@ -295,7 +290,7 @@ function dockerArguments(input: {
     "--api-key", input.engineToken, "--admin-api-key", input.adminToken,
     "--random-seed", String(lock.generation.seed),
     "--load-format", lock.execution.load_format, "--dtype", lock.execution.dtype,
-    "--tp", "1", "--dp", "1", "--pp", "1",
+    "--tp-size", "1", "--dp-size", "1", "--pp-size", "1",
     "--context-length", String(lock.execution.context_tokens_per_request),
     "--max-running-requests", String(lock.execution.max_running_requests),
     "--max-total-tokens", String(lock.execution.max_total_tokens),
@@ -304,7 +299,7 @@ function dockerArguments(input: {
     "--kv-cache-dtype", lock.execution.kv_cache_dtype,
     "--attention-backend", lock.execution.attention_backend,
     "--sampling-backend", lock.execution.sampling_backend,
-    "--disable-request-logging",
+    // Request logging is disabled by default; there is no negative CLI switch.
     ...(lock.execution.quantization ? ["--quantization", lock.execution.quantization] : []),
     ...(lock.execution.prefix_cache.mode === "disabled" ? ["--disable-radix-cache"] : []),
     ...(!backend.overlap_schedule ? ["--disable-overlap-schedule"] : []),

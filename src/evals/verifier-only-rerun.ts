@@ -18,10 +18,8 @@ import { reapOwnedDockerResources } from "./docker-reaper.js";
 import { replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { regradeTreeDigest, sealRegradeAssessment } from "./regrade-evidence.js";
 import type { EvalRerunResult, RerunEvalOptions } from "./rerun-types.js";
-import { evalRerunSemantics } from "./rerun-types.js";
-import { invalidTrialSlots, uniqueTasks } from "./rerun-slots.js";
 import type { EvalTrialSlot } from "./rerun-slots.js";
-import { summarizeTrialRefs } from "./result-helpers.js";
+import { finishVerifierRerun } from "./verifier-rerun-result.js";
 import { validateEvalTrialReferences } from "./trial-import.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult } from "./verifier-diagnostics.js";
 import { verifierRuntimeRepair } from "./verifier-runtime.js";
@@ -182,18 +180,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
       repaired.push(slot);
     }
   }
-  const remaining = invalidTrialSlots(input.plan.tasks, input.plan.attempts, progress);
-  const completed = new Date().toISOString();
-  const output: EvalRerunResult = { schema_version: "1", kind: "eval-rerun", rerun_id: input.rerunId, rerun_type: "verifier-only", semantics: evalRerunSemantics("verifier-only"),
-    eval_id: input.evalId, status: "completed", selected_tasks: uniqueTasks(input.selectedTrials), selected_trials: input.selectedTrials,
-    repaired_tasks: uniqueTasks(repaired), repaired_trials: repaired, remaining_invalid_tasks: uniqueTasks(remaining), remaining_invalid_trials: remaining, sources,
-    eval_status: remaining.length ? "failed" : "succeeded", started_at: input.startedAt, completed_at: completed };
-  const result = { ...input.previousResult, status: output.eval_status, exit_code: remaining.length ? 13 : 0, generation: progress.generation,
-    trials: progress.trials, summary: summarizeTrialRefs(progress.trials), completed_at: completed };
-  if (!remaining.length) delete (result as Record<string, unknown>).error;
-  await atomicWriteJSON(path.join(input.evalDirectory, "result.json"), result);
-  await atomicWriteJSON(path.join(input.rerunDirectory, "state.json"), { ...output, tasks: output.selected_tasks, trials: input.selectedTrials, updated_at: completed });
-  return output;
+  return finishVerifierRerun({ ...input, progress, repaired, sources });
 }
 
 function unavailable(message: string): HitchError { return new HitchError(message, { code: "eval_verifier_only_unavailable", exitCode: 2 }); }

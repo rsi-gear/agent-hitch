@@ -139,16 +139,27 @@ function invokeRecoverableHarbor(
     ], {
       cwd,
       env,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
       detached: process.platform !== "win32",
       windowsHide: true,
     });
     let settled = false;
     const abort = () => terminateProcess(child).catch(() => {});
     signal?.addEventListener("abort", abort, { once: true });
-    const started = child.pid === undefined
-      ? Promise.reject(new HitchError("Harbor process has no PID", { code: "harbor_launch_failed", exitCode: 6 }))
-      : Promise.resolve(onStarted(child.pid));
+    const started = new Promise<void>((resolve, rejectStart) => {
+      child.once("error", rejectStart);
+      child.once("exit", () => rejectStart(new Error("Harbor supervisor exited before launch acknowledgement")));
+      child.once("message", (message) => {
+        if (message !== "ready" || !child.pid) { rejectStart(new Error("invalid Harbor supervisor launch handshake")); return; }
+        Promise.resolve(onStarted(child.pid)).then(() => {
+          if (signal?.aborted) throw signal.reason ?? new Error("Harbor launch cancelled");
+          child.send("start", error => {
+            if (error) rejectStart(error);
+            else { child.disconnect(); resolve(); }
+          });
+        }).catch(rejectStart);
+      });
+    });
     started.then(() => emit({ type: "eval.backend.process-recorded", process_id: child.pid })).catch((error) => {
       if (settled) return;
       settled = true;
@@ -166,7 +177,9 @@ function invokeRecoverableHarbor(
       signal?.removeEventListener("abort", abort);
       reject(new HitchError(`failed to launch Harbor: ${error.message}`, { code: "harbor_launch_failed", exitCode: 6, cause: error }));
     });
-    child.once("close", (code: number | null, processSignal: NodeJS.Signals | null) => {
+    // The supervisor persists and closes logs before exit. With an explicitly
+    // disconnected IPC channel, Node may not emit ChildProcess's close event.
+    child.once("exit", (code: number | null, processSignal: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
       signal?.removeEventListener("abort", abort);

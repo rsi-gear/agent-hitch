@@ -151,6 +151,11 @@ test("SGLang launcher compiles a locked-down digest-pinned CPU command and probe
     },
     fetch: async (input, init) => {
       const url = String(input);
+      if (url.endsWith("/server_info") || url.endsWith("/flush_cache")) {
+        const argv = commands.find(args => args[0] === "run")!;
+        const flag = url.endsWith("/server_info") ? "--api-key" : "--admin-api-key";
+        assert.equal((init?.headers as Record<string, string>).Authorization, `Bearer ${argv[argv.indexOf(flag) + 1]}`);
+      }
       if (url.endsWith("/health") || url.endsWith("/flush_cache")) return new Response("ok");
       if (url.endsWith("/server_info")) return Response.json({
         version: runtime.sglang_version, device: "cpu", dtype: lock.execution.dtype, kv_cache_dtype: lock.execution.kv_cache_dtype,
@@ -179,6 +184,14 @@ test("SGLang launcher compiles a locked-down digest-pinned CPU command and probe
   assert.equal(dockerRun.includes("SGLANG_USE_CPU_ENGINE=1"), true);
   assert.equal(dockerRun.includes("--device"), true);
   assert.equal(dockerRun.includes("--trust-remote-code"), false);
+  for (const parallel of ["tp", "dp", "pp"]) {
+    const index = dockerRun.indexOf(`--${parallel}-size`);
+    assert.ok(index > 0);
+    assert.equal(dockerRun[index + 1], "1");
+    assert.equal(dockerRun.includes(`--${parallel}`), false);
+  }
+  assert.equal(dockerRun.includes("--disable-request-logging"), false);
+  assert.equal(dockerRun.includes("--log-requests"), false);
   assert.equal(launched.observation?.max_total_num_tokens, lock.execution.max_total_tokens);
   assert.equal(JSON.stringify(launched.observation).includes("must-not-persist"), false);
   assert.equal(dockerRun.includes("--memory"), true);

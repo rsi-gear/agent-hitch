@@ -13,6 +13,8 @@ export type EvalDockerResourceReaper = (input: {
 }) => Promise<DockerReaperReportV1>;
 
 export interface RunEvalOptions {
+  /** A preparation repair owns a separate immutable inference service scope. */
+  inferenceRerunId?: string;
   evalId?: EvalId;
   request: EvalRequestInput;
   root: string;
@@ -108,9 +110,13 @@ export interface EvalRemoteWorkExecutionResult {
   leaseId: string;
   refs: EvalTrialRefV1[];
   run: HarborBackendResult;
+  assessments?: Array<{ id: string; digest: string }>;
 }
 
 export type EvalRemoteWorkExecutor = (input: {
+  physicalExecution?: import("../domain/index.js").RemotePhysicalExecutionV2;
+  verifierOnly?: { descriptor: import("../domain/index.js").RemoteVerifierWorkV2; sourceSnapshotDirectory: string; verifierRuntimeDirectory: string };
+  modelTarget?: import("../model-access/index.js").RemoteModelTargetV2;
   evalId: EvalId;
   evalDirectory: string;
   root: string;

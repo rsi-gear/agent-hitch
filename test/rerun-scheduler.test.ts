@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { EvalRerunScheduler, ResourceLedger } from "../src/control-plane/index.js";
+import { CollisionLockManager, EvalRerunScheduler, RemoteWorkCoordinator, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger } from "../src/control-plane/index.js";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalRerunResult, RerunEvalOptions } from "../src/evals/index.js";
-import { buildEvalExecutionPlan, evalRerunSemantics, validateEvalRequest } from "../src/evals/index.js";
+import { buildEvalExecutionPlan, createExecutionLease, evalRerunSemantics, markExecutionLeaseLost, readExecutionLeases, stageRemoteRerunCompletion, validateEvalRequest } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, readJSON, sha256JSON } from "../src/foundation/index.js";
 
@@ -314,16 +314,16 @@ function completedResult(options: RerunEvalOptions): EvalRerunResult {
   };
 }
 
-async function persistRerunOperation(root: string, rerunId: string, status: "queued" | "running"): Promise<void> {
+async function persistRerunOperation(root: string, rerunId: string, status: "queued" | "running", rerunType: "candidate-restart" | "verifier-only" = "candidate-restart"): Promise<void> {
   const directory = path.join(root, "evals", EVAL_ID, "reruns", rerunId);
   await mkdir(directory, { recursive: true });
   const now = new Date().toISOString();
-  const semantics = evalRerunSemantics("candidate-restart");
+  const semantics = evalRerunSemantics(rerunType);
   await atomicWriteJSON(path.join(directory, "submission.json"), {
     schema_version: "1",
     rerun_id: rerunId,
     eval_id: EVAL_ID,
-    rerun_type: "candidate-restart",
+    rerun_type: rerunType,
     semantics,
     selector: { mode: "invalid" },
     submitted_at: now,
@@ -332,7 +332,7 @@ async function persistRerunOperation(root: string, rerunId: string, status: "que
     schema_version: "1",
     rerun_id: rerunId,
     eval_id: EVAL_ID,
-    rerun_type: "candidate-restart",
+    rerun_type: rerunType,
     semantics,
     status,
     tasks: [],
@@ -450,4 +450,120 @@ test("cancellation refuses to claim ambiguous execution stopped after daemon res
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
   await assert.rejects(scheduler.cancel(EVAL_ID, rerunId), { code: "execution_state_ambiguous" });
+});
+
+test("an offline remote rerun does not prevent daemon recovery or fall back locally", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-offline-recovery-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID, { provider: "remote-docker", max_parallelism: 1,
+    resources: { default_trial: TRIAL }, build: { mode: "backend" }, model_capture: { mode: "native", required: false } });
+  const runningId = `rerun_${"3".repeat(32)}`, queuedId = `rerun_${"4".repeat(32)}`;
+  await persistRerunOperation(root, runningId, "running"); await persistRerunOperation(root, queuedId, "queued");
+  let executed = 0;
+  const scheduler = new EvalRerunScheduler({ root, resources: new ResourceLedger(TRIAL), trialResources: TRIAL,
+    executor: async options => { executed++; return completedResult(options); } });
+  await scheduler.initialize(); t.after(() => scheduler.shutdown());
+  const running = await scheduler.status(EVAL_ID, runningId), queued = await scheduler.status(EVAL_ID, queuedId);
+  assert.equal(running?.state.status, "failed"); assert.equal((running?.state.error as { code: string }).code, "execution_state_ambiguous");
+  assert.equal(queued?.state.status, "failed"); assert.equal((queued?.state.error as { code: string }).code, "remote_rerun_unavailable");
+  assert.equal(executed, 0);
+});
+
+test("new candidate repair reconciles a late cleanup receipt without reviving the fenced execution", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-late-cleanup-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const execution = { provider: "remote-docker", max_parallelism: 1, resources: { default_trial: TRIAL },
+    build: { mode: "backend" as const }, model_capture: { mode: "native" as const, required: false } };
+  const request = await persistTerminalEval(root, EVAL_ID, execution), evalDirectory = path.join(root, "evals", EVAL_ID);
+  const registry = new RemoteWorkerRegistry({ root }), protocol = new RemoteWorkerProtocol({ root, registry });
+  await registry.initialize(); await protocol.initialize();
+  await registry.register({ schema_version: "1", worker_id: "worker_late", provider: execution.provider, collision_domain_id: "docker:late",
+    platforms: ["linux/amd64"], backends: [{ id: "harbor", version: "0.21.0" }], task_membership: ["known"],
+    features: { docker: true, buildkit: true, model_proxy: false, isolated_same_task_attempts: false, physical_work: "2" },
+    capacity: { total: TRIAL, allocatable: TRIAL, reserved_for_system: { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 } } });
+  const work = buildEvalExecutionPlan({ evalId: EVAL_ID, request, tasks: ["one"], provider: execution.provider, workItemMode: "task-slots",
+    candidate: { revisionIdentity: `sha256:${"a".repeat(64)}`, artifactId: `sha256:${"b".repeat(64)}` },
+    maxParallelism: 1, trialResources: TRIAL, createdAt: new Date().toISOString() }).work_items[0]!;
+  const lease = await createExecutionLease({ evalDirectory, evalId: EVAL_ID, workId: work.work_id, reservation: work.reservation,
+    worker: { workerId: "worker_late", provider: execution.provider, collisionDomainId: "docker:late" }, ttlMs: 60_000, initialState: "offered" });
+  const offer = await protocol.createOffer("worker_late", lease.current(), work);
+  await protocol.acceptOffer(offer.worker_id, { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
+    generation: 1, accepted: true, sent_at: new Date().toISOString() });
+  await protocol.completeOffer(offer.worker_id, { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
+    generation: 1, lease_id: lease.leaseId, epoch: 1, status: "failed", artifacts: [], sent_at: new Date().toISOString() });
+  await markExecutionLeaseLost({ evalDirectory, leaseId: lease.leaseId, expectedEpoch: 1 });
+  const collisions = new CollisionLockManager(), remoteWork = new RemoteWorkCoordinator({ root, registry, protocol, collisions });
+  let executions = 0, cancelNext = false;
+  let pendingLease: Awaited<ReturnType<typeof createExecutionLease>> | undefined;
+  const scheduler = new EvalRerunScheduler({ root, resources: new ResourceLedger(TRIAL), trialResources: TRIAL, collisions, remoteWork,
+    executor: async options => {
+      executions++; assert.equal(options.executionWorker!.provider, execution.provider);
+      if (cancelNext) {
+        pendingLease = await createExecutionLease({ evalDirectory, evalId: EVAL_ID, workId: work.work_id, reservation: work.reservation,
+          worker: { workerId: "worker_late", provider: execution.provider, collisionDomainId: "docker:late" }, ttlMs: 60_000 });
+        await new Promise<void>((_, reject) => options.signal!.addEventListener("abort", () => reject(new Error("worker disconnected during cancellation")), { once: true }));
+      }
+      return completedResult(options);
+    } });
+  await scheduler.initialize(); t.after(() => scheduler.shutdown());
+  await assert.rejects(scheduler.submit(EVAL_ID, { selector: { mode: "invalid" } }), { code: "execution_state_ambiguous" });
+  assert.equal(executions, 0);
+  await protocol.releaseOffer(offer.worker_id, { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
+    generation: 1, lease_id: lease.leaseId, epoch: 1, sent_at: new Date().toISOString() });
+  const submitted = await scheduler.submit(EVAL_ID, { selector: { mode: "invalid" } });
+  await waitFor(async () => (await scheduler.status(EVAL_ID, submitted.rerunId))!.state.status === "completed");
+  assert.equal(executions, 1);
+  const confirmed = (await readExecutionLeases(evalDirectory))[0]!;
+  assert.equal(confirmed.state, "released"); assert.equal(confirmed.epoch, 2);
+  assert.deepEqual(confirmed.resource_epochs, [1]); assert.equal(confirmed.release_confirmation!.execution_epoch, 1);
+  cancelNext = true;
+  const interrupted = await scheduler.submit(EVAL_ID, { selector: { mode: "invalid" } });
+  await waitFor(async () => pendingLease !== undefined);
+  await assert.rejects(scheduler.cancel(EVAL_ID, interrupted.rerunId), { code: "execution_state_ambiguous" });
+  const unresolved = await scheduler.status(EVAL_ID, interrupted.rerunId);
+  assert.equal(unresolved!.state.status, "failed"); assert.equal((unresolved!.state.error as { code: string }).code, "execution_state_ambiguous");
+  await assert.rejects(scheduler.cancel(EVAL_ID, interrupted.rerunId), { code: "execution_state_ambiguous" });
+  assert.equal((await readExecutionLeases(evalDirectory)).find(item => item.lease_id === pendingLease!.leaseId)!.state, "accepted");
+  await pendingLease!.release();
+});
+
+for (const rerunType of ["candidate-restart", "verifier-only"] as const)
+for (const boundary of ["running", "completed", "newer-source", "corrupt-result", "late-cancel"] as const) test(`remote ${rerunType} completion handoff recovers ${boundary} without executing a candidate`, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-handoff-")); t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID, { provider: "remote-docker", max_parallelism: 1, resources: { default_trial: TRIAL },
+    build: { mode: "backend" }, model_capture: { mode: "native", required: false } });
+  const rerunId = `rerun_${"d".repeat(32)}`, evalDirectory = path.join(root, "evals", EVAL_ID), directory = path.join(evalDirectory, "reruns", rerunId);
+  await persistRerunOperation(root, rerunId, "running", rerunType);
+  const result = completedResult({ root, evalId: EVAL_ID, rerunId, rerunType, selector: { mode: "invalid" } });
+  await atomicWriteJSON(path.join(directory, "request.json"), { schema_version: "1", eval_id: EVAL_ID, rerun_id: rerunId,
+    rerun_type: rerunType, semantics: result.semantics, tasks: result.selected_tasks, trials: result.selected_trials });
+  const sourceResult = { schema_version: "1", eval_id: EVAL_ID, status: "succeeded", generation: 2 };
+  await atomicWriteJSON(path.join(evalDirectory, "result.json"), sourceResult);
+  await stageRemoteRerunCompletion(evalDirectory, directory, result);
+  if (boundary !== "running") {
+    const state = await readJSON<Record<string, unknown>>(path.join(directory, "state.json"));
+    await atomicWriteJSON(path.join(directory, "state.json"), { ...state, status: "completed", completed_at: result.completed_at });
+  }
+  if (boundary === "newer-source") await atomicWriteJSON(path.join(evalDirectory, "result.json"), { ...sourceResult, status: "failed", generation: 3 });
+  if (boundary === "late-cancel") await atomicWriteJSON(path.join(directory, "cancellation.json"), { schema_version: "1", eval_id: EVAL_ID, rerun_id: rerunId });
+  if (boundary === "corrupt-result") {
+    const record = await readJSON<{ result: EvalRerunResult }>(path.join(directory, "completion-pending.json"));
+    await atomicWriteJSON(path.join(directory, "completion-pending.json"), { ...record, result: { ...record.result, repaired_tasks: ["invented"] } });
+  }
+  let executions = 0;
+  const options = { root, resources: new ResourceLedger(TRIAL), trialResources: TRIAL,
+    executor: async () => { executions++; return result; } };
+  const scheduler = new EvalRerunScheduler(options); await scheduler.initialize();
+  const status = await scheduler.status(EVAL_ID, rerunId); assert.equal(executions, 0);
+  if (boundary === "corrupt-result") {
+    assert.equal(status!.state.status, "failed"); assert.equal((status!.state.error as { code: string }).code, "execution_state_ambiguous");
+  } else {
+    assert.equal(status!.state.status, "completed"); assert.deepEqual(status!.result, result);
+    assert.equal(await readJSON(path.join(directory, "completion-pending.json"), null), null);
+    assert.equal((await readJSON<EvalControlV1>(path.join(evalDirectory, "control.json"))).state, boundary === "newer-source" ? "failed" : "succeeded");
+  }
+  await scheduler.shutdown();
+  const control = await readJSON(path.join(evalDirectory, "control.json"));
+  const again = new EvalRerunScheduler({ ...options, resources: new ResourceLedger(TRIAL) });
+  await again.initialize(); await again.shutdown();
+  assert.deepEqual(await readJSON(path.join(evalDirectory, "control.json")), control); assert.equal(executions, 0);
 });

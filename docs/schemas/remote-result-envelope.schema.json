@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-hitch.local/schemas/remote-result-envelope.schema.json",
-  "title": "Hitch remote result envelope V1",
+  "title": "Hitch remote result envelope V1/V2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "eval_id", "work_id", "lease_id", "lease_epoch", "trial", "files"],
   "properties": {
-    "schema_version": { "const": "1" },
+    "schema_version": { "enum": ["1", "2"] },
+    "verifier_source": { "$ref": "remote-verifier-source.schema.json" },
     "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
     "work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
     "lease_id": { "type": "string", "pattern": "^lease_[a-f0-9]{32}$" },
@@ -28,5 +29,10 @@
         }
       }
     }
-  }
+  },
+  "allOf": [{
+    "if": { "properties": { "schema_version": { "const": "2" } } },
+    "then": { "required": ["verifier_source"] },
+    "else": { "not": { "required": ["verifier_source"] } }
+  }]
 }

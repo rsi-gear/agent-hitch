@@ -8,14 +8,14 @@ import { atomicWriteJSON, sha256Bytes, sha256JSON, statePaths } from "../foundat
 import { verifyResultBundleIndex } from "../runs/index.js";
 
 /** A bounded inventory includes empty directories and rejects symlinks. */
-export async function regradeTreeDigest(directory: string): Promise<string> {
+export async function regradeTreeDigest(directory: string, maximumBytes = 4 * 1024 ** 3): Promise<string> {
   const files: unknown[] = [];
   let total = 0;
   async function visit(relative: string): Promise<void> {
     const absolute = path.join(directory, relative);
     const info = await lstat(absolute);
-    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error("regrade input contains a symlink or special file");
-    if (files.length >= 100_000 || (total += info.isFile() ? info.size : 0) > 4 * 1024 ** 3) throw new Error("regrade input exceeds inventory limits");
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory()) || info.isFile() && info.nlink !== 1) throw new Error("regrade input contains a symlink, hardlink or special file");
+    if (files.length >= 100_000 || (total += info.isFile() ? info.size : 0) > maximumBytes) throw new Error("regrade input exceeds inventory limits");
     if (info.isDirectory()) {
       files.push({ path: relative, type: "directory" });
       for (const name of (await readdir(absolute)).sort()) await visit(relative ? `${relative}/${name}` : name);

@@ -1,5 +1,7 @@
-import type { ModelEndpointBindingV1, RunId, Sha256 } from "../domain/index.js";
+import type { ModelEndpointBindingV1, RunId, Sha256, ModelNodeBindingV2 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
+import { sha256JSON } from "../foundation/index.js";
+import { parseModelNodeBinding } from "../domain/index.js";
 
 const LOCAL_MODEL_ENVIRONMENT_NAMES = new Set([
   "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
@@ -39,9 +41,11 @@ export function scrubLocalInferenceEnvironment(env: NodeJS.ProcessEnv): NodeJS.P
 export function managedHarborModelRuntime(
   env: NodeJS.ProcessEnv,
   runId: RunId,
-  identity: { inference_id: Sha256; model_id: Sha256 },
+  identity: { inference_id: Sha256; model_id: Sha256; model_node?: ModelNodeBindingV2 },
 ): { model_endpoint: ModelEndpointBindingV1; model_endpoint_credential: string } {
   const base = env.OPENAI_BASE_URL;
+  const modelNode = env.HITCH_MANAGED_NODE_BINDING ? parseModelNodeBinding(JSON.parse(env.HITCH_MANAGED_NODE_BINDING)) : undefined;
+  if (sha256JSON(modelNode ?? null) !== sha256JSON(identity.model_node ?? null)) throw invalidHandoff();
   if (env.HITCH_HARBOR_INTERNAL !== "1" || env.HITCH_MANAGED_LOCAL_INFERENCE !== "1"
     || env.HITCH_MANAGED_RUN_ID !== runId || env.HITCH_MANAGED_INFERENCE_ID !== identity.inference_id
     || env.HITCH_MANAGED_MODEL_ID !== identity.model_id || env.OPENAI_API_KEY !== "hitch-managed-local"
@@ -56,7 +60,8 @@ export function managedHarborModelRuntime(
   }
   return {
     model_endpoint: {
-      kind: "managed-local",
+      kind: modelNode ? "managed-node" : "managed-local",
+      ...(modelNode ? { model_node: modelNode } : {}),
       inference_id: identity.inference_id,
       api: "responses",
       base_url: base,

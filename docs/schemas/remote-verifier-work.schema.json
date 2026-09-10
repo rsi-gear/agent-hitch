@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-verifier-work.schema.json",
+  "title": "Hitch remote verifier-only work V2",
+  "description": "Sealed original-candidate scoring inputs. Runtime additionally validates all candidate, source, assessment, logical slot and digest relationships. Public dispatch remains gated until assessment import and recovery are wired.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "assessment_id",
+    "source_ref",
+    "source_manifest",
+    "source_trial",
+    "candidate_result",
+    "candidate_result_digest",
+    "canonical_bundle_digest",
+    "verifier_runtime_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2"
+    },
+    "kind": {
+      "const": "verifier-only"
+    },
+    "assessment_id": {
+      "type": "string",
+      "pattern": "^assessment_[a-f0-9]{32}$"
+    },
+    "source_ref": {
+      "allOf": [
+        {
+          "$ref": "eval-trial-reference.schema.json"
+        },
+        {
+          "required": [
+            "run_id",
+            "invalid_reason"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "run_group"
+                ]
+              },
+              {
+                "required": [
+                  "assessment"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "observation_status": {
+              "const": "invalid"
+            },
+            "invalid_reason": {
+              "enum": [
+                "verifier_infrastructure_failure",
+                "verifier_result_missing"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "source_manifest": {
+      "allOf": [
+        {
+          "$ref": "remote-verifier-source.schema.json#/$defs/manifest"
+        },
+        {
+          "required": [
+            "regrade_config_digest",
+            "original_result_digest"
+          ],
+          "properties": {
+            "status": {
+              "const": "available"
+            }
+          }
+        }
+      ]
+    },
+    "source_trial": {
+      "type": "object",
+      "required": [
+        "id",
+        "trial_name",
+        "agent_result"
+      ],
+      "not": {
+        "required": [
+          "config"
+        ]
+      }
+    },
+    "candidate_result": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "succeeded"
+        }
+      }
+    },
+    "candidate_result_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "canonical_bundle_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "verifier_runtime_id": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

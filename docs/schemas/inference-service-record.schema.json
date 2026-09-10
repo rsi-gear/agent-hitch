@@ -4,26 +4,252 @@
   "title": "Hitch inference service record v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "service_id", "inference_id", "isolation_key", "state", "epoch", "owner_id", "lease_owner_ids", "backend", "started_at", "updated_at"],
+  "required": [
+    "schema_version",
+    "service_id",
+    "inference_id",
+    "isolation_key",
+    "state",
+    "epoch",
+    "owner_id",
+    "lease_owner_ids",
+    "backend",
+    "started_at",
+    "updated_at"
+  ],
   "properties": {
-    "schema_version": { "const": "1" },
-    "service_id": { "type": "string", "pattern": "^inference_[a-f0-9]{32}$" },
-    "inference_id": { "$ref": "#/$defs/sha256" },
-    "isolation_key": { "$ref": "#/$defs/sha256" },
-    "state": { "enum": ["starting", "ready", "draining", "stopped", "failed"] },
-    "epoch": { "type": "integer", "minimum": 1 },
-    "owner_id": { "type": "string", "minLength": 1 },
-    "lease_owner_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-    "backend": { "enum": ["cpu", "cuda", "metal"] },
-    "container_id": { "type": "string", "pattern": "^[a-f0-9]{12,64}$" },
-    "pid": { "type": "integer", "minimum": 1 },
-    "base_url": { "type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/?$" },
-    "started_at": { "type": "string", "format": "date-time" },
-    "updated_at": { "type": "string", "format": "date-time" },
+    "schema_version": {
+      "const": "1"
+    },
+    "service_id": {
+      "type": "string",
+      "pattern": "^inference_[a-f0-9]{32}$"
+    },
+    "inference_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "isolation_key": {
+      "$ref": "#/$defs/sha256"
+    },
+    "state": {
+      "enum": [
+        "starting",
+        "ready",
+        "draining",
+        "stopped",
+        "failed"
+      ]
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lease_owner_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "backend": {
+      "enum": [
+        "cpu",
+        "cuda",
+        "metal"
+      ]
+    },
+    "container_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12,64}$"
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "base_url": {
+      "type": "string",
+      "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/?$"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
     "error": {
-      "type": "object", "additionalProperties": false, "required": ["code", "message"],
-      "properties": { "code": { "type": "string", "minLength": 1 }, "message": { "type": "string", "minLength": 1 } }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "service_handle": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "container_id"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "2"
+            },
+            "kind": {
+              "const": "docker"
+            },
+            "container_id": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{12,64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "node_id",
+            "generation",
+            "service_id",
+            "process"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "2"
+            },
+            "kind": {
+              "const": "process"
+            },
+            "node_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+            },
+            "generation": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"
+            },
+            "service_id": {
+              "type": "string",
+              "pattern": "^inference_[a-f0-9]{32}$"
+            },
+            "process": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pid",
+                "created_at"
+              ],
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "created_at": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "model_node": {
+      "$ref": "#/$defs/modelNodeBinding"
     }
   },
-  "$defs": { "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } }
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "modelNodeBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "node_id",
+        "generation",
+        "runtime_digest",
+        "launcher"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2"
+        },
+        "node_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+        },
+        "runtime_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "launcher": {
+          "const": "process"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "service_handle"
+        ],
+        "properties": {
+          "service_handle": {
+            "properties": {
+              "kind": {
+                "const": "process"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "container_id"
+              ]
+            },
+            {
+              "required": [
+                "pid"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
 }

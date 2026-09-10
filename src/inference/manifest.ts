@@ -2,11 +2,15 @@ import type {
   InferenceLockV1,
   InferenceRuntimeManifestV1,
   InferenceServiceRecordV1,
+  InferenceServiceHandleV2,
   LocalModelFileV1,
   LocalModelManifestV1,
   Sha256,
 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
+
+import { parseModelNodeBinding } from "../domain/index.js";
+export { parseModelNodeBinding } from "../domain/index.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
@@ -72,14 +76,16 @@ export function parseInferenceRuntimeManifest(value: unknown): InferenceRuntimeM
   const record = exact(value, [
     "schema_version", "runtime_id", "engine", "sglang_version", "sglang_commit", "backend", "package", "compatibility_profile",
   ], "inference runtime manifest");
-  if (record.schema_version !== "1" || record.engine !== "sglang") fail("unsupported inference runtime manifest");
+  if ((record.schema_version !== "1" && record.schema_version !== "2") || record.engine !== "sglang") fail("unsupported inference runtime manifest");
   if (record.backend !== "cpu" && record.backend !== "cuda" && record.backend !== "metal") fail("inference runtime backend is invalid");
+  const pythonPackage = record.backend === "metal" || (record.schema_version === "2" && !!record.package && typeof record.package === "object"
+    && (record.package as Record<string, unknown>).kind === "python-env");
   const packageRecord = exact(record.package,
-    record.backend === "metal"
+    pythonPackage
       ? ["kind", "environment_digest", "python_version", "packages_digest"]
       : ["kind", "image", "image_digest", "platform"],
     "inference runtime package");
-  const runtimePackage = record.backend === "metal"
+  const runtimePackage = pythonPackage
     ? {
       kind: "python-env" as const,
       environment_digest: digest(packageRecord.environment_digest, "environment_digest"),
@@ -92,13 +98,14 @@ export function parseInferenceRuntimeManifest(value: unknown): InferenceRuntimeM
       image_digest: digest(packageRecord.image_digest, "image_digest"),
       platform: literal(packageRecord.platform, "linux/amd64", "runtime platform"),
     };
-  if ((record.backend === "metal") !== (runtimePackage.kind === "python-env")) fail("runtime package does not match backend");
+  if (packageRecord.kind !== runtimePackage.kind || (record.schema_version === "1" && (record.backend === "metal") !== (runtimePackage.kind === "python-env"))) fail("runtime package does not match backend");
   const manifest: InferenceRuntimeManifestV1 = {
-    schema_version: "1",
+    schema_version: record.schema_version,
     runtime_id: digest(record.runtime_id, "runtime_id"),
     engine: "sglang",
     sglang_version: text(record.sglang_version, "sglang_version"),
-    sglang_commit: text(record.sglang_commit, "sglang_commit"),
+    sglang_commit: record.schema_version === "2" && runtimePackage.kind === "python-env"
+      ? nullableText(record.sglang_commit, "sglang_commit") : text(record.sglang_commit, "sglang_commit"),
     backend: record.backend,
     package: runtimePackage,
     compatibility_profile: text(record.compatibility_profile, "compatibility_profile"),
@@ -113,7 +120,7 @@ export function parseInferenceRuntimeManifest(value: unknown): InferenceRuntimeM
 export function parseInferenceServiceRecord(value: unknown): InferenceServiceRecordV1 {
   const record = exact(value, [
     "schema_version", "service_id", "inference_id", "isolation_key", "state", "epoch", "owner_id",
-    "lease_owner_ids", "backend", "container_id", "pid", "base_url", "started_at", "updated_at", "error",
+    "lease_owner_ids", "backend", "container_id", "service_handle", "model_node", "pid", "base_url", "started_at", "updated_at", "error",
   ], "inference service record");
   if (record.schema_version !== "1" || typeof record.service_id !== "string" || !/^inference_[a-f0-9]{32}$/.test(record.service_id)) {
     fail("inference service identity is invalid");
@@ -127,6 +134,16 @@ export function parseInferenceServiceRecord(value: unknown): InferenceServiceRec
     fail("inference container identity is invalid");
   }
   if (record.pid !== undefined && (!Number.isSafeInteger(record.pid) || (record.pid as number) < 1)) fail("inference process identity is invalid");
+  const serviceHandle = record.service_handle === undefined ? undefined : parseInferenceServiceHandle(record.service_handle);
+  const modelNode = record.model_node === undefined ? undefined : parseModelNodeBinding(record.model_node);
+  if (modelNode && (record.container_id !== undefined || record.pid !== undefined || serviceHandle?.kind === "docker"
+    || serviceHandle?.kind === "process" && (serviceHandle.node_id !== modelNode.node_id || serviceHandle.generation !== modelNode.generation))) {
+    fail("service handle differs from its frozen model node");
+  }
+  if (serviceHandle?.kind === "process" && (record.container_id !== undefined || record.pid !== undefined || serviceHandle.service_id !== record.service_id)) {
+    fail("process service handle cannot use local container/PID identity or another service ID");
+  }
+  if (serviceHandle?.kind === "docker" && record.container_id !== undefined && record.container_id !== serviceHandle.container_id) fail("Docker service handle differs from container identity");
   if (record.base_url !== undefined) {
     let url: URL;
     try { url = new URL(text(record.base_url, "inference base URL")); } catch { fail("inference base URL is invalid"); }
@@ -150,12 +167,31 @@ export function parseInferenceServiceRecord(value: unknown): InferenceServiceRec
     lease_owner_ids: owners,
     backend: record.backend,
     ...(record.container_id === undefined ? {} : { container_id: record.container_id }),
+    ...(serviceHandle ? { service_handle: serviceHandle } : {}),
+    ...(modelNode ? { model_node: modelNode } : {}),
     ...(record.pid === undefined ? {} : { pid: record.pid as number }),
     ...(record.base_url === undefined ? {} : { base_url: record.base_url as string }),
     started_at: timestamp(record.started_at, "inference started_at"),
     updated_at: timestamp(record.updated_at, "inference updated_at"),
     ...(error ? { error } : {}),
   };
+}
+
+export function parseInferenceServiceHandle(value: unknown): InferenceServiceHandleV2 {
+  const input = value as Record<string, unknown> | null;
+  const process = input?.kind === "process";
+  const r = exact(input, process ? ["schema_version", "kind", "node_id", "generation", "service_id", "process"] : ["schema_version", "kind", "container_id"], "inference service handle");
+  if (r.schema_version !== "2") fail("service handle version is invalid");
+  if (!process) {
+    if (r.kind !== "docker" || typeof r.container_id !== "string" || !/^[a-f0-9]{12,64}$/.test(r.container_id)) fail("Docker service handle is invalid");
+    return { schema_version: "2", kind: "docker", container_id: r.container_id };
+  }
+  const p = exact(r.process, ["pid", "created_at"], "model-node process identity");
+  for (const key of ["node_id", "generation"]) if (typeof r[key] !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(r[key] as string)) fail("model node identity/generation is invalid");
+  if (typeof r.service_id !== "string" || !/^inference_[a-f0-9]{32}$/.test(r.service_id)
+    || !Number.isSafeInteger(p.pid) || (p.pid as number) < 1 || typeof p.created_at !== "number" || !Number.isFinite(p.created_at) || p.created_at <= 0) fail("model-node process handle is invalid");
+  return { schema_version: "2", kind: "process", node_id: r.node_id as string, generation: r.generation as string,
+    service_id: r.service_id, process: { pid: p.pid as number, created_at: p.created_at } };
 }
 
 function parseModelFile(value: unknown): LocalModelFileV1 {

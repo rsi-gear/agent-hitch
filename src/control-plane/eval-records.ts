@@ -239,6 +239,7 @@ function persistedRequestInput(request: EvalRequest): EvalRequestInput {
     agent_args: request.agent_args,
     pass_env: request.pass_env,
     ...(request.local_inference ? { local_inference: request.local_inference } : {}),
+    ...(request.training_binding ? { training_binding: request.training_binding } : {}),
   };
 }
 

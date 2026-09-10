@@ -107,6 +107,8 @@ export async function runRemoteInfrastructureRetries(input: {
     const completed = await executor({
       evalId: input.options.evalId, evalDirectory: input.options.evalDirectory, root: input.options.root,
       request: input.options.request, plan: input.options.plan, workItem: work,
+      physicalExecution: { schema_version: "2", kind: "physical-infrastructure-retry", source_work_id: input.item.work_id,
+        retry_index: retry, trigger_trial_ids: [...new Set(triggers.map(trigger => trigger.trial_id))].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))) },
       resolvedRevision: input.options.resolvedRevision, preparedArtifact: preparedArtifactForWorkItem(input.options, work),
       runtimeDirectory: input.options.controllerRuntime.directory, runtimeId: input.options.controllerRuntime.runtime_id,
       ...(input.initial.environmentImages ? { environmentImages: input.initial.environmentImages } : {}),

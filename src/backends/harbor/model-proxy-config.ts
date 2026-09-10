@@ -1,4 +1,5 @@
 import type { ModelProxyRouteV1 } from "../../domain/index.js";
+import { parseModelNodeBinding } from "../../domain/index.js";
 import { invalidInput } from "../../foundation/index.js";
 
 export function parseHarborModelProxyRoute(value: ModelProxyRouteV1): ModelProxyRouteV1 {
@@ -18,11 +19,11 @@ function digest(value: unknown): boolean {
 function parseManagedInference(value: unknown): ModelProxyRouteV1["managed_inference"] {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some((key) => key !== "inference_id" && key !== "model_id")
-    || Object.keys(value).length !== 2) throw invalidInput("Harbor managed inference identity is invalid");
+    || Object.keys(value).some((key) => !["inference_id", "model_id", "model_node"].includes(key))) throw invalidInput("Harbor managed inference identity is invalid");
   const record = value as Record<string, unknown>;
   if (!digest(record.inference_id) || !digest(record.model_id)) throw invalidInput("Harbor managed inference identity is invalid");
-  return { inference_id: record.inference_id as import("../../domain/index.js").Sha256, model_id: record.model_id as import("../../domain/index.js").Sha256 };
+  return { inference_id: record.inference_id as import("../../domain/index.js").Sha256, model_id: record.model_id as import("../../domain/index.js").Sha256,
+    ...(record.model_node === undefined ? {} : { model_node: parseModelNodeBinding(record.model_node) }) };
 }
 
 function proxyTemplate(value: string, provider: boolean): boolean {

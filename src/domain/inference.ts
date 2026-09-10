@@ -5,6 +5,15 @@ export type LocalInferenceBackend = "cpu" | "cuda" | "metal";
 export type LocalInferenceDevice = LocalInferenceBackend | "auto";
 export type LocalInferenceProfile = "baseline" | "throughput";
 
+/** Public frozen identity; SSH aliases, paths, ports and credentials stay private. */
+export interface ModelNodeBindingV2 {
+  schema_version: "2";
+  node_id: string;
+  generation: string;
+  runtime_digest: Sha256;
+  launcher: "process";
+}
+
 export interface LocalModelFileV1 {
   path: string;
   size: number;
@@ -46,15 +55,22 @@ export interface PythonInferenceRuntimeV1 {
 }
 
 export interface InferenceRuntimeManifestV1 {
-  schema_version: "1";
+  schema_version: "1" | "2";
   runtime_id: Sha256;
   engine: "sglang";
   sglang_version: string;
-  sglang_commit: string;
+  /** Null only for v2 Python wheels without VCS provenance. */
+  sglang_commit: string | null;
   backend: LocalInferenceBackend;
   package: OciInferenceRuntimeV1 | PythonInferenceRuntimeV1;
   compatibility_profile: string;
 }
+
+/** A service identity never treats a remote PID as a local Docker container. */
+export type InferenceServiceHandleV2 =
+  | { schema_version: "2"; kind: "docker"; container_id: string }
+  | { schema_version: "2"; kind: "process"; node_id: string; generation: string; service_id: string;
+      process: { pid: number; created_at: number } };
 
 export interface SGLangCpuConfigV1 {
   backend: "cpu";
@@ -81,7 +97,9 @@ export interface SGLangMetalConfigV1 {
 export type SGLangBackendConfigV1 = SGLangCpuConfigV1 | SGLangCudaConfigV1 | SGLangMetalConfigV1;
 
 export interface InferenceLockV1 {
-  schema_version: "1";
+  schema_version: "1" | "2";
+  /** Required for v2; prohibited on legacy locks. */
+  model_node?: ModelNodeBindingV2;
   engine: "sglang";
   model_id: Sha256;
   runtime_id: Sha256;
@@ -147,6 +165,7 @@ export interface LocalInferenceSelectionV1 {
   profile: LocalInferenceProfile;
   offline: boolean;
   inference_id?: Sha256;
+  model_node?: ModelNodeBindingV2;
 }
 
 export interface InferenceServiceRecordV1 {
@@ -160,6 +179,8 @@ export interface InferenceServiceRecordV1 {
   lease_owner_ids: string[];
   backend: LocalInferenceBackend;
   container_id?: string;
+  service_handle?: InferenceServiceHandleV2;
+  model_node?: ModelNodeBindingV2;
   pid?: number;
   base_url?: string;
   started_at: string;
@@ -168,7 +189,8 @@ export interface InferenceServiceRecordV1 {
 }
 
 export interface ModelEndpointBindingV1 {
-  kind: "managed-local";
+  kind: "managed-local" | "managed-node";
+  model_node?: ModelNodeBindingV2;
   inference_id: Sha256;
   api: "responses" | "chat-completions";
   base_url: string;
@@ -221,5 +243,20 @@ export interface InferenceRuntimeObservationV1 {
   max_running_requests: number;
   container_image_id: string;
   gpu_uuid: string | null;
-  probe: { api: "responses"; max_output_tokens: number; streaming: boolean };
+  probe: { api: "responses" | "chat-completions"; max_output_tokens: number; streaming: boolean };
 }
+
+export interface PythonRuntimeObservationV2 {
+  kind: "python-env";
+  node_id: string;
+  generation: string;
+  environment_digest: Sha256;
+  python_version: string;
+  packages_digest: Sha256;
+  outer_image_digest: Sha256 | null;
+}
+export interface InferenceRuntimeObservationV2 extends Omit<InferenceRuntimeObservationV1, "schema_version" | "container_image_id"> {
+  schema_version: "2";
+  runtime: PythonRuntimeObservationV2;
+}
+export type InferenceRuntimeObservation = InferenceRuntimeObservationV1 | InferenceRuntimeObservationV2;

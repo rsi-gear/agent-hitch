@@ -11,6 +11,7 @@ import type { ValidatedRunRequest } from "./request.js";
 export interface ManagedModelProxyIdentity {
   inference_id: Sha256;
   model_id: Sha256;
+  model_node?: import("../domain/index.js").ModelNodeBindingV2;
 }
 
 export function bindManagedModelProxy(
@@ -33,6 +34,7 @@ export function bindManagedModelProxy(
       effective_id: proxy.model_id,
       identity_resolved: true,
       inference_id: proxy.inference_id,
+      ...(proxy.model_node ? { model_node: proxy.model_node } : {}),
     },
   };
 }
@@ -72,5 +74,6 @@ export function managedModelIdentity(identity: ModelIdentityV1, lease: ManagedIn
     effective_id: lease.lock.model_id,
     identity_resolved: true,
     inference_id: lease.lock.inference_id,
+    ...(lease.lock.model_node ? { model_node: lease.lock.model_node } : {}),
   };
 }

@@ -1,3 +1,4 @@
+import { parseModelNodeBinding } from "../../inference/index.js";
 import path from "node:path";
 import { daemonClient } from "../../daemon/index.js";
 import type { RunId } from "../../domain/index.js";
@@ -104,7 +105,7 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   }
 }
 
-function managedModelProxyIdentity(env: NodeJS.ProcessEnv): { inference_id: import("../../domain/index.js").Sha256; model_id: import("../../domain/index.js").Sha256 } | undefined {
+function managedModelProxyIdentity(env: NodeJS.ProcessEnv): { inference_id: import("../../domain/index.js").Sha256; model_id: import("../../domain/index.js").Sha256; model_node?: import("../../domain/index.js").ModelNodeBindingV2 } | undefined {
   if (env.HITCH_MANAGED_LOCAL_INFERENCE !== "1") return undefined;
   if (env.HITCH_HARBOR_INTERNAL !== "1") throw invalidInput("managed local inference marker is internal to Harbor");
   const inferenceId = env.HITCH_MANAGED_INFERENCE_ID;
@@ -112,7 +113,8 @@ function managedModelProxyIdentity(env: NodeJS.ProcessEnv): { inference_id: impo
   if (!inferenceId || !modelId || !/^sha256:[a-f0-9]{64}$/.test(inferenceId) || !/^sha256:[a-f0-9]{64}$/.test(modelId)) {
     throw invalidInput("managed local inference identity is incomplete");
   }
-  return { inference_id: inferenceId as import("../../domain/index.js").Sha256, model_id: modelId as import("../../domain/index.js").Sha256 };
+  return { inference_id: inferenceId as import("../../domain/index.js").Sha256, model_id: modelId as import("../../domain/index.js").Sha256,
+    ...(env.HITCH_MANAGED_NODE_BINDING ? { model_node: parseModelNodeBinding(JSON.parse(env.HITCH_MANAGED_NODE_BINDING)) } : {}) };
 }
 
 interface InternalPreparedArtifactFlags {

@@ -246,7 +246,8 @@ async function restoreModelCaptureForRecovery(input: {
   if (!await readModelProxyRuntimeState(input.evalDirectory, input.evalId, plan)) {
     throw ambiguous("recoverable model proxy has no persisted endpoint identity");
   }
-  const runtime = await startEvalModelCaptureRuntime({ plan, evalId: input.evalId, evalDirectory: input.evalDirectory, env: input.env ?? process.env });
+  const runtime = await startEvalModelCaptureRuntime({ plan, evalId: input.evalId, evalDirectory: input.evalDirectory, env: input.env ?? process.env,
+    ...(request.training_binding ? { trainingBinding: request.training_binding } : {}) });
   if (!runtime.route || !runtime.exporter) {
     await runtime.close().catch(() => undefined);
     throw ambiguous("recoverable model proxy endpoint could not be restored");

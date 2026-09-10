@@ -4,6 +4,8 @@ import type { InteractionCaptureRefV1, ModelCapturePlanV1, ModelEndpointBindingV
 import { HitchError, runCommand } from "../foundation/index.js";
 import { HostModelProxy } from "../model-access/index.js";
 import { readModelProxyRuntimeState, writeModelProxyRuntimeState } from "./model-proxy-runtime-state.js";
+import { resolveTrainingEndpoint } from "../model-access/index.js";
+import type { TrainingExternalBindingV1 } from "../domain/index.js";
 
 export interface EvalModelCaptureRuntime {
   plan: ModelCapturePlanV1;
@@ -27,6 +29,8 @@ export async function startEvalModelCaptureRuntime(input: {
   /** A sealed remote plan cannot be rewritten after dispatch when optional proxy startup fails. */
   preservePlanOnOptionalFailure?: boolean;
   managedInference?: { binding: ModelEndpointBindingV1; credential: string; modelId: import("../domain/index.js").Sha256 };
+  trainingBinding?: TrainingExternalBindingV1;
+  remoteRelay?: { binding: import("../domain/index.js").RemoteModelBindingV2; baseUrl: string; credential: string; bindRun(runId: string): Promise<void> };
 }): Promise<EvalModelCaptureRuntime> {
   if (input.plan.effective_mode !== "proxy" && input.plan.effective_mode !== "hybrid") {
     return { plan: input.plan, close: async () => undefined };
@@ -37,6 +41,8 @@ export async function startEvalModelCaptureRuntime(input: {
   }
   let proxy: HostModelProxy | undefined;
   try {
+    if (Number(!!input.trainingBinding) + Number(!!input.managedInference) + Number(!!input.remoteRelay) > 1) throw new TypeError("model route bindings are exclusive");
+    const training = input.trainingBinding ? await resolveTrainingEndpoint(path.resolve(input.evalDirectory, "../.."), input.trainingBinding) : undefined;
     const persisted = await readModelProxyRuntimeState(input.evalDirectory, input.evalId, input.plan);
     const binding = await resolveModelProxyBinding(input.env);
     proxy = await HostModelProxy.start({
@@ -48,6 +54,16 @@ export async function startEvalModelCaptureRuntime(input: {
       topology: runtimeTopology,
       bindHost: binding.bindHost,
       advertisedHost: binding.advertisedHost,
+      ...(input.remoteRelay ? {
+        upstreams: { openai: input.remoteRelay.baseUrl }, upstreamAuthorizations: { openai: `Bearer ${input.remoteRelay.credential}` },
+        credentialValues: [input.remoteRelay.credential], onRun: input.remoteRelay.bindRun,
+        ...(input.remoteRelay.binding.kind === "training-external" ? { trainingBinding: input.remoteRelay.binding.training } : {
+          managedInferenceIdentity: { inference_id: input.remoteRelay.binding.inference_id, model_id: input.remoteRelay.binding.model_id, model_node: input.remoteRelay.binding.model_node },
+        }),
+      } : {}),
+      ...(training ? { trainingEndpoint: training, upstreams: { openai: training.base_url },
+        upstreamAuthorizations: { openai: `Bearer ${training.credential}` }, upstreamWireModels: { openai: training.binding.expectedPolicyVersion },
+        credentialValues: [training.credential] } : {}),
       ...(input.managedInference ? {
         upstreams: { openai: input.managedInference.binding.base_url },
         upstreamAuthorizations: { openai: `Bearer ${input.managedInference.credential}` },
@@ -56,6 +72,7 @@ export async function startEvalModelCaptureRuntime(input: {
         managedInferenceIdentity: {
           inference_id: input.managedInference.binding.inference_id,
           model_id: input.managedInference.modelId,
+          ...(input.managedInference.binding.model_node ? { model_node: input.managedInference.binding.model_node } : {}),
         },
       } : {}),
       ...(persisted ? {

@@ -65,12 +65,17 @@ export class RemoteWorkerRegistry {
   }
 
   async authenticate(workerId: string, token: string): Promise<boolean> {
-    if (!WORKER_ID.test(workerId) || !/^[a-f0-9]{64}$/.test(token)) return false;
+    return await this.authenticatedGeneration(workerId, token) !== null;
+  }
+
+  /** Return the generation attested by this exact bearer, not a later request-body claim. */
+  async authenticatedGeneration(workerId: string, token: string): Promise<number | null> {
+    if (!WORKER_ID.test(workerId) || !/^[a-f0-9]{64}$/.test(token)) return null;
     const record = await this.readPersisted(workerId);
-    if (!record || record.revoked_at) return false;
+    if (!record || record.revoked_at) return null;
     const supplied = Buffer.from(sha256Bytes(token));
     const expected = Buffer.from(record.token_hash);
-    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected) ? record.generation : null;
   }
 
   async heartbeat(workerId: string, value: unknown): Promise<RemoteWorkerPublicRecordV1> {
@@ -108,6 +113,20 @@ export class RemoteWorkerRegistry {
     const current = await this.requirePersisted(workerId);
     if (current.revoked_at) throw new HitchError("remote worker identity is revoked", { code: "worker_revoked", exitCode: 11 });
     if (generation !== current.generation) throw new HitchError("remote worker generation is stale", { code: "worker_generation_mismatch", exitCode: 12 });
+  }
+
+  /** Serialize a short publication with credential rotation/revocation. Never hold this lock while receiving a body or running work. */
+  async withGeneration<T>(workerId: string, generation: number, publish: () => Promise<T>): Promise<T> {
+    if (!WORKER_ID.test(workerId) || !Number.isSafeInteger(generation) || generation < 1) throw invalidWorker("remote worker publication identity is invalid");
+    return withFileLock(this.locks, workerId, async () => {
+      const current = await this.requirePersisted(workerId);
+      if (current.revoked_at) throw new HitchError("remote worker identity is revoked", { code: "worker_revoked", exitCode: 11 });
+      if (current.generation !== generation) throw new HitchError("remote worker generation is stale", { code: "worker_generation_mismatch", exitCode: 12 });
+      if (withLiveness(current, Date.now(), this.heartbeatTtlMs).worker.status !== "ready") {
+        throw new HitchError("remote worker is unavailable", { code: "worker_unavailable", exitCode: 10 });
+      }
+      return publish();
+    }, { timeoutCode: "worker_record_locked", timeoutExitCode: 12 });
   }
 
   async revoke(workerId: string): Promise<RemoteWorkerPublicRecordV1> {
@@ -322,8 +341,17 @@ function parseBackends(value: unknown): Array<{ id: string; version: string }> {
 }
 
 function parseFeatures(value: unknown): RemoteWorkerRegistrationV1["features"] {
-  const features = exact(value, ["docker", "buildkit", "model_proxy", "isolated_same_task_attempts"], "remote worker features");
-  if (Object.values(features).some((entry) => typeof entry !== "boolean")) throw invalidWorker("remote worker features are invalid");
+  const booleans = ["docker", "buildkit", "model_proxy", "isolated_same_task_attempts"];
+  const bindings = ["training_external_binding", "managed_model_node"];
+  const features = exact(value, [...booleans, ...bindings, "physical_work", "execution_observation", "verifier_source", "verifier_only"], "remote worker features");
+  if (booleans.some(key => typeof features[key] !== "boolean")
+    || features.physical_work !== undefined && (features.physical_work !== "2" || !features.docker)
+    || features.execution_observation !== undefined && features.execution_observation !== "2"
+    || features.verifier_source !== undefined && (features.verifier_source !== "2" || !features.docker)
+    || features.verifier_only !== undefined && (features.verifier_only !== "2" || !features.docker || features.physical_work !== "2")
+    || bindings.some(key => features[key] !== undefined && (features[key] !== "2" || !features.docker || !features.model_proxy))) {
+    throw invalidWorker("remote worker features are invalid");
+  }
   return features as unknown as RemoteWorkerRegistrationV1["features"];
 }
 

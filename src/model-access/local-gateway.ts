@@ -6,19 +6,13 @@ import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { InferenceLockV1, ModelEndpointBindingV1 } from "../domain/index.js";
-import { HitchError } from "../foundation/index.js";
+import { HitchError, sha256JSON } from "../foundation/index.js";
+import { validateRequestBody } from "./local-gateway-request.js";
 
 const RUN_ID = /^run_[a-f0-9]{32}$/;
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 const HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]);
-const RESPONSE_FIELDS = new Set([
-  "background", "include", "input", "instructions", "max_output_tokens", "max_tool_calls", "metadata", "model",
-  "parallel_tool_calls", "previous_response_id", "reasoning", "service_tier", "store", "stream", "temperature",
-  "tool_choice", "tools", "top_logprobs", "top_p", "truncation", "user", "request_id", "session_id", "priority",
-  "extra_key", "cache_salt", "frequency_penalty", "presence_penalty", "stop", "top_k", "min_p",
-  "repetition_penalty", "prompt_cache_key", "client_metadata",
-]);
-const LOCAL_TOOL_TYPES = new Set(["function", "namespace", "tool_search", "custom"]);
+
 
 export interface LocalModelGatewayOptions {
   upstreamBaseUrl: string;
@@ -41,6 +35,7 @@ interface Registration {
   token: string;
   revoked: boolean;
   controllers: Set<AbortController>;
+  authorize?: () => Promise<boolean>;
 }
 
 interface Waiter {
@@ -95,18 +90,40 @@ export class LocalModelGateway {
   }
 
   register(runId: string): LocalModelGatewayRegistration {
+    return this.registerToken(runId, randomBytes(32).toString("hex"));
+  }
+
+  restore(runId: string, binding: ModelEndpointBindingV1, credential: string, authorize: () => Promise<boolean>): LocalModelGatewayRegistration {
+    if (!/^[a-f0-9]{64}$/.test(credential) || sha256JSON(binding) !== sha256JSON(this.bindingFor(runId))) {
+      throw new HitchError("saved gateway registration differs from the original model route", { code: "inference_recovery_ambiguous", exitCode: 12 });
+    }
+    return this.registerToken(runId, credential, authorize);
+  }
+
+  private registerToken(runId: string, token: string, authorize?: () => Promise<boolean>): LocalModelGatewayRegistration {
     if (!RUN_ID.test(runId)) throw new TypeError("local model gateway run ID is invalid");
     if (this.closed) throw new HitchError("local model gateway is closed", { code: "inference_route_unavailable", exitCode: 12 });
     if (this.registrations.has(runId)) throw new TypeError(`local model gateway run is already registered: ${runId}`);
-    const registration: Registration = { token: randomBytes(32).toString("hex"), revoked: false, controllers: new Set() };
+    const registration: Registration = { token, revoked: false, controllers: new Set(), ...(authorize ? { authorize } : {}) };
     this.registrations.set(runId, registration);
-    const baseUrl = `http://${hostForUrl(this.host)}:${this.port}/runs/${runId}/v1/`;
     return {
-      binding: {
-        kind: "managed-local",
+      binding: this.bindingFor(runId),
+      credential: registration.token,
+      revoke: () => {
+        registration.revoked = true;
+        for (const controller of registration.controllers) controller.abort();
+        if (this.registrations.get(runId) === registration) this.registrations.delete(runId);
+      },
+    };
+  }
+
+  private bindingFor(runId: string): ModelEndpointBindingV1 {
+    return {
+        kind: this.lock.model_node ? "managed-node" : "managed-local",
+        ...(this.lock.model_node ? { model_node: this.lock.model_node } : {}),
         inference_id: this.lock.inference_id,
         api: this.lock.protocol.api,
-        base_url: baseUrl,
+        base_url: `http://${hostForUrl(this.host)}:${this.port}/runs/${runId}/v1/`,
         wire_model: this.wireModel,
         credential_env_name: "HITCH_LOCAL_MODEL_TOKEN",
         capabilities: {
@@ -115,13 +132,6 @@ export class LocalModelGateway {
           parallel_tool_calls: this.lock.protocol.parallel_tool_calls,
           input_modalities: ["text"],
         },
-      },
-      credential: registration.token,
-      revoke: () => {
-        registration.revoked = true;
-        for (const controller of registration.controllers) controller.abort();
-        if (this.registrations.get(runId) === registration) this.registrations.delete(runId);
-      },
     };
   }
 
@@ -148,6 +158,7 @@ export class LocalModelGateway {
     if (!registration || registration.revoked || bearer(request) !== registration.token) {
       return respondJSON(response, 401, { error: { code: "inference_binding_revoked" } });
     }
+    if (registration.authorize && !await registration.authorize()) return respondJSON(response, 401, { error: { code: "inference_binding_revoked" } });
     if (request.method === "GET" && route.endpoint === "models") {
       return respondJSON(response, 200, {
         object: "list", data: [{ id: this.wireModel, object: "model", created: 0, owned_by: "hitch-local" }],
@@ -167,7 +178,7 @@ export class LocalModelGateway {
     let release: (() => void) | undefined;
     try {
       release = await this.acquirePermit(controller.signal);
-      if (registration.revoked) throw new HitchError("local inference binding was revoked", { code: "inference_binding_revoked", exitCode: 12 });
+      if (registration.revoked || registration.authorize && !await registration.authorize()) throw new HitchError("local inference binding was revoked", { code: "inference_binding_revoked", exitCode: 12 });
       const body = validateRequestBody(await readBody(request), this.lock, this.wireModel);
       const upstream = new URL(route.endpoint === "responses" ? "/v1/responses" : "/v1/chat/completions", this.upstream);
       const upstreamResponse = await this.request(upstream, {
@@ -250,71 +261,6 @@ export class LocalModelGateway {
   }
 }
 
-function validateRequestBody(buffer: Buffer, lock: InferenceLockV1, wireModel: string): Record<string, unknown> {
-  let value: unknown;
-  try { value = JSON.parse(buffer.toString("utf8")); } catch { throw requestError("model request must be valid JSON"); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw requestError("model request must be an object");
-  const body = value as Record<string, unknown>;
-  const unknown = Object.keys(body).find((field) => !RESPONSE_FIELDS.has(field));
-  if (unknown) throw requestError(`unsupported local inference request field: ${unknown}`);
-  if (body.model !== wireModel) throw requestError("model request does not match the bound local model");
-  if (containsUnsupportedMedia(body)) throw new HitchError("local inference P0 accepts text input only", { code: "inference_modality_unsupported", exitCode: 2 });
-  if (body.tools !== undefined && !Array.isArray(body.tools)) throw requestError("tools must be an array");
-  const tools = (body.tools ?? []) as unknown[];
-  if (!lock.protocol.tool_calls && tools.length > 0) throw requestError("tools are unavailable for this local inference profile");
-  for (const tool of tools) {
-    if (!tool || typeof tool !== "object" || Array.isArray(tool)
-      || !LOCAL_TOOL_TYPES.has(String((tool as Record<string, unknown>).type))) {
-      throw requestError("local inference accepts only Harness-executed function tools");
-    }
-  }
-  if (body.parallel_tool_calls !== undefined && body.parallel_tool_calls !== lock.protocol.parallel_tool_calls) {
-    throw requestError("parallel_tool_calls conflicts with the inference lock");
-  }
-  body.parallel_tool_calls = lock.protocol.parallel_tool_calls;
-  if (body.store !== undefined && body.store !== false) throw requestError("local inference requires store=false");
-  if (body.truncation !== undefined && body.truncation !== "disabled") throw requestError("local inference does not allow automatic truncation");
-  if (body.previous_response_id !== undefined && body.previous_response_id !== null) throw requestError("local inference requires complete request history");
-  if (body.background === true) throw requestError("background responses are unavailable for local inference");
-  if (body.reasoning !== undefined && body.reasoning !== null) {
-    if (!body.reasoning || typeof body.reasoning !== "object" || Array.isArray(body.reasoning)) throw requestError("reasoning must be an object");
-    const reasoning = body.reasoning as Record<string, unknown>;
-    if (reasoning.effort !== undefined && lock.protocol.reasoning_parser === null) {
-      throw requestError("reasoning effort requires a certified reasoning parser");
-    }
-  }
-  const expected: Record<string, number> = {
-    temperature: lock.generation.temperature,
-    top_p: lock.generation.top_p,
-    top_k: lock.generation.top_k,
-    min_p: lock.generation.min_p,
-    repetition_penalty: lock.generation.repetition_penalty,
-  };
-  for (const [name, configured] of Object.entries(expected)) {
-    if (body[name] !== undefined && body[name] !== configured) throw requestError(`${name} conflicts with the inference lock`);
-    body[name] = name === "top_k" && configured === 0 ? -1 : configured;
-  }
-  const maxOutput = body.max_output_tokens ?? lock.generation.max_output_tokens;
-  if (!Number.isSafeInteger(maxOutput) || (maxOutput as number) < 1 || (maxOutput as number) > lock.generation.max_output_tokens) {
-    throw requestError("max_output_tokens exceeds the inference lock");
-  }
-  // The pinned SGLang Responses implementation subtracts two reserved tokens.
-  // Keep the lock/client budget in generated tokens, including budgets of one.
-  body.max_output_tokens = (maxOutput as number) + 2;
-  body.store = false;
-  body.truncation = "disabled";
-  if (body.prompt_cache_key !== undefined) {
-    if (typeof body.prompt_cache_key !== "string" || body.prompt_cache_key.length > 256) throw requestError("prompt_cache_key is invalid");
-    if (lock.execution.prefix_cache.mode === "radix" && body.cache_salt === undefined) body.cache_salt = body.prompt_cache_key;
-    delete body.prompt_cache_key;
-  }
-  if (body.client_metadata !== undefined) {
-    if (!body.client_metadata || typeof body.client_metadata !== "object" || Array.isArray(body.client_metadata)) throw requestError("client_metadata is invalid");
-    if (body.metadata === undefined) body.metadata = body.client_metadata;
-    delete body.client_metadata;
-  }
-  return body;
-}
 
 async function readBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -333,7 +279,11 @@ function parseRoute(raw: string | undefined): { runId: string; endpoint: "respon
   try { url = new URL(raw ?? "", "http://gateway.local"); } catch { return null; }
   if (url.hash) return null;
   const segments = url.pathname.split("/").filter(Boolean);
-  if (segments.length !== 4 || segments[0] !== "runs" || !RUN_ID.test(segments[1] || "") || segments[2] !== "v1") return null;
+  if (segments[0] !== "runs" || !RUN_ID.test(segments[1] || "") || segments[2] !== "v1") return null;
+  if (segments.length === 5 && segments[3] === "chat" && segments[4] === "completions" && !url.search) {
+    return { runId: segments[1] as string, endpoint: "chat-completions" };
+  }
+  if (segments.length !== 4) return null;
   if (segments[3] === "models") {
     if ([...url.searchParams.keys()].some((name) => name !== "client_version")) return null;
     return { runId: segments[1] as string, endpoint: "models" };
@@ -350,15 +300,6 @@ function bearer(request: IncomingMessage): string | null {
   return match?.[1] ?? null;
 }
 
-function containsUnsupportedMedia(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(containsUnsupportedMedia);
-  if (!value || typeof value !== "object") return false;
-  for (const [name, nested] of Object.entries(value as Record<string, unknown>)) {
-    if (name === "image_url" || name === "input_image" || name === "audio_url" || name === "input_audio") return true;
-    if (containsUnsupportedMedia(nested)) return true;
-  }
-  return false;
-}
 
 function responseHeaders(headers: Headers): Record<string, string> {
   return Object.fromEntries([...headers.entries()].filter(([name]) => !HOP_HEADERS.has(name.toLowerCase()) && name.toLowerCase() !== "set-cookie"));

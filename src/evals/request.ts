@@ -1,3 +1,4 @@
+import { parseModelNodeBinding } from "../domain/index.js";
 export const DEFAULT_EVAL_TIMEOUT_MS = 15 * 60 * 1_000;
 export const DEFAULT_EVAL_SETUP_TIMEOUT_MS = 30 * 60 * 1_000;
 export const DEFAULT_INFRASTRUCTURE_RETRIES = 1;
@@ -32,6 +33,7 @@ export interface EvalRequestInput {
   agent_args?: unknown;
   pass_env?: unknown;
   local_inference?: unknown;
+  training_binding?: unknown;
 }
 
 export async function validateEvalRequest(input: EvalRequestInput): Promise<EvalRequest> {
@@ -39,7 +41,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   const allowed = new Set([
     "schema_version", "backend", "dataset", "harness_ref", "model", "attempts",
     "max_concurrent", "infrastructure_retries", "infrastructure_retry_backoff_ms",
-    "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env", "local_inference",
+    "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env", "local_inference", "training_binding",
   ]);
   const unexpected = Object.keys(input).find((field) => !allowed.has(field));
   if (unexpected) throw invalidInput(`unknown eval request field: ${unexpected}`);
@@ -73,6 +75,12 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     throw invalidInput("pass_env must be an array of strings");
   }
   const localInference = validateEvalLocalInference(input.local_inference, typeof input.model === "string" ? input.model : "");
+  const training = input.training_binding === undefined ? undefined : parseTrainingBinding(input.training_binding);
+  if (training && (localInference || input.model !== `training/${training.bindingId}` || attempts !== 1 || infrastructureRetries !== 0
+    || reference.harness_id !== "training-tool" || (input.agent_args as unknown[] | undefined)?.length || (input.pass_env as unknown[] | undefined)?.length)) {
+    throw invalidInput("training-external requires training-tool, one logical attempt, zero automatic retries, no argument/env overrides, and its exact training/<bindingId> model");
+  }
+  if (!training && String(input.model).startsWith("training/")) throw invalidInput("training models require an explicit training binding");
   const agentArgs = Array.isArray(input.agent_args) ? [...input.agent_args] as string[] : [];
   if (benchmark.manifest) {
     await assertStandardBenchmarkCandidate(input.dataset.trim(), benchmark.manifest, reference.harness_id, agentArgs);
@@ -96,6 +104,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     benchmark_id: benchmark.benchmark_id,
     benchmark_revision: benchmark.benchmark_revision,
     ...(localInference ? { local_inference: localInference } : {}),
+    ...(training ? { training_binding: training } : {}),
   };
 }
 
@@ -108,11 +117,14 @@ function validateEvalLocalInference(value: unknown, model: string): import("../d
   if (value === undefined) return { model, device: "auto", profile: "baseline", offline: false };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidInput("local_inference must be an object");
   const record = value as Record<string, unknown>;
-  const allowed = new Set(["model", "device", "profile", "inference_id", "offline"]);
+  const allowed = new Set(["model", "device", "profile", "inference_id", "offline", "model_node"]);
   const unexpected = Object.keys(record).find((field) => !allowed.has(field));
   if (unexpected) throw invalidInput(`local_inference has unknown field: ${unexpected}`);
   if (record.model !== undefined && record.model !== model) throw invalidInput("local_inference.model must match model");
-  if (record.inference_id !== undefined && (record.device !== undefined || record.profile !== undefined)) {
+  const modelNode = record.model_node === undefined ? undefined : parseModelNodeBinding(record.model_node);
+  if (modelNode && record.inference_id === undefined) throw new TypeError("model-node selection requires a planned inference lock");
+  const normalizedNodeSelection = modelNode && (record.device === undefined || record.device === "auto") && (record.profile === undefined || record.profile === "baseline");
+  if (record.inference_id !== undefined && !normalizedNodeSelection && (record.device !== undefined || record.profile !== undefined)) {
     throw invalidInput("--inference cannot be combined with --device or --local-profile");
   }
   const device = record.device ?? "auto";
@@ -128,6 +140,7 @@ function validateEvalLocalInference(value: unknown, model: string): import("../d
     device: device as import("../domain/index.js").LocalInferenceDevice,
     profile,
     offline: record.offline === true,
+    ...(modelNode ? { model_node: modelNode } : {}),
     ...(record.inference_id === undefined ? {} : { inference_id: record.inference_id as import("../domain/index.js").Sha256 }),
   };
 }
@@ -225,3 +238,4 @@ import { assertExactLocalGitEvalReference, parseHarnessReference } from "../revi
 import { workspaceDigest } from "../workspaces/index.js";
 import { loadBenchmarkAdapterManifest, type BenchmarkAdapterManifestV1 } from "./benchmark-adapter-manifest.js";
 import { assertStandardBenchmarkCandidate } from "./benchmark-candidate.js";
+import { parseTrainingBinding } from "../model-access/index.js";

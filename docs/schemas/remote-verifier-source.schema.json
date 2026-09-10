@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-verifier-source.schema.json",
+  "title": "Hitch remote verifier source V2",
+  "description": "Optional original-candidate evidence transport. Runtime verifies negotiated work version, original trial/runtime/run identity and all source digests before import.",
+  "type": "object", "additionalProperties": false, "required": ["manifest"],
+  "properties": {
+    "manifest": { "$ref": "#/$defs/manifest" },
+    "tree": { "allOf": [{ "$ref": "remote-tree-envelope.schema.json" }, {
+      "required": ["directories"],
+      "properties": {
+        "symlinks": { "maxItems": 0 },
+        "directories": { "contains": { "properties": { "path": { "const": "artifacts" } } },
+          "items": { "properties": { "path": { "pattern": "^artifacts(/.+)?$" } } } },
+        "files": { "contains": { "properties": { "path": { "const": "benchmark-lifecycle.json" } } },
+          "items": { "properties": { "path": { "pattern": "^(artifacts/.+|benchmark-lifecycle\\.json|hitch-final-response\\.json|regrade-config\\.json)$" } } } }
+      }
+    }] }
+  },
+  "allOf": [{
+    "if": { "properties": { "manifest": { "properties": { "status": { "const": "available" } } } } },
+    "then": { "required": ["tree"] }, "else": { "not": { "required": ["tree"] } }
+  }, {
+    "if": { "properties": { "manifest": { "required": ["regrade_config_digest"] } } },
+    "then": { "required": ["tree"], "properties": { "tree": { "properties": { "files": { "contains": { "properties": { "path": { "const": "regrade-config.json" } } } } } } } },
+    "else": { "properties": { "tree": { "properties": { "files": { "items": { "properties": { "path": { "not": { "const": "regrade-config.json" } } } } } } } } }
+  }],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "manifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "task_id", "trial_id", "run_id", "controller_runtime_id", "source_result_digest", "status"],
+      "properties": {
+        "schema_version": { "const": "2" }, "task_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "trial_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$" },
+        "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+        "controller_runtime_id": { "$ref": "#/$defs/sha256" }, "source_result_digest": { "$ref": "#/$defs/sha256" }, "original_result_digest": { "$ref": "#/$defs/sha256" },
+        "status": { "enum": ["available", "unavailable"] },
+        "source_bundle_digest": { "$ref": "#/$defs/sha256" }, "source_config_digest": { "$ref": "#/$defs/sha256" }, "regrade_config_digest": { "$ref": "#/$defs/sha256" },
+        "task_digest": { "$ref": "#/$defs/sha256" }, "artifacts_digest": { "$ref": "#/$defs/sha256" }, "snapshot_digest": { "$ref": "#/$defs/sha256" },
+        "reason": { "enum": ["unsupported-task", "source-unavailable", "source-too-large"] }
+      },
+      "allOf": [{
+        "if": { "properties": { "status": { "const": "available" } } },
+        "then": { "required": ["source_bundle_digest", "source_config_digest", "task_digest", "artifacts_digest", "snapshot_digest"], "not": { "required": ["reason"] } },
+        "else": { "required": ["reason"], "not": { "anyOf": [
+          { "required": ["source_bundle_digest"] }, { "required": ["source_config_digest"] }, { "required": ["task_digest"] }, { "required": ["artifacts_digest"] }, { "required": ["snapshot_digest"] }, { "required": ["regrade_config_digest"] }
+        ] } }
+      }]
+    }
+  }
+}

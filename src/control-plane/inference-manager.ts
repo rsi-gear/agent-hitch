@@ -7,12 +7,14 @@ import type {
   InferenceLockV1,
   LocalInferenceSelectionV1,
 } from "../domain/index.js";
-import { HitchError, atomicWriteJSON, ensureDir, sha256JSON, statePaths } from "../foundation/index.js";
+import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { prepareLocalInference, SGLangServiceSupervisor } from "../inference/index.js";
 import type { LocalInferencePreflightOptions, LocalInferencePreflightResultV1, SGLangServiceLease } from "../inference/index.js";
 import { LocalModelGateway } from "../model-access/index.js";
-import type { LocalModelGatewayOptions } from "../model-access/index.js";
+import type { LocalModelGatewayOptions, LocalModelGatewayRegistration } from "../model-access/index.js";
 import type { ResourceLedger, ResourceLease } from "./resources.js";
+import type { ManagedServiceRecovery, ManagedServiceRecoveryPlan } from "./managed-service-recovery.js";
+import { sealManagedGateway } from "./managed-gateway-receipt.js";
 
 export interface LocalInferenceManagerOptions {
   root: string;
@@ -21,6 +23,8 @@ export interface LocalInferenceManagerOptions {
   preflight?: (options: LocalInferencePreflightOptions) => ReturnType<typeof prepareLocalInference>;
   startGateway?: (options: LocalModelGatewayOptions) => Promise<LocalModelGateway>;
   onEvent?: (event: Record<string, unknown>) => void;
+  recovery?: ManagedServiceRecovery;
+  recoveryPollIntervalMs?: number;
 }
 
 interface ManagedService {
@@ -31,6 +35,15 @@ interface ManagedService {
   refs: number;
   lock: InferenceLockV1;
   invalidated?: boolean;
+}
+
+interface RecoveredOwner {
+  plan: ManagedServiceRecoveryPlan;
+  service: SGLangServiceLease;
+  registration: LocalModelGatewayRegistration;
+  lease: ManagedInferenceLeaseV1;
+  claimed: boolean;
+  retiring?: Promise<void>;
 }
 
 export class LocalInferenceManager implements ManagedInferenceCoordinator {
@@ -44,12 +57,20 @@ export class LocalInferenceManager implements ManagedInferenceCoordinator {
   private readonly serviceById = new Map<string, ManagedService>();
   private readonly gatewayPending = new Map<string, Promise<ManagedService>>();
   private readonly resourceLeases = new Map<string, ResourceLease>();
+  private readonly recovery: ManagedServiceRecovery | undefined;
+  private readonly recovered = new Map<string, RecoveredOwner>();
+  private readonly recoveryPollIntervalMs: number;
+  private recoveryTimer?: NodeJS.Timeout;
+  private recoveryChecking: Promise<void> | undefined;
   private closed = false;
 
   constructor(options: LocalInferenceManagerOptions) {
     this.root = options.root;
     this.resources = options.resources;
     this.onEvent = options.onEvent;
+    this.recovery = options.recovery;
+    this.recoveryPollIntervalMs = options.recoveryPollIntervalMs ?? 1_000;
+    if (!Number.isSafeInteger(this.recoveryPollIntervalMs) || this.recoveryPollIntervalMs < 1) throw new TypeError("invalid inference recovery polling interval");
     this.supervisor = options.supervisor ?? new SGLangServiceSupervisor({ root: options.root, ...(options.onEvent ? { onEvent: options.onEvent } : {}) });
     this.preflight = options.preflight ?? prepareLocalInference;
     this.startGateway = options.startGateway ?? LocalModelGateway.start;
@@ -68,7 +89,59 @@ export class LocalInferenceManager implements ManagedInferenceCoordinator {
   }
 
   async initialize(): Promise<void> {
-    await this.supervisor.recover();
+    const plans = await this.recovery?.select(await this.supervisor.list()) ?? [];
+    const claims = new Map<string, string[]>();
+    for (const plan of plans) claims.set(plan.record.service_id, [...claims.get(plan.record.service_id) ?? [], plan.ownerId]);
+    const attached = await this.supervisor.recover([...claims].map(([service_id, owner_ids]) => ({ service_id, owner_ids })));
+    for (const restored of attached) {
+      const selected = plans.filter(plan => plan.record.service_id === restored.record.service_id);
+      if (!selected.length || selected.some(plan => plan.port !== selected[0]!.port || sha256JSON(plan.lock) !== sha256JSON(restored.lock))) {
+        throw new HitchError("recovered model service has conflicting gateway evidence", { code: "inference_recovery_ambiguous", exitCode: 12 });
+      }
+      const first = restored.owners.get(selected[0]!.ownerId)!;
+      const gateway = await this.startGateway({ upstreamBaseUrl: first.base_url, engineToken: first.engine_token, wireModel: first.wire_model,
+        lock: restored.lock, bindHost: "127.0.0.1", listenPort: selected[0]!.port });
+      const key = `${restored.record.inference_id}:${restored.record.isolation_key}`;
+      const managed: ManagedService = { key, serviceId: restored.record.service_id, gateway, refs: selected.length, lock: restored.lock };
+      this.services.set(key, managed); this.serviceById.set(managed.serviceId, managed);
+      for (const plan of selected) {
+        const service = restored.owners.get(plan.ownerId)!;
+        let owner: RecoveredOwner;
+        const registration = gateway.restore(plan.ownerId, plan.target.binding, plan.target.credential,
+          async () => service.isReady() && (owner.claimed || await plan.state() === "active"));
+        let released = false;
+        const lease: ManagedInferenceLeaseV1 = { binding: registration.binding, credential: registration.credential, lock: restored.lock,
+          service_id: service.service_id, service_epoch: service.epoch,
+          release: async () => {
+            if (released) return;
+            registration.revoke();
+            await service.release();
+            managed.refs = Math.max(0, managed.refs - 1); released = true;
+          } };
+        owner = { plan, service, registration, lease, claimed: false };
+        this.recovered.set(`${key}:${plan.ownerId}`, owner);
+      }
+      this.onEvent?.({ type: "inference.gateway.reattached", service_id: managed.serviceId, inference_id: restored.record.inference_id, epoch: restored.record.epoch });
+    }
+    if (this.recovered.size) {
+      this.recoveryTimer = setInterval(() => {
+        this.recoveryChecking ??= this.reconcileRecovered().catch(() => {
+          this.onEvent?.({ type: "inference.recovery.unresolved", code: "inference_recovery_ambiguous" });
+        }).finally(() => { this.recoveryChecking = undefined; });
+      }, this.recoveryPollIntervalMs);
+      this.recoveryTimer.unref?.();
+    }
+  }
+
+  private async reconcileRecovered(): Promise<void> {
+    for (const [key, owner] of this.recovered) {
+      const state = owner.service.isReady() ? await owner.plan.state() : "finished";
+      if (owner.claimed || this.recovered.get(key) !== owner) continue;
+      if (state !== "finished") continue;
+      owner.retiring ??= owner.lease.release().then(() => { this.recovered.delete(key); });
+      await owner.retiring;
+    }
+    if (!this.recovered.size && this.recoveryTimer) { clearInterval(this.recoveryTimer); delete this.recoveryTimer; }
   }
 
   async acquire(input: AcquireManagedInferenceInputV1): Promise<ManagedInferenceLeaseV1> {
@@ -91,13 +164,28 @@ export class LocalInferenceManager implements ManagedInferenceCoordinator {
   private async acquirePrepared(input: AcquireManagedInferenceInputV1, prepared: LocalInferencePreflightResultV1, persistEvidence: boolean) {
     if (this.closed) throw new HitchError("local inference manager is closed", { code: "inference_route_unavailable", exitCode: 12 });
     if (input.signal?.aborted) throw new HitchError("inference acquisition cancelled", { code: "cancelled", exitCode: 9 });
-    const cacheScopeOwner = prepared.lock.execution.prefix_cache.mode === "disabled"
+    const cacheScopeOwner = !prepared.lock.model_node && prepared.lock.execution.prefix_cache.mode === "disabled"
       ? "prefix-cache-disabled"
       : input.cache_scope_owner;
     const isolationKey = sha256JSON({ inference_id: prepared.lock.inference_id, cache_scope_owner: cacheScopeOwner });
     const serviceKey = `${prepared.lock.inference_id}:${isolationKey}`;
+    const recoveredKey = `${serviceKey}:${input.run_id}`;
+    await this.recovered.get(recoveredKey)?.retiring;
+    if (this.closed || input.signal?.aborted) throw new HitchError("inference acquisition interrupted during recovery", { code: "inference_route_unavailable", exitCode: 12 });
+    const recovered = this.recovered.get(recoveredKey);
+    if (recovered) {
+      if (!recovered.service.isReady() || recovered.plan.cacheScopeOwner !== input.cache_scope_owner
+        || sha256JSON(recovered.plan.lock) !== sha256JSON(prepared.lock)
+        || sha256JSON(recovered.plan.evidenceOwner) !== sha256JSON(input.evidence_owner ?? null)) {
+        throw new HitchError("resumed inference owner differs from its original service", { code: "inference_recovery_ambiguous", exitCode: 12 });
+      }
+      recovered.claimed = true; this.recovered.delete(recoveredKey);
+      return { lease: recovered.lease, observation: recovered.service.observation ?? null };
+    }
     let allocation = this.resourceLeases.get(serviceKey);
-    if (!allocation && this.resources) {
+    // Model-node process capacity/ownership is enforced by that node's shared
+    // training/evaluation ledger, never by the controller host's GPU inventory.
+    if (!allocation && this.resources && !prepared.lock.model_node) {
       if (!this.resources.canEverFit(prepared.lock.resources)) {
         const missing = Object.entries(prepared.lock.resources).filter(([key, value]) => value > (this.resources!.capacity[key as keyof typeof prepared.lock.resources] ?? 0))
           .map(([key, value]) => `${key} requires ${value}`);
@@ -123,12 +211,16 @@ export class LocalInferenceManager implements ManagedInferenceCoordinator {
     try {
       if (!serviceLease.isReady() || input.signal?.aborted) throw new HitchError("inference service is no longer available", { code: "inference_route_unavailable", exitCode: 12 });
       registration = managed.gateway.register(input.run_id);
+      if (prepared.lock.model_node) await sealManagedGateway(this.root, { serviceId: serviceLease.service_id, epoch: serviceLease.epoch,
+        inferenceId: prepared.lock.inference_id, isolationKey, ownerId: input.run_id, cacheScopeOwner: input.cache_scope_owner,
+        evidenceOwner: input.evidence_owner, binding: registration.binding, credential: registration.credential });
       if (persistEvidence) await writeInferenceEvidence(this.root, input.run_id, input.evidence_owner, {
         lock: prepared.lock,
         model: prepared.model,
         runtime: prepared.runtime,
         service: { service_id: serviceLease.service_id, epoch: serviceLease.epoch, isolation_key: isolationKey },
         doctor: prepared.doctor ?? null,
+        model_node_observation: prepared.node_observation ?? null,
         observation: serviceLease.observation ?? null,
       });
       input.on_event?.({
@@ -189,6 +281,8 @@ export class LocalInferenceManager implements ManagedInferenceCoordinator {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    await this.recoveryChecking;
     await this.supervisor.close();
   }
 
@@ -256,15 +350,32 @@ async function writeInferenceEvidence(
       ? path.join(statePaths(root).evals, owner.eval_id, "reruns", owner.rerun_id, "inference")
       : path.join(statePaths(root).evals, owner.eval_id, "inference")
     : path.join(statePaths(root).runs, runId, "inference"));
-  await Promise.all([
-    atomicWriteJSON(path.join(directory, "lock.json"), evidence.lock),
-    atomicWriteJSON(path.join(directory, "model.manifest.json"), evidence.model),
-    atomicWriteJSON(path.join(directory, "runtime.manifest.json"), evidence.runtime),
-    atomicWriteJSON(path.join(directory, "execution.json"), {
-      schema_version: "1", run_id: runId,
+  const execution = {
+      schema_version: evidence.model_node_observation ? "2" : "1", run_id: runId,
       ...(owner ? { eval_id: owner.eval_id, ...(owner.rerun_id ? { rerun_id: owner.rerun_id } : {}) } : {}),
       service: evidence.service, doctor: evidence.doctor, observation: evidence.observation,
+      ...(evidence.model_node_observation ? { model_node_observation: evidence.model_node_observation } : {}),
       prepared_at: new Date().toISOString(),
-    }),
-  ]);
+  };
+  const files: Array<[string, unknown]> = [["lock.json", evidence.lock], ["model.manifest.json", evidence.model],
+    ["runtime.manifest.json", evidence.runtime], ["execution.json", execution]];
+  await withFileLock(statePaths(root).inferenceOperationLocks, sha256JSON({ inference_evidence: directory }), async () => {
+    const previous = await readJSON<Record<string, unknown> | null>(path.join(directory, "execution.json"), null);
+    if (execution.schema_version === "2" && previous && sha256JSON(previous.service) === sha256JSON(execution.service)) {
+      // Recovery can finish the worker and retire its gateway before the eval
+      // scheduler reacquires the same service to finalize. Retain the original
+      // evidence, including its time, instead of making that service look new.
+      if (typeof previous.prepared_at !== "string" || !Number.isFinite(Date.parse(previous.prepared_at))
+        || sha256JSON(previous) !== sha256JSON({ ...execution, prepared_at: previous.prepared_at })) {
+        throw new HitchError("original managed inference execution evidence changed", { code: "inference_recovery_ambiguous", exitCode: 12 });
+      }
+      for (const [name, value] of files.slice(0, -1)) {
+        if (sha256JSON(await readJSON(path.join(directory, name), null)) !== sha256JSON(value)) {
+          throw new HitchError("original managed inference input evidence changed", { code: "inference_recovery_ambiguous", exitCode: 12 });
+        }
+      }
+      return;
+    }
+    await Promise.all(files.map(([name, value]) => atomicWriteJSON(path.join(directory, name), value)));
+  });
 }

@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-worker-execution-admission.schema.json",
+  "title": "Hitch authenticated worker execution admission V2",
+  "description": "Independent authenticated original-generation ownership and launch identity. This is not a physical release receipt. Offer binding, ownership digest and original acceptance identity must also be verified by the consumer. Ownership V3 binds a stable host identity and a separate boot identity; legacy ownership V2 cannot prove a host reboot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "offer_id",
+    "worker_id",
+    "generation",
+    "lease_id",
+    "execution_epoch",
+    "accepted_at",
+    "ownership",
+    "ownership_digest",
+    "execution_process"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2"
+    },
+    "offer_id": {
+      "type": "string",
+      "pattern": "^offer_[a-f0-9]{32}$"
+    },
+    "worker_id": {
+      "type": "string",
+      "pattern": "^worker_[a-z0-9][a-z0-9_-]{0,62}$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "lease_id": {
+      "type": "string",
+      "pattern": "^lease_[a-f0-9]{32}$"
+    },
+    "execution_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "accepted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ownership": {
+      "$ref": "#/$defs/ownership"
+    },
+    "ownership_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "execution_process": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/process"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "start_identity",
+        "observed_at"
+      ],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_identity": {
+          "$ref": "#/$defs/digest"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ownership": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ownershipV2"
+        },
+        {
+          "$ref": "#/$defs/ownershipV3"
+        }
+      ]
+    },
+    "hostIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "platform",
+        "host_id",
+        "boot_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1"
+        },
+        "platform": {
+          "enum": [
+            "linux",
+            "darwin"
+          ]
+        },
+        "host_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "ownershipV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "binding_digest",
+        "root_id",
+        "root_digest",
+        "boot_digest",
+        "docker_engine_id",
+        "worker_process"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "root_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{24}$"
+        },
+        "root_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "boot_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "docker_engine_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\s\\u0000-\\u001f]+$"
+        },
+        "worker_process": {
+          "$ref": "#/$defs/process"
+        }
+      }
+    },
+    "ownershipV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "binding_digest",
+        "root_id",
+        "root_digest",
+        "boot_digest",
+        "docker_engine_id",
+        "worker_process",
+        "host_identity"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "3"
+        },
+        "binding_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "root_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{24}$"
+        },
+        "root_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "boot_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "docker_engine_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\s\\u0000-\\u001f]+$"
+        },
+        "worker_process": {
+          "$ref": "#/$defs/process"
+        },
+        "host_identity": {
+          "$ref": "#/$defs/hostIdentity"
+        }
+      }
+    }
+  }
+}

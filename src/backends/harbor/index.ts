@@ -1,5 +1,9 @@
 export { buildHarborJobConfig, lockedHarnessRef, normalizeHarborResult, readHarborRawResult, runHarborBackend } from "./backend.js";
+export { observeHarborEnvironment } from "./observation.js";
+export type { HarborObservationOptions } from "./observation.js";
 export { buildHarborRegradeConfig, runHarborRegrade, seedHarborRegradeTrial } from "./regrade.js";
+export { capturePortableHarborRegradeConfig, parsePortableHarborRegradeConfig, restorePortableHarborRegradeConfig } from "./portable-regrade.js";
+export type { PortableHarborRegradeConfigV2 } from "./portable-regrade.js";
 export { DEFAULT_HARBOR_TRIAL_DOCKER_PLATFORM, HARBOR_NODE_VERSION, HARBOR_NODE_VERSION_WITH_PREFIX, HARBOR_PNPM_VERSION, harborTrialRuntimeContract } from "./runtime-toolchain.js";
 export type { HarborTrialRuntimeContract } from "./runtime-toolchain.js";
 export type { BuildHarborJobConfigOptions, HarborBackendResult, HarborPreparedArtifactUse, RunHarborBackendOptions } from "./backend.js";

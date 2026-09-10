@@ -8,9 +8,18 @@ import type {
   RemoteWorkerRegistrationV1,
   ResourceVectorV1,
   Sha256,
+  RemoteExecutionObservationChallengeV2,
+  RemoteExecutionObservationReceiptV2,
+  RemoteWorkerExecutionOwnership,
+  RemoteWorkerProcessIdentityV2,
+  RemoteWorkerCleanupChallengeV2,
+  RemoteWorkerCleanupReceipt,
 } from "../domain/index.js";
-import { HitchError, safeDiagnosticMessage } from "../foundation/index.js";
+import { HitchError, safeDiagnosticMessage, sha256JSON } from "../foundation/index.js";
+import { parseExecutionLease, parseRemoteWorkerCleanupChallenge, parseRemoteWorkerCleanupReceipt } from "../evals/index.js";
 import { parseRemoteWorkOffer } from "./remote-worker-protocol.js";
+import { parseExecutionObservationChallenge, parseExecutionObservationReceipt } from "./execution-observation-contract.js";
+import { parseRemoteExecutionAdmission, parseRemoteExecutionOwnership, remoteExecutionBindingDigest } from "./remote-worker-ownership.js";
 
 const TOKEN = /^[a-f0-9]{64}$/;
 const WORKER = /^worker_[a-z0-9][a-z0-9_-]{0,62}$/;
@@ -30,6 +39,10 @@ export class RemoteWorkerHttpClient {
   private readonly baseUrl: URL;
   private readonly token: string;
   private readonly request: typeof fetch;
+  private readonly fence = new AbortController();
+
+  /** A definitive credential rejection fences every request from this generation. */
+  get fencedSignal(): AbortSignal { return this.fence.signal; }
 
   constructor(input: { baseUrl: string; credential: RemoteWorkerCredentialV1; request?: typeof fetch }) {
     this.baseUrl = parseBaseUrl(input.baseUrl);
@@ -67,6 +80,23 @@ export class RemoteWorkerHttpClient {
     return body.offers.map(parseRemoteWorkOffer);
   }
 
+  async pollExecutionObservation(signal: AbortSignal): Promise<RemoteExecutionObservationChallengeV2 | null> {
+    const response = await this.call(`v2/workers/${this.workerId}/execution-observation?generation=${this.generation}`, { signal });
+    const body = object(await responseJSON(response));
+    if (body.schema_version !== "2" || response.headers.get("cache-control") !== "no-store") throw clientError("invalid or cacheable worker observation challenge");
+    if (body.challenge === null) return null;
+    const challenge = parseExecutionObservationChallenge(body.challenge);
+    if (challenge.worker_id !== this.workerId || challenge.generation !== this.generation) throw clientError("observation challenge does not belong to this worker generation");
+    return challenge;
+  }
+
+  async submitExecutionObservation(value: RemoteExecutionObservationReceiptV2, signal: AbortSignal): Promise<void> {
+    const receipt = parseExecutionObservationReceipt(value);
+    if (receipt.challenge.worker_id !== this.workerId || receipt.challenge.generation !== this.generation) throw clientError("observation receipt does not belong to this worker generation");
+    await this.call(`v2/workers/${this.workerId}/execution-observation`, { method: "POST", signal,
+      body: JSON.stringify(receipt), headers: { "content-type": "application/json" } });
+  }
+
   async heartbeat(allocated: ResourceVectorV1, activeLeases: Array<{ lease_id: string; epoch: number }>, health: RemoteWorkerHeartbeatV1["health"] = "healthy"): Promise<void> {
     await this.call(`v1/workers/${this.workerId}/heartbeat`, {
       method: "POST", body: JSON.stringify({
@@ -86,7 +116,76 @@ export class RemoteWorkerHttpClient {
     return body;
   }
 
-  accept(offer: RemoteWorkOfferV1): Promise<RemoteWorkOfferV1> { return this.receipt(offer, "accept", { accepted: true }); }
+  async accept(offer: RemoteWorkOfferV1, ownership?: RemoteWorkerExecutionOwnership, sentAt = new Date().toISOString()): Promise<RemoteWorkOfferV1> {
+    if (!ownership) return this.receipt(offer, "accept", { accepted: true }, sentAt);
+    this.assertOffer(offer);
+    parseRemoteExecutionOwnership(ownership, offer);
+    const response = await this.call(`v2/workers/${this.workerId}/offers/${offer.offer_id}/accept`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ schema_version: "2", offer_id: offer.offer_id, generation: this.generation, nonce: offer.nonce, sent_at: sentAt, ownership }),
+    });
+    const body = object(await responseJSON(response)), accepted = parseRemoteWorkOffer(body.offer);
+    if (body.schema_version !== "2" || response.headers.get("cache-control") !== "no-store"
+      || remoteExecutionBindingDigest(accepted) !== remoteExecutionBindingDigest(offer)) throw clientError("worker execution admission response differs from its offer");
+    if (accepted.accepted_at) {
+      const admission = parseRemoteExecutionAdmission(body.admission, accepted);
+      if (admission.ownership_digest !== sha256JSON(ownership)) throw clientError("worker execution admission changed its ownership");
+    } else if (accepted.state !== "expired" || body.admission !== null) throw clientError("worker execution admission was not acknowledged");
+    return accepted;
+  }
+
+  async authorizeProcess(offer: RemoteWorkOfferV1, ownership: RemoteWorkerExecutionOwnership, identity: RemoteWorkerProcessIdentityV2): Promise<void> {
+    this.assertOffer(offer);
+    const response = await this.call(`v2/workers/${this.workerId}/offers/${offer.offer_id}/process`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ schema_version: "2", offer_id: offer.offer_id, generation: this.generation, ownership_digest: sha256JSON(ownership), process: identity }),
+    });
+    const body = object(await responseJSON(response)), admission = parseRemoteExecutionAdmission(body.admission, offer);
+    if (body.schema_version !== "2" || response.headers.get("cache-control") !== "no-store"
+      || admission.ownership_digest !== sha256JSON(ownership) || sha256JSON(admission.execution_process) !== sha256JSON(identity)) {
+      throw clientError("worker execution process authorization differs from its launch identity");
+    }
+  }
+
+  async cleanupChallenge(offer: RemoteWorkOfferV1): Promise<{ challenge: RemoteWorkerCleanupChallengeV2 | null; receipt: RemoteWorkerCleanupReceipt | null }> {
+    this.assertPreviousOffer(offer);
+    const response = await this.call(`v2/workers/${this.workerId}/offers/${offer.offer_id}/cleanup-challenge`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ schema_version: "2", offer_id: offer.offer_id, generation: this.generation }),
+    });
+    const body = object(await responseJSON(response));
+    if (body.schema_version !== "2" || response.headers.get("cache-control") !== "no-store") throw clientError("invalid or cacheable cleanup challenge");
+    if (body.receipt !== null) {
+      const receipt = parseRemoteWorkerCleanupReceipt(body.receipt, offer);
+      if (body.challenge !== null || receipt.challenge.generation > this.generation) throw clientError("cleanup receipt belongs to a future generation");
+      return { challenge: null, receipt };
+    }
+    const challenge = parseRemoteWorkerCleanupChallenge(body.challenge, offer);
+    if (challenge.generation !== this.generation || Date.parse(challenge.expires_at) <= Date.now()) throw clientError("cleanup challenge is stale");
+    return { challenge, receipt: null };
+  }
+
+  async commitCleanup(offer: RemoteWorkOfferV1, receipt: RemoteWorkerCleanupReceipt): Promise<void> {
+    this.assertPreviousOffer(offer); parseRemoteWorkerCleanupReceipt(receipt, offer);
+    if (receipt.challenge.generation !== this.generation) throw clientError("cleanup receipt belongs to another generation");
+    const response = await this.call(`v2/workers/${this.workerId}/offers/${offer.offer_id}/cleanup`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ schema_version: "2", offer_id: offer.offer_id, generation: this.generation, receipt }),
+    });
+    const body = object(await responseJSON(response));
+    if (body.schema_version !== "2" || response.headers.get("cache-control") !== "no-store"
+      || sha256JSON(parseRemoteWorkerCleanupReceipt(body.receipt, offer)) !== sha256JSON(receipt)) throw clientError("cleanup acknowledgement differs from its observation");
+  }
+
+  /** Called only by the worker-owned relay; worker credentials never enter a task environment. */
+  relayModel(offer: RemoteWorkOfferV1, runId: string, operation: "bind" | "generate", body: unknown, signal: AbortSignal): Promise<Response> {
+    this.assertOffer(offer);
+    if (!/^run_[a-f0-9]{32}$/.test(runId)) throw clientError("remote model run identity is invalid");
+    return this.call(`v1/workers/${this.workerId}/leases/${offer.lease.lease_id}/model`, {
+      method: "POST", headers: { "content-type": "application/json" }, signal,
+      body: JSON.stringify({ schema_version: "2", generation: this.generation, epoch: offer.lease.epoch, run_id: runId, operation, body }),
+    });
+  }
 
   async credentials(offer: RemoteWorkOfferV1): Promise<RemoteCredentialEnvelopeV1> {
     this.assertOffer(offer);
@@ -102,12 +201,12 @@ export class RemoteWorkerHttpClient {
     return this.receipt(offer, "accept", { accepted: false, rejection_code: rejectionCode });
   }
 
-  async emit(offer: RemoteWorkOfferV1, sequence: number, type: string, payload?: Record<string, unknown>): Promise<void> {
+  async emit(offer: RemoteWorkOfferV1, sequence: number, type: string, payload?: Record<string, unknown>, sentAt = new Date().toISOString()): Promise<void> {
     this.assertOffer(offer);
     await this.call(`v1/workers/${this.workerId}/leases/${offer.lease.lease_id}/events`, {
       method: "POST", body: JSON.stringify({
         schema_version: "1", generation: this.generation, lease_id: offer.lease.lease_id,
-        epoch: offer.lease.epoch, sequence, type, ...(payload ? { payload } : {}), sent_at: new Date().toISOString(),
+        epoch: offer.lease.epoch, sequence, type, ...(payload ? { payload } : {}), sent_at: sentAt,
       }), headers: { "content-type": "application/json" },
     });
   }
@@ -121,31 +220,52 @@ export class RemoteWorkerHttpClient {
     return ref;
   }
 
-  complete(offer: RemoteWorkOfferV1, status: "succeeded" | "failed" | "cancelled", artifacts: RemoteWorkArtifactRefV1[]): Promise<RemoteWorkOfferV1> {
-    return this.receipt(offer, "complete", { lease_id: offer.lease.lease_id, epoch: offer.lease.epoch, status, artifacts });
+  complete(offer: RemoteWorkOfferV1, status: "succeeded" | "failed" | "cancelled", artifacts: RemoteWorkArtifactRefV1[], sentAt = new Date().toISOString()): Promise<RemoteWorkOfferV1> {
+    return this.receipt(offer, "complete", { lease_id: offer.lease.lease_id, epoch: offer.lease.epoch, status, artifacts }, sentAt);
   }
 
-  release(offer: RemoteWorkOfferV1): Promise<RemoteWorkOfferV1> {
-    return this.receipt(offer, "release", { lease_id: offer.lease.lease_id, epoch: offer.lease.epoch });
+  release(offer: RemoteWorkOfferV1, sentAt = new Date().toISOString()): Promise<RemoteWorkOfferV1> {
+    return this.receipt(offer, "release", { lease_id: offer.lease.lease_id, epoch: offer.lease.epoch }, sentAt);
   }
 
-  private async receipt(offer: RemoteWorkOfferV1, action: "accept" | "complete" | "release", fields: Record<string, unknown>): Promise<RemoteWorkOfferV1> {
+  private async receipt(offer: RemoteWorkOfferV1, action: "accept" | "complete" | "release", fields: Record<string, unknown>, sentAt = new Date().toISOString()): Promise<RemoteWorkOfferV1> {
     this.assertOffer(offer);
     const response = await this.call(`v1/workers/${this.workerId}/offers/${offer.offer_id}/${action}`, {
       method: "POST", body: JSON.stringify({
         schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce, generation: this.generation,
-        ...fields, sent_at: new Date().toISOString(),
+        ...fields, sent_at: sentAt,
       }), headers: { "content-type": "application/json" },
     });
     return parseRemoteWorkOffer(object(await responseJSON(response)).offer);
   }
 
-  private call(relative: string, init: RequestInit = {}): Promise<Response> {
-    return call(this.request, new URL(relative, this.baseUrl), this.token, init);
+  async executionLease(offer: RemoteWorkOfferV1, signal: AbortSignal) {
+    this.assertOffer(offer);
+    const response = await this.call(`v1/workers/${this.workerId}/leases/${offer.lease.lease_id}/execution?generation=${this.generation}&epoch=${offer.lease.epoch}`, { signal });
+    const value = object(await responseJSON(response)), lease = parseExecutionLease(value.lease);
+    const fields = ["lease_id", "eval_id", "work_id", "worker_id", "provider", "collision_domain_id", "epoch", "reservation"] as const;
+    if (Object.keys(value).sort().join(",") !== "generation,lease,offer_id,schema_version" || value.schema_version !== "2"
+      || value.offer_id !== offer.offer_id || value.generation !== this.generation || !["offered", "accepted", "running"].includes(lease.state)
+      || Date.parse(lease.expires_at) <= Date.now() || fields.some(field => sha256JSON(lease[field]) !== sha256JSON(offer.lease[field]))
+      || sha256JSON(lease.resource_epochs ?? [lease.epoch]) !== sha256JSON(offer.lease.resource_epochs ?? [offer.lease.epoch])) throw clientError("remote execution lease grant differs from its accepted offer");
+    return lease;
+  }
+
+  private async call(relative: string, init: RequestInit = {}): Promise<Response> {
+    this.fence.signal.throwIfAborted();
+    const signal = init.signal ? AbortSignal.any([init.signal, this.fence.signal]) : this.fence.signal;
+    try { return await call(this.request, new URL(relative, this.baseUrl), this.token, { ...init, signal }, !relative.endsWith("/model")); }
+    catch (error) {
+      if (error instanceof HitchError && error.code === "remote_worker_fenced") this.fence.abort(error);
+      throw error;
+    }
   }
 
   private assertOffer(offer: RemoteWorkOfferV1): void {
     if (offer.worker_id !== this.workerId || offer.generation !== this.generation) throw clientError("remote work offer does not belong to this worker generation");
+  }
+  private assertPreviousOffer(offer: RemoteWorkOfferV1): void {
+    if (offer.worker_id !== this.workerId || offer.generation >= this.generation) throw clientError("cleanup requires an older generation of the same worker");
   }
 }
 
@@ -158,21 +278,35 @@ export function parseRemoteWorkerCredential(value: unknown): RemoteWorkerCredent
   return record as unknown as RemoteWorkerCredentialV1;
 }
 
-async function call(request: typeof fetch, url: URL, token: string, init: RequestInit = {}): Promise<Response> {
+async function call(request: typeof fetch, url: URL, token: string, init: RequestInit = {}, controlResponse = true): Promise<Response> {
   let response: Response;
   const headers = new Headers(init.headers);
   headers.set("authorization", `Bearer ${token}`);
   try { response = await request(url, { ...init, headers }); }
   catch (error) { throw clientError(`remote worker request failed: ${safeDiagnosticMessage(error, [token], 512)}`); }
   if (response.ok) return response;
+  // Model responses can carry upstream 401/403/409 errors. Only the daemon's
+  // own authentication rejection (whose header is never proxied) fences them.
+  const authenticationResponse = controlResponse || response.headers.get("x-hitch-worker-auth") === "rejected";
+  if (response.status === 401 && authenticationResponse) {
+    // The status itself rejects this bearer; do not wait for a possibly stalled
+    // error body while its candidate continues executing.
+    void response.body?.cancel().catch(() => undefined);
+    throw new HitchError("remote worker credential was rejected (HTTP 401)", { code: "remote_worker_fenced", exitCode: 11 });
+  }
   const body = (await response.text()).slice(0, MAX_ERROR_BYTES);
   let message = `HTTP ${response.status}`;
+  let fenced = false;
   try {
     const error = object(object(JSON.parse(body) as unknown).error);
+    fenced ||= authenticationResponse && (response.status === 403 || response.status === 409)
+      && (error.code === "worker_generation_mismatch" || error.code === "worker_revoked");
     if (typeof error.code === "string") message += ` ${error.code}`;
     if (typeof error.message === "string") message += `: ${error.message}`;
   } catch { /* Keep the bounded status-only error. */ }
-  throw clientError(`remote worker request failed: ${safeDiagnosticMessage(message, [token], 512)}`);
+  const diagnostic = `remote worker request failed: ${safeDiagnosticMessage(message, [token], 512)}`;
+  if (fenced) throw new HitchError(diagnostic, { code: "remote_worker_fenced", exitCode: 11 });
+  throw clientError(diagnostic);
 }
 
 async function responseJSON(response: Response, maximum = MAX_ERROR_BYTES): Promise<unknown> {

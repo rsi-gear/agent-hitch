@@ -30,6 +30,15 @@ export interface ExecutionLeaseV1 {
   heartbeat_at?: string;
   expires_at: string;
   terminal_at?: string;
+  /** Acknowledges cleanup of the execution epoch without restoring its authority. */
+  release_confirmation?: import("./worker-recovery.js").RemoteWorkerGenerationReleaseV3 | {
+    schema_version: "2";
+    offer_id: string;
+    worker_generation: number;
+    execution_epoch: number;
+    receipt_digest: Sha256;
+    released_at: string;
+  };
 }
 
 export interface WorkerCapacityV1 {
@@ -55,6 +64,15 @@ export interface ExecutionWorkerV1 {
   capacity: WorkerCapacityV1;
 }
 
+export type RemotePhysicalExecutionV2 = {
+  schema_version: "2"; kind: "candidate-restart"; source_work_id: string; rerun_id: string;
+} | {
+  schema_version: "2"; kind: "verifier-only"; source_work_id: string; rerun_id: string; assessment_id: string;
+} | {
+  schema_version: "2"; kind: "physical-infrastructure-retry"; source_work_id: string;
+  retry_index: number; trigger_trial_ids: string[];
+};
+
 export interface RemoteWorkerRegistrationV1 {
   schema_version: "1";
   worker_id: string;
@@ -66,6 +84,12 @@ export interface RemoteWorkerRegistrationV1 {
     docker: boolean;
     buildkit: boolean;
     model_proxy: boolean;
+    training_external_binding?: "2";
+    managed_model_node?: "2";
+    physical_work?: "2";
+    execution_observation?: "2";
+    verifier_source?: "2";
+    verifier_only?: "2";
     isolated_same_task_attempts: boolean;
   };
   task_membership: Array<"known" | "opaque">;
@@ -99,7 +123,7 @@ export interface RemoteWorkArtifactRefV1 {
 }
 
 export interface RemoteWorkInputRefV1 {
-  kind: "work-spec" | "harness-artifact" | "controller-runtime" | "task-input";
+  kind: "work-spec" | "harness-artifact" | "controller-runtime" | "task-input" | "verifier-source" | "verifier-runtime";
   format: "json" | "hitch-tree-v1";
   digest: Sha256;
   size: number;

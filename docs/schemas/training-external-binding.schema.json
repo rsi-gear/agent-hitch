@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/training-external-binding.schema.json",
+  "title": "Hitch exact training binding V1",
+  "type": "object", "additionalProperties": false,
+  "required": ["kind", "bindingId", "trainingRunId", "policyLeaseRef", "expectedPolicyVersion", "fencingToken", "expiresAt", "endpointRef", "credentialRef", "generationContractDigest", "requiredCapture", "api", "maxOutputTokens", "maxEpisodeSteps"],
+  "properties": {
+    "kind": { "const": "training-external" },
+    "bindingId": { "$ref": "#/$defs/id" }, "trainingRunId": { "$ref": "#/$defs/id" },
+    "policyLeaseRef": {
+      "type": "object", "additionalProperties": false, "required": ["uri", "digest", "mediaType"],
+      "properties": { "uri": { "type": "string", "minLength": 1 }, "digest": { "$ref": "#/$defs/sha256" }, "mediaType": { "const": "application/json" } }
+    },
+    "expectedPolicyVersion": { "type": "string", "minLength": 1 }, "fencingToken": { "type": "string", "minLength": 1 },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "endpointRef": { "type": "string", "pattern": "^hitch-training:[a-zA-Z0-9_-]{1,128}$" },
+    "credentialRef": { "type": "string", "pattern": "^hitch-training:[a-zA-Z0-9_-]{1,128}$" },
+    "generationContractDigest": { "$ref": "#/$defs/sha256" },
+    "requiredCapture": { "const": "exact-policy-tokens-v1" }, "api": { "const": "chat-completions" },
+    "maxOutputTokens": { "type": "integer", "minimum": 1 }, "maxEpisodeSteps": { "type": "integer", "minimum": 1 }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,128}$" },
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

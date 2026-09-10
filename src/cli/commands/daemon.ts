@@ -6,6 +6,7 @@ import { localInferenceDaemonEnvironment } from "../../inference/index.js";
 import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger, runCommand } from "../../foundation/index.js";
 import { assertNoArgs, parseRunRequest, takeFlag, takeOption } from "../arguments.js";
 import { waitForDaemonRun } from "../output.js";
+import { LocalExecutionObserver } from "../../workers/index.js";
 
 const executable = fileURLToPath(new URL("../../../bin/hitch.js", import.meta.url));
 
@@ -50,6 +51,7 @@ async function daemonServe(args: string[], root: string): Promise<void> {
 async function serveDaemon(root: string, port: number, maxConcurrent: number, resourcePolicy: DaemonResourcePolicy): Promise<void> {
   const server = new DaemonServer({
     root,
+    executionObserver: new LocalExecutionObserver({ root, env: process.env }),
     port,
     maxConcurrent,
     discoverHarnesses: discoverAgents,
