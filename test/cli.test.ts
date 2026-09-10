@@ -37,7 +37,8 @@ test("CLI advertises bounded trajectory capabilities", () => {
     verifier_evidence: "1",
     training_external_binding: "1", exact_policy_tokens: "1", training_policy_fencing: "1",
     training_harnesses: ["training-tool"], training_gpu_validation: "pending",
-    managed_model_node: "2", model_node_usage: "2", controller_runtime_observation: "2", local_execution_observation: "2", remote_execution_observation: "2",
+    managed_model_node: "2", model_node_usage: "2", model_node_storage: "1", ordered_eval_control: "2",
+    controller_runtime_observation: "2", local_execution_observation: "2", remote_execution_observation: "2",
   });
 });
 

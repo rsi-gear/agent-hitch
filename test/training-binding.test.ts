@@ -36,7 +36,8 @@ test("training registration is immutable, private, and checks live policy fencin
 });
 
 test("training proxy admits one run and only forwards generation using the private policy credential", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "hitch-training-proxy-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-training-proxy-"));
+  let proxy: HostModelProxy | undefined;
   const b = binding(); const calls: string[] = []; let forwarded: Record<string, unknown> = {};
   const server = http.createServer(async (req, res) => {
     let text = ""; for await (const chunk of req) text += chunk;
@@ -44,12 +45,20 @@ test("training proxy admits one run and only forwards generation using the priva
     if (req.url === "/v1/hitch/run") res.end(JSON.stringify({ runId: body.runId, policyVersion: b.expectedPolicyVersion }));
     else { forwarded = body; assert.equal(req.headers.authorization, `Bearer ${"s".repeat(48)}`); res.end(JSON.stringify({ choices: [], model: b.expectedPolicyVersion })); }
   });
-  server.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  t.after(async () => {
+    try { await proxy?.close(); }
+    finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
   const base = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/v1`;
-  const proxy = await HostModelProxy.start({ captureRoot: path.join(root, 'capture'), evalId: `eval_${"b".repeat(32)}`, mode: 'proxy', required: true,
+  proxy = await HostModelProxy.start({ captureRoot: path.join(root, 'capture'), evalId: `eval_${"b".repeat(32)}`, mode: 'proxy', required: true,
     trainingEndpoint: { schema_version: '1', binding: b, base_url: base, credential: 's'.repeat(48) }, upstreams: { openai: base },
     upstreamAuthorizations: { openai: `Bearer ${'s'.repeat(48)}` }, upstreamWireModels: { openai: b.expectedPolicyVersion },
-    credentialValues: ['s'.repeat(48)], bindHost: '127.0.0.1', advertisedHost: '127.0.0.1' }); t.after(() => proxy.close());
+    credentialValues: ['s'.repeat(48)], bindHost: '127.0.0.1', advertisedHost: '127.0.0.1' });
   const run = `run_${"c".repeat(32)}`;
   assert.equal((await fetch(`${proxy.localBaseUrl}/${run}/openai/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'training/binding_test', messages: [] }) })).status, 200);
   assert.equal(forwarded.model, b.expectedPolicyVersion);
