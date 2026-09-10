@@ -41,8 +41,6 @@ You need **Node.js 22+**, Git, and model access. Local runs do not require Docke
 **1. Install Hitch and authenticate the harness.** This example pins Codex to
 an explicit version; complete its login flow before continuing.
 
-Before 0.2.10 is published to npm, [install from source](docs/guide/en/model-inference.md#use-the-current-dev-build).
-
 ```bash
 npm install --global agent-hitch@0.2.10
 npx --yes @openai/codex@0.92.0 login

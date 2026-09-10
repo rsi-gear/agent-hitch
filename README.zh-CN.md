@@ -39,8 +39,6 @@
 **1. 安装 Hitch，并完成 Harness 认证。** 示例固定了一个 Codex 版本，
 继续前先完成登录流程。
 
-在 0.2.10 发布到 npm 前，请按[源码安装说明](docs/guide/zh-CN/model-inference.md#使用当前-dev-构建)使用当前 dev。
-
 ```bash
 npm install --global agent-hitch@0.2.10
 npx --yes @openai/codex@0.92.0 login
