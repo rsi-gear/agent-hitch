@@ -10,7 +10,7 @@ import { captureRemoteVerifierSource, dockerResourceOwnership, importEvalTrialRu
 import { encodeRemoteResultEnvelope, materializeRemoteTreeEnvelope, startWorkerModelRelay } from "../control-plane/index.js";
 import type { RemoteWorkerExecutor, RemoteWorkerExecutionResult } from "../control-plane/index.js";
 import { parseRemoteHarborWorkSpec } from "./remote-harbor-work-spec.js";
-import { scrubLocalInferenceEnvironment } from "../evals/index.js";
+import { scrubLocalInferenceEnvironment } from "../model-access/index.js";
 import { executeRemoteHarborVerifier } from "./remote-harbor-verifier.js";
 import { beginRemoteHarborOffer, cleanRemoteHarborOffer, prepareRemoteHarborOffer, remoteHarborProcessHooks, settleRemoteHarborOffer } from "./remote-harbor-ownership.js";
 

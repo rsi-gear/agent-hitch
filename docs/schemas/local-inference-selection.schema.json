@@ -92,35 +92,7 @@
       "pattern": "^sha256:[a-f0-9]{64}$"
     },
     "modelNodeBinding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema_version",
-        "node_id",
-        "generation",
-        "runtime_digest",
-        "launcher"
-      ],
-      "properties": {
-        "schema_version": {
-          "const": "2"
-        },
-        "node_id": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
-        },
-        "generation": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
-        },
-        "runtime_digest": {
-          "type": "string",
-          "pattern": "^sha256:[a-f0-9]{64}$"
-        },
-        "launcher": {
-          "const": "process"
-        }
-      }
+      "$ref": "model-node-binding.schema.json"
     }
   }
 }

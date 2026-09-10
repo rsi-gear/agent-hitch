@@ -71,7 +71,6 @@ export { reapOwnedDockerResources } from "./docker-reaper.js";
 export type { DockerReaperOptions, DockerReaperReportV1, ReapableDockerResourceKind } from "./docker-reaper.js";
 export { compileBenchmark, exportStandardBenchmarkDataset, runBenchmarkEval, STANDARD_BENCHMARK_COMPILER } from "./benchmark-run.js";
 export { prepareVerifierEnvironmentRuntime } from "./verifier-runtime.js";
-export { scrubLocalInferenceEnvironment } from "../runs/index.js";
 export { assertPhysicalWork, parsePhysicalExecution } from "./physical-work-plan.js";
 export { assertRemoteVerifierWork, parseRemoteVerifierWork } from "./remote-verifier-contract.js";
 export { assertRemoteRerunQuiescent } from "./remote-rerun-execution.js";

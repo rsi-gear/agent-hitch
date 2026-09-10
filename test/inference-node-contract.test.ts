@@ -20,7 +20,9 @@ const pythonRuntime = (): InferenceRuntimeManifestV1 => {
 };
 
 async function validator(name: string) {
-  return new Ajv2020({ strict: false, validateFormats: false, allErrors: true }).compile(JSON.parse(await readFile(`docs/schemas/${name}.schema.json`, "utf8")));
+  const bindingSchema = JSON.parse(await readFile("docs/schemas/model-node-binding.schema.json", "utf8"));
+  const schema = JSON.parse(await readFile(`docs/schemas/${name}.schema.json`, "utf8"));
+  return new Ajv2020({ strict: false, validateFormats: false, allErrors: true }).addSchema(bindingSchema).compile(schema);
 }
 
 test("Python CUDA runtime has a v2 identity while legacy OCI manifests round-trip unchanged", async () => {

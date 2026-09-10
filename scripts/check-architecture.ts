@@ -24,7 +24,7 @@ const ALLOWED = new Map<string, Set<string>>([
   ["backends", new Set(["domain", "foundation"])],
   ["evals", new Set(["domain", "foundation", "benchmarks", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
   ["control-plane", new Set(["domain", "foundation", "adapters", "model-access", "evals", "images", "inference"])],
-  ["workers", new Set(["domain", "foundation", "artifacts", "backends", "controller-runtime", "evals", "control-plane"])],
+  ["workers", new Set(["domain", "foundation", "artifacts", "backends", "controller-runtime", "evals", "control-plane", "model-access"])],
   ["daemon", new Set(["domain", "foundation", "runs", "workspaces", "control-plane"])],
   ["cli", new Set([...MODULES].filter((name) => name !== "cli"))],
 ]);

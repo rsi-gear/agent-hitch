@@ -11,3 +11,4 @@ export { parseTrainingBinding, trainingProxyIdentity, registerTrainingEndpoint, 
 export type { RegisteredTrainingEndpoint } from "./training.js";
 export { parseRemoteModelBinding, remoteModelBinding, callRemoteModel } from "./remote-model.js";
 export type { RemoteModelTargetV2 } from "./remote-model.js";
+export { scrubLocalInferenceEnvironment } from "./environment.js";

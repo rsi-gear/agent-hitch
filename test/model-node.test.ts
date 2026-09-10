@@ -139,7 +139,8 @@ test("node identity affects inference hashes and JSON contracts require v2 lock 
   assert.throws(() => validateInferenceLockShape({ ...lock, model_node: changed.model_node }), /identity mismatch/);
   assert.throws(() => validateInferenceLockShape({ ...lock, schema_version: "1" }), /legacy/);
   const schema = JSON.parse(await readFile("docs/schemas/inference-lock.schema.json", "utf8"));
-  const validate = new Ajv2020({ strict: false, validateFormats: false }).compile(schema);
+  const bindingSchema = JSON.parse(await readFile("docs/schemas/model-node-binding.schema.json", "utf8"));
+  const validate = new Ajv2020({ strict: false, validateFormats: false }).addSchema(bindingSchema).compile(schema);
   assert.equal(validate(lock), true, JSON.stringify(validate.errors));
   assert.equal(validate({ ...lock, model_node: undefined }), false);
   assert.equal(validate({ ...lock, resources: { ...lock.resources, container_slots: 1 } }), false);

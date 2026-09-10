@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { harnessChildEnvironment, managedHarborModelRuntime, scrubLocalInferenceEnvironment } from "../src/runs/local-inference-environment.js";
+import { harnessChildEnvironment, managedHarborModelRuntime } from "../src/runs/local-inference-environment.js";
+import { scrubLocalInferenceEnvironment } from "../src/model-access/index.js";
 import type { RunId } from "../src/domain/index.js";
 
 const runId = `run_${"a".repeat(32)}` as RunId;
