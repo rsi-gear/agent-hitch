@@ -354,6 +354,51 @@ resolved only from that process environment and are removed from provider
 capture, trajectory, result, event and diagnostic evidence before persistence;
 Harbor host stdout/stderr use the same bounded streaming redactor.
 
+Deployments that need a fresh short-lived Target credential for every physical
+trial start can set the trusted host variable
+`HITCH_HOST_CREDENTIAL_HELPER_JSON`. Its value has this exact shape:
+
+```json
+{
+  "version": 1,
+  "argv": ["/absolute/path/to/helper", "fixed-argument"],
+  "credentialNames": ["TARGET_ACCESS_B64"],
+  "timeoutMs": 5000
+}
+```
+
+Every listed name must also be declared with `--pass-env`. Hitch removes any
+inherited value for those names before starting Harbor. After Harbor has queued
+and prepared the trial, its host agent sends the helper one JSON line on stdin:
+
+```json
+{"version":1,"credentialNames":["TARGET_ACCESS_B64"],"minimumValidityMs":1200000}
+```
+
+The helper must return only one JSON value with the same names, an epoch-millisecond
+expiry, and credentials that remain valid beyond the requested interval:
+
+```json
+{"version":1,"env":{"TARGET_ACCESS_B64":"value"},"expiresAtMs":1790000000000}
+```
+
+Hitch supplies that response only to the pending Target exec. It does not modify
+the host process environment or persist the helper configuration, request,
+response, or credential values. Helper stderr and malformed output produce fixed
+error codes without copying helper output into Harbor evidence. Initial trials
+and invalid-slot reruns use this same per-Target path, so a rerun keeps its native
+eval/attempt identity while obtaining a new credential.
+
+This boundary currently requires Hitch's Docker environment integration and
+exactly Harbor 0.21.0. `hitch eval doctor --json` advertises
+`host-task-credential-helper-v1` only when the selected Harbor installation is
+exactly 0.21.0 and the installed Hitch CLI supports it. The
+backend also checks the eval's actual frozen controller runtime before each
+Harbor launch; an older runtime is rejected as
+`host_credential_helper_runtime_unsupported` rather than silently using a
+static credential. Keep secrets out of helper arguments: the helper receives
+its request on stdin and returns credentials on stdout.
+
 For remote workers, offers and content-addressed work specs likewise contain
 only credential names. A worker can fetch values only after accepting the exact
 offer, through a worker-authenticated endpoint fenced by generation, lease ID

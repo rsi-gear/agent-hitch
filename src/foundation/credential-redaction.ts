@@ -10,6 +10,7 @@ export const PROVIDER_ENVIRONMENT_NAMES = [
 ] as const;
 const OVERSIZED_LINE_MARKER = "[REDACTED OVERSIZED LOG LINE]";
 const DEFAULT_MAX_LINE_BYTES = 1024 * 1024;
+const MAX_STRUCTURED_CREDENTIAL_BYTES = 256 * 1024;
 
 const TEXT_RULES: Array<{ id: string; pattern: RegExp; replacement: string }> = [
   { id: "authorization-bearer-v1", pattern: /\bBearer\s+[A-Za-z0-9._~+\/-]{8,}/gi, replacement: `Bearer ${CREDENTIAL_REDACTION_MARKER}` },
@@ -90,18 +91,28 @@ export function credentialValuesFromEnv(names: readonly string[], env: NodeJS.Pr
       values.push(value);
       // Structured credential files can be handed off as one environment value.
       // Also redact their opaque strings when a client prints a nested token.
-      if (value.trimStart().startsWith("{")) {
+      collectStructuredCredential(value, values);
+      if (name.endsWith("_B64") && Buffer.byteLength(value) <= MAX_STRUCTURED_CREDENTIAL_BYTES * 2
+        && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
         try {
-          const collect = (entry: unknown): void => {
-            if (typeof entry === "string" && entry.length >= 16) values.push(entry);
-            else if (entry && typeof entry === "object") Object.values(entry).forEach(collect);
-          };
-          collect(JSON.parse(value));
-        } catch { /* Opaque non-JSON credentials retain the exact-value rule. */ }
+          const decoded = Buffer.from(value, "base64");
+          if (decoded.byteLength <= MAX_STRUCTURED_CREDENTIAL_BYTES) collectStructuredCredential(decoded.toString("utf8"), values);
+        } catch { /* The exact encoded value remains protected. */ }
       }
     }
   }
   return [...new Set(values)].sort((left, right) => right.length - left.length || left.localeCompare(right));
+}
+
+function collectStructuredCredential(value: string, values: string[]): void {
+  if (!value.trimStart().startsWith("{") || Buffer.byteLength(value) > MAX_STRUCTURED_CREDENTIAL_BYTES) return;
+  try {
+    const collect = (entry: unknown): void => {
+      if (typeof entry === "string" && entry.length >= 16) values.push(entry);
+      else if (entry && typeof entry === "object") Object.values(entry).forEach(collect);
+    };
+    collect(JSON.parse(value));
+  } catch { /* Opaque non-JSON credentials retain the exact-value rule. */ }
 }
 
 export function createCredentialRedactionTransform(

@@ -26,6 +26,8 @@ class DockerEnvironment:
         self.task_env_config = kwargs.get("task_env_config")
     @property
     def _docker_compose_paths(self): return [pathlib.Path("base.json")]
+    def _compose_env_vars(self, include_os_env=True):
+        return {"HITCH_HOST_CREDENTIAL_HELPER_JSON": "host-only-helper", "SAFE_COMPOSE_VALUE": "kept"}
 harbor = types.ModuleType("harbor")
 constants = types.ModuleType("harbor.constants"); constants.MAIN_SERVICE_NAME = "main"
 environments = types.ModuleType("harbor.environments")
@@ -49,6 +51,7 @@ resolved = {
   "registry.test/task:v1": "registry.test/task@sha256:" + "b" * 64,
 }
 env = module.HitchHarborDockerEnvironment(environment_dir=root, task_env_config=TaskEnvironment("registry.test/task:v1"), hitch_ownership_labels=labels, hitch_service_resource_limits=limits, hitch_resolved_images=resolved)
+assert env._compose_env_vars(include_os_env=True) == {"SAFE_COMPOSE_VALUE": "kept"}
 overlay = json.loads(env._hitch_ownership_compose_path.read_text())
 assert set(overlay["services"]) == {"main", "database"}
 assert set(overlay["networks"]) == {"default", "private"}

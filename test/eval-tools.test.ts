@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { doctorHarbor, managedHarborExecutable, setupHarbor } from "../src/backends/harbor/index.js";
-import { writeFakeDocker, writeFakePython } from "../test-support/helpers.js";
+import { HOST_CREDENTIAL_HELPER_CAPABILITY, doctorHarbor, managedHarborExecutable, setupHarbor } from "../src/backends/harbor/index.js";
+import { writeFakeDocker, writeFakeHarbor, writeFakePython } from "../test-support/helpers.js";
 
 test("managed Harbor setup is isolated, pinned, reusable, and discoverable", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-tools-"));
@@ -35,8 +35,30 @@ test("Harbor doctor reports required runtime checks and credential warnings", as
   });
   assert.equal(ready.ready, true);
   assert.equal(ready.status, "ready");
+  assert.deepEqual(ready.capabilities, [HOST_CREDENTIAL_HELPER_CAPABILITY]);
   assert.equal(ready.checks.harbor?.source, "managed");
   assert.deepEqual(ready.checks.credentials?.present, ["DEEPSEEK_API_KEY", "OPENAI_API_KEY"]);
+
+  const oldHarbor = await writeFakeHarbor(root, { version: "0.20.0" });
+  const oldReady = await doctorHarbor({
+    root,
+    python,
+    harbor: oldHarbor,
+    docker,
+    env: { ...process.env, DEEPSEEK_API_KEY: "test-only" },
+  });
+  assert.equal(oldReady.ready, true, "older Harbor remains usable without the helper feature");
+  assert.deepEqual(oldReady.capabilities, []);
+
+  const noHarborRoot = path.join(root, "without-managed-harbor");
+  const noHarbor = await doctorHarbor({
+    root: noHarborRoot,
+    python,
+    harbor: path.join(root, "missing-harbor"),
+    docker,
+    env: { ...process.env, DEEPSEEK_API_KEY: "test-only" },
+  });
+  assert.deepEqual(noHarbor.capabilities, []);
 
   const stoppedDocker = await writeFakeDocker(root, { daemonRunning: false });
   const actionRequired = await doctorHarbor({ root, python, docker: stoppedDocker, env: process.env });

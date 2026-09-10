@@ -12,6 +12,7 @@ export function harborEnvironmentConfig(
   resolvedImages?: Record<string, string>,
   prebuiltTaskImage?: string,
   modelProxyHostGateway = false,
+  privateExecEnvironment = false,
 ): Record<string, unknown> {
   const environment: Record<string, unknown> = { type: "docker", delete: true };
   let gpuCount = 0;
@@ -30,7 +31,7 @@ export function harborEnvironmentConfig(
   if (serviceLimits && !ownership) throw invalidInput("Harbor sidecar limits require Docker ownership");
   const images = resolvedImages ? parseResolvedImages(resolvedImages) : {};
   if (prebuiltTaskImage !== undefined && !/^sha256:[a-f0-9]{64}$/.test(prebuiltTaskImage)) throw invalidInput("Harbor prebuilt task image is invalid");
-  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage || modelProxyHostGateway || gpuCount > 0) Object.assign(environment, {
+  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage || modelProxyHostGateway || gpuCount > 0 || privateExecEnvironment) Object.assign(environment, {
     import_path: HITCH_DOCKER_ENVIRONMENT,
     kwargs: {
       ...(ownership ? { hitch_ownership_labels: harborOwnershipLabels(ownership) } : {}),

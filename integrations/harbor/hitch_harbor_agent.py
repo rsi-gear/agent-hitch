@@ -893,17 +893,29 @@ class HitchHarborAgent(BaseAgent):
             if timeout_ms <= 0:
                 raise RuntimeError("candidate whole-task budget expired during phase binding/upload")
         elif session:
-            preparation_ms = (time.monotonic_ns() - invocation_started_ns) // 1_000_000
-            timeout_ms = task_budget_ms - preparation_ms
-            (self.logs_dir / "hitch-agent-budget.json").write_text(json.dumps({
-                "schema_version": "hitch-agent-budget@1", "run_id": run_id,
-                "task_budget_ms": task_budget_ms, "preparation_ms": preparation_ms,
-                "hitch_timeout_ms": max(0, timeout_ms),
-                "collection_timeout_ms": session.config["profile"]["budget"]["collection_timeout_ms"],
-                "scope": "invocation-budget-and-collection-allowance",
-            }))
+            timeout_ms = self._record_session_budget(
+                session, run_id, invocation_started_ns, task_budget_ms
+            )
             if timeout_ms <= 0:
                 raise RuntimeError("candidate budget expired during input preparation; no model was launched")
+        private_environment = await self._host_task_credentials(
+            environment,
+            context,
+            run_id,
+            timeout_ms,
+        )
+        if private_environment is not None:
+            if prepared_phase is not None:
+                timeout_ms = (prepared_phase.deadline_ns - time.monotonic_ns()) // 1_000_000
+            if timeout_ms <= 0:
+                raise RuntimeError("candidate budget expired during host credential preparation; no model was launched")
+        if prepared_phase is None and session:
+            timeout_ms = self._record_session_budget(
+                session, run_id, invocation_started_ns, task_budget_ms
+            )
+            if timeout_ms <= 0:
+                stage = "host credential preparation" if private_environment is not None else "input preparation"
+                raise RuntimeError(f"candidate budget expired during {stage}; no model was launched")
         arguments = [
             self._node_prefix(),
             "HITCH_ROOT=/tmp/hitch-state",
@@ -943,7 +955,14 @@ class HitchHarborAgent(BaseAgent):
             arguments.extend(["--internal-credential-name", shlex.quote(name)])
         command = self._logged_run_command(" ".join(arguments))
         try:
-            execution = await environment.exec(command, cwd=workdir)
+            if private_environment is None:
+                execution = await environment.exec(command, cwd=workdir)
+            else:
+                execution = await environment.hitch_exec_with_private_env(
+                    command,
+                    cwd=workdir,
+                    env=private_environment,
+                )
         except (Exception, asyncio.CancelledError):
             # Harbor cancels this await on its agent deadline. Collect what is
             # already durable before it removes the container, without turning
@@ -967,6 +986,78 @@ class HitchHarborAgent(BaseAgent):
                        "process_return_code": execution.return_code}
             (self.logs_dir / "hitch-collection-timeout.json").write_text(json.dumps(receipt))
             raise RuntimeError("hitch_run_collection_timeout: terminal evidence export exceeded its allowance") from error
+
+    async def _host_task_credentials(
+        self,
+        environment: BaseEnvironment,
+        context: AgentContext,
+        run_id: str,
+        remaining_timeout_ms: int,
+    ) -> dict[str, str] | None:
+        # Preserve the original single-file bridge behavior when this optional
+        # host feature is not configured. An empty value remains configured and
+        # reaches the strict parser below.
+        if "HITCH_HOST_CREDENTIAL_HELPER_JSON" not in os.environ:
+            return None
+        from hitch_host_credentials import (
+            HOST_CREDENTIAL_VALIDITY_MARGIN_MS,
+            HostCredentialHelperError,
+            load_host_credential_helper,
+            prepare_host_credentials,
+        )
+
+        try:
+            config = load_host_credential_helper(self.credential_names)
+            if config is None:
+                return None
+            if not callable(getattr(environment, "hitch_exec_with_private_env", None)):
+                raise HostCredentialHelperError(
+                    "host_credential_transport_unsupported",
+                    "Harbor environment does not support private Target credentials",
+                )
+            return await prepare_host_credentials(
+                config,
+                remaining_timeout_ms + HOST_CREDENTIAL_VALIDITY_MARGIN_MS,
+            )
+        except HostCredentialHelperError as error:
+            trial_id, task_id, attempt = self._trial_identity()
+            evidence = {
+                "schema_version": "1",
+                "code": error.code,
+                "message": error.message,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "scope": "host-task-credential-helper",
+                "eval_id": self.eval_id,
+                "trial_id": trial_id,
+                "task_id": task_id,
+                "attempt": attempt,
+                "assigned_run_id": run_id,
+            }
+            context.metadata["hitch_bridge_error_code"] = error.code
+            context.metadata["hitch_bridge_error_artifact"] = "hitch-bridge-error.json"
+            try:
+                await self._write_bridge_error(environment, evidence)
+            except Exception:
+                pass
+            raise HitchBridgeError(error.code, error.message, evidence) from None
+
+    def _record_session_budget(
+        self,
+        session,
+        run_id: str,
+        invocation_started_ns: int,
+        task_budget_ms: int,
+    ) -> int:
+        preparation_ms = (time.monotonic_ns() - invocation_started_ns) // 1_000_000
+        timeout_ms = task_budget_ms - preparation_ms
+        (self.logs_dir / "hitch-agent-budget.json").write_text(json.dumps({
+            "schema_version": "hitch-agent-budget@1", "run_id": run_id,
+            "task_budget_ms": task_budget_ms, "preparation_ms": preparation_ms,
+            "hitch_timeout_ms": max(0, timeout_ms),
+            "collection_timeout_ms": session.config["profile"]["budget"]["collection_timeout_ms"],
+            "scope": "invocation-budget-and-collection-allowance",
+        }))
+        return timeout_ms
 
     @staticmethod
     def _logged_run_command(invocation: str) -> str:
