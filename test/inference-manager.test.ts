@@ -13,7 +13,8 @@ import { safetensorsFixture } from "../test-support/helpers.js";
 
 test("local inference manager coalesces services, isolates run credentials, and releases one resource lease", async (t) => {
   const temporary = await mkdtemp(path.join(tmpdir(), "hitch-inference-manager-"));
-  t.after(() => rm(temporary, { recursive: true, force: true }));
+  let closeService = async () => {};
+  t.after(async () => { await closeService(); await rm(temporary, { recursive: true, force: true }); });
   const root = path.join(temporary, "state");
   const source = path.join(temporary, "model");
   await mkdir(source);
@@ -63,7 +64,7 @@ test("local inference manager coalesces services, isolates run credentials, and 
     supervisor,
     preflight: async () => ({ model, runtime, lock, runtime_cache_hit: true }),
   });
-  t.after(() => manager.close());
+  closeService = () => manager.close();
   const runIds = Array.from({ length: 8 }, (_, index) => `run_${index.toString(16).padStart(32, "0")}`);
   const leases = await Promise.all(runIds.map((runId) => manager.acquire({
     run_id: runId,

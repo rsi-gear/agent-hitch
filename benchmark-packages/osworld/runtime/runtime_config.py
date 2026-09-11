@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 
 from controller_server import strict_json
@@ -20,11 +21,22 @@ SDK_FILES = {
 
 
 def read_bytes(file, maximum=1024 * 1024):
-    file = Path(file)
-    info = file.lstat()
-    if not file.is_file() or file.is_symlink() or info.st_nlink != 1 or info.st_size > maximum:
-        raise ValueError('invalid private runtime file')
-    return file.read_bytes()
+    # Pin one inode: writers atomically replace status files while the lifecycle
+    # polls them. Path-based checks can observe different versions (including an
+    # unlinked old inode). Never follow a replacement symlink or block on a FIFO.
+    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        # Zero links is valid when a writer replaced the file after our open.
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1 or info.st_size > maximum:
+            raise ValueError('invalid private runtime file')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            data = stream.read(maximum + 1)
+        if len(data) > maximum:
+            raise ValueError('private runtime file exceeds size limit')
+        return data
+    finally:
+        os.close(fd)
 
 
 def read_json(file):

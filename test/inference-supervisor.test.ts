@@ -10,7 +10,8 @@ import { safetensorsFixture } from "../test-support/helpers.js";
 
 test("SGLang supervisor coalesces concurrent starts and releases an idle service once", async (t) => {
   const temporary = await mkdtemp(path.join(tmpdir(), "hitch-supervisor-"));
-  t.after(() => rm(temporary, { recursive: true, force: true }));
+  let closeService = async () => {};
+  t.after(async () => { await closeService(); await rm(temporary, { recursive: true, force: true }); });
   const root = path.join(temporary, "state");
   const source = path.join(temporary, "model");
   await mkdir(source);
@@ -39,6 +40,7 @@ test("SGLang supervisor coalesces concurrent starts and releases an idle service
   };
   const events: Record<string, unknown>[] = [];
   const supervisor = new SGLangServiceSupervisor({ root, launcher, onEvent: (event) => events.push(event) });
+  closeService = () => supervisor.close();
   const isolationKey = sha256JSON({ run: "shared" });
   const leases = await Promise.all(Array.from({ length: 20 }, (_, index) => supervisor.acquire({
     lock, model, runtime, isolationKey, ownerId: `run_${String(index).padStart(32, "0")}`,

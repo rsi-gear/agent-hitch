@@ -31,9 +31,9 @@ const observation = validateRuntimeObservation(info, `sha256:${"a".repeat(64)}`,
 const selection = { model: "local/coder", device: "cpu" as const, profile: "baseline" as const, offline: true };
 const runId = `run_${"a".repeat(32)}`;
 function input() { return { lock, model, runtime, isolationKey: sha256JSON("fixture"), ownerId: runId }; }
-async function temporary(t: { after(fn: () => Promise<void>): unknown }) {
+async function temporary(t: { after(fn: () => Promise<void>): unknown }, close: () => Promise<void> = async () => {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-inference-validation-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(async () => { await close(); await rm(directory, { recursive: true, force: true }); });
   return directory;
 }
 function doctorOptions(gpus: string, endpoint = "unix:///var/run/docker.sock"): InferenceDoctorOptions {
@@ -81,14 +81,15 @@ test("physical GPU reservations exclude other roots and survive until their owne
 });
 
 test("supervisor detects OOM after ready, invalidates the service, and starts a new epoch", async (t) => {
-  const root = await temporary(t);
+  let close = async () => {};
+  const root = await temporary(t, () => close());
   let failed = false, stops = 0, starts = 0;
   const supervisor = new SGLangServiceSupervisor({ root, healthIntervalMs: 5, launcher: { start: async () => {
     starts += 1;
     return { container_id: "a".repeat(64), base_url: "http://127.0.0.1:30000", wire_model: "wire", engine_token: "secret", admin_token: "admin", observation,
       checkHealth: async () => { if (failed) throw new HitchError("OOM", { code: "inference_oom" }); }, stop: async () => { stops += 1; } };
   } } });
-  t.after(() => supervisor.close());
+  close = () => supervisor.close();
   const terminal: boolean[] = [];
   let observed!: () => void;
   const failure = new Promise<void>((resolve) => { observed = resolve; });
@@ -108,14 +109,15 @@ test("supervisor detects OOM after ready, invalidates the service, and starts a 
 });
 
 test("unconfirmed stop keeps failed service reserved and rejects reuse", async (t) => {
-  const root = await temporary(t);
+  let close = async () => {};
+  const root = await temporary(t, () => close());
   let failed = false, canStop = false;
   const supervisor = new SGLangServiceSupervisor({ root, launcher: { start: async () => ({
     container_id: "a".repeat(64), base_url: "http://127.0.0.1:30000", wire_model: "wire", engine_token: "secret", admin_token: "admin",
     checkHealth: async () => { if (failed) throw new Error("unreachable"); },
     stop: async () => { if (!canStop) throw new Error("Docker unreachable"); },
   }) } });
-  t.after(() => { canStop = true; return supervisor.close(); });
+  close = async () => { canStop = true; return supervisor.close(); };
   const terminal: boolean[] = [];
   supervisor.subscribeTerminal(async (_record, released) => { terminal.push(released); });
   await supervisor.acquire(input());
@@ -147,7 +149,8 @@ test("one cancelled startup waiter does not cancel another owner, and close wait
 });
 
 test("manager prepare loads through the shared supervisor, records observations, and returns all temporary resources", async (t) => {
-  const root = await temporary(t);
+  let close = async () => {};
+  const root = await temporary(t, () => close());
   let starts = 0, stops = 0;
   const launcher: SGLangLauncher = { start: async () => {
     starts += 1;
@@ -155,7 +158,7 @@ test("manager prepare loads through the shared supervisor, records observations,
   } };
   const resources = new ResourceLedger({ cpu_millis: 4000, memory_bytes: 8 * 1024 ** 3, container_slots: 4, build_slots: 1, ephemeral_disk_bytes: 8 * 1024 ** 3 });
   const manager = new LocalInferenceManager({ root, resources, supervisor: new SGLangServiceSupervisor({ root, launcher }), preflight: async () => ({ model, runtime, lock, runtime_cache_hit: true }) });
-  t.after(() => manager.close());
+  close = () => manager.close();
   const prepared = await manager.prepare(selection);
   assert.equal(prepared.observation?.version, runtime.sglang_version);
   assert.equal(starts, 1); assert.equal(stops, 1);
@@ -170,7 +173,8 @@ test("manager prepare loads through the shared supervisor, records observations,
 });
 
 test("ambiguous startup retains admission resources and blocks repeated starts", async (t) => {
-  const root = await temporary(t);
+  let close = async () => {};
+  const root = await temporary(t, () => close());
   let starts = 0;
   const supervisor = new SGLangServiceSupervisor({ root, launcher: { start: async () => {
     starts += 1;
@@ -178,7 +182,7 @@ test("ambiguous startup retains admission resources and blocks repeated starts",
   } } });
   const resources = new ResourceLedger({ cpu_millis: 4000, memory_bytes: 8 * 1024 ** 3, container_slots: 4, build_slots: 1, ephemeral_disk_bytes: 8 * 1024 ** 3 });
   const manager = new LocalInferenceManager({ root, resources, supervisor, preflight: async () => ({ model, runtime, lock, runtime_cache_hit: true }) });
-  t.after(() => manager.close());
+  close = () => manager.close();
   for (let i = 0; i < 2; i += 1) {
     await assert.rejects(manager.acquire({ run_id: runId, harness_ref: "model-call", selection, cache_scope_owner: runId }),
       (error: unknown) => (error as { code: string }).code === "inference_recovery_ambiguous");

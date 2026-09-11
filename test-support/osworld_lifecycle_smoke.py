@@ -23,7 +23,7 @@ sys.path.insert(0, str(RUNTIME))
 from controller_client import control
 from controller_lifecycle import LifecycleServer, NativeLifecycle
 from lifecycle_client import hook
-from runtime_config import SDK_COMMIT, digest, inventory, load_config, read_json, write_json
+from runtime_config import SDK_COMMIT, digest, inventory, load_config, read_bytes, read_json, write_json
 
 spec = importlib.util.spec_from_file_location('hitch_benchmark', ROOT / 'integrations/harbor/hitch_benchmark.py')
 harbor = importlib.util.module_from_spec(spec); spec.loader.exec_module(harbor)
@@ -259,6 +259,46 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError): inventory(evidence, 1000)
         alias.unlink()
         with self.assertRaises(ValueError): inventory(evidence, 1)
+
+    def test_runtime_read_pins_the_opened_file_across_atomic_replacement(self):
+        target, replacement = self.root / 'status.json', self.root / 'replacement.json'
+        for linked in (False, True):
+            with self.subTest(linked=linked):
+                target.unlink(missing_ok=True)
+                replacement.unlink(missing_ok=True)
+                target.write_bytes(b'{"state":"starting"}')
+                if linked:
+                    replacement.symlink_to(self.config_file)
+                else:
+                    replacement.write_bytes(b'{"state":"completed"}')
+                original_open = os.open
+                def replace_after_open(file, flags):
+                    fd = original_open(file, flags)
+                    os.replace(replacement, target)
+                    self.assertEqual(os.fstat(fd).st_nlink, 0)
+                    return fd
+                with patch('runtime_config.os.open', side_effect=replace_after_open) as opened:
+                    self.assertEqual(read_bytes(target), b'{"state":"starting"}')
+                    opened.assert_called_once()
+
+    def test_runtime_read_rejects_links_special_files_and_growth_past_limit(self):
+        target = self.root / 'bounded'; target.write_bytes(b'1234')
+        self.assertEqual(read_bytes(target, 4), b'1234')
+        alias = self.root / 'alias'; alias.symlink_to(target)
+        with self.assertRaises(OSError): read_bytes(alias)
+        alias.unlink(); os.link(target, alias)
+        with self.assertRaises(ValueError): read_bytes(target)
+        alias.unlink(); os.mkfifo(alias)
+        with self.assertRaises(ValueError): read_bytes(alias)
+        with self.assertRaises(ValueError): read_bytes(self.root)
+        with self.assertRaises(ValueError): read_bytes(target, 3)
+        original_fstat = os.fstat
+        def grow_after_stat(fd):
+            info = original_fstat(fd)
+            with target.open('ab') as stream: stream.write(b'5')
+            return info
+        with patch('runtime_config.os.fstat', side_effect=grow_after_stat):
+            with self.assertRaises(ValueError): read_bytes(target, 4)
 
 
 if __name__ == '__main__':

@@ -8,8 +8,8 @@ import { ProcessSGLangLauncher, SGLangServiceSupervisor } from "../src/inference
 import type { SGLangAttachInput } from "../src/inference/index.js";
 import { inferenceAttachmentFixture } from "../test-support/inference-attachment.js";
 
-async function fixture(t: test.TestContext) {
-  const temporary = await mkdtemp(path.join(tmpdir(), "hitch-attach-")); t.after(() => rm(temporary, { recursive: true, force: true }));
+async function fixture(t: test.TestContext, close: () => Promise<void> = async () => {}) {
+  const temporary = await mkdtemp(path.join(tmpdir(), "hitch-attach-")); t.after(async () => { await close(); await rm(temporary, { recursive: true, force: true }); });
   return inferenceAttachmentFixture(temporary);
 }
 
@@ -73,8 +73,8 @@ test("missing probe evidence, foreign generations and route failures never trigg
   assert.equal(f.calls.some(call => /stop|start|prepare|POST|flush/.test(call)), false);
 });
 
-async function priorService(t: test.TestContext) {
-  const f = await fixture(t), supervisor = new SGLangServiceSupervisor({ root: f.root, launcher: f.launcher, healthIntervalMs: 60_000 });
+async function priorService(t: test.TestContext, close?: () => Promise<void>) {
+  const f = await fixture(t, close), supervisor = new SGLangServiceSupervisor({ root: f.root, launcher: f.launcher, healthIntervalMs: 60_000 });
   const lease = await supervisor.acquire({ ...f.input, isolationKey: f.record.isolation_key, ownerId: f.record.owner_id });
   const record = (await supervisor.list())[0]!;
   const directory = path.join(statePaths(f.root).inferenceServices, lease.service_id);
@@ -87,8 +87,9 @@ async function priorService(t: test.TestContext) {
 }
 
 test("supervisor reattaches explicitly claimed live owners with original service/epoch and releasable leases", async t => {
-  const f = await priorService(t), supervisor = new SGLangServiceSupervisor({ root: f.root, launcher: f.launcher });
-  t.after(() => supervisor.close());
+  let close = async () => {};
+  const f = await priorService(t, () => close()), supervisor = new SGLangServiceSupervisor({ root: f.root, launcher: f.launcher });
+  close = () => supervisor.close();
   const [restored] = await supervisor.recover(f.claims); assert.ok(restored);
   assert.equal(restored.record.service_id, f.record.service_id); assert.equal(restored.record.epoch, f.record.epoch);
   assert.equal(restored.lock.inference_id, f.record.inference_id);
