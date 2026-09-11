@@ -7,9 +7,10 @@ import { deepseekAdapter } from "./providers/deepseek.js";
 import { opencodeAdapter } from "./providers/opencode.js";
 import { piAdapter } from "./providers/pi.js";
 import { modelCallAdapter } from "./providers/model-call.js";
+import { trainingToolAdapter } from "./providers/training-tool.js";
 
 const definitions: Record<string, AdapterDefinition> = Object.fromEntries(
-  [codexAdapter, claudeAdapter, piAdapter, opencodeAdapter, deepseekAdapter, modelCallAdapter].map((definition) => [definition.id, definition]),
+  [codexAdapter, claudeAdapter, piAdapter, opencodeAdapter, deepseekAdapter, modelCallAdapter, trainingToolAdapter].map((definition) => [definition.id, definition]),
 );
 
 export function listDefinitions(): PublicAdapterDefinition[] {

@@ -45,6 +45,8 @@ export class RemoteWorkerArtifactStore {
     digest: string;
     expectedSize: number;
     body: AsyncIterable<Uint8Array>;
+    /** Final publication gate; receiving and hashing the stream never owns the worker registry lock. */
+    publish?: (commit: () => Promise<RemoteWorkerArtifactRecordV1>) => Promise<RemoteWorkerArtifactRecordV1>;
   }): Promise<RemoteWorkerArtifactRecordV1> {
     const identity = validateIdentity(input);
     if (identity.expectedSize > this.maxArtifactBytes) throw artifactError("remote worker artifact exceeds the configured size limit");
@@ -53,7 +55,7 @@ export class RemoteWorkerArtifactStore {
       if (existing) {
         if (existing.epoch !== identity.epoch || existing.size !== identity.expectedSize) throw conflict("remote worker artifact identity is already bound to different evidence");
         await this.verify(identity.workerId, identity.leaseId, { kind: "diagnostic", digest: identity.digest, size: identity.expectedSize }, identity.epoch);
-        return existing;
+        return input.publish ? input.publish(async () => existing) : existing;
       }
       const target = this.blobPath(identity.workerId, identity.leaseId, identity.hex);
       await ensureDir(path.dirname(target));
@@ -82,13 +84,16 @@ export class RemoteWorkerArtifactStore {
         throw artifactError("remote worker artifact size or digest does not match its declaration");
       }
       try {
-        await rename(temporary, target);
-        const record: RemoteWorkerArtifactRecordV1 = {
-          schema_version: "1", worker_id: identity.workerId, lease_id: identity.leaseId,
-          epoch: identity.epoch, digest: identity.digest, size, completed_at: new Date().toISOString(),
+        const commit = async () => {
+          await rename(temporary, target);
+          const record: RemoteWorkerArtifactRecordV1 = {
+            schema_version: "1", worker_id: identity.workerId, lease_id: identity.leaseId,
+            epoch: identity.epoch, digest: identity.digest, size, completed_at: new Date().toISOString(),
+          };
+          await atomicWriteJSON(this.recordPath(identity.workerId, identity.leaseId, identity.hex), record);
+          return record;
         };
-        await atomicWriteJSON(this.recordPath(identity.workerId, identity.leaseId, identity.hex), record);
-        return record;
+        return await (input.publish ? input.publish(commit) : commit());
       } catch (error) {
         await rm(temporary, { force: true });
         throw error;

@@ -30,8 +30,102 @@
     "accepted_at": { "type": "string", "format": "date-time" },
     "heartbeat_at": { "type": "string", "format": "date-time" },
     "expires_at": { "type": "string", "format": "date-time" },
-    "terminal_at": { "type": "string", "format": "date-time" }
+    "terminal_at": { "type": "string", "format": "date-time" },
+    "release_confirmation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "offer_id",
+            "worker_generation",
+            "execution_epoch",
+            "receipt_digest",
+            "released_at"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "2"
+            },
+            "offer_id": {
+              "type": "string",
+              "pattern": "^offer_[a-f0-9]{32}$"
+            },
+            "worker_generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "execution_epoch": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "receipt_digest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "released_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "offer_id",
+            "worker_generation",
+            "execution_epoch",
+            "receipt_digest",
+            "released_at",
+            "cleanup_generation",
+            "cleanup_id",
+            "admission_digest"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "3"
+            },
+            "offer_id": {
+              "type": "string",
+              "pattern": "^offer_[a-f0-9]{32}$"
+            },
+            "worker_generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "execution_epoch": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "receipt_digest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "released_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "cleanup_generation": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "cleanup_id": {
+              "type": "string",
+              "pattern": "^cleanup_[a-f0-9]{32}$"
+            },
+            "admission_digest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          }
+        }
+      ]
+    }
   },
+  "allOf": [{ "if": { "required": ["release_confirmation"] }, "then": { "properties": { "state": { "const": "released" }, "provider": { "not": { "const": "local-docker" } } } } }],
   "$defs": {
     "resources": {
       "type": "object",

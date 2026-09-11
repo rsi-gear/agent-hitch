@@ -3,6 +3,7 @@ import { copyFile, mkdir } from "node:fs/promises";
 import { HitchError, atomicWriteJSON, ensureDir, fingerprintExecutable, readJSON } from "../../foundation/index.js";
 import { locateHarbor } from "./tools.js";
 import { invokeHarbor } from "./process.js";
+import { withBridgePythonPath } from "./bridge-environment.js";
 
 /** Harbor 0.21 dispatches source_trial.action=regrade to RegradeTrial, which
  * never initializes or runs the candidate. Keep the source agent config as
@@ -74,6 +75,7 @@ export async function runHarborRegrade(input: {
   trustedResult?: Record<string, unknown>;
   harborExecutable?: string;
   signal?: AbortSignal;
+  processHooks?: Pick<import("./backend.js").RunHarborBackendOptions, "onProcessStarted" | "recoverableProcess">;
 }): Promise<{ trial: Record<string, unknown>; backend: Record<string, unknown> }> {
   const located = await locateHarbor({ root: input.root, explicit: input.harborExecutable, env: input.env });
   // Pin the SDK contract; upgrading this gate requires a regrade parity test.
@@ -84,9 +86,11 @@ export async function runHarborRegrade(input: {
   await seedHarborRegradeTrial(String((input.config.source_trial as Record<string, unknown>).path), path.join(String(input.config.trials_dir), String(input.config.trial_name)), input.trustedResult);
   const outcome = await invokeHarbor(located.executable, ["trials", "start", "--config", configPath], {
     cwd: input.directory,
-    env: { ...input.env, PYTHONPATH: [path.join(input.runtimeDirectory, "payload/integrations/harbor"), input.env.PYTHONPATH].filter(Boolean).join(path.delimiter) },
+    env: withBridgePythonPath(input.env, input.runtimeDirectory),
     stdoutPath: path.join(input.directory, "stdout.log"), stderrPath: path.join(input.directory, "stderr.log"),
     ...(input.signal ? { signal: input.signal } : {}), emit: () => {},
+    ...(input.processHooks?.onProcessStarted ? { onStarted: input.processHooks.onProcessStarted } : {}),
+    ...(input.processHooks?.recoverableProcess ? { persistAcrossParentExit: true, exitStatusPath: path.join(input.directory, "process-exit.json") } : {}),
     redactEnvNames: Object.keys(input.env).filter((key) => /TOKEN|SECRET|PASSWORD|API_KEY|AUTH_JSON/.test(key)),
   });
   const trial = await readJSON<Record<string, unknown>>(path.join(String(input.config.trials_dir), String(input.config.trial_name), "result.json"));

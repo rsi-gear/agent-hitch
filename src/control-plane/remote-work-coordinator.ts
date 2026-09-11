@@ -1,8 +1,9 @@
 import path from "node:path";
-import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerPublicRecordV1, ResourceVectorV1 } from "../domain/index.js";
+import { remoteBackendResult } from "./remote-backend-result.js";
+import type { BackendWorkItemV1, EvalId, ExecutionLeaseV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerPublicRecordV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
-import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease, markExecutionLeaseLost, releaseExecutionLease } from "../evals/index.js";
-import type { EvalRemoteWorkExecutor } from "../evals/index.js";
+import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, assertRemoteVerifierDispatch, confirmRemoteExecutionLeaseReleased, createExecutionLease, markExecutionLeaseLost, readExecutionLeases } from "../evals/index.js";
+import type { EvalRemoteWorkExecutor, EvalRemoteWorkExecutionResult } from "../evals/index.js";
 import { CollisionLockManager } from "./collisions.js";
 import { evalTaskCollisionKey } from "./eval-records.js";
 import { importRemoteResultEnvelope } from "./remote-result-transport.js";
@@ -11,6 +12,11 @@ import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { DEFAULT_REMOTE_WORKER_RECONNECT_TIMEOUT_MS, recoverRemoteWorkerEvalLeases } from "./remote-work-recovery.js";
 import { prepareRemoteWorkInputs } from "./remote-work-inputs.js";
 import { subtractResourceVectors } from "./resources.js";
+import { remoteModelBinding, resolveTrainingEndpoint } from "../model-access/index.js";
+import type { RemoteModelTargetV2 } from "../model-access/index.js";
+import { verifierSourceRequested } from "./remote-verifier-source-transport.js";
+import { importRemoteVerifierResultEnvelope } from "./remote-verifier-import.js";
+import { collectRemoteRerunJournal, completeRemoteRerunJournal, loadRemoteRerunJournal } from "./remote-rerun-journal.js";
 
 export interface RemoteWorkCoordinatorOptions {
   root: string;
@@ -65,28 +71,68 @@ export class RemoteWorkCoordinator {
     });
   }
 
+  async reconcileReleasedLeases(input: { evalId: EvalId; evalDirectory: string; provider: string }): Promise<void> {
+    const leases: ExecutionLeaseV1[] = [];
+    for (const lease of await readExecutionLeases(input.evalDirectory)) {
+      if (lease.provider !== input.provider || !["lost", "expired", "released"].includes(lease.state)
+        || lease.state === "released" && lease.release_confirmation?.schema_version !== "3") continue;
+      const offer = await this.protocol.findOfferForLease(lease.worker_id, lease.lease_id);
+      if (offer && (offer.state === "released" || await this.protocol.generationCleanup.read(offer))) leases.push(lease);
+    }
+    if (!leases.length) return;
+    const result = await this.recoverEvalLeases({ evalId: input.evalId, evalDirectory: input.evalDirectory, leases });
+    // Failed work may be retried by the caller's repair contract once cleanup is proven.
+    const released = new Set((await readExecutionLeases(input.evalDirectory)).filter(lease => lease.state === "released").map(lease => lease.lease_id));
+    if (result.status !== "resumable" && !(result.code === "remote_work_failed" && leases.every(lease => released.has(lease.lease_id)))) {
+      throw new HitchError(result.message ?? "remote cleanup could not be reconciled", { code: result.code ?? "execution_state_ambiguous", exitCode: 12 });
+    }
+  }
+
   private async providerWorkers(provider: string): Promise<RemoteWorkerPublicRecordV1[]> {
     return (await this.registry.list()).filter((record) => record.worker.status === "ready" && !record.revoked_at && record.worker.provider === provider);
   }
 
   private async executeWork(input: Parameters<EvalRemoteWorkExecutor>[0]): ReturnType<EvalRemoteWorkExecutor> {
-    const credentialNames = this.protocol.credentialNamesFor(input.request.pass_env);
-    const inputs = await prepareRemoteWorkInputs({
+    const verifier = input.verifierOnly, physical = input.physicalExecution;
+    if ((physical?.kind === "verifier-only") !== !!verifier || verifier && input.modelTarget) throw ambiguous("verifier work requires its scoring inputs and no model route");
+    if (verifier) {
+      if (!physical) throw ambiguous("verifier work has no physical identity");
+      await assertRemoteVerifierDispatch({ ...input, verifier: verifier.descriptor, physical, work: input.workItem });
+    }
+    const modelTarget: RemoteModelTargetV2 | undefined = verifier ? undefined : input.request.training_binding
+      ? { kind: "training-external", endpoint: await resolveTrainingEndpoint(input.root, input.request.training_binding) }
+      : input.modelTarget;
+    if (!verifier && input.request.local_inference && !modelTarget) throw new HitchError("remote work has no controller-owned model route", { code: "remote_model_binding_unsupported", exitCode: 12 });
+    const modelBinding = modelTarget ? remoteModelBinding(modelTarget) : undefined;
+    if (modelBinding && input.request.pass_env.length) throw new HitchError("remote bound models do not accept credential overrides", { code: "remote_model_binding_unsupported", exitCode: 12 });
+    const credentialNames = modelBinding || verifier ? [] : this.protocol.credentialNamesFor(input.request.pass_env);
+    const cachedInputs = new Map<boolean, Promise<RemoteWorkInputRefV1[]>>();
+    const inputsFor = (captureVerifierSource: boolean): Promise<RemoteWorkInputRefV1[]> => {
+      captureVerifierSource = captureVerifierSource && !verifier;
+      if (cachedInputs.has(captureVerifierSource)) return cachedInputs.get(captureVerifierSource)!;
+      const prepared = prepareRemoteWorkInputs({
       root: input.root, request: input.request, plan: input.plan, work: input.workItem,
       resolvedRevision: input.resolvedRevision, preparedArtifact: input.preparedArtifact,
       runtimeDirectory: input.runtimeDirectory, runtimeId: input.runtimeId,
       credentialNames,
-    });
-    const dispatch = await this.dispatch(input, inputs, credentialNames);
+      ...(modelBinding ? { modelBinding } : {}),
+      ...(input.physicalExecution ? { physicalExecution: input.physicalExecution } : {}),
+      ...(verifier ? { verifierOnly: verifier } : {}),
+      captureVerifierSource,
+      });
+      cachedInputs.set(captureVerifierSource, prepared); return prepared;
+    };
+    const dispatch = await this.dispatch(input, inputsFor, credentialNames, modelTarget);
     const { worker, lease, offer, collision } = dispatch;
+    const backendVersion = worker.provider_status.backends.find(backend => backend.id === "harbor")?.version ?? null;
     let accepted = false;
     let terminal = false;
     let released = false;
     let terminalOffer: RemoteWorkOfferV1 | undefined;
-    await input.onLeaseState(lease.leaseId, "running");
-    input.emit({ type: "eval.work.leased", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, reservation: input.workItem.reservation });
-    input.emit({ type: "lease.offered", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, offer_id: offer.offer_id });
     try {
+      await input.onLeaseState(lease.leaseId, "running");
+      input.emit({ type: "eval.work.leased", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, reservation: input.workItem.reservation });
+      input.emit({ type: "lease.offered", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, offer_id: offer.offer_id });
       const acceptedOffer = await this.waitFor(input, offer, (current) => current.state !== "offered");
       if (!acceptedOrLater(acceptedOffer)) throw new HitchError(`remote worker did not accept work: ${acceptedOffer.state}`, { code: "worker_rejected", exitCode: 10 });
       accepted = true;
@@ -102,11 +148,15 @@ export class RemoteWorkCoordinator {
       if (completed.terminal.status !== "succeeded") {
         await this.finishRelease(input, completed, lease.current());
         released = true;
-        return { leaseId: lease.leaseId, refs: [], run: remoteBackendResult(worker, offer, completed, null, null) };
+        return { leaseId: lease.leaseId, refs: [], run: remoteBackendResult(offer, completed, null, null, backendVersion) };
       }
       if (artifacts.length !== 1) throw ambiguous("remote worker success requires exactly one result bundle");
       const artifact = artifacts[0] as typeof artifacts[number];
-      const imported = await importRemoteResultEnvelope({
+      let grading: Awaited<ReturnType<typeof importRemoteVerifierResultEnvelope>> | undefined;
+      const imported = verifier ? grading = await importRemoteVerifierResultEnvelope({ root: input.root, evalDirectory: input.evalDirectory,
+        verifier: verifier.descriptor, plan: input.plan, work: input.workItem, physical: physical!, lease: lease.current(),
+        artifactPath: this.protocol.artifactPath(worker.worker.worker_id, lease.leaseId, artifact.digest),
+        ...(input.signal ? { signal: input.signal } : {}) }) : await importRemoteResultEnvelope({
         root: input.root,
         evalDirectory: input.evalDirectory,
         request: input.request,
@@ -115,20 +165,25 @@ export class RemoteWorkCoordinator {
         lease: lease.current(),
         artifactPath: this.protocol.artifactPath(worker.worker.worker_id, lease.leaseId, artifact.digest),
         runtimeId: input.runtimeId,
+        verifierSourceExpected: await verifierSourceRequested(input.root, completed),
+        ...(modelBinding ? { modelProof: await this.protocol.modelRoutes.boundRun(completed) } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
         ...(input.environmentImages ? { environmentImages: input.environmentImages } : {}),
         ...(input.modelCapturePlan ? { modelCapturePlan: input.modelCapturePlan } : {}),
         ...(input.publicationMode ? { publicationMode: input.publicationMode } : {}),
       });
+      const result: EvalRemoteWorkExecutionResult = { leaseId: lease.leaseId, refs: [imported.ref],
+        run: remoteBackendResult(offer, completed, imported.trial, imported.backendDirectory, backendVersion, grading?.outcome),
+        ...(grading ? { assessments: [grading.assessment] } : {}) };
+      const journal = verifier ? await loadRemoteRerunJournal({ root: input.root, evalDirectory: input.evalDirectory, plan: input.plan, request: input.request, offer: completed }) : null;
+      if (verifier && !journal) throw ambiguous("verifier result has no durable dispatch journal");
+      if (journal) await collectRemoteRerunJournal(journal, result);
       await input.publish(imported.ref);
       input.emit({ type: "eval.work.completed", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, run_id: imported.ref.run_id });
       await this.finishRelease(input, completed, lease.current());
       released = true;
-      return {
-        leaseId: lease.leaseId,
-        refs: [imported.ref],
-        run: remoteBackendResult(worker, offer, completed, imported.trial, imported.backendDirectory),
-      };
+      if (journal) await completeRemoteRerunJournal(journal, lease.leaseId);
+      return result;
     } catch (error) {
       input.emit({ type: "eval.work.lost", work_id: input.workItem.work_id, lease_id: lease.leaseId, worker_id: worker.worker.worker_id, code: (error as { code?: string }).code || "remote_work_failed" });
       if (terminalOffer && !released) {
@@ -144,11 +199,14 @@ export class RemoteWorkCoordinator {
     }
   }
 
-  private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0], inputs: RemoteWorkInputRefV1[], credentialNames: readonly string[]) {
+  private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0], inputsFor: (capture: boolean) => Promise<RemoteWorkInputRefV1[]>, credentialNames: readonly string[], modelTarget?: RemoteModelTargetV2) {
     for (;;) {
       if (input.signal?.aborted) throw cancelled();
       const registered = (await this.registry.list()).filter((worker) => !worker.revoked_at && worker.worker.provider === input.workItem.provider);
-      const capable = registered.filter((worker) => supports(worker, input.workItem, input.preparedArtifact.platform, input.modelCapturePlan));
+      const capable = registered.filter((worker) => supports(worker, input.workItem, input.preparedArtifact.platform, input.verifierOnly ? undefined : input.modelCapturePlan)
+        && (!input.physicalExecution || worker.provider_status.features.physical_work === "2")
+        && (!input.verifierOnly || worker.provider_status.features.verifier_only === "2")
+        && (!modelTarget || worker.provider_status.features[modelTarget.kind === "training-external" ? "training_external_binding" : "managed_model_node"] === "2"));
       if (registered.length > 0 && capable.length === 0) {
         throw new HitchError(`no remote worker supports ${input.workItem.backend} on ${input.preparedArtifact.platform}`, {
           code: "execution_provider_unavailable", exitCode: 10,
@@ -161,6 +219,7 @@ export class RemoteWorkCoordinator {
       }
       const workers = capable.filter((worker) => compatible(worker, input.workItem));
       for (const worker of workers.sort(workerOrder)) {
+        const inputs = await inputsFor(worker.provider_status.features.verifier_source === "2");
         const collisionKey = evalTaskCollisionKey(input.request, input.workItem.task_ids[0] as string, worker.worker.collision_domain_id);
         const collision = this.collisions.tryAcquire(`${input.evalId}:${input.workItem.work_id}`, [collisionKey]);
         if (!collision) continue;
@@ -176,7 +235,7 @@ export class RemoteWorkCoordinator {
           initialState: "offered",
         });
         try {
-          const offer = await this.protocol.createOffer(worker.worker.worker_id, lease.current(), input.workItem, inputs, credentialNames);
+          const offer = await this.protocol.createOffer(worker.worker.worker_id, lease.current(), input.workItem, inputs, credentialNames, modelTarget);
           return { worker, lease, offer, collision };
         } catch (error) {
           await lease.release().catch(() => undefined);
@@ -201,6 +260,7 @@ export class RemoteWorkCoordinator {
       if (ready(offer)) return offer;
       const worker = await this.registry.get(offer.worker_id);
       if (worker?.revoked_at) throw ambiguous(`remote worker was revoked: ${offer.worker_id}`);
+      if (worker && worker.generation !== offer.generation) throw new HitchError("remote worker generation changed during execution", { code: "worker_generation_mismatch", exitCode: 12 });
       if (workerAvailableForOffer(worker, offer)) {
         if (reportedUnavailable) input.emit({ type: "worker.reconnected", worker_id: offer.worker_id, lease_id: offer.lease.lease_id, lease_epoch: offer.lease.epoch });
         unavailableSince = undefined;
@@ -251,25 +311,26 @@ export class RemoteWorkCoordinator {
 
   private async finishRelease(input: Parameters<EvalRemoteWorkExecutor>[0], completed: RemoteWorkOfferV1, lease: ExecutionLeaseV1): Promise<void> {
     input.emit({ type: "sandbox.cleanup.started", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id });
-    let offer = await this.protocol.requestRelease(completed.worker_id, completed.offer_id);
+    let cleanup = await this.protocol.generationCleanup.read(completed);
+    let offer = cleanup ? completed : await this.protocol.requestRelease(completed.worker_id, completed.offer_id);
     const deadline = Date.now() + this.releaseTimeoutMs;
-    while (offer.state !== "released" && Date.now() < deadline && !input.signal?.aborted) {
+    while (!cleanup && offer.state !== "released" && Date.now() < deadline && !input.signal?.aborted) {
       await delay(this.pollIntervalMs, input.signal);
       offer = await this.protocol.getOffer(offer.worker_id, offer.offer_id) ?? offer;
+      cleanup = await this.protocol.generationCleanup.read(offer);
     }
-    if (offer.state === "released") {
-      await this.releaseLease(input, lease);
+    if (cleanup || offer.state === "released") {
+      if (cleanup) await this.protocol.generationCleanup.reconcile(offer, cleanup);
+      else await confirmRemoteExecutionLeaseReleased({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch, offer });
       input.emit({ type: "lease.released", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id });
       input.emit({ type: "sandbox.cleanup.completed", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id, residual_resources: 0 });
       return;
     }
     await markExecutionLeaseLost({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });
     input.emit({ type: "sandbox.cleanup.failed", work_id: lease.work_id, lease_id: lease.lease_id, worker_id: lease.worker_id, code: "worker_release_timeout" });
+    throw new HitchError("remote worker release was not acknowledged; resources remain unresolved", { code: "worker_release_timeout", exitCode: 12 });
   }
 
-  private async releaseLease(input: Parameters<EvalRemoteWorkExecutor>[0], lease: ExecutionLeaseV1): Promise<void> {
-    await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: lease.epoch });
-  }
 }
 
 function supports(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1, platform: string, capture?: { effective_mode: string; topology?: string }): boolean {
@@ -278,24 +339,6 @@ function supports(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1, p
 }
 function compatible(worker: RemoteWorkerPublicRecordV1, work: BackendWorkItemV1): boolean {
   return worker.worker.status === "ready" && fits(work.reservation, subtractResourceVectors(worker.worker.capacity.allocatable, worker.worker.capacity.allocated));
-}
-
-function remoteBackendResult(worker: RemoteWorkerPublicRecordV1, offered: RemoteWorkOfferV1, terminal: RemoteWorkOfferV1, trial: Record<string, unknown> | null, backendDirectory: string | null) {
-  const directory = backendDirectory ?? path.join("remote", offered.work.work_id);
-  const succeeded = terminal.terminal?.status === "succeeded" && trial !== null;
-  return {
-    backend: {
-      name: "harbor", executable: `remote-worker:${worker.worker.worker_id}`,
-      version: worker.provider_status.backends.find((backend) => backend.id === "harbor")?.version ?? null,
-      identity: `${worker.worker.provider}:${worker.worker.worker_id}:${worker.generation}`,
-      config_path: path.join(directory, "remote-offer.json"),
-      result_path: succeeded ? path.join(directory, "remote-result.json") : null,
-      stdout_path: path.join(directory, "remote.stdout.log"), stderr_path: path.join(directory, "remote.stderr.log"),
-      process_exit_code: succeeded ? 0 : 1, signal: null, job_directory: path.join(directory, "job"),
-    },
-    rawResult: trial ? { trial_results: [trial] } : null,
-    summary: trial ? { n_trials: 1, remote_worker: worker.worker.worker_id } : null,
-  };
 }
 
 function workerOrder(left: RemoteWorkerPublicRecordV1, right: RemoteWorkerPublicRecordV1): number {

@@ -26,6 +26,8 @@ class DockerEnvironment:
         self.task_env_config = kwargs.get("task_env_config")
     @property
     def _docker_compose_paths(self): return [pathlib.Path("base.json")]
+    def _compose_env_vars(self, include_os_env=True):
+        return {"HITCH_HOST_CREDENTIAL_HELPER_JSON": "host-only-helper", "SAFE_COMPOSE_VALUE": "kept"}
 harbor = types.ModuleType("harbor")
 constants = types.ModuleType("harbor.constants"); constants.MAIN_SERVICE_NAME = "main"
 environments = types.ModuleType("harbor.environments")
@@ -49,6 +51,7 @@ resolved = {
   "registry.test/task:v1": "registry.test/task@sha256:" + "b" * 64,
 }
 env = module.HitchHarborDockerEnvironment(environment_dir=root, task_env_config=TaskEnvironment("registry.test/task:v1"), hitch_ownership_labels=labels, hitch_service_resource_limits=limits, hitch_resolved_images=resolved)
+assert env._compose_env_vars(include_os_env=True) == {"SAFE_COMPOSE_VALUE": "kept"}
 overlay = json.loads(env._hitch_ownership_compose_path.read_text())
 assert set(overlay["services"]) == {"main", "database"}
 assert set(overlay["networks"]) == {"default", "private"}
@@ -100,6 +103,16 @@ assert '"devices": !override [{"capabilities": ["gpu"], "count": 1}]' in gpu_sid
 try: module._validate_labels({**labels, "unexpected": "x"})
 except ValueError: pass
 else: raise AssertionError("unknown ownership label accepted")
+for provider in ["local-docker", "remote-docker", "remote.us-1"]:
+    assert module._validate_labels({**labels, "io.hitch.provider": provider})["io.hitch.provider"] == provider
+for provider in ["Remote", "remote/docker", "bad provider", "a" * 129, "", None]:
+    try: module._validate_labels({**labels, "io.hitch.provider": provider})
+    except ValueError: pass
+    else: raise AssertionError("invalid provider ownership label accepted")
+remote_labels = {**labels, "io.hitch.provider": "remote-docker"}
+remote_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=remote_labels)
+for resources in json.loads(remote_env._hitch_ownership_compose_path.read_text()).values():
+    for resource in resources.values(): assert resource["labels"]["io.hitch.provider"] == "remote-docker"
 try: module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels, hitch_service_resource_limits={"other": limits["database"]})
 except ValueError: pass
 else: raise AssertionError("unbounded sidecar accepted")

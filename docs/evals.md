@@ -354,6 +354,57 @@ resolved only from that process environment and are removed from provider
 capture, trajectory, result, event and diagnostic evidence before persistence;
 Harbor host stdout/stderr use the same bounded streaming redactor.
 
+Deployments that need a fresh short-lived Target credential for every physical
+trial start can set the trusted host variable
+`HITCH_HOST_CREDENTIAL_HELPER_JSON`. Its value has this exact shape:
+
+```json
+{
+  "version": 1,
+  "argv": ["/absolute/path/to/helper", "fixed-argument"],
+  "credentialNames": ["TARGET_ACCESS_B64"],
+  "timeoutMs": 5000
+}
+```
+
+Every listed name must also be declared with `--pass-env`. Hitch removes any
+inherited value for those names before starting Harbor. After Harbor has queued
+and prepared the trial, its host agent sends the helper one JSON line on stdin:
+
+```json
+{"version":1,"credentialNames":["TARGET_ACCESS_B64"],"minimumValidityMs":1200000}
+```
+
+The helper must return only one JSON value with the same names, an epoch-millisecond
+expiry, and credentials that remain valid beyond the requested interval:
+
+```json
+{"version":1,"env":{"TARGET_ACCESS_B64":"value"},"expiresAtMs":1790000000000}
+```
+
+`minimumValidityMs` is the finite remaining execution allowance plus a five-minute
+margin. For a native Harbor task, Hitch preserves `--timeout 0` as the inner CLI
+sentinel and derives the allowance from Harbor's effective task configuration.
+If neither Hitch nor Harbor supplies a finite agent timeout, configure one before
+using the helper; Hitch rejects the trial before calling the helper or Target.
+
+Hitch supplies that response only to the pending Target exec. It does not modify
+the host process environment or persist the helper configuration, request,
+response, or credential values. Helper stderr and malformed output produce fixed
+error codes without copying helper output into Harbor evidence. Initial trials
+and invalid-slot reruns use this same per-Target path, so a rerun keeps its native
+eval/attempt identity while obtaining a new credential.
+
+This boundary currently requires Hitch's Docker environment integration and
+exactly Harbor 0.21.0. `hitch eval doctor --json` advertises
+`host-task-credential-helper-v1` only when the selected Harbor installation is
+exactly 0.21.0 and the installed Hitch CLI supports it. The
+backend also checks the eval's actual frozen controller runtime before each
+Harbor launch; an older runtime is rejected as
+`host_credential_helper_runtime_unsupported` rather than silently using a
+static credential. Keep secrets out of helper arguments: the helper receives
+its request on stdin and returns credentials on stdout.
+
 For remote workers, offers and content-addressed work specs likewise contain
 only credential names. A worker can fetch values only after accepting the exact
 offer, through a worker-authenticated endpoint fenced by generation, lease ID
@@ -361,6 +412,96 @@ and epoch. The response is a short-TTL `no-store` envelope; the packaged runner
 keeps it in process memory, overlays it on the Harbor execution environment,
 and clears the map when execution settles. Credential envelopes are not events,
 input artifacts, result artifacts, or persistent worker state.
+Result encoding also omits Harbor's embedded `trial.config`, which can contain
+private agent settings and the worker's temporary model-proxy credential.
+The V1 envelope shape and candidate/scoring fields stay unchanged.
+
+Workers may opt into original verifier-input retention with the registration
+feature `verifier_source: "2"` (requires Docker). The controller then seals that
+choice into a V2 work spec and requires a V2 result envelope, including during
+recovery. Workers without this feature retain the existing result protocol.
+For single-step tasks with a separate verifier, the worker captures the original
+`artifacts/`, host lifecycle receipt, and matching final-response receipt before
+release. The snapshot preserves file modes and empty directories, rejects links,
+and has a 48 MiB inventory limit. Missing or unsafe inputs are marked unavailable;
+an oversized combined envelope can omit the snapshot with `source-too-large`.
+Private agent configuration is not transferred; its digest records provenance
+and cannot reconstruct that configuration. New snapshots include a whitelisted
+`regrade-config.json` bound by `regrade_config_digest`: verifier retries/timeouts,
+resource enforcement, pinned images, artifact declarations, and timeout
+multipliers are preserved; host paths and lease ownership are replaced when
+restored. Host mounts, extra Compose files, private verifier/environment env,
+unknown verifier code or settings are rejected. Older snapshots without this
+configuration remain readable but cannot execute a portable regrade.
+
+The controller verifies the original sealed bundle before adding its import
+completion marker. It retains `verifier-source.json`, `verifier-source/`, the
+trial `result.json` without its embedded private configuration, and
+`verifier-source.import.json` alongside the
+imported trial. The import receipt binds the source manifest to the published
+canonical bundle, candidate identity/result, and execution evidence. These are
+prerequisites for remote `verifier-only` repair. Sources without the portable
+configuration and matching import receipt are rejected before dispatch.
+
+The staged verifier work contract uses work spec v2 with an explicit
+`physical_execution.kind=verifier-only` and a matching `verifier_only` descriptor.
+Its work ID binds the original frozen work, rerun and assessment IDs; the v1 plan,
+provider, task/attempt, artifact and resource reservation remain unchanged.
+The descriptor binds the original verifier-invalid trial, portable native result,
+source manifest, canonical bundle/result digests and verifier runtime. Six sealed
+inputs carry the spec, harness, source runtime, task, source snapshot and verifier
+runtime. Missing or duplicate inputs, model bindings, credentials and simultaneous
+source capture are rejected. A scoring worker must declare `verifier_only="2"`,
+`physical_work="2"` and Docker support; model proxy support is not required.
+The packaged worker consumes this six-input contract and runs only regrade.
+Register scoring support explicitly in the worker registration file; the
+controller requires the frozen remote provider and never falls back to local
+execution. This path acquires no model service, model relay or capture session.
+
+Before the first offer, the rerun freezes all selected source descriptors in
+`reruns/RERUN_ID/verifier-selection.json`, including stable assessment/work IDs,
+source runtime and original candidate references. Each work has a v2 journal
+under `remote-work/`. The controller records the imported result as `collected`
+before publishing progress or requesting release, and marks it `completed` only
+after release confirmation. A lost release receipt retains the result for lease
+reconciliation. Recovery checks the same sealed assessment and original source;
+it does not select from already repaired progress or repeat completed scoring.
+An unaccepted offer may be dispatched again only after confirmed withdrawal.
+Interrupted daemon completion also uses the durable completion handoff.
+
+Scoring results use a distinct `verifier-only-result` v2 envelope, limited to
+64 MiB. It contains the descriptor digest, original execution lease identity,
+portable trial, verifier logs and resource/runtime evidence. It contains no
+worker config paths or candidate bundle. The controller revalidates the original
+canonical run, source import receipt, frozen benchmark and verifier runtime,
+then publishes the assessment by atomic directory rename. A successful score
+keeps the original run/trial/task/attempt; an invalid score leaves the original
+slot invalid while retaining its assessment. Repeated imports verify and reuse
+the sealed assessment; changed results cannot replace it. Source lookup follows
+the canonical candidate's actual work ID and epoch, including candidate restarts.
+
+`GET /v1/workers/WORKER/leases/LEASE/execution?generation=GENERATION&epoch=EPOCH`
+returns a no-store v2 snapshot of the current controller lease for an accepted
+offer. Reading does not renew the lease. The verifier worker refreshes its local
+lease from this authenticated response and stops at the last confirmed expiry
+if the controller becomes unreachable. Offer identity, worker generation,
+resource reservation and epoch must match. This avoids treating the original
+offer's fixed expiry as a renewal or extending authority locally.
+
+The execution function checks the durable running lease before and after a
+regrade, verifies source/task/runtime digests, requires the restored resource
+limits to match the lease plan, and rejects changed candidate results. It uses
+Harbor 0.21.0's `source_trial.action=regrade`; the original agent phase is not
+initialized or executed. The private original result has a separate
+`original_result_digest`; `source_result_digest` binds the portable trial.
+
+After building, `dist/scripts/canary-remote-verifier.js` exercises this function
+with real Harbor/Docker and a recorded candidate fixture. Set
+`HITCH_HARBOR_TEST_PYTHON` to Harbor 0.21.0's Python and `HITCH_VERIFIER_IMAGE`
+to a locally cached image with bash. The canary resolves the image ID, performs
+only verification, checks its score and unchanged agent result, and reaps its
+owned Docker resources. It does not pull images, run a candidate/model, or
+exercise remote worker HTTP dispatch. Failed runs retain their evidence path.
 
 ## Records
 
@@ -481,7 +622,7 @@ backward compatibility. Rerun/recovery operations have distinct semantics:
 | `candidate-restart` | Executes again from the original instruction | New conversation | Clean environment | Supported |
 | `candidate-resume` | Continues an interrupted candidate | Provider-native session | Restored checkpoint | Reserved; rejected until both checkpoint and adapter resume exist |
 | `trajectory-replay` | Starts a new physical execution with prior context | Verified canonical trajectory | Restored checkpoint | Reserved; rejected until replay and checkpoint support exist |
-| `verifier-only` | Does not execute | None | Fresh verifier, recorded artifacts | Harbor 0.21.0, frozen standard package, local Docker, original single-step separate verifier |
+| `verifier-only` | Does not execute | None | Fresh verifier, recorded artifacts | Harbor 0.21.0, frozen standard package, local Docker or a remote Docker worker with `verifier_only="2"`, original single-step separate verifier |
 | `collect-only` | Does not execute | None | None | Imports a complete late result from an isolated work item |
 
 For a verifier timeout or missing result after a successful candidate, use

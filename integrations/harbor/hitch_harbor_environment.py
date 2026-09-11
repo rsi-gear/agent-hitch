@@ -31,6 +31,7 @@ _REQUIRED_LABELS = {
 _ALLOWED_LABELS = _REQUIRED_LABELS | {_LABEL_TASK}
 _COMPOSE_RESET_MARKER = "__HITCH_COMPOSE_RESET_NULL__"
 _GPU_OVERRIDE_PREFIX = "__HITCH_GPU_OVERRIDE_"
+_HOST_CREDENTIAL_HELPER_ENV = "HITCH_HOST_CREDENTIAL_HELPER_JSON"
 
 
 class HitchHarborDockerEnvironment(DockerEnvironment):
@@ -127,6 +128,25 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         if self._hitch_static_no_network:
             return result.model_copy(update={"disable_internet": True, "dynamic_network_policy": False})
         return result
+
+    def _compose_env_vars(self, include_os_env=True):
+        result = super()._compose_env_vars(include_os_env=include_os_env)
+        # The host-only helper command is not a task Compose interpolation
+        # input. The agent reads it directly from its trusted host process.
+        result.pop(_HOST_CREDENTIAL_HELPER_ENV, None)
+        return result
+
+    async def hitch_exec_with_private_env(self, command, *, env, cwd=None, timeout_sec=None, user=None):
+        """Execute one Target without placing per-exec credential values in argv."""
+        from hitch_private_exec import exec_with_private_environment
+        return await exec_with_private_environment(
+            self,
+            command,
+            env=env,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
+            user=user,
+        )
 
     async def _apply_network_policy(self, network_policy):
         if self._hitch_static_no_network:
@@ -375,7 +395,8 @@ def _validate_labels(value: Mapping[str, str] | None) -> dict[str, str]:
     labels = dict(value)
     if (
         not re.fullmatch(r"[a-f0-9]{24}", labels.get(_LABEL_ROOT, ""))
-        or labels.get(_LABEL_PROVIDER) != "local-docker"
+        or not isinstance(labels.get(_LABEL_PROVIDER), str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", labels[_LABEL_PROVIDER])
         or not re.fullmatch(r"eval_[a-f0-9]{32}", labels.get(_LABEL_EVAL, ""))
         or not re.fullmatch(r"work_[a-f0-9]{32}", labels.get(_LABEL_WORK, ""))
         or not re.fullmatch(r"lease_[a-f0-9]{32}", labels.get(_LABEL_LEASE, ""))

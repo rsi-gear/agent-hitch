@@ -1,5 +1,9 @@
 export { buildHarborJobConfig, lockedHarnessRef, normalizeHarborResult, readHarborRawResult, runHarborBackend } from "./backend.js";
+export { observeHarborEnvironment } from "./observation.js";
+export type { HarborObservationOptions } from "./observation.js";
 export { buildHarborRegradeConfig, runHarborRegrade, seedHarborRegradeTrial } from "./regrade.js";
+export { capturePortableHarborRegradeConfig, parsePortableHarborRegradeConfig, restorePortableHarborRegradeConfig } from "./portable-regrade.js";
+export type { PortableHarborRegradeConfigV2 } from "./portable-regrade.js";
 export { DEFAULT_HARBOR_TRIAL_DOCKER_PLATFORM, HARBOR_NODE_VERSION, HARBOR_NODE_VERSION_WITH_PREFIX, HARBOR_PNPM_VERSION, harborTrialRuntimeContract } from "./runtime-toolchain.js";
 export type { HarborTrialRuntimeContract } from "./runtime-toolchain.js";
 export type { BuildHarborJobConfigOptions, HarborBackendResult, HarborPreparedArtifactUse, RunHarborBackendOptions } from "./backend.js";
@@ -12,4 +16,5 @@ export type { VerifiedLocalGitSource } from "../../domain/index.js";
 export { inspectHarborTaskResources, parseHarborTaskResourceDeclaration } from "./task-resources.js";
 export type { HarborEnvironmentBuildDeclarationV1, HarborEnvironmentImageDeclarationV1, HarborEnvironmentImageFallbackV1, HarborTaskResourceDeclarationV1 } from "./task-resources.js";
 export { DEFAULT_HARBOR_VERSION, HARBOR_CREDENTIAL_ENV, doctorHarbor, locateHarbor, managedHarborExecutable, setupHarbor } from "./tools.js";
+export { HOST_CREDENTIAL_HELPER_CAPABILITY, HOST_CREDENTIAL_HELPER_ENV } from "./host-credential-helper.js";
 export type { DoctorCheck, DoctorHarborOptions, DoctorResult, HarborLocation, LocateHarborOptions, HarborSetupResult, SetupHarborOptions } from "./tools.js";

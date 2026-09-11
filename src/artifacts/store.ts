@@ -105,6 +105,24 @@ export async function loadPreparedArtifact(
   directory: string,
   expected: PreparedArtifactExpectation,
 ): Promise<PreparedArtifact> {
+  const manifest = await verifyPreparedArtifact(directory, expected);
+  const currentPlatform = `${process.platform}-${process.arch}`;
+  if (manifest.platform !== currentPlatform) {
+    throw new HitchError(`prepared artifact platform ${manifest.platform} is incompatible with ${currentPlatform}`, {
+      code: "artifact_platform_mismatch",
+      exitCode: 5,
+    });
+  }
+  const invocation = artifactInvocation(manifest, path.resolve(directory));
+  await access(invocation.entrypoint_args[0] || invocation.executable, manifest.launcher === "node" ? constants.R_OK : constants.X_OK);
+  return { ...manifest, ...invocation, cache_hit: true };
+}
+
+/** Verify transported bytes and pinned target identity without creating a host invocation. */
+export async function verifyPreparedArtifact(
+  directory: string,
+  expected: PreparedArtifactExpectation,
+): Promise<ArtifactManifest> {
   const absolute = path.resolve(directory);
   const info = await lstat(absolute).catch(() => null);
   if (!info?.isDirectory() || info.isSymbolicLink()) {
@@ -147,22 +165,13 @@ export async function loadPreparedArtifact(
       exitCode: 5,
     });
   }
-  const currentPlatform = `${process.platform}-${process.arch}`;
-  if (manifest.platform !== currentPlatform) {
-    throw new HitchError(`prepared artifact platform ${manifest.platform} is incompatible with ${currentPlatform}`, {
-      code: "artifact_platform_mismatch",
-      exitCode: 5,
-    });
-  }
   if (manifest.source_type === "installed" || !await artifactMatches(absolute, manifest)) {
     throw new HitchError("prepared artifact handoff failed content verification", {
       code: "artifact_integrity_mismatch",
       exitCode: 5,
     });
   }
-  const invocation = artifactInvocation(manifest, absolute);
-  await access(invocation.entrypoint_args[0] || invocation.executable, manifest.launcher === "node" ? constants.R_OK : constants.X_OK);
-  return { ...manifest, ...invocation, cache_hit: true };
+  return manifest;
 }
 
 export async function withArtifactLock(

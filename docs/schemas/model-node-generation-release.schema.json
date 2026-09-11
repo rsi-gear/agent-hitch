@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/model-node-generation-release.schema.json",
+  "title": "Confirmed release of a previous model-node generation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "service_digest", "model_node", "receipt_digest", "receipt"],
+  "properties": {
+    "schema_version": { "const": "2" },
+    "service_digest": { "$ref": "#/$defs/sha" },
+    "model_node": { "$ref": "model-node-binding.schema.json" },
+    "receipt_digest": { "$ref": "#/$defs/sha" },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "serviceId", "ownerId", "inferenceId", "previousNode", "node", "sourceIdentityDigest", "handle", "admissionOnly", "state", "resourcesReleased", "gpuSeconds", "devices", "previousBootDigest", "currentBootDigest"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "kind": { "const": "inference-generation-release" },
+        "serviceId": { "type": "string", "pattern": "^inference_[a-f0-9]{32}$" },
+        "ownerId": { "type": "string", "minLength": 1 },
+        "inferenceId": { "$ref": "#/$defs/sha" },
+        "previousNode": { "$ref": "#/$defs/node" },
+        "node": { "$ref": "#/$defs/node" },
+        "sourceIdentityDigest": { "$ref": "#/$defs/sha" },
+        "handle": { "oneOf": [{ "type": "null" }, { "$ref": "inference-service-record.schema.json#/properties/service_handle/oneOf/1" }] },
+        "admissionOnly": { "type": "boolean" },
+        "state": { "const": "stopped" },
+        "resourcesReleased": { "const": true },
+        "gpuSeconds": { "type": "number", "minimum": 0 },
+        "devices": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^GPU-[a-fA-F0-9-]+$" } },
+        "previousBootDigest": { "$ref": "#/$defs/sha" },
+        "currentBootDigest": { "$ref": "#/$defs/sha" }
+      }
+    }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "node": { "type": "object", "additionalProperties": false, "required": ["nodeId", "generation"],
+      "properties": {
+        "nodeId": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$" },
+        "generation": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$" }
+      }
+    }
+  }
+}

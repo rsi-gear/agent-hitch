@@ -1,8 +1,8 @@
-import { mkdir, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import path from "node:path";
-import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, EvalSubmissionV1, ExecutionLeaseV1, ExecutionProviderStatusV1, ExecutionWorkerV1, ManagedInferenceCoordinator, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, hitchRootId, readJSON, safeDiagnosticMessage, sha256Bytes, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
-import { newEvalId, parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
+import { parseEvalExecutionPlan, readExecutionLeases, reapOwnedDockerResources, resolveLocalDatasetTaskIds, runEval, validateEvalId } from "../evals/index.js";
 import type { EvalDockerResourceReaper, EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver, EvalRequestInput, EvalResult, RunEvalOptions } from "../evals/index.js";
 import { ResourceLedger, scaleResources, type ResourceLease } from "./resources.js";
 import { CollisionLockManager, type CollisionLease } from "./collisions.js";
@@ -20,6 +20,10 @@ import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { schedulerCapturePlan, schedulerQueuedEval, type SchedulerQueuedEval } from "./scheduler-eval-entry.js";
 import { emitPersistedEvalEvent, updateEvalControl } from "./eval-control-state.js";
+
+import { persistEvalSubmission } from "./eval-submission-persist.js";
+import { assertOrderedSubmission, evalCommandPath } from "./ordered-eval-control.js";
+import type { OrderedEvalSubmission } from "./ordered-eval-control.js";
 
 type QueuedEval = SchedulerQueuedEval;
 
@@ -48,10 +52,12 @@ export interface EvalSchedulerOptions {
   remoteWorkers?: RemoteWorkerRegistry;
   remoteWorkerProtocol?: RemoteWorkerProtocol;
   credentialEnv?: NodeJS.ProcessEnv;
+  inferenceCoordinator?: ManagedInferenceCoordinator;
 }
 
 export interface SubmitEvalOptions {
   idempotencyKey?: string;
+  ordered?: OrderedEvalSubmission;
 }
 
 export interface EvalSchedulerStatus {
@@ -86,15 +92,16 @@ export class EvalScheduler {
   private readonly workItems: WorkItemDispatcher;
   private readonly dockerResourceReaper: EvalDockerResourceReaper;
   private readonly environmentImages: EvalImageServices;
-  private readonly remoteWork: RemoteWorkCoordinator | undefined;
+  readonly remoteWork: RemoteWorkCoordinator | undefined;
   private readonly credentialEnv: NodeJS.ProcessEnv;
+  private readonly inferenceCoordinator: ManagedInferenceCoordinator | undefined;
   private queue: QueuedEval[] = [];
   private active = new Map<EvalId, ActiveEval>();
   private completions = new Map<EvalId, Promise<void>>();
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol, credentialEnv = process.env }: EvalSchedulerOptions) {
+  constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol, credentialEnv = process.env, inferenceCoordinator }: EvalSchedulerOptions) {
     this.root = root;
     this.evalsRoot = statePaths(root).evals;
     this.resources = resources;
@@ -109,6 +116,7 @@ export class EvalScheduler {
     this.workItems = new WorkItemDispatcher({ resources, collisions });
     this.dockerResourceReaper = dockerResourceReaper;
     this.credentialEnv = credentialEnv;
+    this.inferenceCoordinator = inferenceCoordinator;
     this.environmentImages = new EvalImageServices({ root, provider, resources, onEvent: this.onEvent, ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}) });
     this.remoteWork = remoteWorkers && remoteWorkerProtocol
       ? new RemoteWorkCoordinator({ root, registry: remoteWorkers, protocol: remoteWorkerProtocol, collisions })
@@ -154,7 +162,9 @@ export class EvalScheduler {
     if (idempotencyKey !== undefined) validateIdempotencyKey(idempotencyKey);
     if (idempotencyKey) {
       const keyHash = sha256Bytes(idempotencyKey);
-      return withFileLock(path.join(this.root, "locks", "eval-idempotency"), keyHash, async () => {
+      const submit = async () => {
+        if (options.ordered) await assertOrderedSubmission(this.root, keyHash, options.ordered);
+        else if (await readJSON(evalCommandPath(this.root, keyHash), null)) throw new HitchError("eval requires ordered control", { code: "eval_control_required", exitCode: 12 });
         const indexPath = idempotencyIndexPath(this.root, keyHash);
         const existing = await readJSON<{ eval_id?: unknown; submission_digest?: unknown } | null>(indexPath, null);
         if (existing) {
@@ -166,7 +176,7 @@ export class EvalScheduler {
           }
           return validateEvalId(existing.eval_id);
         }
-        const entry = await this.persistSubmission(normalized.request, normalized.execution, modelCapturePlan, submissionDigest, keyHash);
+        const entry = await this.persistSubmission(normalized.request, normalized.execution, modelCapturePlan, submissionDigest, keyHash, options.ordered?.evalId);
         try {
           await atomicWriteJSON(indexPath, { schema_version: "1", eval_id: entry.evalId, submission_digest: submissionDigest });
         } catch (error) {
@@ -174,48 +184,17 @@ export class EvalScheduler {
           throw error;
         }
         return this.enqueue(entry);
-      }, { timeoutCode: "idempotency_locked", timeoutExitCode: 12 });
+      };
+      return options.ordered ? submit() : withFileLock(path.join(this.root, "locks", "eval-idempotency"), keyHash, submit, { timeoutCode: "idempotency_locked", timeoutExitCode: 12 });
     }
+    if (options.ordered) throw new HitchError("ordered eval requires a key", { code: "eval_control_required", exitCode: 12 });
     return this.enqueue(await this.persistSubmission(normalized.request, normalized.execution, modelCapturePlan, submissionDigest));
   }
 
-  private async persistSubmission(normalized: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1, submissionDigest: `sha256:${string}`, keyHash?: `sha256:${string}`): Promise<QueuedEval> {
-    const evalId = newEvalId();
-    const directory = path.join(this.evalsRoot, evalId);
-    await mkdir(directory, { mode: 0o700 });
-    try {
-      const now = new Date().toISOString();
-      const submission: EvalSubmissionV1 = {
-        schema_version: "1",
-        eval_id: evalId,
-        request: normalized,
-        execution,
-        submission_digest: submissionDigest,
-        ...(keyHash ? { idempotency_key_hash: keyHash } : {}),
-        submitted_at: now,
-      };
-      const control: EvalControlV1 = {
-        schema_version: "1",
-        eval_id: evalId,
-        generation: 0,
-        state: "queued",
-        requested_parallelism: execution.max_parallelism,
-        admitted_parallelism: 0,
-        active_leases: [],
-        queued_work_items: [],
-        terminal_work_items: [],
-        created_at: now,
-        updated_at: now,
-      };
-      await atomicWriteJSON(path.join(directory, "request.json"), normalized);
-      await atomicWriteJSON(path.join(directory, "submission.json"), submission);
-      await atomicWriteJSON(path.join(directory, "control.json"), control);
-      await this.emitPersisted(directory, evalId, { type: "eval.queued", requested_parallelism: execution.max_parallelism, model_capture: modelCapturePlan });
-      return this.queuedEval(evalId, normalized, execution, modelCapturePlan, directory);
-    } catch (error) {
-      await rm(directory, { recursive: true, force: true });
-      throw error;
-    }
+  private async persistSubmission(normalized: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1, submissionDigest: `sha256:${string}`, keyHash?: `sha256:${string}`, reservedEvalId?: EvalId): Promise<QueuedEval> {
+    const { evalId, directory } = await persistEvalSubmission({ evalsRoot: this.evalsRoot, request: normalized, execution, modelCapturePlan, submissionDigest,
+      ...(keyHash ? { keyHash } : {}), ...(reservedEvalId ? { reservedEvalId } : {}), emit: (directory, id, event) => this.emitPersisted(directory, id, event) });
+    return this.queuedEval(evalId, normalized, execution, modelCapturePlan, directory);
   }
 
   private enqueue(entry: QueuedEval): EvalId {
@@ -421,6 +400,7 @@ export class EvalScheduler {
         workItemAdmission: workItemAdmission({ dispatcher: this.workItems, request: entry.request, collisionDomainId: this.collisionDomainId }),
       } : {}),
       ...(remote && this.remoteWork ? { remoteWorkExecutor: this.remoteWork.execute } : {}),
+      ...(this.inferenceCoordinator ? { inferenceCoordinator: this.inferenceCoordinator } : {}),
       precreated: true,
       resumeExisting: entry.resumeExisting,
       root: this.root,
@@ -487,14 +467,7 @@ export class EvalScheduler {
   }
 
   private async queuedEval(evalId: EvalId, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string, resumeExisting = false): Promise<QueuedEval> {
-    return schedulerQueuedEval({ evalId, request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}), directory, collisionDomainId: this.collisionDomainId, resumeExisting });
-  }
-
-  private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> {
-    return updateEvalControl(directory, update);
-  }
-
-  private async emitPersisted(directory: string, evalId: EvalId, event: Record<string, unknown>): Promise<void> {
-    return emitPersistedEvalEvent(directory, evalId, this.onEvent, event);
-  }
+    return schedulerQueuedEval({ evalId, request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}), directory, collisionDomainId: this.collisionDomainId, resumeExisting }); }
+  private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> { return updateEvalControl(directory, update); }
+  private async emitPersisted(directory: string, evalId: EvalId, event: Record<string, unknown>): Promise<void> { return emitPersistedEvalEvent(directory, evalId, this.onEvent, event); }
 }

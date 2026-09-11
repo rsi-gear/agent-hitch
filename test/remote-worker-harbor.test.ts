@@ -5,15 +5,20 @@ import type { Server } from "node:http";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { RemoteWorkerHttpClient, RemoteWorkerRunner } from "../src/control-plane/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
-import { runEval as runEvalProduction } from "../src/evals/index.js";
+import { runEval as runEvalProduction, rerunEval, verifyImportedRemoteVerifierSource } from "../src/evals/index.js";
 import type { RunEvalOptions } from "../src/evals/index.js";
-import { atomicWriteJSON, sha256JSON, statePaths } from "../src/foundation/index.js";
-import { benchmarkTaskDigest, benchmarkVerifierIdentity } from "../src/runs/index.js";
-import { TrajectoryProjector, TrajectoryWriter, canonicalTrajectoryFileRef, trajectoryRefV2 } from "../src/trajectories/index.js";
+import type { EvalTrialRefV1 } from "../src/domain/index.js";
+import { atomicWriteJSON, sha256JSON, statePaths, runCommand } from "../src/foundation/index.js";
+import { parseTrainingBinding, trainingProxyIdentity, registerTrainingEndpoint } from "../src/model-access/index.js";
 import { releaseRemoteHarborOffer, remoteHarborWorker } from "../src/workers/index.js";
+import { parseRemoteHarborWorkSpec } from "../src/workers/remote-harbor-work-spec.js";
 import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { verifyRemoteModelRecovery, verifyRemoteRerunDaemonRecovery } from "../test-support/remote-model-recovery.js";
+
+import { writeResourceInspector, writeEmptyDocker, writeCaptureHarbor, writeExportedBundle } from "../test-support/remote-harbor-model.js";
 
 const ZERO = { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 };
 const TRIAL = { cpu_millis: 1_000, memory_bytes: 1024 ** 3, container_slots: 1, build_slots: 0 };
@@ -98,24 +103,62 @@ test("packaged worker executes a staged remote eval through Harbor and returns a
   }
 });
 
-test("packaged remote worker runs in-sandbox proxy capture and transports sealed interaction evidence", async (t) => {
+for (const mode of ["api", "api-verifier-source", "managed", "managed-verifier-source-recovery", "training", "training-verifier-source", "api-repair", "managed-repair", "managed-recovery", "training-recovery"]) test(`packaged remote worker captures and imports ${mode} model evidence`, async (t) => {
+  const managed = mode.startsWith("managed"), training = mode.startsWith("training"), repair = mode.endsWith("repair");
+  const captureSource = mode.includes("verifier-source");
+  const inferenceId = `sha256:${"8".repeat(64)}` as const, modelId = `sha256:${"9".repeat(64)}` as const;
+  const modelNode = { schema_version: "2" as const, node_id: "model-test", generation: "generation-1", runtime_digest: inferenceId, launcher: "process" as const };
+  let acquisitions = 0, releases = 0, generations = 0;
   const controllerRoot = await mkdtemp(path.join(tmpdir(), "hitch-remote-capture-controller-"));
   const workerRoot = await mkdtemp(path.join(tmpdir(), "hitch-remote-capture-worker-"));
   t.after(() => Promise.all([forceRemove(controllerRoot), forceRemove(workerRoot)]));
   const dataset = path.join(controllerRoot, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
-  await writeFile(path.join(dataset, "one", "task.toml"), "");
+  await writeFile(path.join(dataset, "one", "task.toml"), captureSource ? '[verifier]\nenvironment_mode = "separate"\n' : "");
+  const trainingBinding = parseTrainingBinding({ kind: "training-external", bindingId: "remote_training", trainingRunId: "train_remote",
+    policyLeaseRef: { uri: `cas:${inferenceId}`, digest: inferenceId, mediaType: "application/json" }, expectedPolicyVersion: "runtime/step-1",
+    fencingToken: "test-fence", expiresAt: new Date(Date.now() + 60_000).toISOString(), endpointRef: "hitch-training:remote_training",
+    credentialRef: "hitch-training:remote_training", generationContractDigest: inferenceId, requiredCapture: "exact-policy-tokens-v1",
+    api: "chat-completions", maxOutputTokens: 16, maxEpisodeSteps: 4 });
+  const harnessRef = training ? await trainingHarnessRef(controllerRoot) : "codex@version:1.2.3";
+  let boundRun: string | undefined;
   const npm = await writeFakeNpm(controllerRoot, { packageName: "@openai/codex", binName: "codex" });
   const inspector = await writeResourceInspector(controllerRoot);
   const docker = await writeEmptyDocker(controllerRoot);
-  const harbor = await writeCaptureHarbor(controllerRoot);
-  const secret = "sk-remote-capture-secret-value";
+  const harbor = await writeCaptureHarbor(controllerRoot, repair, captureSource);
+  const secret = "sk-remote-capture-secret-value-123456789";
   const upstream = http.createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
+      if (training) {
+        assert.equal(request.headers.authorization, `Bearer ${secret}`);
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/v1/lease") {
+          response.end(JSON.stringify({ schemaVersion: 1, trainingRunId: trainingBinding.trainingRunId, policyVersion: trainingBinding.expectedPolicyVersion,
+            fencingToken: trainingBinding.fencingToken, state: "serving", generationContractDigest: inferenceId, capture: trainingBinding.requiredCapture })); return;
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (request.url === "/v1/hitch/run") {
+          assert.ok(!boundRun || boundRun === body.runId); boundRun = body.runId;
+          response.end(JSON.stringify({ runId: boundRun, policyVersion: trainingBinding.expectedPolicyVersion })); return;
+        }
+        assert.equal(request.url, "/v1/chat/completions"); assert.ok(boundRun); generations++;
+        assert.equal(request.headers["idempotency-key"], `${boundRun}-${generations - 1}`);
+        assert.equal(body.model, trainingBinding.expectedPolicyVersion);
+        if (generations > 1) assert.match(body.messages.at(-1).content, new RegExp(`remote-tool-${generations - 1}`));
+        response.setHeader("x-gear-receipt-id", `receipt-${generations}`);
+        response.end(JSON.stringify({ model: trainingBinding.expectedPolicyVersion, choices: [{ finish_reason: generations < 3 ? "tool_calls" : "stop",
+          message: generations < 3 ? { role: "assistant", content: null, tool_calls: [{ id: `call-${generations}`, type: "function",
+            function: { name: "bash", arguments: JSON.stringify({ command: `printf remote-tool-${generations}` }) } }] } : { role: "assistant", content: "done" } }] })); return;
+      }
+      generations++;
+      if (managed) {
+        assert.equal(request.headers.authorization, `Bearer ${secret}`);
+        assert.equal(JSON.parse(Buffer.concat(chunks).toString("utf8")).model, "hitch-wire-model");
+      }
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ model: "remote-effective", output: Buffer.concat(chunks).toString("utf8"), api_key: secret }));
+      response.end(JSON.stringify({ model: "remote-effective", output: Buffer.concat(chunks).toString("utf8"), ...(!managed ? { api_key: secret } : {}) }));
     });
   });
   const upstreamUrl = await serverUrl(upstream);
@@ -126,14 +169,35 @@ test("packaged remote worker runs in-sandbox proxy capture and transports sealed
     // that topology explicitly so Linux does not select the real Docker bridge
     // gateway that production in-sandbox capture requires.
     HITCH_MODEL_PROXY_BIND_HOST: "127.0.0.1", HITCH_MODEL_PROXY_ADVERTISED_HOST: "127.0.0.1",
-    OPENAI_BASE_URL: `${upstreamUrl}/v1`, OPENAI_API_KEY: secret,
+    OPENAI_BASE_URL: managed || training ? "http://127.0.0.1:1/v1" : `${upstreamUrl}/v1`, OPENAI_API_KEY: managed || training ? "foreign-worker-key" : secret,
   };
-  const server = new DaemonServer({
+  const scopes: string[] = [];
+  const inferenceCoordinator: import("../src/domain/index.js").ManagedInferenceCoordinator = {
+    acquire: async input => {
+        acquisitions++; scopes.push(input.cache_scope_owner); assert.deepEqual(input.selection.model_node, modelNode);
+        assert.equal(input.selection.inference_id, inferenceId);
+        return {
+          binding: { kind: "managed-node" as const, model_node: modelNode, inference_id: inferenceId, api: "responses" as const,
+            base_url: `${upstreamUrl}/v1`, wire_model: "hitch-wire-model", credential_env_name: "HITCH_LOCAL_MODEL_TOKEN",
+            capabilities: { streaming: true, tool_calls: true, parallel_tool_calls: false, input_modalities: ["text" as const] } },
+          credential: secret, lock: { inference_id: inferenceId, model_id: modelId, model_node: modelNode, generation: { max_output_tokens: 16 } } as never,
+          service_id: `inference_${"a".repeat(32)}`, service_epoch: 1, release: async () => { releases++; },
+        };
+      }
+  };
+  const serverOptions: ConstructorParameters<typeof DaemonServer>[0] = {
     root: controllerRoot, port: 0, maxConcurrent: 1, logger: () => {},
-    resourceCapacity: { ...TRIAL, build_slots: 1 }, evalTrialResources: TRIAL,
-    evalExecutor: (options) => runEval({ ...options, harborExecutable: harbor, env: workerEnv }),
-  });
+    resourceCapacity: repair ? { cpu_millis: 100, memory_bytes: 64 * 1024 ** 2, container_slots: 0, build_slots: 1 } : { ...TRIAL, build_slots: 1 }, evalTrialResources: TRIAL,
+    evalExecutor: (options) => runEval({ ...options, harborExecutable: harbor, env: workerEnv,
+      ...(managed ? { inferenceCoordinator } : {}),
+    }),
+    evalRerunExecutor: (options) => rerunEval({ ...options, harborExecutable: harbor, env: workerEnv,
+      ...(managed ? { inferenceCoordinator } : {}),
+    }),
+  };
+  const server = new DaemonServer(serverOptions);
   await server.start();
+  if (training) await registerTrainingEndpoint(controllerRoot, { schema_version: "1", binding: trainingBinding, base_url: `${upstreamUrl}/v1`, credential: secret });
   t.after(() => server.close());
   const baseUrl = `http://127.0.0.1:${server.port}`;
   const adminToken = (await readFile(statePaths(controllerRoot).token, "utf8")).trim();
@@ -141,7 +205,11 @@ test("packaged remote worker runs in-sandbox proxy capture and transports sealed
     schema_version: "1" as const, worker_id: "worker_harbor_capture", provider: "remote-docker",
     collision_domain_id: "docker-engine:remote-capture", platforms: [`${process.platform}-${process.arch}`],
     backends: [{ id: "harbor", version: "0.21.0" }],
-    features: { docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false },
+    features: { docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false,
+      ...(repair ? { physical_work: "2" as const } : {}),
+      ...(captureSource ? { verifier_source: "2" as const } : {}),
+      ...(managed ? { managed_model_node: "2" as const } : {}),
+      ...(training ? { training_external_binding: "2" as const } : {}) },
     task_membership: ["known" as const], capacity: { total: TRIAL, reserved_for_system: ZERO, allocatable: TRIAL },
   };
   const credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration });
@@ -151,7 +219,9 @@ test("packaged remote worker runs in-sandbox proxy capture and transports sealed
     method: "POST",
     body: JSON.stringify({
       request: {
-        dataset, harness_ref: "codex@version:1.2.3", model: "openai/remote", max_concurrent: 1,
+        dataset, harness_ref: harnessRef, model: managed ? "local/test" : training ? `training/${trainingBinding.bindingId}` : "openai/remote", max_concurrent: 1,
+        ...(managed ? { local_inference: { inference_id: inferenceId, model_node: modelNode } } : {}),
+        ...(training ? { training_binding: trainingBinding } : {}),
         infrastructure_retries: 0,
       },
       execution: {
@@ -169,12 +239,28 @@ test("packaged remote worker runs in-sandbox proxy capture and transports sealed
   await writeExportedBundle({
     bundle: path.join(controllerRoot, "capture-bundles", evalId), runId, evalId, trialId,
     taskId: "one", benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision,
+    ...(managed ? { managed: { inference_id: inferenceId, model_id: modelId, model_node: modelNode } } : {}),
+    ...(training ? { training: trainingProxyIdentity(trainingBinding), harnessRef } : {}),
   });
   const execution = { root: workerRoot, env: workerEnv, harborExecutable: harbor, dockerExecutable: docker, trialBundleGraceMs: 0 };
   const workerErrors: string[] = [];
   const workerController = new AbortController();
   const runner = new RemoteWorkerRunner({
-    client, capacity: TRIAL, execute: remoteHarborWorker(execution), once: true,
+    client, capacity: TRIAL, execute: async input => {
+      const spec = JSON.parse(input.inputs.get("work-spec")!.toString());
+      assert.equal(spec.schema_version, managed || training || captureSource ? "2" : "1");
+      assert.equal(spec.verifier_source, captureSource ? "2" : undefined);
+      assert.throws(() => parseRemoteHarborWorkSpec({ ...spec, work: { ...spec.work, task_ids: ["wrong-task"] } }, input.offer), /work graph/);
+      if (training) {
+        assert.throws(() => parseRemoteHarborWorkSpec({ ...spec, request: { ...spec.request, infrastructure_retries: 1 } }, input.offer), /single-attempt/);
+        assert.throws(() => parseRemoteHarborWorkSpec({ ...spec, request: { ...spec.request, training_binding: { ...spec.request.training_binding, fencingToken: "other" } } }, input.offer), /single-attempt/);
+      }
+      if (managed) {
+        assert.throws(() => parseRemoteHarborWorkSpec({ ...spec, model_binding: { ...spec.model_binding, credential: "private" } }, input.offer), /binding fields/);
+        assert.throws(() => parseRemoteHarborWorkSpec({ ...spec, model_binding: { ...spec.model_binding, model_node: { ...modelNode, generation: "changed" } } }, input.offer), /differs from its request/);
+      }
+      return remoteHarborWorker(execution)(input);
+    }, once: true,
     releaseUnknown: (offer) => releaseRemoteHarborOffer(execution, offer),
     pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
     onError: (error) => workerErrors.push((error as Error).stack ?? String(error)),
@@ -201,18 +287,95 @@ test("packaged remote worker runs in-sandbox proxy capture and transports sealed
   const workerFiles = await regularFiles(workerRoot);
   const importErrors = await Promise.all(workerFiles.filter((file) => path.basename(file) === "hitch-run-import-error.json")
     .map((file) => readFile(file, "utf8")));
-  assert.equal((status.result as { status: string }).status, "succeeded", `${JSON.stringify(status.result)}\nrun result: ${diagnostic}\nimport errors: ${importErrors.join("\n")}\nworker files: ${workerFiles.map((file) => path.relative(workerRoot, file)).join("\n")}`);
+  assert.equal((status.result as { status: string }).status, repair ? "failed" : "succeeded", `${JSON.stringify(status.result)}\nrun result: ${diagnostic}\nimport errors: ${importErrors.join("\n")}\nworker files: ${workerFiles.map((file) => path.relative(workerRoot, file)).join("\n")}`);
   assert.equal(trial?.run_id, runId);
+  if (captureSource) {
+    const files = await regularFiles(path.join(controllerRoot, "evals", evalId, "harbor"));
+    const manifestFile = files.find(file => path.basename(file) === "verifier-source.json");
+    assert.ok(manifestFile, "controller must retain source evidence after worker release");
+    const source = JSON.parse(await readFile(manifestFile, "utf8"));
+    assert.equal(source.status, "available"); assert.equal(source.run_id, runId);
+    assert.equal(await readFile(path.join(path.dirname(manifestFile), "verifier-source/artifacts/patch.diff"), "utf8"), "original candidate patch\n");
+    assert.equal(source.source_result_digest, sha256JSON(JSON.parse(await readFile(path.join(path.dirname(manifestFile), "result.json"), "utf8"))));
+    const frozenRequest = JSON.parse(await readFile(path.join(controllerRoot, "evals", evalId, "request.json"), "utf8"));
+    assert.deepEqual(await verifyImportedRemoteVerifierSource({ root: controllerRoot, runId,
+      trialDirectory: path.dirname(manifestFile), taskDirectory: path.join(frozenRequest.dataset, "one") }), source);
+    assert.equal((await client.listOffers()).length, 0);
+  }
   const runDirectory = path.join(controllerRoot, "runs", runId);
   const ref = JSON.parse(await readFile(path.join(runDirectory, "interactions", "interaction.ref.json"), "utf8")) as {
     topology: string; completeness: string; interaction_count: number;
   };
   assert.equal(ref.topology, "in-sandbox");
   assert.equal(ref.completeness, "complete");
-  assert.equal(ref.interaction_count, 1);
+  assert.equal(ref.interaction_count, training ? 3 : 1);
+  assert.equal(generations, training ? 3 : 1);
+  if (training) {
+    assert.equal(boundRun, runId);
+    const manifest = JSON.parse(await readFile(path.join(runDirectory, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.training_external, trainingProxyIdentity(trainingBinding));
+  }
+  if (managed) {
+    assert.equal(acquisitions, 1); assert.equal(releases, 1);
+    const manifest = JSON.parse(await readFile(path.join(runDirectory, "manifest.json"), "utf8"));
+    assert.equal(manifest.model.inference_id, inferenceId); assert.deepEqual(manifest.model.model_node, modelNode);
+    assert.equal(manifest.model.effective_id, modelId);
+  }
+  if (mode.endsWith("recovery")) {
+    await verifyRemoteModelRecovery(controllerRoot, evalId, runId);
+    assert.equal(generations, training ? 3 : 1, "recovering acknowledged results must not call the model again");
+    if (captureSource) {
+      const files = await regularFiles(path.join(controllerRoot, "evals", evalId, "harbor"));
+      const sourceFile = files.find(file => path.basename(file) === "verifier-source.json")!;
+      const request = JSON.parse(await readFile(path.join(controllerRoot, "evals", evalId, "request.json"), "utf8"));
+      assert.equal((await verifyImportedRemoteVerifierSource({ root: controllerRoot, runId, trialDirectory: path.dirname(sourceFile),
+        taskDirectory: path.join(request.dataset, "one") })).status, "available");
+    }
+  }
+  await assert.rejects(admin.request(`/v1/evals/${evalId}/reruns`, {
+    method: "POST", body: JSON.stringify({ rerun_type: "verifier-only", selector: { mode: "invalid" } }),
+  }), (error: unknown) => (error as { code?: string }).code === (training ? "training_rerun_fenced" : "remote_rerun_unavailable"));
+  if (repair) {
+    const rerunId = `rerun_${"b".repeat(32)}`, repairedTrialId = "one__random-2";
+    const repairedRunId = `run_${sha256JSON({ evalId, trialId: repairedTrialId }).slice(7, 39)}`;
+    const bundle = path.join(controllerRoot, "capture-bundles", evalId);
+    await forceRemove(bundle);
+    await writeExportedBundle({ bundle, runId: repairedRunId, evalId, trialId: repairedTrialId, taskId: "one",
+      benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision,
+      ...(managed ? { managed: { inference_id: inferenceId, model_id: modelId, model_node: modelNode } } : {}),
+    });
+    await admin.request(`/v1/evals/${evalId}/reruns`, { method: "POST", body: JSON.stringify({ rerun_id: rerunId, selector: { mode: "invalid" } }) });
+    const repairAbort = new AbortController(); t.after(() => repairAbort.abort());
+    const repairWorker = new RemoteWorkerRunner({ client, capacity: TRIAL, execute: remoteHarborWorker(execution), once: true,
+      releaseUnknown: offer => releaseRemoteHarborOffer(execution, offer), signal: repairAbort.signal,
+      pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50 }).run();
+    const completed = await waitFor(async () => {
+      const current = await admin.request(`/v1/evals/${evalId}/reruns/${rerunId}`);
+      return ["completed", "failed", "cancelled"].includes(String((current.state as { status?: string }).status)) ? current : undefined;
+    }, 20_000);
+    if ((completed.state as { status: string }).status !== "completed") repairAbort.abort();
+    await repairWorker;
+    assert.equal((completed.state as { status: string }).status, "completed", JSON.stringify(completed));
+    assert.deepEqual((completed.result as { repaired_tasks: string[] }).repaired_tasks, ["one"]);
+    assert.equal((completed.result as { eval_status: string }).eval_status, "succeeded");
+    const progress = JSON.parse(await readFile(path.join(controllerRoot, "evals", evalId, "progress.json"), "utf8"));
+    assert.equal(progress.trials[0].run_id, repairedRunId);
+    const executionEvidence = JSON.parse(await readFile(path.join(controllerRoot, "runs", repairedRunId, "execution.json"), "utf8"));
+    assert.equal(executionEvidence.provider, "remote-docker"); assert.equal(executionEvidence.worker_id, registration.worker_id);
+    const initialExecution = JSON.parse(await readFile(path.join(runDirectory, "execution.json"), "utf8"));
+    assert.notEqual(executionEvidence.work_id, initialExecution.work_id); assert.notEqual(executionEvidence.lease_id, initialExecution.lease_id);
+    if (managed) { assert.deepEqual(scopes, [evalId, `${evalId}:${rerunId}`]); assert.equal(acquisitions, 2); assert.equal(releases, 2); }
+    if (managed) await verifyRemoteModelRecovery(controllerRoot, evalId, repairedRunId, { rerunId, prior: (status.result as { trials: EvalTrialRefV1[] }).trials[0]! });
+    await verifyRemoteRerunDaemonRecovery({ server, options: serverOptions, root: controllerRoot, evalId, rerunId,
+      prior: (status.result as { trials: EvalTrialRefV1[] }).trials[0]! });
+    if (managed) { assert.equal(acquisitions, 2, "completion recovery must not restart the model service"); assert.equal(releases, 2); }
+    assert.equal(generations, 2);
+  }
   await server.close();
   for (const root of [controllerRoot, workerRoot]) {
     for (const file of await regularFiles(root)) {
+      if ((managed || training) && root === controllerRoot && (file.includes(`${path.sep}model-routes${path.sep}`)
+        || file.includes(`${path.sep}training${path.sep}bindings${path.sep}`))) continue;
       assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `remote capture credential leaked into ${path.relative(root, file)}`);
     }
   }
@@ -228,100 +391,16 @@ async function regularFiles(directory: string): Promise<string[]> {
   return files;
 }
 
-async function writeResourceInspector(root: string): Promise<string> {
-  const executable = path.join(root, "fake-resource-inspector");
-  const declaration = {
-    schema_version: "1", task: {}, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }],
-    provider_sidecars: { main_egress: false, verifier_egress: false },
-    environment_images: [], environment_image_fallbacks: [], environment_builds: [],
-  };
-  await writeFile(executable, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(declaration))});\n`, { mode: 0o755 });
-  return executable;
-}
-
-async function writeEmptyDocker(root: string): Promise<string> {
-  const executable = path.join(root, "fake-empty-docker");
-  await writeFile(executable, `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args[0] === "version") process.stdout.write("27.4.0\\n");
-if (["container", "network", "volume"].includes(args[0]) && args[1] === "ls") process.stdout.write("");
-process.exit(0);
-`, { mode: 0o755 });
-  return executable;
-}
-
-async function writeCaptureHarbor(root: string): Promise<string> {
-  const executable = path.join(root, "fake-capture-harbor");
-  const source = `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-const args = process.argv.slice(2);
-if (args.includes("--version")) { process.stdout.write("harbor 0.21.0\\n"); process.exit(0); }
-const config = JSON.parse(fs.readFileSync(args[args.indexOf("--config") + 1], "utf8"));
-(async () => {
-  const capture = config.agents[0].kwargs.model_capture;
-  if (!capture || capture.topology !== "in-sandbox" || capture.required !== true) process.exit(3);
-  const evalId = config.agents[0].kwargs.eval_id;
-  const bundle = path.join(${JSON.stringify(path.join(root, "capture-bundles"))}, evalId);
-  const manifest = JSON.parse(fs.readFileSync(path.join(bundle, "manifest.json"), "utf8"));
-  const runId = manifest.run_id;
-  const local = (value) => value.replace("host.docker.internal", "127.0.0.1").replace("{run_id}", runId);
-  const health = await fetch(local(capture.health_url_template));
-  if (!health.ok) process.exit(4);
-  const response = await fetch(local(capture.base_url_template).replace("{provider}", "openai") + "/responses", {
-    method: "POST", headers: {authorization: "Bearer " + process.env.OPENAI_API_KEY, "content-type": "application/json"},
-    body: JSON.stringify({model:"remote-requested",input:"credential=" + process.env.OPENAI_API_KEY}),
-  });
-  if (!response.ok) process.exit(5);
-  const output = path.join(config.jobs_dir, config.job_name);
-  const trialId = "one__random-1";
-  const trialDirectory = path.join(output, trialId);
-  fs.mkdirSync(path.join(trialDirectory, "agent"), {recursive:true});
-  fs.writeFileSync(path.join(trialDirectory, "lock.json"), JSON.stringify({task:{name:"one"}}));
-  fs.cpSync(bundle, path.join(trialDirectory, "agent", "hitch-run-bundle"), {recursive:true});
-  fs.writeFileSync(path.join(trialDirectory, "result.json"), JSON.stringify({task_name:"one",trial_name:trialId,verifier_result:{rewards:{reward:1}}}));
-  fs.writeFileSync(path.join(output, "result.json"), JSON.stringify({n_total_trials:1,stats:{n_completed_trials:1,n_errored_trials:0,n_cancelled_trials:0}}));
-  process.stdout.write("Results written\\n");
-})().catch((error) => { process.stderr.write(String(error)); process.exit(6); });
-`;
-  await writeFile(executable, source, { mode: 0o755 });
-  return executable;
-}
-
-async function writeExportedBundle(options: {
-  bundle: string; runId: string; evalId: string; trialId: string; taskId: string; benchmarkId: string; benchmarkRevision: string;
-}): Promise<void> {
-  await mkdir(options.bundle, { recursive: true });
-  const projector = new TrajectoryProjector({ runId: options.runId, cwd: "/app", prompt: "complete", model: "openai/remote", fidelity: "normalized" });
-  projector.feed({ type: "message.completed", text: "done" });
-  const projected = projector.finalize("succeeded");
-  const writer = await TrajectoryWriter.open({ runDirectory: options.bundle, cwd: "/app", sessionId: projected.header.id, fidelity: "normalized", header: projected.header });
-  for (const event of projected.events) writer.append(event);
-  const trajectory = await writer.close();
-  await atomicWriteJSON(path.join(options.bundle, "trajectory.ref.json"), trajectoryRefV2({
-    runId: options.runId, fidelity: "normalized", files: [await canonicalTrajectoryFileRef(options.bundle, trajectory)],
-  }));
-  await atomicWriteJSON(path.join(options.bundle, "request.json"), { cwd: "/app" });
-  await atomicWriteJSON(path.join(options.bundle, "resolution.json"), { schema_version: "1" });
-  await atomicWriteJSON(path.join(options.bundle, "result.json"), { schema_version: "1", run_id: options.runId, status: "succeeded", exit_code: 0 });
-  await writeFile(path.join(options.bundle, "events.jsonl"), `${JSON.stringify({ type: "run.completed" })}\n`);
-  const now = new Date().toISOString();
-  await atomicWriteJSON(path.join(options.bundle, "manifest.json"), {
-    schema_version: "1", run_id: options.runId,
-    context: {
-      kind: "benchmark_task", benchmark_id: options.benchmarkId, benchmark_revision: options.benchmarkRevision, task_id: options.taskId,
-      task_digest: benchmarkTaskDigest(options.benchmarkId, options.benchmarkRevision, options.taskId),
-      verifier_identity: benchmarkVerifierIdentity(options.benchmarkId, options.benchmarkRevision),
-    },
-    parent: { kind: "eval", eval_id: options.evalId, trial_id: options.trialId, attempt: 1 },
-    status: "succeeded", harness: { harness_id: "codex", requested_ref: "codex@version:1.2.3", revision_identity: `sha256:${"a".repeat(64)}` },
-    model: { provider: "openai", requested_id: "openai/remote", effective_id: "openai/remote", identity_resolved: false },
-    protocol: { timeout_ms: 0, workspace_mode: "shared" }, request_ref: "request.json", resolution_ref: "resolution.json",
-    result_ref: "result.json", trajectory_ref: "trajectory.ref.json", created_at: now, completed_at: now, sealed: false,
-  });
-  await atomicWriteJSON(path.join(options.bundle, "bundle.complete.json"), {
-    schema_version: "1", run_id: options.runId, eval_id: options.evalId, trial_id: options.trialId, completed_at: now,
-  });
+async function trainingHarnessRef(root: string): Promise<string> {
+  const source = path.join(root, "training-source");
+  await mkdir(path.join(source, "integrations/training-tool"), { recursive: true });
+  await writeFile(path.join(source, "integrations/training-tool/cli.js"), await readFile("integrations/training-tool/cli.js"), { mode: 0o755 });
+  await writeFile(path.join(source, "package.json"), '{"type":"module"}');
+  for (const args of [["init"], ["add", "."], ["-c", "user.name=Hitch Test", "-c", "user.email=test@hitch.invalid", "commit", "-m", "training fixture"]]) {
+    await runCommand("git", args, { cwd: source });
+  }
+  const result = await runCommand("git", ["rev-parse", "HEAD"], { cwd: source });
+  return `training-tool@git+${pathToFileURL(source).href}#${result.stdout.trim()}`;
 }
 
 async function serverUrl(server: Server): Promise<string> {

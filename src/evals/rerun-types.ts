@@ -1,5 +1,5 @@
 import type { RerunSelector } from "./rerun-slots.js";
-import type { ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
+import type { ManagedInferenceCoordinator, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import type { EvalHarborArtifactBuilder } from "./harbor-artifact-builder.js";
 import { HitchError, invalidInput } from "../foundation/index.js";
 
@@ -38,6 +38,11 @@ export interface RerunEvalOptions {
   environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
   modelCapturePlan?: ModelCapturePlanV1;
   harborArtifactBuilder?: EvalHarborArtifactBuilder;
+  inferenceCoordinator?: ManagedInferenceCoordinator;
+  remoteWorkExecutor?: import("./service-types.js").EvalRemoteWorkExecutor;
+  executionWorker?: import("./execution-leases.js").ExecutionWorkerIdentity;
+  /** Internal: daemon has reconciled the original remote leases before resuming. */
+  resumeRemoteRerun?: boolean;
 }
 
 export interface EvalRerunResult {

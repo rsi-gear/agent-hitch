@@ -1,5 +1,6 @@
 import { cp, lstat, readdir, rename } from "node:fs/promises";
 import path from "node:path";
+import { stageRemoteRerunCompletion } from "./rerun-completion.js";
 import type { EvalRequest, ModelCapturePlanV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, readJSON } from "../foundation/index.js";
 import { logicalPlanModelCapture, readEvalLogicalPlan } from "./eval-logical-plan.js";
@@ -78,6 +79,9 @@ export async function restartIncompleteEval(
       ...(options.environmentBuildMode ? { environmentBuildMode: options.environmentBuildMode } : {}),
       modelCapturePlan,
       ...(options.harborArtifactBuilder ? { harborArtifactBuilder: options.harborArtifactBuilder } : {}),
+      ...(options.inferenceCoordinator ? { inferenceCoordinator: options.inferenceCoordinator, inferenceRerunId: options.rerunId } : {}),
+      ...(options.remoteWorkExecutor ? { remoteWorkExecutor: options.remoteWorkExecutor } : {}),
+      ...(options.executionWorker ? { executionWorker: options.executionWorker } : {}),
     });
     if (restarted.status === "cancelled") {
       throw new HitchError("eval rerun was aborted", { code: "eval_rerun_aborted", exitCode: 9 });
@@ -121,6 +125,7 @@ export async function restartIncompleteEval(
       started_at: startedAt,
       completed_at: completedAt,
     };
+    if (options.executionWorker && options.executionWorker.provider !== "local-docker") await stageRemoteRerunCompletion(options.evalDirectory, rerunDirectory, output);
     await writeState(statePath, options, startedAt, "completed", selectedTasks, selectedTrials, repairedTasks, repairedTrials, {
       completedAt,
       evalStatus: output.eval_status,

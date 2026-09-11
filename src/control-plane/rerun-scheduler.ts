@@ -1,22 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { EvalExecutionPolicyV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
+import type { EvalExecutionPolicyV1, EvalId, EvalRequest, ManagedInferenceCoordinator, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
 import {
   assertEvalRerunTypeSupported,
+  acknowledgeRemoteRerunCompletion,
+  assertRemoteRerunQuiescent,
+  readRemoteRerunCompletion,
   evalRerunSemantics,
   rerunEval,
   validateEvalId,
-  parseEvalExecutionPlan,
 } from "../evals/index.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions, RerunSelector } from "../evals/index.js";
 import { EvalEventSink } from "../evals/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, hitchRootId, readJSON, safeDiagnosticMessage, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, credentialValuesFromEnv, ensureDir, hitchRootId, readJSON, safeDiagnosticMessage, sha256JSON, statePaths } from "../foundation/index.js";
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
-import { defaultEvalExecutionPolicy, evalCollisionKeys, isTerminalControl, parseEvalControl, parseEvalSubmission } from "./eval-records.js";
+import { evalCollisionKeys, parseEvalControl } from "./eval-records.js";
 import { localProviderStatusSnapshot } from "./local-worker.js";
-import { modelCapturePlanForEval } from "./model-capture-planning.js";
+import { loadRerunSource } from "./rerun-source.js";
+import { assertRerunStateIdentity, recoverPersistedReruns } from "./rerun-recovery.js";
+import type { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
 import { ResourceLedger, scaleResources, zeroResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
 
@@ -43,6 +47,8 @@ export interface EvalRerunSchedulerOptions {
   onEvent?: (event: Record<string, unknown>) => void;
   credentialEnv?: NodeJS.ProcessEnv;
   provider?: string;
+  inferenceCoordinator?: ManagedInferenceCoordinator;
+  remoteWork?: RemoteWorkCoordinator;
 }
 
 export interface EvalRerunStatus {
@@ -62,6 +68,7 @@ interface QueuedRerun {
   modelCapturePlan?: ModelCapturePlanV1;
   directory: string;
   collisionKeys: string[];
+  resumeRemoteRerun?: boolean;
 }
 
 interface ActiveRerun {
@@ -82,6 +89,8 @@ export class EvalRerunScheduler {
   private readonly executor: EvalRerunExecutor;
   private readonly onEvent: (event: Record<string, unknown>) => void;
   private readonly credentialEnv: NodeJS.ProcessEnv;
+  private readonly inferenceCoordinator: ManagedInferenceCoordinator | undefined;
+  private readonly remoteWork: RemoteWorkCoordinator | undefined;
   private readonly unsubscribeResources: () => void;
   private readonly unsubscribeCollisions: () => void;
   private readonly queue: QueuedRerun[] = [];
@@ -91,7 +100,7 @@ export class EvalRerunScheduler {
   private accepting = true;
   private draining = false;
 
-  constructor({ root, resources, trialResources, collisions = new CollisionLockManager(), collisionDomainId = "local-docker", provider = "local-docker", executor = rerunEval, onEvent = () => {}, credentialEnv = process.env }: EvalRerunSchedulerOptions) {
+  constructor({ root, resources, trialResources, collisions = new CollisionLockManager(), collisionDomainId = "local-docker", provider = "local-docker", executor = rerunEval, onEvent = () => {}, credentialEnv = process.env, inferenceCoordinator, remoteWork }: EvalRerunSchedulerOptions) {
     this.root = root;
     this.rerunsRoot = statePaths(root).evals;
     this.resources = resources;
@@ -103,6 +112,8 @@ export class EvalRerunScheduler {
     this.executor = executor;
     this.onEvent = onEvent;
     this.credentialEnv = credentialEnv;
+    this.inferenceCoordinator = inferenceCoordinator;
+    this.remoteWork = remoteWork;
     this.unsubscribeResources = resources.subscribe(() => this.scheduleDrain());
     this.unsubscribeCollisions = collisions.subscribe(() => this.scheduleDrain());
   }
@@ -138,7 +149,7 @@ export class EvalRerunScheduler {
 
   private async submitNew(evalId: EvalId, rerunId: string, input: ParsedRerunInput): Promise<{ evalId: EvalId; rerunId: string; rerunType: EvalRerunType }> {
     const source = await this.loadSource(evalId, input.rerun_type);
-    if (!this.resources.canEverFit(rerunResourceUnit(input.rerun_type, source.execution.resources.default_trial))) {
+    if (!this.resources.canEverFit(rerunResourceUnit(input.rerun_type, source.execution.resources.default_trial, source.execution.provider !== this.provider))) {
       throw new HitchError("one rerun trial exceeds the daemon resource capacity", { code: "resource_request_unsatisfiable", exitCode: 10 });
     }
     const directory = path.join(this.rerunsRoot, evalId, "reruns", rerunId);
@@ -193,6 +204,9 @@ export class EvalRerunScheduler {
       this.active.get(key)?.controller.abort();
       await this.completions.get(key);
       const state = await readJSON<Record<string, unknown> | null>(path.join(directory, "state.json"), null);
+      if (state?.status === "failed" && (state.error as { code?: string })?.code === "execution_state_ambiguous") {
+        throw new HitchError("cannot prove interrupted rerun execution has stopped", { code: "execution_state_ambiguous", exitCode: 12 });
+      }
       if (state && state.status !== "completed" && state.status !== "failed" && state.status !== "cancelled") {
         await atomicWriteJSON(path.join(directory, "state.json"), { ...state, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() });
       }
@@ -280,8 +294,9 @@ export class EvalRerunScheduler {
   private selectRunnable(): { index: number; parallelism: number; resources: ResourceLease; collisions: CollisionLease } | null {
     for (let index = 0; index < this.queue.length; index += 1) {
       const entry = this.queue[index] as QueuedRerun;
-      const unit = rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial);
-      const parallelism = entry.rerunType === "collect-only" ? 1 : this.resources.maximumUnits(unit, entry.execution.max_parallelism);
+      const remote = entry.execution.provider !== this.provider;
+      const unit = rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial, remote);
+      const parallelism = entry.rerunType === "collect-only" ? 1 : remote ? entry.execution.max_parallelism : this.resources.maximumUnits(unit, entry.execution.max_parallelism);
       if (parallelism < 1) continue;
       const collisions = this.collisions.tryAcquire(operationKey(entry.evalId, entry.rerunId), entry.collisionKeys);
       if (!collisions) continue;
@@ -297,7 +312,13 @@ export class EvalRerunScheduler {
     const key = operationKey(entry.evalId, entry.rerunId);
     this.active.set(key, { controller, resources, collisions });
     const completion = this.execute(entry, parallelism, resources, controller)
-      .catch((error) => this.fail(entry, errorCode(error), safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.pass_env, this.credentialEnv)), controller.signal.aborted ? "cancelled" : "failed"))
+      .catch(async error => {
+        if (entry.execution.provider !== this.provider) {
+          try { await assertRemoteRerunQuiescent(path.join(this.rerunsRoot, entry.evalId), entry.execution.provider); }
+          catch { await this.fail(entry, "execution_state_ambiguous", "remote rerun stopped without confirmed worker cleanup"); return; }
+        }
+        await this.fail(entry, errorCode(error), safeDiagnosticMessage(error, credentialValuesFromEnv(entry.request.pass_env, this.credentialEnv)), controller.signal.aborted ? "cancelled" : "failed");
+      })
       .finally(() => {
         this.active.delete(key);
         this.completions.delete(key);
@@ -332,28 +353,41 @@ export class EvalRerunScheduler {
       ...(entry.modelCapturePlan ? { modelCapturePlan: entry.modelCapturePlan } : {}),
       env: this.credentialEnv,
       signal: controller.signal,
+      ...(entry.resumeRemoteRerun ? { resumeRemoteRerun: true } : {}),
+      ...(this.inferenceCoordinator ? { inferenceCoordinator: this.inferenceCoordinator } : {}),
+      ...(entry.execution.provider !== this.provider && this.remoteWork ? {
+        remoteWorkExecutor: this.remoteWork.execute,
+        executionWorker: { workerId: "worker_remote_pool", provider: entry.execution.provider, collisionDomainId: `remote-pool:${entry.execution.provider}` },
+      } : {}),
     });
-    controller.signal.throwIfAborted();
+    if (controller.signal.aborted && !await readRemoteRerunCompletion(entry.directory, entry.evalId, entry.rerunId)) controller.signal.throwIfAborted();
+    await this.complete(entry, result);
+  }
+
+  private async complete(entry: Pick<QueuedRerun, "evalId" | "rerunId" | "directory" | "rerunType">, result: EvalRerunResult, sourceDigest?: string): Promise<void> {
     await atomicWriteJSON(path.join(entry.directory, "result.json"), result);
-    await this.synchronizeSourceControl(entry.evalId, result);
-    await this.mergeState(entry, { status: "completed", completed_at: result.completed_at });
+    const source = await readJSON(path.join(this.rerunsRoot, entry.evalId, "result.json"), null);
+    if (!sourceDigest || sourceDigest === sha256JSON(source)) await this.synchronizeSourceControl(entry.evalId, result);
+    const current = await readJSON<Record<string, unknown>>(path.join(entry.directory, "state.json"));
+    if (current.status !== "completed" || current.completed_at !== result.completed_at) await this.mergeState(entry, { status: "completed", completed_at: result.completed_at });
+    await acknowledgeRemoteRerunCompletion(entry.directory, result);
     await this.emit(entry, { type: "eval.rerun.completed", rerun_type: entry.rerunType, eval_status: result.eval_status });
   }
 
-  private async fail(entry: QueuedRerun, code: string, message: string, status: "failed" | "cancelled" = "failed"): Promise<void> {
+  private async fail(entry: Pick<QueuedRerun, "evalId" | "rerunId" | "directory" | "rerunType">, code: string, message: string, status: "failed" | "cancelled" = "failed"): Promise<void> {
     const completedAt = new Date().toISOString();
     await this.mergeState(entry, { status, error: { code, message }, completed_at: completedAt });
     await this.emit(entry, { type: `eval.rerun.${status}`, rerun_type: entry.rerunType, code });
   }
 
-  private async mergeState(entry: QueuedRerun, patch: Record<string, unknown>): Promise<void> {
+  private async mergeState(entry: Pick<QueuedRerun, "evalId" | "rerunId" | "directory">, patch: Record<string, unknown>): Promise<void> {
     const state = await readJSON<Record<string, unknown>>(path.join(entry.directory, "state.json"));
     assertRerunStateIdentity(state, entry.evalId, entry.rerunId);
     const { allocation_id: _allocationId, admitted_parallelism: _admitted, ...base } = state;
     await atomicWriteJSON(path.join(entry.directory, "state.json"), { ...base, ...patch, updated_at: new Date().toISOString() });
   }
 
-  private async emit(entry: QueuedRerun, event: Record<string, unknown>): Promise<void> {
+  private async emit(entry: Pick<QueuedRerun, "evalId" | "rerunId" | "directory">, event: Record<string, unknown>): Promise<void> {
     const sink = new EvalEventSink(entry.directory, entry.evalId, this.onEvent);
     await sink.open();
     sink.emit({ ...event, rerun_id: entry.rerunId });
@@ -375,46 +409,17 @@ export class EvalRerunScheduler {
       generation: current.generation + 1,
       updated_at: new Date().toISOString(),
     });
+    const stable = ({ generation: _generation, updated_at: _updated, ...rest }: typeof next) => rest;
+    if (sha256JSON(stable(current)) === sha256JSON(stable(next))) return;
     await atomicWriteJSON(file, next);
   }
 
-  private async loadSource(evalId: EvalId, rerunType: EvalRerunType): Promise<{ request: EvalRequest; execution: EvalExecutionPolicyV1; modelCapturePlan?: ModelCapturePlanV1 }> {
-    const directory = path.join(this.rerunsRoot, evalId);
-    const submissionValue = await readJSON<unknown | null>(path.join(directory, "submission.json"), null);
-    const controlValue = await readJSON<unknown | null>(path.join(directory, "control.json"), null);
-    if (!submissionValue || !controlValue) throw new HitchError(`eval not found: ${evalId}`, { code: "eval_not_found", exitCode: 3 });
-    const submission = await parseEvalSubmission(submissionValue, evalId);
-    const control = parseEvalControl(controlValue);
-    if (control.eval_id !== evalId) throw new TypeError("eval control identity does not match its directory");
-    const result = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
-    if (!isTerminalControl(control.state) || !result) {
-      throw new HitchError("eval rerun requires a terminal source eval", { code: "eval_rerun_source_not_terminal", exitCode: 12 });
-    }
-    if (control.state === "cancelled" || result.status === "cancelled") {
-      throw new HitchError("cancelled eval cannot be rerun", { code: "eval_rerun_cancelled", exitCode: 12 });
-    }
-    let execution = submission.execution || defaultEvalExecutionPolicy(submission.request, {
-      provider: this.provider,
-      trialResources: this.trialResources,
-      buildMode: "backend",
+  private async loadSource(evalId: EvalId, rerunType: EvalRerunType) {
+    return loadRerunSource({ root: this.root, evalId, rerunType, localProvider: this.provider, trialResources: this.trialResources,
+      localStatus: localProviderStatusSnapshot({ workerId: this.workerId, provider: this.provider,
+        collisionDomainId: this.collisionDomainId, accepting: this.accepting, resources: this.resources }),
+      ...(this.remoteWork ? { remoteWork: this.remoteWork } : {}),
     });
-    if (rerunType === "verifier-only") {
-      const plan = parseEvalExecutionPlan(await readJSON(path.join(directory, "execution-plan.json")));
-      const upper = { ...execution.resources.default_trial };
-      for (const item of plan.work_items) for (const key of Object.keys(item.reservation) as Array<keyof ResourceVectorV1>) upper[key] = Math.max(upper[key] ?? 0, item.reservation[key] ?? 0);
-      // Artifact regrades run serially and preserve the source resource limits.
-      execution = { ...execution, max_parallelism: 1, resources: { ...execution.resources, default_trial: upper } };
-    }
-    const modelCapturePlan = execution.provider === this.provider
-      ? modelCapturePlanForEval(submission.request, execution, localProviderStatusSnapshot({
-        workerId: this.workerId,
-        provider: this.provider,
-        collisionDomainId: this.collisionDomainId,
-        accepting: this.accepting,
-        resources: this.resources,
-      }))
-      : undefined;
-    return { request: submission.request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}) };
   }
 
   private async queuedEntry(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, selector: RerunSelector, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string): Promise<QueuedRerun> {
@@ -427,38 +432,24 @@ export class EvalRerunScheduler {
       execution,
       ...(modelCapturePlan ? { modelCapturePlan } : {}),
       directory,
-      collisionKeys: rerunType === "collect-only" ? [] : await evalCollisionKeys(request, this.collisionDomainId),
+      collisionKeys: [`eval-rerun:${evalId}`, ...(rerunType === "collect-only" || execution.provider !== this.provider ? [] : await evalCollisionKeys(request, this.collisionDomainId))],
     };
   }
 
   private async recoverInterrupted(): Promise<void> {
-    for (const evalEntry of await readdir(this.rerunsRoot, { withFileTypes: true })) {
-      if (!evalEntry.isDirectory() || !/^eval_[a-f0-9]{32}$/.test(evalEntry.name)) continue;
-      const reruns = path.join(this.rerunsRoot, evalEntry.name, "reruns");
-      let entries;
-      try { entries = await readdir(reruns, { withFileTypes: true }); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory() || !/^rerun_[a-f0-9]{32}$/.test(entry.name)) continue;
-        const directory = path.join(reruns, entry.name);
-        const state = await readJSON<Record<string, unknown> | null>(path.join(directory, "state.json"), null);
-        const submission = await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null);
-        if (!state || !submission || !new Set(["queued", "running"]).has(String(state.status))) continue;
-        const parsed = parsePersistedSubmission(submission, evalEntry.name as EvalId, entry.name);
-        assertRerunStateIdentity(state, evalEntry.name as EvalId, entry.name);
-        if (state.status === "queued" && await readJSON(path.join(directory, "cancellation.json"), null)) {
-          await atomicWriteJSON(path.join(directory, "state.json"), { ...state, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() });
-          continue;
-        }
-        const source = await this.loadSource(evalEntry.name as EvalId, parsed.rerun_type);
-        const queued = await this.queuedEntry(evalEntry.name as EvalId, entry.name, parsed.rerun_type, parsed.selector, source.request, source.execution, source.modelCapturePlan, directory);
+    await recoverPersistedReruns({ root: this.root, rerunsRoot: this.rerunsRoot, localProvider: this.provider,
+      ...(this.remoteWork ? { remoteWork: this.remoteWork } : {}),
+      loadSource: (evalId, type) => this.loadSource(evalId, type), onEvent: this.onEvent,
+      fail: (identity, code, message) => this.fail(identity, code, message),
+      complete: (identity, result, sourceDigest) => this.complete(identity, result, sourceDigest),
+      enqueue: async (identity, parsed, source, resume) => {
+        const queued = await this.queuedEntry(identity.evalId, identity.rerunId, parsed.rerun_type, parsed.selector,
+          source.request, source.execution, source.modelCapturePlan, identity.directory);
         if (parsed.verifier_runtime_id) queued.verifierRuntimeId = parsed.verifier_runtime_id;
-        if (state.status === "queued") this.queue.push(queued);
-        else await this.fail(queued, "execution_state_ambiguous", "daemon restarted while rerun execution state was ambiguous");
-      }
-    }
+        if (resume) queued.resumeRemoteRerun = true;
+        this.queue.push(queued);
+      },
+    });
   }
 }
 
@@ -479,17 +470,10 @@ function queuedState(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, 
   };
 }
 
-function assertRerunStateIdentity(state: Record<string, unknown>, evalId: EvalId, rerunId: string): void {
-  if (state.schema_version !== "1" || state.eval_id !== evalId || state.rerun_id !== rerunId
-    || typeof state.status !== "string" || !new Set(["queued", "running", "completed", "failed", "cancelled"]).has(state.status)) {
-    throw new TypeError("eval rerun state identity is invalid");
-  }
-}
-
 function errorCode(error: unknown): string {
   return error instanceof HitchError ? error.code : "eval_rerun_failed";
 }
 
-function rerunResourceUnit(type: EvalRerunType, trialResources: ResourceVectorV1): ResourceVectorV1 {
-  return type === "collect-only" ? zeroResources() : trialResources;
+function rerunResourceUnit(type: EvalRerunType, trialResources: ResourceVectorV1, remote = false): ResourceVectorV1 {
+  return type === "collect-only" || remote ? zeroResources() : trialResources;
 }

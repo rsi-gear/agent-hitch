@@ -404,3 +404,14 @@ export function validateControllerRuntimeManifest(value: unknown): ControllerRun
     created_at: createdAt,
   };
 }
+
+/** Frozen model identity shared by plans, routes and canonical run records. */
+export function parseModelNodeBinding(value: unknown): import("./inference.js").ModelNodeBindingV2 {
+  const record = asRecord(value, "model node binding");
+  assertExactFields(record, ["schema_version", "node_id", "generation", "runtime_digest", "launcher"], "model node binding");
+  if (record.schema_version !== "2" || record.launcher !== "process"
+    || typeof record.node_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(record.node_id)
+    || typeof record.generation !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(record.generation)) throw new TypeError("invalid model node identity");
+  return { schema_version: "2", node_id: record.node_id, generation: record.generation,
+    runtime_digest: asSha256(record.runtime_digest, "model node runtime"), launcher: "process" };
+}

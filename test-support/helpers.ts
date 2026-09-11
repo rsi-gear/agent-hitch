@@ -6,6 +6,15 @@ import type { EvalHarborArtifactBuilder } from "../src/evals/index.js";
 
 export const prepareHostHarborArtifactForTest: EvalHarborArtifactBuilder = prepareHostArtifact;
 
+export function safetensorsFixture(): Buffer {
+  const rawHeader = Buffer.from(JSON.stringify({ weight: { dtype: "F32", shape: [1], data_offsets: [0, 4] } }));
+  const padding = (8 - rawHeader.length % 8) % 8;
+  const header = Buffer.concat([rawHeader, Buffer.alloc(padding, 0x20)]);
+  const prefix = Buffer.alloc(8);
+  prefix.writeBigUInt64LE(BigInt(header.length));
+  return Buffer.concat([prefix, header, Buffer.alloc(4)]);
+}
+
 /**
  * Remove a tree even when it contains read-only controller runtime bundles
  * (spec §4.5 makes promoted payloads 0555/0444; plain `rm -rf` then fails to
@@ -228,17 +237,22 @@ process.exit(2);
 }
 
 export async function writeFakeHarbor(directory: string, {
+  version = "0.1.0",
   delayMs = 0,
   candidateStartDelayMs = 0,
   postResultDelayMs = 0,
   activityLog,
   leakEnvName,
+  pythonBytecodeLog,
   pythonPathLog,
 }: {
+  version?: string;
   delayMs?: number;
   candidateStartDelayMs?: number;
   postResultDelayMs?: number;
   activityLog?: string;
+  /** Test-only: persist the inherited bytecode-write setting. */
+  pythonBytecodeLog?: string;
   /** Test-only: persist the inherited PYTHONPATH used to import Harbor plugins. */
   pythonPathLog?: string;
   /** Test-only: print one inherited value so callers can verify host log redaction. */
@@ -250,7 +264,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
-  process.stdout.write("harbor 0.1.0\\n");
+  process.stdout.write("harbor ${version}\\n");
   process.exit(0);
 }
 const configIndex = args.indexOf("--config");
@@ -261,6 +275,8 @@ if (args[0] !== "run" || configIndex < 0 || !args.includes("--yes")) {
 const config = JSON.parse(fs.readFileSync(args[configIndex + 1], "utf8"));
 const pythonPathLog = ${pythonPathLog === undefined ? "null" : JSON.stringify(pythonPathLog)};
 if (pythonPathLog) fs.writeFileSync(pythonPathLog, process.env.PYTHONPATH || "");
+const pythonBytecodeLog = ${pythonBytecodeLog === undefined ? "null" : JSON.stringify(pythonBytecodeLog)};
+if (pythonBytecodeLog) fs.writeFileSync(pythonBytecodeLog, process.env.PYTHONDONTWRITEBYTECODE || "");
 const leakEnvName = ${leakEnvName === undefined ? "null" : JSON.stringify(leakEnvName)};
 if (leakEnvName) {
   process.stdout.write("inherited=" + (process.env[leakEnvName] || "") + "\\n");

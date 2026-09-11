@@ -1,4 +1,4 @@
-import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalExecutionPlanV1, EvalId, EvalRequest, EvalTrialRefV1, InteractionCaptureRefV1, ModelCapturePlanV1, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1, Sha256 } from "../domain/index.js";
+import type { BackendWorkItemV1, EnvironmentImageManifestV1, EvalExecutionPlanV1, EvalId, EvalRequest, EvalTrialRefV1, InteractionCaptureRefV1, ManagedInferenceCoordinator, ModelCapturePlanV1, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1, Sha256 } from "../domain/index.js";
 import type { HarborBackendResult, HarborPreparedArtifactUse } from "../backends/index.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
 import type { DockerReaperReportV1 } from "./docker-reaper.js";
@@ -13,6 +13,8 @@ export type EvalDockerResourceReaper = (input: {
 }) => Promise<DockerReaperReportV1>;
 
 export interface RunEvalOptions {
+  /** A preparation repair owns a separate immutable inference service scope. */
+  inferenceRerunId?: string;
   evalId?: EvalId;
   request: EvalRequestInput;
   root: string;
@@ -45,6 +47,7 @@ export interface RunEvalOptions {
   environmentImageManifestLoader?: EvalEnvironmentImageManifestLoader;
   harborArtifactBuilder?: EvalHarborArtifactBuilder;
   remoteWorkExecutor?: EvalRemoteWorkExecutor;
+  inferenceCoordinator?: ManagedInferenceCoordinator;
 }
 
 export type EvalEnvironmentImageManifestLoader = (imageId: Sha256) => Promise<EnvironmentImageManifestV1>;
@@ -107,9 +110,13 @@ export interface EvalRemoteWorkExecutionResult {
   leaseId: string;
   refs: EvalTrialRefV1[];
   run: HarborBackendResult;
+  assessments?: Array<{ id: string; digest: string }>;
 }
 
 export type EvalRemoteWorkExecutor = (input: {
+  physicalExecution?: import("../domain/index.js").RemotePhysicalExecutionV2;
+  verifierOnly?: { descriptor: import("../domain/index.js").RemoteVerifierWorkV2; sourceSnapshotDirectory: string; verifierRuntimeDirectory: string };
+  modelTarget?: import("../model-access/index.js").RemoteModelTargetV2;
   evalId: EvalId;
   evalDirectory: string;
   root: string;

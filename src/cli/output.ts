@@ -81,7 +81,21 @@ Usage:
   hitch inspect <harness> [--json]
   hitch resolve <harness-ref> [--json]
   hitch prepare <harness-ref> [--json]
-  hitch run --harness <ref> [--model <id>] [--context-file <json>] [--workspace-mode <mode>] --prompt <text> [--daemon]
+  hitch models add <checkpoint-directory> --name <name> [--force] [--json]
+  hitch models add-node <snapshot-ref.json> --model-node-file <binding.json> --name <name> [--force] [--json]
+  hitch models inspect local/<name> [--verify] [--json]
+  hitch models gc [--dry-run | --apply] [--json]
+  hitch model-node register --file <connection.json> [--json]
+  hitch model-node inspect --file <binding.json> [--json]
+  hitch model-node recover-service <service-id> --file <current-binding.json> [--json]
+  hitch local plan local/<name> --harness <immutable-ref> --gpu <GPU-UUID> [--model-node-file <binding.json>] [--offline] [--json]
+  hitch local inspect <inference-digest> [--json]
+  hitch local inspect-service <model-node-service-id> [--json]
+  hitch local prepare local/<name> [--device auto|cpu|cuda] [--profile baseline|throughput] [--inference <digest> --model-node-file <binding.json>] [--offline] [--json]
+  hitch local doctor [--device auto|cpu|cuda] [--json]
+  hitch local status [--json]
+  hitch local stop [<service-id>] [--force]
+  hitch run --harness <ref> [--model <id>] [--device auto|cpu|cuda] [--local-profile baseline|throughput] [--offline] [--context-file <json>] [--workspace-mode <mode>] --prompt <text> [--daemon]
   hitch runs list [filters] [--json]
   hitch runs inspect <run-id> [--json]
   hitch runs rebuild-index [--json]
@@ -89,12 +103,13 @@ Usage:
   hitch compare model|harness [filters] [--reference-run <run-id>] [--json]
   hitch eval setup harbor [--version <version>] [--python <path>] [--force] [--json]
   hitch eval doctor [--harbor <path>] [--python <path>] [--docker <path>] [--json]
-  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>] [execution policy]
+  hitch eval run [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--device auto|cpu|cuda] [--local-profile baseline|throughput] [--offline] [--attempts <n>] [--infrastructure-retries <n>] [--eval-id <eval-id>] [--daemon] [--idempotency-key <key>] [execution policy]
   hitch benchmark validate --package <directory>
   hitch benchmark lock --package <directory> [--out <benchmark.lock.json>]
   hitch benchmark compile --package <directory> --out <harbor-dataset>
   hitch eval run --benchmark <directory> | --benchmark-lock <file> --harness <immutable-ref> [--model <id>]
   hitch eval submit [--backend harbor] --dataset <ref> --harness <immutable-ref> [--model <id>] [--idempotency-key <key>] [execution policy]
+    managed model node: --model local/<name> --inference <digest> --model-node-file <binding.json>
     execution policy: [--provider <id>] [--cpu-per-trial <integer-cpus>] [--memory-per-trial <size>]
       [--build-mode backend|prebuild-preferred|prebuild-required]
       [--model-capture off|native|proxy|hybrid] [--require-model-capture]
@@ -114,6 +129,9 @@ Usage:
   hitch verifier inspect <run-id> [--json]
   hitch trajectory project <run-id> [--profile analysis] [--max-bytes <bytes>] [--json]
   hitch trajectory events <run-id> [--types <a,b>] [--seq-start <n>] [--seq-end <n>] [--field <path>] [--canonical-sha256 <digest>] [--limit <n>] [--cursor <opaque>] [--max-bytes <bytes>] [--json]
+  hitch training register --file <PATH|->
+  hitch training runtime [--json]
+  hitch training evidence <run-id> [--json]
   hitch capabilities [--json]
   hitch feedback list <run-id> [--json]
   hitch feedback put <run-id> --message <id> --rating positive|negative [--note <text>] [--if-version <v>] [--json]
@@ -128,11 +146,15 @@ Usage:
   hitch daemon stop | status [--json] | logs [-n <lines>]
   hitch daemon submit --harness <ref> --prompt <text> [--workspace-mode <mode>] [--wait]
   hitch daemon cancel <run-id>
+  hitch worker list [--json]
+  hitch worker observe PROVIDER [--nonce HEX] [--json]
   hitch worker register --server <url> --registration <json> --admin-token-file <file> --credential-file <file>
   hitch worker run --server <url> --registration <json> --credential-file <file> [--harbor <path>] [--docker <path>] [--once]
 
 Eval:
   Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.
+  A local/<name> model automatically starts the root daemon and a managed SGLang service;
+  --device defaults to auto, so the common path needs no setup or daemon command.
   Rerun type candidate-restart is supported and is the compatibility default.
   collect-only imports an already-finished Harbor result without executing Candidate. candidate-resume, trajectory-replay, and verifier-only fail explicitly until their recovery prerequisites exist.
   Use 'hitch eval setup harbor' for an isolated managed install and 'hitch eval doctor' to verify it.

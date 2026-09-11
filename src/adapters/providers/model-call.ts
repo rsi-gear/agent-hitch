@@ -13,7 +13,21 @@ export const modelCallAdapter: AdapterDefinition = {
     // An arbitrary custom Git revision cannot claim the no-tools capability.
     const approved = sha256Bytes(await readFile(path.join(packageRoot(), "integrations/model-call/cli.js")));
     if (runtime.entrypoint_integrity !== approved) throw invalidInput("model-call runner differs from the trusted implementation in this Hitch runtime");
-    return { executable, args: ["--model", request.model], input: request.prompt };
+    const endpoint = runtime.model_endpoint;
+    if (endpoint && !runtime.model_endpoint_credential) throw invalidInput("managed local model binding is incomplete");
+    if (endpoint && endpoint.api !== "responses") throw invalidInput("model-call local inference requires a Responses endpoint");
+    return {
+      executable,
+      args: ["--model", endpoint?.wire_model ?? request.model],
+      input: request.prompt,
+      ...(endpoint ? { env: {
+        HITCH_LOCAL_MODEL_BASE_URL: endpoint.base_url,
+        HITCH_LOCAL_MODEL_TOKEN: runtime.model_endpoint_credential as string,
+        ...(Number.isSafeInteger(runtime.model_endpoint_max_output_tokens)
+          ? { HITCH_LOCAL_MAX_OUTPUT_TOKENS: String(runtime.model_endpoint_max_output_tokens) }
+          : {}),
+      } } : {}),
+    };
   },
   translate(event) {
     if (event.type === "message.completed" && typeof event.text === "string") return [{ type: "message.completed", text: event.text }];

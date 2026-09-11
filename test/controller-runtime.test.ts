@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashRuntimePayload, verifyRuntimePayload, canonicalEncodeManifest, isEntrypointPath } from "../src/controller-runtime/hash.js";
 import { ensureControllerRuntime, useControllerRuntimeById } from "../src/controller-runtime/store.js";
-import { statePaths } from "../src/foundation/index.js";
+import { runCommand, statePaths } from "../src/foundation/index.js";
+import { observeControllerRuntime } from "../src/controller-runtime/observation.js";
+import { ResidentRuntimeObserver } from "../src/controller-runtime/resident.js";
 import { forceRemove } from "../test-support/helpers.js";
 import { validateControllerRuntimeManifest } from "../src/domain/index.js";
 import type { ControllerRuntimeManifest } from "../src/domain/index.js";
@@ -24,13 +26,15 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
   await mkdir(path.join(root, "integrations", "harbor"), { recursive: true });
   await mkdir(path.join(root, "integrations", "model-call"), { recursive: true });
   await writeFile(path.join(root, "integrations", "model-call", "cli.js"), "// trusted model-call fixture\n");
+  await mkdir(path.join(root, "integrations", "training-tool"), { recursive: true });
+  await writeFile(path.join(root, "integrations", "training-tool", "cli.js"), "// trusted training-tool fixture\n");
   await mkdir(path.join(root, "node_modules", "smol-toml"), { recursive: true });
   await writeFile(path.join(root, "node_modules", "smol-toml", "index.js"), "export const parse = () => ({});\n");
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ name: "fake-hitch", version: "0.2.0" })}\n`);
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
   await writeFile(path.join(root, "dist", "scripts", "check.js"), "export const check = () => {};\n");
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
     await writeFile(path.join(root, "integrations", "harbor", name), `# ${name}\n`);
   }
   return {
@@ -42,9 +46,10 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
 async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): Promise<void> {
   await cp(path.join(sourceRoot, "node_modules"), path.join(destinationRoot, "node_modules"), { recursive: true });
   await cp(path.join(sourceRoot, "integrations", "model-call"), path.join(destinationRoot, "integrations", "model-call"), { recursive: true });
+  await cp(path.join(sourceRoot, "integrations", "training-tool"), path.join(destinationRoot, "integrations", "training-tool"), { recursive: true });
   const relative = path.join("integrations", "harbor");
   await mkdir(path.join(destinationRoot, relative), { recursive: true });
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
     await writeFile(
       path.join(destinationRoot, relative, name),
       await readFile(path.join(sourceRoot, relative, name)),
@@ -58,9 +63,55 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 13);
+  assert.equal(first.fileCount, 16);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
+});
+
+test("runtime observation binds actual payload bytes to its own checkout and excludes unrelated documents", async t => {
+  const fixture = await payloadFixture(); t.after(fixture.cleanup);
+  await runCommand("git", ["init", "--quiet"], { cwd: fixture.root });
+  await runCommand("git", ["add", "."], { cwd: fixture.root });
+  await runCommand("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "-qm", "fixture"], { cwd: fixture.root });
+  const first = await observeControllerRuntime(fixture.root);
+  assert.equal(first.source.kind, "git-checkout"); assert.equal(first.source.dirty, false);
+  assert.equal(first.source.commit, (await runCommand("git", ["rev-parse", "HEAD"], { cwd: fixture.root })).stdout.trim());
+  assert.equal(first.runtime_id, (await hashRuntimePayload({ payloadRoot: fixture.root })).runtimeId);
+  await writeFile(path.join(fixture.root, "notes.md"), "unrelated draft");
+  assert.deepEqual(await observeControllerRuntime(fixture.root), first);
+  await writeFile(path.join(fixture.root, "dist", "src", "cli.js"), "export const changed = true;\n");
+  const changed = await observeControllerRuntime(fixture.root);
+  assert.notEqual(changed.runtime_id, first.runtime_id); assert.equal(changed.source.commit, first.source.commit); assert.equal(changed.source.dirty, true);
+  assert.equal(JSON.stringify(changed).includes(fixture.root), false);
+});
+
+test("a source-less runtime does not borrow a parent repository commit", async t => {
+  const fixture = await payloadFixture(); t.after(fixture.cleanup);
+  const child = path.join(fixture.root, "installed");
+  await mkdir(child); await cp(path.join(fixture.root, "package.json"), path.join(child, "package.json"));
+  await cp(path.join(fixture.root, "dist"), path.join(child, "dist"), { recursive: true });
+  await copyBridgeFixture(fixture.root, child);
+  await runCommand("git", ["init", "--quiet"], { cwd: fixture.root });
+  await runCommand("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "--allow-empty", "-qm", "parent"], { cwd: fixture.root });
+  assert.deepEqual((await observeControllerRuntime(child)).source, { kind: "unavailable", commit: null, dirty: null });
+});
+
+test("resident runtime keeps its startup snapshot when disk bytes change and cannot refresh it", async t => {
+  const fixture = await payloadFixture(); t.after(fixture.cleanup);
+  const resident = new ResidentRuntimeObserver(() => observeControllerRuntime(fixture.root));
+  await assert.rejects(resident.observe(), /startup snapshot is unavailable/);
+  await resident.initialize();
+  const first = await resident.observe();
+  assert.equal(first.unchanged, true);
+  first.startup.runtime_id = "caller mutation";
+  assert.equal((await resident.observe()).unchanged, true);
+  await writeFile(path.join(fixture.root, "dist", "src", "cli.js"), "export const rebuilt = true;\n");
+  const changed = await resident.observe();
+  assert.equal(changed.unchanged, false);
+  assert.notEqual(changed.startup.runtime_id, changed.current.runtime_id);
+  assert.equal(changed.current.runtime_id, (await observeControllerRuntime(fixture.root)).runtime_id);
+  await assert.rejects(resident.initialize(), /already captured/);
+  assert.equal((await resident.observe()).unchanged, false);
 });
 
 test("changing any payload byte changes the runtime id", async () => {
@@ -425,7 +476,7 @@ test("runtime allowlist is the execution closure, excluding dev artifacts and re
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
-  assert.equal(result.fileCount, 13);
+  assert.equal(result.fileCount, 16);
   await fixture.cleanup();
 });
 

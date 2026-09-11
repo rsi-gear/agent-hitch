@@ -11,7 +11,7 @@ export type ProcessIdentityStatus = "running" | "terminal" | "identity-mismatch"
 
 export async function captureProcessIdentity(pid: number): Promise<ProcessIdentityV1 | null> {
   const snapshot = await processSnapshot(pid);
-  if (!snapshot || terminalState(snapshot.state)) return null;
+  if (!snapshot || snapshot === "unavailable" || terminalState(snapshot.state)) return null;
   return {
     pid,
     start_identity: sha256JSON({ pid, started: snapshot.started, command: snapshot.command }),
@@ -22,6 +22,7 @@ export async function captureProcessIdentity(pid: number): Promise<ProcessIdenti
 export async function inspectProcessIdentity(identity: ProcessIdentityV1): Promise<ProcessIdentityStatus> {
   validateProcessIdentity(identity);
   const snapshot = await processSnapshot(identity.pid);
+  if (snapshot === "unavailable") return "unavailable";
   if (!snapshot) return "terminal";
   const current = sha256JSON({ pid: identity.pid, started: snapshot.started, command: snapshot.command });
   if (current !== identity.start_identity) return "identity-mismatch";
@@ -40,31 +41,33 @@ export function validateProcessIdentity(value: unknown): ProcessIdentityV1 {
   return record as unknown as ProcessIdentityV1;
 }
 
-async function processSnapshot(pid: number): Promise<{ started: string; command: string; state: string } | null> {
+async function processSnapshot(pid: number): Promise<{ started: string; command: string; state: string } | null | "unavailable"> {
   if (!Number.isSafeInteger(pid) || pid < 1) throw new TypeError("process pid must be a positive safe integer");
-  if (process.platform === "win32") return null;
+  if (process.platform === "win32") return "unavailable";
   const output = await runPs(pid);
-  if (output.code === 1 && output.stdout.trim() === "") return null;
-  if (output.code !== 0) return null;
+  if (output.code === 1 && output.stdout.trim() === "" && output.stderr.trim() === "") return null;
+  if (output.code !== 0) return "unavailable";
   const fields = output.stdout.trim().split(/\s+/);
-  if (fields.length < 7) return null;
+  if (fields.length < 7) return "unavailable";
   const state = fields.at(-1) as string;
   const command = fields.at(-2) as string;
   const started = fields.slice(0, -2).join(" ");
-  return started && command && state ? { started, command, state } : null;
+  return started && command && state ? { started, command, state } : "unavailable";
 }
 
-function runPs(pid: number): Promise<{ code: number | null; stdout: string }> {
+function runPs(pid: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn("/bin/ps", ["-o", "lstart=", "-o", "comm=", "-o", "stat=", "-p", String(pid)], {
       env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
     let stdout = "";
+    let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => { stdout = `${stdout}${chunk.toString("utf8")}`.slice(-8_192); });
-    child.once("error", () => resolve({ code: null, stdout: "" }));
-    child.once("close", (code) => resolve({ code, stdout }));
+    child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(-8_192); });
+    child.once("error", () => resolve({ code: null, stdout: "", stderr: "process observation failed" }));
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
 

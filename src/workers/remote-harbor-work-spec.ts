@@ -1,7 +1,8 @@
 import type { HarborPreparedArtifactUse } from "../backends/index.js";
-import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalRequest, RemoteWorkOfferV1, ResolvedRevision } from "../domain/index.js";
-import { HitchError } from "../foundation/index.js";
-import { parseEvalExecutionPlan } from "../evals/index.js";
+import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalRequest, RemoteModelBindingV2, RemotePhysicalExecutionV2, RemoteVerifierWorkV2, RemoteWorkOfferV1, ResolvedRevision } from "../domain/index.js";
+import { HitchError, sha256JSON } from "../foundation/index.js";
+import { assertPhysicalWork, assertRemoteVerifierWork, parseEvalExecutionPlan, parsePhysicalExecution } from "../evals/index.js";
+import { parseRemoteModelBinding } from "../control-plane/index.js";
 
 export interface RemoteHarborWorkSpecV1 {
   schema_version: "1";
@@ -14,16 +15,32 @@ export interface RemoteHarborWorkSpecV1 {
   task: { task_id: string; directory: "task-input" };
   credential_names: string[];
 }
+export type RemoteHarborWorkSpecV2 = Omit<RemoteHarborWorkSpecV1, "schema_version"> & {
+  schema_version: "2";
+  model_binding?: RemoteModelBindingV2;
+  physical_execution?: RemotePhysicalExecutionV2;
+  verifier_source?: "2";
+  verifier_only?: RemoteVerifierWorkV2;
+};
 
-export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOfferV1): RemoteHarborWorkSpecV1 {
+export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOfferV1): RemoteHarborWorkSpecV1 | RemoteHarborWorkSpecV2 {
+  const v2 = object(value) && value.schema_version === "2";
   const spec = exact(value, [
     "schema_version", "request", "plan", "work", "resolution", "harness_artifact", "controller_runtime", "task", "credential_names",
-  ], "remote Harbor work spec", ["credential_names"]);
-  if (spec.schema_version !== "1") throw specError("remote Harbor work spec version is invalid");
-  const request = parseRequest(spec.request);
+    ...(v2 ? ["model_binding", "physical_execution", "verifier_source", "verifier_only"] : []),
+  ], "remote Harbor work spec", v2 ? ["model_binding", "physical_execution", "verifier_source", "verifier_only"] : ["credential_names"]);
+  if (spec.schema_version !== "1" && !v2) throw specError("remote Harbor work spec version is invalid");
+  const binding = v2 && spec.model_binding !== undefined ? parseRemoteModelBinding(spec.model_binding) : undefined;
+  const physical = v2 && spec.physical_execution !== undefined ? parsePhysicalExecution(spec.physical_execution) : undefined;
+  const capture = v2 && spec.verifier_source === "2";
+  if (spec.verifier_source !== undefined && !capture) throw specError("remote verifier source version is invalid");
+  if (v2 && !binding && !physical && !capture) throw specError("remote work spec v2 requires a model binding, physical execution or verifier source capture");
+  const request = parseRequest(spec.request, v2);
   const plan = parseEvalExecutionPlan(spec.plan);
-  const work = plan.work_items.find((entry) => entry.work_id === offer.work.work_id);
-  if (!work || JSON.stringify(work) !== JSON.stringify(offer.work) || plan.eval_id !== offer.lease.eval_id
+  const work = offer.work;
+  try { assertPhysicalWork(plan, work, physical); }
+  catch { throw specError("remote Harbor work graph differs from its frozen plan"); }
+  if (sha256JSON(spec.work) !== sha256JSON(work) || plan.eval_id !== offer.lease.eval_id
     || plan.provider !== offer.lease.provider || request.backend !== "harbor") throw specError("remote Harbor work graph does not match its offer");
   const resolution = parseResolution(spec.resolution);
   const harnessArtifact = parseArtifact(spec.harness_artifact);
@@ -41,20 +58,32 @@ export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOffer
     || JSON.stringify(credentialNames) !== JSON.stringify(offer.credential_names ?? [])) {
     throw specError("remote Harbor work inputs do not match their pinned identities");
   }
+  const verifier = spec.verifier_only === undefined ? undefined : assertRemoteVerifierWork({ verifier: spec.verifier_only,
+    plan, work, physical, runtimeId: runtime.runtime_id as string });
+  if ((physical?.kind === "verifier-only") !== !!verifier) throw specError("verifier-only requires both its physical identity and source descriptor");
+  if (verifier && (binding || capture || credentialNames.length || request.training_binding || plan.training_binding)) throw specError("verifier-only cannot execute a model or a training slot");
+  if (verifier) {
+    const kinds = ["work-spec", "harness-artifact", "controller-runtime", "task-input", "verifier-source", "verifier-runtime"];
+    if (!offer.inputs || offer.inputs.length !== kinds.length || kinds.some(kind => offer.inputs!.filter(ref => ref.kind === kind).length !== 1)
+      || offer.inputs.some(ref => ref.format !== (ref.kind === "work-spec" ? "json" : "hitch-tree-v1"))) throw specError("remote verifier inputs are incomplete or ambiguous");
+  } else if (binding) validateModelGraph(binding, request, plan, credentialNames);
+  else if (plan.training_binding || request.model.startsWith("local/") || request.model.startsWith("training/")) throw specError("bound models require remote work spec v2");
   return {
-    schema_version: "1", request, plan, work, resolution, harness_artifact: harnessArtifact,
+    ...(v2 ? { schema_version: "2" as const, ...(binding ? { model_binding: binding } : {}), ...(physical ? { physical_execution: physical } : {}), ...(capture ? { verifier_source: "2" as const } : {}), ...(verifier ? { verifier_only: verifier } : {}) } : { schema_version: "1" as const }),
+    request, plan, work, resolution, harness_artifact: harnessArtifact,
     controller_runtime: { runtime_id: runtime.runtime_id, directory: "controller-runtime" },
     task: { task_id: task.task_id as string, directory: "task-input" },
     credential_names: credentialNames,
   };
 }
 
-function parseRequest(value: unknown): EvalRequest {
+function parseRequest(value: unknown, v2: boolean): EvalRequest {
   const request = exact(value, [
     "schema_version", "backend", "dataset", "harness_ref", "model", "attempts", "max_concurrent",
     "infrastructure_retries", "infrastructure_retry_backoff_ms", "timeout_ms", "setup_timeout_ms",
     "agent_args", "pass_env", "benchmark_id", "benchmark_revision",
-  ], "remote eval request");
+    ...(v2 ? ["training_binding", "local_inference"] : []),
+  ], "remote eval request", v2 ? ["training_binding", "local_inference"] : []);
   if (typeof request.schema_version !== "string" || request.backend !== "harbor" || request.dataset !== "task-input"
     || !text(request.harness_ref) || typeof request.model !== "string"
     || !positive(request.attempts) || !positive(request.max_concurrent)
@@ -63,6 +92,27 @@ function parseRequest(value: unknown): EvalRequest {
     || !stringArray(request.agent_args, 4_096) || !environmentNames(request.pass_env)
     || !text(request.benchmark_id) || !text(request.benchmark_revision)) throw specError("remote eval request is invalid");
   return request as unknown as EvalRequest;
+}
+
+function validateModelGraph(binding: RemoteModelBindingV2, request: EvalRequest, plan: EvalExecutionPlanV1, credentialNames: string[]): void {
+  if (!plan.model_capture?.required || plan.model_capture.effective_mode !== "proxy" || plan.model_capture.topology !== "in-sandbox"
+    || credentialNames.length || request.pass_env.length) throw specError("remote model binding requires mandatory lease capture and no credential overrides");
+  if (binding.kind === "training-external") {
+    if (request.local_inference || !request.training_binding || !plan.training_binding
+      || sha256JSON(request.training_binding) !== sha256JSON(binding.training) || sha256JSON(plan.training_binding) !== sha256JSON(binding.training)
+      || request.model !== `training/${binding.training.bindingId}` || !request.harness_ref.startsWith("training-tool@")
+      || request.attempts !== 1 || request.infrastructure_retries !== 0 || request.agent_args.length
+      || plan.slots.length !== 1 || plan.work_items.length !== 1 || plan.retry_policy.infrastructure_retries !== 0) {
+      throw specError("remote training binding differs from its single-attempt work graph");
+    }
+  } else {
+    const selection = exact(request.local_inference, ["model", "device", "profile", "offline", "inference_id", "model_node"], "remote managed model selection");
+    if (request.training_binding || plan.training_binding || !request.model.startsWith("local/") || selection.model !== request.model
+      || selection.device !== "auto" || selection.profile !== "baseline" || typeof selection.offline !== "boolean"
+      || selection.inference_id !== binding.inference_id || sha256JSON(selection.model_node) !== sha256JSON(binding.model_node)) {
+      throw specError("remote managed model binding differs from its request");
+    }
+  }
 }
 
 function parseResolution(value: unknown): ResolvedRevision {

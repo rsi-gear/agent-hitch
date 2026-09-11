@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { EvalProgressV1, EvalRequest, ModelCapturePlanV1 } from "../domain/index.js";
-import { SCHEMA_VERSION, atomicWriteJSON, readJSON } from "../foundation/index.js";
+import { SCHEMA_VERSION, atomicWriteJSON, readJSON, sha256JSON } from "../foundation/index.js";
 import { writeEvalProgress } from "./progress.js";
 
 export interface EvalLogicalPlanV1 extends Record<string, unknown> {
@@ -62,6 +62,12 @@ export async function readEvalLogicalPlan(
     throw new TypeError("eval logical plan identity is invalid");
   }
   if (plan.model_capture !== undefined) parseModelCapturePlan(plan.model_capture);
+  const candidate = plan.candidate as Record<string, unknown> | undefined;
+  if (sha256JSON(candidate?.model_node ?? null) !== sha256JSON(request.local_inference?.model_node ?? null)
+    || request.local_inference?.inference_id && candidate?.inference_id !== request.local_inference.inference_id) {
+    throw new TypeError("managed model node or inference lock differs from the frozen logical plan");
+  }
+  if (sha256JSON(plan.training_binding ?? null) !== sha256JSON(request.training_binding ?? null)) throw new TypeError("training binding differs from the frozen logical plan");
   return plan as unknown as EvalLogicalPlanV1;
 }
 

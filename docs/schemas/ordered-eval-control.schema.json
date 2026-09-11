@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/ordered-eval-control.schema.json",
+  "title": "Ordered eval command v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "key", "subject_digest", "sequence", "action"],
+  "properties": {
+    "schema_version": { "const": "2" },
+    "key": { "type": "string", "pattern": "^[!-~]{1,256}$" },
+    "subject_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "sequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "action": { "enum": ["start", "pause"] },
+    "submission": { "$ref": "eval-submission-input.schema.json" },
+    "rerun": {
+      "type": "object", "additionalProperties": false, "required": ["eval_id", "input"],
+      "properties": {
+        "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
+        "input": {
+          "type": "object", "additionalProperties": false, "required": ["rerun_id", "rerun_type", "selector"],
+          "properties": {
+            "rerun_id": { "type": "string", "pattern": "^rerun_[a-f0-9]{32}$" },
+            "rerun_type": { "$ref": "eval-rerun-submission.schema.json#/$defs/rerunType" },
+            "selector": { "$ref": "eval-rerun-submission.schema.json#/$defs/selector" },
+            "verifier_runtime_id": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+          },
+          "allOf": [{ "if": { "required": ["verifier_runtime_id"] }, "then": { "properties": { "rerun_type": { "const": "verifier-only" } } } }]
+        }
+      }
+    }
+  },
+  "allOf": [
+    { "not": { "required": ["submission", "rerun"] } },
+    {
+      "if": { "properties": { "action": { "const": "pause" } } },
+      "then": { "not": { "anyOf": [{ "required": ["submission"] }, { "required": ["rerun"] }] } }
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import { access, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { HitchError, PROVIDER_ENVIRONMENT_NAMES, SCHEMA_VERSION, atomicWriteJSON, detectVersion, ensureDir, invalidInput, readJSON, resolveExecutable, statePaths, terminateProcess } from "../../foundation/index.js";
+import { HOST_CREDENTIAL_HELPER_CAPABILITY } from "./host-credential-helper.js";
 
 export const DEFAULT_HARBOR_VERSION = "0.21.0";
 export const HARBOR_CREDENTIAL_ENV: string[] = [...PROVIDER_ENVIRONMENT_NAMES];
@@ -150,6 +151,7 @@ export interface DoctorCheck {
 export interface DoctorResult {
   schema_version: string;
   backend: string;
+  capabilities: string[];
   status: string;
   ready: boolean;
   checks: Record<string, DoctorCheck>;
@@ -200,6 +202,7 @@ export async function doctorHarbor({ root, python, harbor, docker, env = process
   return {
     schema_version: SCHEMA_VERSION,
     backend: "harbor",
+    capabilities: harborInfo.version === DEFAULT_HARBOR_VERSION ? [HOST_CREDENTIAL_HELPER_CAPABILITY] : [],
     status: ready ? (checks.credentials?.status === "ok" ? "ready" : "ready_with_warnings") : "action_required",
     ready,
     checks,

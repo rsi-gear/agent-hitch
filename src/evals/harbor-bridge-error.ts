@@ -20,6 +20,14 @@ const HITCH_BRIDGE_ERROR_CODES = new Set([
   "hitch_revision_identity_mismatch",
   "hitch_run_bundle_export_failed",
   "hitch_result_artifact_copy_failed",
+  "host_credential_helper_config_invalid",
+  "host_credential_helper_request_invalid",
+  "host_credential_helper_unavailable",
+  "host_credential_helper_timed_out",
+  "host_credential_helper_response_invalid",
+  "host_credential_helper_failed",
+  "host_credential_helper_insufficient_validity",
+  "host_credential_transport_unsupported",
 ]);
 
 export interface HarborBridgeErrorDiagnostic {

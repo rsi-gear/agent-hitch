@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "product": "Hitch",
+  "version": "0.2.10",
+  "updated": "2026-09-10",
+  "defaultLanguage": "en",
+  "languages": [
+    { "id": "en", "label": "English", "prefix": "" },
+    { "id": "zh-CN", "label": "简体中文", "prefix": "zh" }
+  ],
+  "pages": [
+    {
+      "slug": "",
+      "file": "index.md",
+      "translations": {
+        "en": { "title": "Hitch user guide", "description": "Evaluate models and harnesses with Harbor-compatible tasks, parallel scheduling, and recovery." },
+        "zh-CN": { "title": "Hitch 用户指南", "description": "使用 Harbor 兼容任务评测模型与 Harness，并行调度实验并恢复中断的工作。" }
+      }
+    },
+    {
+      "slug": "quickstart",
+      "file": "quickstart.md",
+      "translations": {
+        "en": { "title": "Quick Start", "description": "Install Hitch, authenticate Codex, inspect a local run, and submit two tasks in parallel." },
+        "zh-CN": { "title": "Quick Start：快速开始", "description": "安装 Hitch、完成 Codex 认证、查看本地运行结果，并提交两个并行任务。" }
+      }
+    },
+    {
+      "slug": "model-inference",
+      "file": "model-inference.md",
+      "translations": {
+        "en": { "title": "Local and remote model inference", "description": "Use hosted APIs, managed local SGLang, and remote model nodes with explicit capacity and recovery." },
+        "zh-CN": { "title": "本地与远程模型推理", "description": "接入云 API、托管本机 SGLang 和远程模型节点，理解推理容量与恢复。" }
+      }
+    },
+    {
+      "slug": "versions-and-workspaces",
+      "file": "versions-and-workspaces.md",
+      "translations": {
+        "en": { "title": "Pin versions and isolate workspaces", "description": "Choose an exact harness reference and a workspace mode that fits your task." },
+        "zh-CN": { "title": "固定版本与隔离工作区", "description": "选择确定的 Harness 引用，以及适合当前任务的工作区模式。" }
+      }
+    },
+    {
+      "slug": "runs-and-evidence",
+      "file": "runs-and-evidence.md",
+      "translations": {
+        "en": { "title": "Read runs and evidence", "description": "Inspect results, bounded trajectories, verifier diagnostics, and message feedback." },
+        "zh-CN": { "title": "查看运行与证据", "description": "查询结果、有界轨迹、Verifier 诊断和消息反馈。" }
+      }
+    },
+    {
+      "slug": "evaluations",
+      "file": "evaluations.md",
+      "translations": {
+        "en": { "title": "Run your first evaluation", "description": "Choose a model or harness comparison, run a one-task Docker evaluation, and interpret the results." },
+        "zh-CN": { "title": "第一次评测", "description": "选择模型或 Harness 对比，运行单任务 Docker 评测并理解结果。" }
+      }
+    },
+    {
+      "slug": "daemon",
+      "file": "daemon.md",
+      "translations": {
+        "en": { "title": "Daemon: parallelism and recovery", "description": "Share resource capacity across evaluations and recover execution with durable plans, leases, and evidence." },
+        "zh-CN": { "title": "Daemon：并行与恢复", "description": "在评测间共享资源容量，依靠持久化计划、执行租约和证据恢复中断的工作。" }
+      }
+    },
+    {
+      "slug": "operations",
+      "file": "operations.md",
+      "translations": {
+        "en": { "title": "Operate and troubleshoot", "description": "Queue work, manage concurrency, cancel tasks, and diagnose common failures." },
+        "zh-CN": { "title": "日常运行与排错", "description": "排队执行任务、管理并发、取消运行并诊断常见失败。" }
+      }
+    },
+    {
+      "slug": "cli-reference",
+      "file": "cli-reference.md",
+      "translations": {
+        "en": {"title": "CLI reference", "description": "Find every Hitch command, shared option, query filter, and advanced integration entry point."},
+        "zh-CN": {"title": "CLI 命令参考", "description": "查询全部 Hitch 命令、共享参数、筛选条件和高级集成入口。"}
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { parseModelNodeBinding } from "../domain/index.js";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { canonicalJSON, readJSON, sha256Bytes, sha256JSON } from "../foundation/index.js";
@@ -108,6 +109,12 @@ function projectModelIdentity(manifest: Record<string, unknown>, harnessId: stri
   if (typeof provider === "string" && provider) model.provider = provider;
   const parameters = nested?.parameters_sha256 ?? manifest.parameters_sha256;
   if (parameters !== undefined && parameters !== null) model.parameters_sha256 = asSha256(parameters, "parameters_sha256");
+  const inferenceId = nested?.inference_id ?? manifest.inference_id;
+  if (inferenceId !== undefined && inferenceId !== null) model.inference_id = asSha256(inferenceId, "inference_id");
+  if (nested?.model_node !== undefined) {
+    if (!model.inference_id) throw new TypeError("model node identity requires an inference lock");
+    model.model_node = parseModelNodeBinding(nested.model_node);
+  }
   const resolved = nested?.identity_resolved ?? manifest.model_identity_resolved;
   model.identity_resolved = resolved === true;
   return model;

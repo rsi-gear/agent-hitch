@@ -6,7 +6,7 @@ export { buildManifest, newRunId, safeAgentArgsForPersistence } from "./manifest
 export type { RunManifest } from "./manifest.js";
 export { sealTerminalManifest } from "./finalizer.js";
 export { executeRun } from "./executor.js";
-export type { ExecuteRunOptions } from "./executor.js";
+export type { ExecuteRunOptions } from "./executor-types.js";
 export type { NormalizedEvent } from "../adapters/index.js";
 export { createQueuedRun } from "./queued.js";
 export type { QueuedRun } from "./queued.js";
@@ -27,3 +27,4 @@ export { deriveTrainingDataCandidate, parseTrainingDataCandidate } from "./train
 export type { TrainingDataCandidatePolicyV1 } from "./training-candidate.js";
 export { inspectBenchmarkPhaseGroup, sealBenchmarkPhaseGroup, readBenchmarkPhaseGroup } from "./phase-group.js";
 export type { BenchmarkPhaseGroupV1, BenchmarkPhaseGroupRefV1 } from "../domain/index.js";
+export { loadTrainingEvidence } from "./training-evidence.js";

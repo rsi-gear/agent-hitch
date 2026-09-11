@@ -4,15 +4,16 @@ import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecu
 import type { DockerResourceOwnershipV1, EvalRequest, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { harborAgentTimeoutOverride } from "./agent-budget.js";
-import { HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
+import { DEFAULT_HARBOR_VERSION, HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
 import { invokeHarbor } from "./process.js";
 import { harborEnvironmentConfig } from "./environment-config.js";
 import type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
 import { parseHarborModelProxyRoute } from "./model-proxy-config.js";
 import { HARBOR_NODE_VERSION_WITH_PREFIX } from "./runtime-toolchain.js";
+import { withBridgePythonPath } from "./bridge-environment.js";
+import { assertHostCredentialRuntimeSupport, helperCredentialNamesForRequest, parseHostCredentialHelperConfig, withHostCredentialPlaceholders } from "./host-credential-helper.js";
 
-const BRIDGE_PAYLOAD_DIRECTORY = path.join("integrations", "harbor");
 export const DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS = 2_000;
 export interface HarborSettledTrialContext {
   bundleWaitExpired: boolean;
@@ -114,6 +115,16 @@ export async function runHarborBackend({
   }
   const executable = await discoverHarbor(harborExecutable, root, env);
   const version = await detectVersion(executable, ["--version"]);
+  const harborRelease = version.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? "";
+  const hostCredentialHelper = parseHostCredentialHelperConfig(env);
+  const hostCredentialNames = helperCredentialNamesForRequest(hostCredentialHelper, request.pass_env);
+  if (hostCredentialHelper !== null && harborRelease !== DEFAULT_HARBOR_VERSION) {
+    throw new HitchError(`host task credentials require Harbor ${DEFAULT_HARBOR_VERSION}`, {
+      code: "host_credential_helper_backend_unsupported",
+      exitCode: 3,
+    });
+  }
+  if (hostCredentialHelper !== null) await assertHostCredentialRuntimeSupport(runtimeDirectory);
   const identity = await fingerprintExecutable(executable);
   const jobName = "job";
   const configPath = path.join(backendDirectory, "job.json");
@@ -139,7 +150,7 @@ export async function runHarborBackend({
     ...(modelProxy ? { modelProxy } : {}),
   });
   await atomicWriteJSON(configPath, config);
-  const credentialNames = credentialEnvironmentNames(request.pass_env, env);
+  const credentialNames = credentialEnvironmentNames(request.pass_env, env, hostCredentialNames);
   emit({
     type: "eval.backend.started",
     backend: "harbor",
@@ -156,7 +167,7 @@ export async function runHarborBackend({
   try {
     invocation = await invokeHarbor(executable, ["run", "--config", configPath, "--yes"], {
       cwd: evalDirectory,
-      env: withBridgePythonPath(env, runtimeDirectory),
+      env: withBridgePythonPath(withHostCredentialPlaceholders(env, hostCredentialNames), runtimeDirectory),
       stdoutPath: path.join(backendDirectory, "stdout.log"),
       stderrPath: path.join(backendDirectory, "stderr.log"),
       ...(signal ? { signal } : {}),
@@ -318,7 +329,9 @@ export async function buildHarborJobConfig({
   const dataset = await harborDatasetConfig(request.dataset, taskNames);
   const outerTimeoutSeconds = await harborAgentTimeoutOverride(dataset, request.timeout_ms);
   const setupTimeoutSeconds = request.setup_timeout_ms > 0 ? Math.ceil(request.setup_timeout_ms / 1_000) : null;
-  const credentialNames = credentialEnvironmentNames(request.pass_env, env);
+  const hostCredentialHelper = parseHostCredentialHelperConfig(env);
+  const hostCredentialNames = helperCredentialNamesForRequest(hostCredentialHelper, request.pass_env);
+  const credentialNames = credentialEnvironmentNames(request.pass_env, env, hostCredentialNames);
   const agent: Record<string, unknown> = {
     import_path: "hitch_harbor_agent:HitchHarborAgent",
     model_name: request.model || null,
@@ -361,6 +374,7 @@ export async function buildHarborJobConfig({
       agent_args: request.agent_args,
       credential_names: credentialNames,
       ...(modelProxy ? { model_capture: parseHarborModelProxyRoute(modelProxy) } : {}),
+      ...(modelProxy?.managed_inference ? { managed_local_inference: modelProxy.managed_inference } : {}),
     },
     env: credentialEnvironment(credentialNames),
     include_logs: ["hitch-*"],
@@ -373,7 +387,15 @@ export async function buildHarborJobConfig({
     jobs_dir: backendDirectory,
     n_attempts: logicalAttempt === undefined ? request.attempts : 1,
     n_concurrent_trials: request.max_concurrent,
-    environment: harborEnvironmentConfig(executionResources, dockerOwnership, dockerServiceLimits, resolvedImages, prebuiltTaskImage, Boolean(modelProxy && process.platform === "linux")),
+    environment: harborEnvironmentConfig(
+      executionResources,
+      dockerOwnership,
+      dockerServiceLimits,
+      resolvedImages,
+      prebuiltTaskImage,
+      Boolean(modelProxy && process.platform === "linux"),
+      hostCredentialHelper !== null,
+    ),
     verifier: harborVerifierConfig(request),
     agents: [agent],
     datasets: [dataset],
@@ -442,11 +464,12 @@ async function discoverHarbor(explicit: string | undefined, root: string, env: N
   return located.executable;
 }
 
-function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.ProcessEnv): string[] {
+function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.ProcessEnv, helperNames: readonly string[] = []): string[] {
   const names = new Set<string>(HARBOR_CREDENTIAL_ENV.filter((name) => env[name] !== undefined));
+  const suppliedByHelper = new Set(helperNames);
   for (const name of explicitNames || []) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw invalidInput(`invalid environment variable name: ${name}`);
-    if (env[name] === undefined) throw invalidInput(`environment variable is not set: ${name}`);
+    if (env[name] === undefined && !suppliedByHelper.has(name)) throw invalidInput(`environment variable is not set: ${name}`);
     names.add(name);
   }
   return [...names].sort();
@@ -454,14 +477,6 @@ function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.Process
 
 function credentialEnvironment(names: readonly string[]): Record<string, string> {
   return Object.fromEntries(names.map((name) => [name, `\${${name}}`]));
-}
-
-function withBridgePythonPath(env: NodeJS.ProcessEnv, runtimeDirectory: string): NodeJS.ProcessEnv {
-  const bridgeDirectory = path.join(runtimeDirectory, "payload", BRIDGE_PAYLOAD_DIRECTORY);
-  return {
-    ...env,
-    PYTHONPATH: [bridgeDirectory, env.PYTHONPATH].filter(Boolean).join(path.delimiter),
-  };
 }
 
 function compact(value: Record<string, unknown>): Record<string, unknown> {

@@ -7,10 +7,13 @@ import {
   RemoteWorkInputStore,
   RemoteWorkerHttpClient,
   RemoteWorkerRunner,
+  RemoteWorkerProtocol,
+  RemoteWorkerRegistry,
+  remoteExecutionBindingDigest,
 } from "../src/control-plane/index.js";
-import type { RemoteWorkInputRefV1, RemoteWorkOfferV1 } from "../src/domain/index.js";
+import type { RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerExecutionOwnershipV2 } from "../src/domain/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
-import { statePaths } from "../src/foundation/index.js";
+import { sha256JSON, statePaths } from "../src/foundation/index.js";
 
 const ZERO = { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 };
 const CAPACITY = { cpu_millis: 2_000, memory_bytes: 2 * 1024 ** 3, container_slots: 2, build_slots: 1 };
@@ -159,6 +162,136 @@ test("executor setup failure remains ownership-releasable", async (t) => {
     assert.equal((await readFile(file)).includes(Buffer.from(secret)), false, `executor diagnostic leaked credential into ${path.relative(root, file)}`);
   }
 });
+
+test("cancellation before acceptance needs no invented physical cleanup proof", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-cancel-unaccepted-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }); await server.start(); t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.port}`, adminToken = (await readFile(statePaths(root).token, "utf8")).trim();
+  const credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration: workerRegistration() });
+  const client = new RemoteWorkerHttpClient({ baseUrl, credential }), admin = await daemonClient(root), { lease, work } = remoteWork("5");
+  const created = await admin.request(`/v1/workers/${credential.worker_id}/offers`, { method: "POST", body: JSON.stringify({ lease, work, inputs: await stagedInputs(root) }) });
+  const offer = created.offer as RemoteWorkOfferV1;
+  let prepared = false, resume!: () => void;
+  const barrier = new Promise<void>(resolve => { resume = resolve; });
+  const controller = new AbortController(); t.after(() => { resume(); controller.abort(); });
+  const execute = Object.assign(async (): Promise<{ status: "succeeded" }> => { throw new Error("must never execute"); },
+    { prepare: async () => { prepared = true; await barrier; } });
+  const runner = new RemoteWorkerRunner({ client, capacity: CAPACITY, execute, once: true, signal: controller.signal,
+    pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50 });
+  const running = runner.run();
+  await waitFor(async () => prepared ? true : undefined);
+  await admin.request(`/v1/workers/${credential.worker_id}/offers/${offer.offer_id}/cancel`, { method: "POST" });
+  await assert.rejects(client.accept(offer));
+  resume(); await running; assert.equal((await client.listOffers()).length, 0);
+});
+
+for (const cleanup of ["missing", "fails", "succeeds"] as const) {
+  test(`accepted work recovery requires explicit successful cleanup: ${cleanup}`, async t => {
+    const root = await mkdtemp(path.join(tmpdir(), "hitch-runner-cleanup-")); t.after(() => rm(root, { recursive: true, force: true }));
+    const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }); await server.start(); t.after(() => server.close());
+    const baseUrl = `http://127.0.0.1:${server.port}`, adminToken = (await readFile(statePaths(root).token, "utf8")).trim();
+    const registration = workerRegistration();
+    const credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration });
+    const client = new RemoteWorkerHttpClient({ baseUrl, credential }), admin = await daemonClient(root), { lease, work } = remoteWork("4");
+    const created = await admin.request(`/v1/workers/${credential.worker_id}/offers`, {
+      method: "POST", body: JSON.stringify({ lease, work, inputs: await stagedInputs(root) }),
+    });
+    const accepted = await client.accept(created.offer as RemoteWorkOfferV1); let executions = 0, cleanups = 0;
+    const runner = new RemoteWorkerRunner({ client, capacity: CAPACITY, execute: async () => { executions++; return { status: "succeeded" }; },
+      ...(cleanup === "missing" ? {} : { releaseUnknown: async () => { cleanups++; if (cleanup === "fails") throw new Error("cleanup incomplete"); } }) });
+    if (cleanup === "fails") await assert.rejects(runner.tick(), /cleanup incomplete/); else await runner.tick();
+    let current = (await client.listOffers()).find(item => item.offer_id === accepted.offer_id)!;
+    assert.equal(current.state, cleanup === "succeeds" ? "completed" : "accepted"); assert.equal(executions, 0);
+    if (cleanup === "succeeds") {
+      assert.equal(current.terminal?.status, "failed"); assert.equal(cleanups, 1);
+      await admin.request(`/v1/workers/${credential.worker_id}/offers/${accepted.offer_id}/release-request`, { method: "POST" });
+      await runner.tick(); assert.equal((await client.listOffers()).length, 0);
+    } else {
+      await admin.request(`/v1/workers/${credential.worker_id}/offers/${accepted.offer_id}/cancel`, { method: "POST" });
+      await assert.rejects(runner.tick(), cleanup === "missing" ? /no recovery cleanup implementation/ : /cleanup incomplete/);
+      current = (await client.listOffers()).find(item => item.offer_id === accepted.offer_id)!; assert.equal(current.state, "cancel-requested");
+    }
+  });
+}
+
+for (const action of ["rotate", "revoke"] as const) {
+  test(`worker ${action} aborts the executor and cleans locally without forging a release receipt`, async t => {
+    const root = await mkdtemp(path.join(tmpdir(), "hitch-worker-fenced-")); t.after(() => rm(root, { recursive: true, force: true }));
+    const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }); await server.start(); t.after(() => server.close());
+    const baseUrl = `http://127.0.0.1:${server.port}`, adminToken = (await readFile(statePaths(root).token, "utf8")).trim();
+    const registration = workerRegistration(), credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration });
+    const client = new RemoteWorkerHttpClient({ baseUrl, credential }), admin = await daemonClient(root), { lease, work } = remoteWork("6");
+    const created = await admin.request(`/v1/workers/${credential.worker_id}/offers`, { method: "POST", body: JSON.stringify({ lease, work, inputs: await stagedInputs(root) }) });
+    const offer = created.offer as RemoteWorkOfferV1; let executions = 0, stopped = false, cleaned = 0;
+    const controller = new AbortController(); t.after(() => controller.abort());
+    const runner = new RemoteWorkerRunner({ client, capacity: CAPACITY, signal: controller.signal, pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
+      execute: async ({ signal }) => {
+        executions++; await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener("abort", () => resolve(), { once: true }); });
+        stopped = true; return { status: "cancelled", release: async () => { assert.equal(stopped, true); cleaned++; } };
+      } });
+    const running = assert.rejects(runner.run(), { code: "remote_worker_fenced" });
+    await waitFor(async () => executions === 1 ? true : undefined);
+    if (action === "rotate") await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration });
+    else await admin.request(`/v1/workers/${credential.worker_id}`, { method: "DELETE" });
+    await running; assert.equal(stopped, true); assert.equal(cleaned, 1); assert.equal(executions, 1);
+    const persisted = JSON.parse(await readFile(path.join(statePaths(root).workerProtocol, "workers", credential.worker_id, "offers", `${offer.offer_id}.json`), "utf8")) as RemoteWorkOfferV1;
+    assert.equal(persisted.state, "accepted"); assert.equal(persisted.release_receipt_digest, undefined); assert.equal(persisted.terminal, undefined);
+  });
+}
+
+for (const owned of [false, true]) {
+  test(`runner replays lost acceptance, event, completion and release replies exactly once with ownership ${owned}`, async t => {
+    const root = await mkdtemp(path.join(tmpdir(), "hitch-worker-reply-loss-")); t.after(() => rm(root, { recursive: true, force: true }));
+    const server = new DaemonServer({ root, port: 0, maxConcurrent: 1, logger: () => {} }); await server.start(); t.after(() => server.close());
+    const baseUrl = `http://127.0.0.1:${server.port}`, adminToken = (await readFile(statePaths(root).token, "utf8")).trim();
+    const registration = workerRegistration(), credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration });
+    const bodies = new Map<string, string[]>(), lost = new Set<string>();
+    const client = new RemoteWorkerHttpClient({ baseUrl, credential, request: async (url, init) => {
+      const action = /\/(accept|events|complete|release|process)$/.exec(String(url))?.[1];
+      if (action) bodies.set(action, [...(bodies.get(action) ?? []), String(init?.body)]);
+      const response = await fetch(url, init);
+      if (response.ok && action && !lost.has(action)) {
+        lost.add(action); await response.arrayBuffer(); throw new Error(`fixture lost committed ${action} reply`);
+      }
+      return response;
+    } });
+    const admin = await daemonClient(root), { lease, work } = remoteWork("7");
+    const created = await admin.request(`/v1/workers/${credential.worker_id}/offers`, { method: "POST", body: JSON.stringify({ lease, work, inputs: await stagedInputs(root) }) });
+    const offered = created.offer as RemoteWorkOfferV1;
+    const identity = { pid: 1001, start_identity: sha256JSON("worker"), observed_at: new Date().toISOString() };
+    const ownership: RemoteWorkerExecutionOwnershipV2 = { schema_version: "2", binding_digest: remoteExecutionBindingDigest(offered), root_id: "a".repeat(24),
+      root_digest: sha256JSON("root"), boot_digest: sha256JSON("boot"), docker_engine_id: "fixture-engine", worker_process: identity };
+    let executions = 0, cleanups = 0;
+    const execute: import("../src/control-plane/index.js").RemoteWorkerExecutor = async ({ emit, authorizeProcess }) => {
+      executions++;
+      if (owned) { assert.ok(authorizeProcess); await authorizeProcess({ ...identity, pid: 1002, start_identity: sha256JSON("supervisor") }); }
+      await emit("worker.finished", { original: true });
+      return { status: "succeeded", release: async () => { cleanups++; } };
+    };
+    if (owned) execute.prepare = async () => ownership;
+    const controller = new AbortController(); t.after(() => { controller.abort(); });
+    const runner = new RemoteWorkerRunner({ client, capacity: registration.capacity.allocatable, execute, once: true, signal: controller.signal,
+      pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50 });
+    const running = runner.run(); void running.catch(() => {});
+    try {
+      const completed = await waitFor(async () => (await client.listOffers()).find(item => item.offer_id === offered.offer_id && item.state === "completed"));
+      await admin.request(`/v1/workers/${credential.worker_id}/offers/${completed.offer_id}/release-request`, { method: "POST" });
+      await waitFor(async () => (await client.listOffers()).length === 0 ? true : undefined);
+      await running;
+      assert.equal(executions, 1); assert.equal(cleanups, 1);
+      for (const action of ["accept", "events", "complete", "release", ...(owned ? ["process"] : [])]) {
+        const requests = bodies.get(action)!;
+        assert.equal(requests.length, 2, `${action} must replay the committed operation once`);
+        assert.equal(requests[0], requests[1], `${action} must retain its original time, identity and sequence`);
+      }
+      const protocol = new RemoteWorkerProtocol({ root, registry: new RemoteWorkerRegistry({ root }) });
+      assert.equal((await readdir(path.join(statePaths(root).workerProtocol, "events", lease.lease_id))).filter(name => /^\d{12}\.json$/.test(name)).length, 1);
+      const admission = await protocol.executionAdmission(offered.worker_id, offered.offer_id);
+      assert.equal(admission !== null, owned);
+      if (admission) assert.equal(admission.execution_process?.pid, 1002);
+    } finally { controller.abort(); await running; }
+  });
+}
 
 function workerRegistration() {
   return {

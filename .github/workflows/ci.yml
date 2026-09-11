@@ -37,6 +37,7 @@ jobs:
         run: |
           npm run check:architecture
           node dist/scripts/check-syntax.js
+          npm run docs:check
       - name: Test
         if: matrix.os != 'ubuntu-latest' || matrix.node != 24
         run: npm test
@@ -85,6 +86,10 @@ jobs:
       - name: Build and typecheck
         run: npm run build
       - run: node --test dist/test/executable.test.js dist/test/windows-support.test.js
+      - name: Test host credential helper process cleanup
+        run: python test-support/harbor_host_credentials_smoke.py integrations/harbor/hitch_host_credentials.py
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
       - name: Packaged harness canary
         run: node dist/scripts/canary-packaged-harness.js
       - run: npm pack --dry-run

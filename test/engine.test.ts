@@ -6,7 +6,7 @@ import path from "node:path";
 import { executeRun, newRunId } from "../src/runs/index.js";
 import type { RunRequestInput } from "../src/runs/index.js";
 import { readJSON, sha256JSON } from "../src/foundation/index.js";
-import { writeFakeCodex, writeFakeDeepseek, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
+import { forceRemove, writeFakeCodex, writeFakeDeepseek, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
 import { loadTrajectoryRef, readTrajectory } from "../src/trajectories/store.js";
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -101,6 +101,39 @@ test("run engine records normalized events and a reproducible result", async (t)
   const manifest = await readJSON<Record<string, unknown>>(path.join(root, "runs", runId, "manifest.json"));
   assert.equal(manifest.status, "succeeded");
   assert.equal(manifest.agent_version, "codex-cli 9.9.9");
+});
+
+test("managed Harbor runs retain verified model identity when the provider reports a wire alias", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-managed-wire-model-"));
+  t.after(() => forceRemove(root));
+  const executable = await writeFakeCodex(root);
+  await writeFile(executable, (await readFile(executable, "utf8")).replace('thread_id:"thread_fake"', 'thread_id:"thread_fake",model:"hitch-wire-alias"'));
+  const names = ["HITCH_CODEX_PATH", "HITCH_HARBOR_INTERNAL", "HITCH_MANAGED_LOCAL_INFERENCE", "HITCH_MANAGED_RUN_ID",
+    "HITCH_MANAGED_INFERENCE_ID", "HITCH_MANAGED_MODEL_ID", "HITCH_MANAGED_NODE_BINDING", "OPENAI_API_KEY", "OPENAI_BASE_URL"];
+  const previous = new Map(names.map(name => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of previous) restoreEnv(name, value); });
+  const modelId = `sha256:${"d".repeat(64)}` as const, inferenceId = `sha256:${"e".repeat(64)}` as const;
+  const node = { schema_version: "2" as const, node_id: "gpu-node", generation: "boot-1",
+    runtime_digest: `sha256:${"f".repeat(64)}` as const, launcher: "process" as const };
+  for (const modelNode of [undefined, node]) {
+    const runId = newRunId(), model = `local/${modelId}`;
+    const proxy = { model_id: modelId, inference_id: inferenceId, ...(modelNode ? { model_node: modelNode } : {}) };
+    Object.assign(process.env, { HITCH_CODEX_PATH: executable, HITCH_HARBOR_INTERNAL: "1", HITCH_MANAGED_LOCAL_INFERENCE: "1",
+      HITCH_MANAGED_RUN_ID: runId, HITCH_MANAGED_INFERENCE_ID: inferenceId, HITCH_MANAGED_MODEL_ID: modelId,
+      OPENAI_API_KEY: "hitch-managed-local", OPENAI_BASE_URL: `http://host.docker.internal:4321/${"b".repeat(48)}/${runId}/openai` });
+    if (modelNode) process.env.HITCH_MANAGED_NODE_BINDING = JSON.stringify(modelNode);
+    else delete process.env.HITCH_MANAGED_NODE_BINDING;
+    const result = await executeRun({ runId, runsRoot: path.join(root, "runs"), managedModelProxy: proxy,
+      request: request({ cwd: root, model, local_inference: { model, inference_id: inferenceId } }) });
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.effective_model, modelId);
+    const manifest = await readJSON<{ model: Record<string, unknown> }>(path.join(root, "runs", runId, "manifest.json"));
+    assert.equal(manifest.model.requested_id, model);
+    assert.equal(manifest.model.effective_id, modelId);
+    assert.equal(manifest.model.identity_resolved, true);
+    assert.equal(manifest.model.inference_id, inferenceId);
+    assert.deepEqual(manifest.model.model_node, modelNode);
+  }
 });
 
 test("run engine redacts declared credential values from every persisted evidence file", async (t) => {

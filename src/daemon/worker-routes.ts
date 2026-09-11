@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { parseRemoteWorkerHeartbeat } from "../control-plane/index.js";
 import type { RemoteWorkerProtocol, RemoteWorkerRegistry } from "../control-plane/index.js";
 import type { BackendWorkItemV1, ExecutionLeaseV1, RemoteWorkInputRefV1 } from "../domain/index.js";
-import { invalidInput } from "../foundation/index.js";
+import { HitchError, invalidInput } from "../foundation/index.js";
 import { authorized } from "./auth.js";
 
 export async function handleWorkerProtocolRoute(input: {
@@ -36,9 +37,11 @@ export async function handleWorkerProtocolRoute(input: {
   const action = match[2];
   if (request.method === "POST" && action === "heartbeat") {
     const workerToken = bearerToken(request);
-    if (!workerToken || !await registry.authenticate(workerId, workerToken)) unauthorized(response);
+    const authorizedGeneration = workerToken ? await registry.authenticatedGeneration(workerId, workerToken) : null;
+    if (authorizedGeneration === null) unauthorized(response);
     else {
       const heartbeat = parseRemoteWorkerHeartbeat(await readBodyJSON(request));
+      positiveGeneration(String(heartbeat.generation), authorizedGeneration);
       await protocol.validateHeartbeatLeases(workerId, heartbeat);
       const worker = await registry.heartbeat(workerId, heartbeat);
       input.onEvent?.({ type: "worker.heartbeat", worker_id: workerId, generation: heartbeat.generation, health: heartbeat.health });
@@ -73,14 +76,52 @@ export async function handleRemoteWorkRoute(input: {
   adminToken: string;
 }): Promise<boolean> {
   const { request, response, url, registry, protocol } = input;
+  const leaseMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/execution$/);
+  if (leaseMatch && request.method === "GET") {
+    const workerId = leaseMatch[1]!;
+    const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+    if (authorizedGeneration === null) { unauthorized(response); return true; }
+    const generation = positiveGeneration(url.searchParams.get("generation"), authorizedGeneration), epoch = positiveGeneration(url.searchParams.get("epoch"));
+    response.setHeader("cache-control", "no-store");
+    json(response, 200, await protocol.executionLease(workerId, leaseMatch[2]!, generation, epoch));
+    return true;
+  }
+  const modelMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/model$/);
+  if (modelMatch && request.method === "POST") {
+    const workerId = modelMatch[1]!, leaseId = modelMatch[2]!;
+    const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+    if (authorizedGeneration === null) { unauthorized(response); return true; }
+    const body = objectBody(await readBodyJSON(request, 32 * 1024 * 1024));
+    if (body.schema_version !== "2" || Object.keys(body).sort().join(",") !== "body,epoch,generation,operation,run_id,schema_version"
+      || !["bind", "generate"].includes(String(body.operation)) || typeof body.run_id !== "string") throw invalidInput("invalid remote model request");
+    const generation = positiveGeneration(String(body.generation), authorizedGeneration), epoch = positiveGeneration(String(body.epoch));
+    const authorize = () => protocol.authorizeModelRequest(workerId, leaseId, generation, epoch);
+    const offer = await authorize(), controller = new AbortController();
+    const abort = () => { if (!response.writableEnded) controller.abort(); };
+    response.once("close", abort);
+    let checking: Promise<void> | undefined;
+    const timer = setInterval(() => {
+      checking ??= authorize().then(() => undefined).catch(error => { controller.abort(error); }).finally(() => { checking = undefined; });
+    }, 1_000);
+    timer.unref();
+    try {
+      const result = await protocol.modelRoutes.call(offer, body.run_id, body.operation as "bind" | "generate", body.body, controller.signal);
+      response.writeHead(result.status, { "content-type": result.headers.get("content-type") ?? "application/json", "cache-control": "no-store",
+        ...(result.headers.has("x-gear-receipt-id") ? { "x-gear-receipt-id": result.headers.get("x-gear-receipt-id")! } : {}) });
+      if (result.body) await pipeline(Readable.fromWeb(result.body as import("node:stream/web").ReadableStream<Uint8Array>), response);
+      else response.end();
+    } finally { clearInterval(timer); response.removeListener("close", abort); controller.abort(); await checking; }
+    return true;
+  }
   const credentialMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/credentials$/);
   if (credentialMatch && request.method === "GET") {
     const workerId = credentialMatch[1] as string;
-    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+    if (authorizedGeneration === null) unauthorized(response);
     else {
       const envelope = await protocol.issueCredentialEnvelope(
         workerId, credentialMatch[2] as string,
-        positiveGeneration(url.searchParams.get("generation")), positiveGeneration(url.searchParams.get("epoch")),
+        positiveGeneration(url.searchParams.get("generation"), authorizedGeneration), positiveGeneration(url.searchParams.get("epoch")),
       );
       response.setHeader("cache-control", "no-store");
       response.setHeader("pragma", "no-cache");
@@ -91,9 +132,10 @@ export async function handleRemoteWorkRoute(input: {
   const inputMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/inputs\/(sha256:[a-f0-9]{64})$/);
   if (inputMatch && request.method === "GET") {
     const workerId = inputMatch[1] as string;
-    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+    if (authorizedGeneration === null) unauthorized(response);
     else {
-      const resolved = await protocol.resolveInput(workerId, inputMatch[2] as string, positiveGeneration(url.searchParams.get("generation")), inputMatch[3] as `sha256:${string}`);
+      const resolved = await protocol.resolveInput(workerId, inputMatch[2] as string, positiveGeneration(url.searchParams.get("generation"), authorizedGeneration), inputMatch[3] as `sha256:${string}`);
       response.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(resolved.size), "cache-control": "private, immutable" });
       await pipeline(createReadStream(resolved.path), response);
     }
@@ -102,9 +144,10 @@ export async function handleRemoteWorkRoute(input: {
   const artifactMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/artifacts\/(sha256:[a-f0-9]{64})$/);
   if (artifactMatch && request.method === "PUT") {
     const workerId = artifactMatch[1] as string;
-    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+    if (authorizedGeneration === null) unauthorized(response);
     else {
-      const generation = positiveGeneration(url.searchParams.get("generation"));
+      const generation = positiveGeneration(url.searchParams.get("generation"), authorizedGeneration);
       const epoch = positiveGeneration(url.searchParams.get("epoch"));
       const expectedSize = contentLength(request);
       const artifact = await protocol.uploadArtifact({
@@ -131,9 +174,10 @@ export async function handleRemoteWorkRoute(input: {
       return true;
     }
     if (request.method === "GET") {
-      if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+      const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+      if (authorizedGeneration === null) unauthorized(response);
       else {
-        const generation = positiveGeneration(url.searchParams.get("generation"));
+        const generation = positiveGeneration(url.searchParams.get("generation"), authorizedGeneration);
         json(response, 200, { schema_version: "1", offers: await protocol.listOffers(workerId, generation) });
       }
       return true;
@@ -150,9 +194,11 @@ export async function handleRemoteWorkRoute(input: {
         : await protocol.requestRelease(workerId, offerId) });
       return true;
     }
-    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+    if (authorizedGeneration === null) unauthorized(response);
     else {
-      const body = { ...objectBody(await readBodyJSON(request)), offer_id: offerId };
+      const body: Record<string, unknown> = { ...objectBody(await readBodyJSON(request)), offer_id: offerId };
+      positiveGeneration(String(body.generation), authorizedGeneration);
       const offer = action === "accept"
         ? await protocol.acceptOffer(workerId, body)
         : action === "complete"
@@ -165,9 +211,12 @@ export async function handleRemoteWorkRoute(input: {
   const eventMatch = url.pathname.match(/^\/v1\/workers\/(worker_[a-z0-9][a-z0-9_-]{0,62})\/leases\/(lease_[a-f0-9]{32})\/events$/);
   if (eventMatch && request.method === "POST") {
     const workerId = eventMatch[1] as string;
-    if (!await workerAuthorized(request, registry, workerId)) unauthorized(response);
+    const authorizedGeneration = await workerAuthorized(request, registry, workerId);
+    if (authorizedGeneration === null) unauthorized(response);
     else {
-      const event = await protocol.recordEvent(workerId, { ...objectBody(await readBodyJSON(request)), lease_id: eventMatch[2] });
+      const body: Record<string, unknown> = { ...objectBody(await readBodyJSON(request)), lease_id: eventMatch[2] };
+      positiveGeneration(String(body.generation), authorizedGeneration);
+      const event = await protocol.recordEvent(workerId, body);
       json(response, event.duplicate ? 200 : 201, { schema_version: "1", ...event });
     }
     return true;
@@ -180,9 +229,9 @@ function bearerToken(request: IncomingMessage): string | null {
   return typeof value === "string" && value.startsWith("Bearer ") ? value.slice(7) : null;
 }
 
-async function workerAuthorized(request: IncomingMessage, registry: RemoteWorkerRegistry, workerId: string): Promise<boolean> {
+async function workerAuthorized(request: IncomingMessage, registry: RemoteWorkerRegistry, workerId: string): Promise<number | null> {
   const token = bearerToken(request);
-  return token !== null && registry.authenticate(workerId, token);
+  return token === null ? null : registry.authenticatedGeneration(workerId, token);
 }
 
 function objectBody(value: unknown): Record<string, unknown> {
@@ -190,8 +239,9 @@ function objectBody(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function positiveGeneration(value: string | null): number {
+function positiveGeneration(value: string | null, authorizedGeneration?: number): number {
   if (!value || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw invalidInput("worker generation is required");
+  if (authorizedGeneration !== undefined && Number(value) !== authorizedGeneration) throw new HitchError("worker generation differs from its authenticated credential", { code: "worker_generation_mismatch", exitCode: 12 });
   return Number(value);
 }
 
@@ -217,6 +267,7 @@ async function readBodyJSON(request: IncomingMessage, limit = 1_048_576): Promis
 }
 
 function unauthorized(response: ServerResponse): void {
+  response.setHeader("x-hitch-worker-auth", "rejected");
   json(response, 401, { error: { code: "unauthorized", message: "missing or invalid worker credential" } });
 }
 

@@ -29,6 +29,8 @@ export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src", "node_module
 export const RUNTIME_HARBOR_BRIDGE_FILES = [
   "integrations/harbor/hitch_harbor_agent.py",
   "integrations/harbor/hitch_harbor_environment.py",
+  "integrations/harbor/hitch_host_credentials.py",
+  "integrations/harbor/hitch_private_exec.py",
   "integrations/harbor/hitch_candidate_recycle.py",
   "integrations/harbor/hitch_phase_supervisor.py",
   "integrations/harbor/hitch_harbor_task_resources.py",
@@ -57,6 +59,7 @@ export interface RuntimePayloadRule {
 export const RUNTIME_PAYLOAD_RULES: RuntimePayloadRule[] = [
   { path: "package.json" },
   { path: "integrations/model-call/cli.js" },
+  { path: "integrations/training-tool/cli.js" },
   ...RUNTIME_PAYLOAD_DIRECTORIES.map((directory) => ({ directory })),
   ...RUNTIME_HARBOR_BRIDGE_FILES.map((bridge) => ({ path: bridge })),
 ];

@@ -381,7 +381,7 @@ backend 返回标准化结果和产物引用；由 `evals/service.ts` 决定如�
 - run、eval、artifact、workspace、trajectory 和 controller-runtime 文件布局；
 - Schema version、事件类型和错误 code；
 - 内容寻址摘要和 canonical JSON 规则；
-- Node.js `>=22` 与零运行时 npm 依赖约束。
+- Node.js `>=22` 与 controller runtime 自包含约束；运行时依赖（当前为 `smol-toml`）必须纳入 payload、摘要与完整性校验，新增依赖遵循[贡献指南](../CONTRIBUTING.md#documentation-and-dependencies)。
 
 ### 11.2 程序化入口
 

@@ -1,10 +1,11 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { getAdapter } from "../src/adapters/index.js";
 import type { AdapterRequest } from "../src/adapters/index.js";
+import type { ModelEndpointBindingV1 } from "../src/domain/index.js";
 
 function request(overrides: Partial<AdapterRequest> = {}): AdapterRequest {
   return {
@@ -42,6 +43,55 @@ test("Codex adapter only uses --ephemeral when the installed version supports it
   assert.equal(oldVersion.args.includes("--ephemeral"), false);
   assert.equal(newVersion.args.includes("--ephemeral"), true);
   assert.equal(oldVersion.args.includes("--skip-git-repo-check"), true);
+});
+
+test("Codex local binding uses an isolated provider config without persisting the credential", async (t) => {
+  const home = await mkdtemp(path.join(tmpdir(), "hitch-codex-local-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const secret = "f".repeat(64);
+  const specification = await getAdapter("codex").process(request({ model: "local/coder", agent_args: [] }), "/bin/codex", {
+    runtime_home: home,
+    model_endpoint_credential: secret,
+    model_endpoint: {
+      kind: "managed-local",
+      inference_id: `sha256:${"a".repeat(64)}`,
+      api: "responses",
+      base_url: "http://127.0.0.1:3000/runs/run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/v1/",
+      wire_model: "hitch-wire-model",
+      credential_env_name: "HITCH_LOCAL_MODEL_TOKEN",
+      capabilities: { streaming: true, tool_calls: true, parallel_tool_calls: false, input_modalities: ["text"] },
+    },
+  });
+  assert.equal(specification.env?.HITCH_LOCAL_MODEL_TOKEN, secret);
+  assert.equal(specification.args[specification.args.indexOf("--model") + 1], "hitch-wire-model");
+  const config = await readFile(path.join(specification.env!.CODEX_HOME!, "config.toml"), "utf8");
+  assert.match(config, /model_provider = "hitch_local"/);
+  assert.match(config, /wire_api = "responses"/);
+  assert.match(config, /web_search = "disabled"/);
+  assert.match(config, /check_for_update_on_startup = false/);
+  assert.match(config, /\[analytics\]\nenabled = false/);
+  assert.match(config, /\[feedback\]\nenabled = false/);
+  assert.match(config, /request_max_retries = 0/);
+  assert.equal(config.includes(secret), false);
+  await specification.cleanup?.();
+  await assert.rejects(readFile(path.join(specification.env!.CODEX_HOME!, "config.toml"), "utf8"));
+});
+
+test("local adapters reject non-Responses managed endpoints", async (t) => {
+  const home = await mkdtemp(path.join(tmpdir(), "hitch-codex-chat-local-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const endpoint: ModelEndpointBindingV1 = {
+    kind: "managed-local" as const,
+    inference_id: `sha256:${"a".repeat(64)}` as const,
+    api: "chat-completions" as const,
+    base_url: "http://127.0.0.1:3000/v1/",
+    wire_model: "hitch-wire-model",
+    credential_env_name: "HITCH_LOCAL_MODEL_TOKEN",
+    capabilities: { streaming: true, tool_calls: false, parallel_tool_calls: false, input_modalities: ["text" as const] },
+  };
+  await assert.rejects(async () => getAdapter("codex").process(request({ agent_args: [] }), "/bin/codex", {
+    runtime_home: home, model_endpoint_credential: "x", model_endpoint: endpoint,
+  }), /Responses endpoint/);
 });
 
 test("Claude adapter emits matched structured tool lifecycle events", () => {

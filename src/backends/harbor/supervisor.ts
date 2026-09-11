@@ -19,9 +19,28 @@ async function main(): Promise<void> {
     return;
   }
   const redactionNames = parseRedactionNames(redactionNamesJSON);
+  // The parent persists our identity before authorizing a child launch. Losing
+  // the parent before that acknowledgement must never leave unrecorded work.
+  if (process.send && !await authorizedLaunch()) return;
   const result = await supervise(executable, args, stdoutPath, stderrPath, redactionNames);
   await persist(statusPath, result);
   process.exitCode = result.process_exit_code === null ? 1 : Math.max(0, Math.min(255, result.process_exit_code));
+}
+
+function authorizedLaunch(): Promise<boolean> {
+  return new Promise(resolve => {
+    const finish = (allowed: boolean) => {
+      process.removeListener("message", message);
+      process.removeListener("disconnect", disconnected);
+      resolve(allowed);
+    };
+    const message = (value: unknown) => { if (value === "start") finish(true); };
+    const disconnected = () => finish(false);
+    process.on("message", message);
+    process.once("disconnect", disconnected);
+    if (!process.connected) finish(false);
+    else process.send!("ready");
+  });
 }
 
 function supervise(executable: string, args: string[], stdoutPath: string, stderrPath: string, redactionNames: string[]): Promise<ExitStatus> {

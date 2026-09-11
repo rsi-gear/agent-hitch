@@ -1,20 +1,26 @@
+import { prepareInference } from "./inference-prepare.js";
+import { orderedEvalControl, withLegacyEvalMutation } from "../control-plane/index.js";
+import { executionObservation } from "./execution-observation.js";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Scheduler } from "./scheduler.js";
-import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
+import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, LocalInferenceManager, ManagedServiceRecovery, RemoteWorkerProtocol, RemoteWorkerRegistry, RemoteExecutionObservationCoordinator, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
 import type { EvalRerunExecutor, EvalSchedulerOptions } from "../control-plane/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
-import type { EvalId, ResourceVectorV1, RunId } from "../domain/index.js";
+import type { EvalId, ResourceVectorV1, RunId, ExecutionObservationSourceV2 } from "../domain/index.js";
 import { acquireInstanceLock, authorized, ensureToken, releaseInstanceLock } from "./auth.js";
 import { handleRemoteWorkRoute, handleWorkerProtocolRoute } from "./worker-routes.js";
+import { handleWorkerOwnershipRoute } from "./worker-ownership.js";
+import { handleWorkerObservationRoute } from "./worker-observation.js";
 import { DaemonTelemetry } from "./telemetry.js";
 import { healthParallelism, healthResources, workerHealth } from "./health.js";
 import { boundedControlEvent, boundedMessage } from "./logging.js";
 import { completeLineSize, isLineBoundary, streamFileRange } from "./event-stream.js";
+import { defaultLogger, defaultResourceCapacity, errorStatus, httpErrorCode, json, readBodyJSON } from "./http.js";
 
 export interface DaemonServerOptions {
   root: string;
@@ -29,6 +35,8 @@ export interface DaemonServerOptions {
   evalRerunExecutor?: EvalRerunExecutor;
   /** Test/deployment injection point; credential values remain process-local. */
   credentialEnv?: NodeJS.ProcessEnv;
+  /** Wired by the CLI from the resident executor's environment, never registration metadata. */
+  executionObserver?: ExecutionObservationSourceV2;
 }
 
 export class DaemonServer {
@@ -51,6 +59,7 @@ export class DaemonServer {
   private evalScheduler: EvalScheduler | undefined;
   private evalRerunScheduler: EvalRerunScheduler | undefined;
   private resources: ResourceLedger | undefined;
+  private inferenceManager: LocalInferenceManager | undefined;
   private server: ReturnType<typeof createServer> | undefined;
   private readonly remoteWorkers: RemoteWorkerRegistry;
   private readonly remoteWorkerProtocol: RemoteWorkerProtocol;
@@ -61,8 +70,10 @@ export class DaemonServer {
   private readonly evalRerunExecutor: EvalRerunExecutor | undefined;
   private readonly credentialEnv: NodeJS.ProcessEnv;
   private readonly telemetry = new DaemonTelemetry();
+  private readonly executionObserver: ExecutionObservationSourceV2 | undefined;
+  private readonly remoteObservations: RemoteExecutionObservationCoordinator;
 
-  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor, credentialEnv }: DaemonServerOptions) {
+  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor, credentialEnv, executionObserver }: DaemonServerOptions) {
     this.paths = statePaths(root);
     this.rootId = hitchRootId(this.paths.root);
     this.instanceId = randomBytes(16).toString("hex");
@@ -76,7 +87,9 @@ export class DaemonServer {
     this.evalExecutor = evalExecutor;
     this.evalRerunExecutor = evalRerunExecutor;
     this.credentialEnv = credentialEnv ?? process.env;
+    this.executionObserver = executionObserver;
     this.remoteWorkers = new RemoteWorkerRegistry({ root: this.paths.root });
+    this.remoteObservations = new RemoteExecutionObservationCoordinator({ registry: this.remoteWorkers, instanceId: this.instanceId });
     this.remoteWorkerProtocol = new RemoteWorkerProtocol({ root: this.paths.root, registry: this.remoteWorkers, ...(credentialEnv ? { credentialEnv } : {}) });
     this.startedAt = new Date();
     this.closedPromise = new Promise((resolve) => { this.resolveClosed = resolve; });
@@ -92,10 +105,22 @@ export class DaemonServer {
     this.ownsLock = true;
     try {
       this.token = await ensureToken(this.paths.token);
+      await this.executionObserver?.initialize();
       await this.remoteWorkers.initialize();
       await this.remoteWorkerProtocol.initialize();
+      this.remoteWorkerProtocol.modelRoutes.deferManagedRecovery();
+      // Recovery needs worker heartbeats, terminal receipts and release acknowledgments.
+      await this.listen();
       this.agents = await this.discoverHarnesses();
       this.resources = new ResourceLedger(this.resourceCapacity);
+      this.inferenceManager = new LocalInferenceManager({
+        root: this.paths.root,
+        resources: this.resources,
+        recovery: new ManagedServiceRecovery(this.paths.root, this.remoteWorkers, this.remoteWorkerProtocol),
+        onEvent: (event) => this.observeControlEvent(event),
+      });
+      await this.inferenceManager.initialize();
+      this.remoteWorkerProtocol.modelRoutes.finishManagedRecovery();
       this.scheduler = new Scheduler({
         runsRoot: this.paths.runs,
         root: this.paths.root,
@@ -104,6 +129,7 @@ export class DaemonServer {
         runResources: this.runResources,
         credentialEnv: this.credentialEnv,
         onEvent: (event) => this.observeRunEvent(event),
+        inferenceCoordinator: this.inferenceManager,
       });
       await this.scheduler.initialize();
       const collisions = new CollisionLockManager();
@@ -115,6 +141,7 @@ export class DaemonServer {
         remoteWorkers: this.remoteWorkers,
         remoteWorkerProtocol: this.remoteWorkerProtocol,
         credentialEnv: this.credentialEnv,
+        inferenceCoordinator: this.inferenceManager,
         ...(this.evalExecutor ? { executor: this.evalExecutor } : {}),
         onEvent: (event) => this.observeControlEvent(event),
       });
@@ -124,33 +151,14 @@ export class DaemonServer {
         resources: this.resources,
         trialResources: this.evalTrialResources,
         collisions,
+        ...(this.evalScheduler.remoteWork ? { remoteWork: this.evalScheduler.remoteWork } : {}),
         ...(this.evalRerunExecutor ? { executor: this.evalRerunExecutor } : {}),
         credentialEnv: this.credentialEnv,
+        inferenceCoordinator: this.inferenceManager,
         onEvent: (event) => this.observeControlEvent(event),
       });
       await this.evalRerunScheduler.initialize();
 
-      this.server = createServer((request, response) => {
-        this.handle(request, response).catch((error) => {
-          this.logger("request_error", { error: boundedMessage((error as Error).message), path: boundedMessage(request.url || "", 2_048) });
-          const status = errorStatus(error);
-          json(response, status, {
-            error: {
-              code: (error as { code?: string }).code || "internal_error",
-              message: boundedMessage((error as Error).message),
-              exit_code: Number.isInteger((error as { exitCode?: unknown }).exitCode) ? (error as { exitCode: number }).exitCode : 12,
-            },
-          });
-        });
-      });
-      this.server.requestTimeout = 30_000;
-      this.server.headersTimeout = 10_000;
-
-      await new Promise<void>((resolve, reject) => {
-        this.server?.once("error", reject);
-        this.server?.listen(this.port, "127.0.0.1", () => resolve());
-      });
-      this.port = (this.server?.address() as { port: number }).port;
       await atomicWriteJSON(this.paths.daemon, {
         schema_version: SCHEMA_VERSION,
         pid: process.pid,
@@ -170,6 +178,7 @@ export class DaemonServer {
         this.scheduler?.shutdown().catch(() => {}),
         this.evalScheduler?.shutdown().catch(() => {}),
         this.evalRerunScheduler?.shutdown().catch(() => {}),
+        this.inferenceManager?.close().catch(() => {}),
       ]);
       await releaseInstanceLock(this.paths.lock, this.instanceId);
       this.ownsLock = false;
@@ -177,13 +186,32 @@ export class DaemonServer {
     }
   }
 
+  private async listen(): Promise<void> {
+    this.server = createServer((request, response) => {
+      this.handle(request, response).catch((error) => {
+        this.logger("request_error", { error: boundedMessage((error as Error).message), path: boundedMessage(request.url || "", 2_048) });
+        json(response, errorStatus(error), { error: {
+          code: (error as { code?: string }).code || "internal_error", message: boundedMessage((error as Error).message),
+          exit_code: Number.isInteger((error as { exitCode?: unknown }).exitCode) ? (error as { exitCode: number }).exitCode : 12,
+        } });
+      });
+    });
+    this.server.requestTimeout = 30_000; this.server.headersTimeout = 10_000;
+    await new Promise<void>((resolve, reject) => {
+      this.server?.once("error", reject); this.server?.listen(this.port, "127.0.0.1", () => resolve());
+    });
+    this.port = (this.server.address() as { port: number }).port;
+  }
+
   async close(): Promise<void> {
     if (this.closing) return this.closedPromise;
     this.closing = true;
+    this.remoteObservations.close();
     this.ready = false;
     let failure: Error | undefined;
     try {
       await Promise.all([this.scheduler?.shutdown(), this.evalScheduler?.shutdown(), this.evalRerunScheduler?.shutdown()]);
+      await this.inferenceManager?.close();
       if (this.server) await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     } catch (error) {
       failure = error as Error;
@@ -211,10 +239,16 @@ export class DaemonServer {
     }
 
     const workerRoute = { request, response, url, registry: this.remoteWorkers, protocol: this.remoteWorkerProtocol, adminToken: this.token || "", onEvent: (event: Record<string, unknown>) => this.observeControlEvent(event) };
-    if (await handleWorkerProtocolRoute(workerRoute) || await handleRemoteWorkRoute(workerRoute)) return;
+    if (await handleWorkerObservationRoute({ ...workerRoute, observations: this.remoteObservations })
+      || await handleWorkerOwnershipRoute(workerRoute) || await handleWorkerProtocolRoute(workerRoute) || await handleRemoteWorkRoute(workerRoute)) return;
 
     if (!authorized(request, this.token || "")) {
       return json(response, 401, { error: { code: "unauthorized", message: "missing or invalid daemon token" } });
+    }
+    if (!this.ready && !this.closing) return json(response, 503, { error: { code: "daemon_recovering", message: "daemon is reconciling persisted execution; retry after recovery" } });
+
+    if (request.method === "POST" && url.pathname === "/v2/execution-observation") {
+      return executionObservation(request, response, { source: this.executionObserver, local: this.evalScheduler?.providerSnapshot(), instanceId: this.instanceId, remote: this.remoteObservations });
     }
 
     if (request.method === "GET" && ["/v1/harnesses", "/v1/agents"].includes(url.pathname)) {
@@ -234,6 +268,20 @@ export class DaemonServer {
       }));
       return json(response, 200, { schema_version: SCHEMA_VERSION, workers: [...(local ? [local] : []), ...remote] });
     }
+    if (request.method === "POST" && url.pathname === "/v1/inference/prepare") {
+      if (!this.inferenceManager) throw new HitchError("inference manager unavailable", { code: "inference_route_unavailable", exitCode: 12 });
+      return prepareInference(request, response, this.inferenceManager);
+    }
+    if (request.method === "GET" && url.pathname === "/v1/inference/services") {
+      return json(response, 200, { schema_version: SCHEMA_VERSION, services: await this.inferenceManager?.list() ?? [] });
+    }
+    const inferenceStop = url.pathname.match(/^\/v1\/inference\/services\/(inference_[a-f0-9]{32})\/stop$/);
+    if (request.method === "POST" && inferenceStop) {
+      const body = await readBodyJSON(request);
+      const force = (body as { force?: unknown }).force === true;
+      await this.inferenceManager?.stop(inferenceStop[1], force);
+      return json(response, 200, { schema_version: SCHEMA_VERSION, service_id: inferenceStop[1], status: "stopped" });
+    }
     const buildMatch = url.pathname.match(/^\/v1\/builds\/(build_[a-f0-9]{32})$/);
     if (request.method === "GET" && buildMatch) {
       const inspected = await inspectBuild(this.paths.root, buildMatch[1] as string);
@@ -245,6 +293,9 @@ export class DaemonServer {
       const requestBody = await readBodyJSON(request);
       const runId = await this.scheduler?.submit(requestBody as RunRequestInput);
       return json(response, 202, { schema_version: SCHEMA_VERSION, run_id: runId, status: "queued" });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/eval-controls") {
+      return json(response, 200, await orderedEvalControl(this.paths.root, await readBodyJSON(request), this.evalScheduler!, this.evalRerunScheduler!));
     }
     if (request.method === "POST" && url.pathname === "/v1/evals") {
       const requestBody = await readBodyJSON(request);
@@ -271,7 +322,8 @@ export class DaemonServer {
     const rerunsCollectionMatch = url.pathname.match(/^\/v1\/evals\/(eval_[a-f0-9]+)\/reruns$/);
     if (request.method === "POST" && rerunsCollectionMatch) {
       const evalId = rerunsCollectionMatch[1] as EvalId;
-      const accepted = await this.evalRerunScheduler?.submit(evalId, await readBodyJSON(request));
+      const body = await readBodyJSON(request);
+      const accepted = await withLegacyEvalMutation(this.paths.root, evalId, () => this.evalRerunScheduler!.submit(evalId, body));
       return json(response, 202, {
         schema_version: SCHEMA_VERSION,
         eval_id: accepted?.evalId,
@@ -289,7 +341,7 @@ export class DaemonServer {
     if (rerunMatch) {
       const [, evalId, rerunId, action] = rerunMatch;
       if (request.method === "POST" && action === "cancel") {
-        const status = await this.evalRerunScheduler?.cancel(evalId as EvalId, rerunId as string);
+        const status = await withLegacyEvalMutation(this.paths.root, evalId!, () => this.evalRerunScheduler!.cancel(evalId as EvalId, rerunId as string));
         return json(response, 200, { schema_version: SCHEMA_VERSION, eval_id: evalId, rerun_id: rerunId, status });
       }
       if (request.method === "GET" && !action) {
@@ -316,7 +368,7 @@ export class DaemonServer {
         return this.streamEvents(response, path.join(this.paths.evals, evalId as string, "events.jsonl"), url.searchParams.get("offset") || "0");
       }
       if (request.method === "POST" && action === "cancel") {
-        const outcome = await this.evalScheduler?.cancel(evalId as EvalId);
+        const outcome = await withLegacyEvalMutation(this.paths.root, evalId!, () => this.evalScheduler!.cancel(evalId as EvalId));
         if (outcome === "accepted") return json(response, 202, { schema_version: SCHEMA_VERSION, eval_id: evalId, status: "cancelling" });
         if (outcome === "terminal") {
           const status = await this.evalScheduler?.status(evalId as EvalId);
@@ -437,56 +489,5 @@ export class DaemonServer {
   }
 }
 
-function errorStatus(error: unknown): number {
-  if (new Set(["idempotency_conflict", "eval_rerun_source_not_terminal", "eval_rerun_cancelled"]).has(String((error as { code?: unknown }).code))) return 409;
-  const exitCode = (error as { exitCode?: unknown }).exitCode;
-  if (exitCode === 2) return 400;
-  if (exitCode === 3) return 404;
-  if (exitCode === 11) return 403;
-  if ([4, 5, 10].includes(exitCode as number)) return 422;
-  return 500;
-}
-
-function httpErrorCode(status: number): string {
-  if (status === 400) return "invalid_input";
-  if (status === 404) return "not_found";
-  return "daemon_request_failed";
-}
-
-async function readBodyJSON(request: IncomingMessage, limit = 1_048_576): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > limit) throw invalidInput("request body exceeds 1 MiB");
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as unknown;
-  } catch {
-    throw invalidInput("invalid JSON request body");
-  }
-}
-
-function json(response: ServerResponse, status: number, value: unknown): void {
-  if (response.headersSent) return;
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  response.end(`${JSON.stringify(value)}\n`);
-}
-
-function defaultLogger(type: string, fields: Record<string, unknown>): void {
-  process.stdout.write(`${new Date().toISOString()} ${type} ${JSON.stringify(fields)}\n`);
-}
-
 type RunRequestInput = import("../runs/index.js").RunRequestInput;
 type EvalRequestInput = import("../evals/index.js").EvalRequestInput;
-
-function defaultResourceCapacity(maxConcurrent: number): ResourceVectorV1 {
-  return {
-    cpu_millis: maxConcurrent * 1_000,
-    memory_bytes: maxConcurrent * 1024 * 1024 * 1024,
-    container_slots: maxConcurrent,
-    build_slots: 1,
-  };
-}

@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/remote-verifier-result.schema.json",
+  "title": "Hitch remote verifier-only result V2",
+  "description": "Scoring evidence bound to the sealed verifier descriptor and original execution epoch. The controller verifies the candidate source, resource limits, runtime repair and scores before atomic assessment publication. Maximum encoded envelope size: 64 MiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "eval_id",
+    "work_id",
+    "lease_id",
+    "lease_epoch",
+    "verifier_work_digest",
+    "outcome",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2"
+    },
+    "kind": {
+      "const": "verifier-only-result"
+    },
+    "eval_id": {
+      "type": "string",
+      "pattern": "^eval_[a-f0-9]{32}$"
+    },
+    "work_id": {
+      "type": "string",
+      "pattern": "^work_[a-f0-9]{32}$"
+    },
+    "lease_id": {
+      "type": "string",
+      "pattern": "^lease_[a-f0-9]{32}$"
+    },
+    "lease_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "verifier_work_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trial",
+        "backend",
+        "execution",
+        "config_digest",
+        "controller_runtime_id"
+      ],
+      "properties": {
+        "trial": {
+          "type": "object",
+          "required": [
+            "trial_name"
+          ],
+          "not": {
+            "required": [
+              "config"
+            ]
+          },
+          "properties": {
+            "trial_name": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$"
+            },
+            "agent_setup": {
+              "type": "null"
+            },
+            "agent_execution": {
+              "type": "null"
+            }
+          }
+        },
+        "backend": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "process_exit_code",
+            "signal"
+          ],
+          "properties": {
+            "process_exit_code": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 255
+            },
+            "signal": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^SIG[A-Z0-9]{1,24}$"
+            }
+          }
+        },
+        "execution": {
+          "$ref": "execution-evidence.schema.json"
+        },
+        "config_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "controller_runtime_id": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runtime_repair": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "source_runtime_id",
+            "replacement_runtime_id",
+            "path",
+            "source_sha256",
+            "replacement_sha256",
+            "unchanged_file_count"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "1"
+            },
+            "kind": {
+              "const": "verifier-environment-runtime-repair"
+            },
+            "source_runtime_id": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "replacement_runtime_id": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "source_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "replacement_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "path": {
+              "const": "integrations/harbor/hitch_harbor_environment.py"
+            },
+            "unchanged_file_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "allOf": [
+        {
+          "$ref": "remote-tree-envelope.schema.json"
+        },
+        {
+          "properties": {
+            "symlinks": {
+              "maxItems": 0
+            },
+            "directories": {
+              "contains": {
+                "properties": {
+                  "path": {
+                    "const": "verifier"
+                  }
+                }
+              },
+              "items": {
+                "properties": {
+                  "path": {
+                    "pattern": "^verifier(/.+)?$"
+                  }
+                }
+              }
+            },
+            "files": {
+              "items": {
+                "properties": {
+                  "path": {
+                    "pattern": "^verifier/.+$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

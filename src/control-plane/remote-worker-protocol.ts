@@ -8,15 +8,25 @@ import { maxResourceVectors, resourceValue, subtractResourceVectors, sumResource
 import { RemoteWorkerArtifactStore } from "./remote-worker-artifacts.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { RemoteWorkInputStore } from "./remote-work-inputs.js";
-import { RemoteCredentialEnvelopeIssuer, canonicalRemoteCredentialNames } from "./remote-worker-credentials.js";
+import { RemoteCredentialEnvelopeIssuer } from "./remote-worker-credentials.js";
 import { parseRemoteWorkItem } from "./remote-work-item.js";
+import { RemoteModelRoutes } from "./remote-model-routes.js";
+import type { RemoteModelTargetV2 } from "./remote-model-routes.js";
+import { validateRemoteOfferContract } from "./remote-offer-contract.js";
+import { readRemoteExecutionLease } from "./remote-execution-lease.js";
+import { RemoteWorkerOwnershipStore, parseRemoteExecutionOwnership } from "./remote-worker-ownership.js";
+import type { RemoteWorkerExecutionAdmissionV2, RemoteWorkerExecutionOwnership } from "../domain/index.js";
+import { RemoteWorkerGenerationCleanup } from "./remote-worker-cleanup.js";
+
+import { parseRemoteWorkOffer, parseRemoteWorkerEvent, parseAcceptReceipt, parseTerminalReceipt, parseReleaseReceipt, parseInputRef } from "./remote-worker-codecs.js";
+export { parseRemoteWorkOffer, parseRemoteWorkerEvent } from "./remote-worker-codecs.js";
 
 const OFFER_ID = /^offer_[a-f0-9]{32}$/;
 const LEASE_ID = /^lease_[a-f0-9]{32}$/;
-const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const DEFAULT_OFFER_TTL_MS = 30_000;
 
 export class RemoteWorkerProtocol {
+  private readonly root: string;
   private readonly registry: RemoteWorkerRegistry;
   private readonly directory: string;
   private readonly locks: string;
@@ -24,11 +34,17 @@ export class RemoteWorkerProtocol {
   private readonly credentials: RemoteCredentialEnvelopeIssuer;
   private readonly artifacts: RemoteWorkerArtifactStore;
   private readonly inputs: RemoteWorkInputStore;
+  private readonly ownership: RemoteWorkerOwnershipStore;
+  readonly modelRoutes: RemoteModelRoutes;
+  readonly generationCleanup: RemoteWorkerGenerationCleanup;
 
   constructor(input: { root: string; registry: RemoteWorkerRegistry; offerTtlMs?: number; credentialEnvelopeTtlMs?: number; credentialEnv?: NodeJS.ProcessEnv }) {
     const ttl = input.offerTtlMs ?? DEFAULT_OFFER_TTL_MS;
     if (!input.root || !Number.isSafeInteger(ttl) || ttl < 1_000 || ttl > 5 * 60_000) throw new TypeError("remote worker protocol configuration is invalid");
     const paths = statePaths(input.root);
+    this.root = input.root;
+    this.generationCleanup = new RemoteWorkerGenerationCleanup(input.root, input.registry, (workerId, offerId) => this.getOffer(workerId, offerId));
+    this.modelRoutes = new RemoteModelRoutes(input.root);
     this.registry = input.registry;
     this.directory = paths.workerProtocol;
     this.locks = paths.workerProtocolLocks;
@@ -39,6 +55,7 @@ export class RemoteWorkerProtocol {
     });
     this.artifacts = new RemoteWorkerArtifactStore({ root: input.root });
     this.inputs = new RemoteWorkInputStore(input.root);
+    this.ownership = new RemoteWorkerOwnershipStore(input.root);
   }
 
   async initialize(): Promise<void> {
@@ -49,7 +66,7 @@ export class RemoteWorkerProtocol {
     return this.credentials.namesFor(explicitNames);
   }
 
-  async createOffer(workerId: string, leaseValue: ExecutionLeaseV1, workValue: BackendWorkItemV1, inputRefs: RemoteWorkInputRefV1[] = [], credentialNames: readonly string[] = []): Promise<RemoteWorkOfferV1> {
+  async createOffer(workerId: string, leaseValue: ExecutionLeaseV1, workValue: BackendWorkItemV1, inputRefs: RemoteWorkInputRefV1[] = [], credentialNames: readonly string[] = [], modelTarget?: RemoteModelTargetV2): Promise<RemoteWorkOfferV1> {
     return withFileLock(this.locks, `offers-${workerId}`, async () => {
       const worker = await this.requireReadyWorker(workerId);
       const lease = parseExecutionLease(leaseValue);
@@ -79,8 +96,12 @@ export class RemoteWorkerProtocol {
         issued_at: now.toISOString(),
         expires_at: new Date(now.getTime() + this.offerTtlMs).toISOString(),
       };
-      await atomicWriteJSON(this.offerPath(workerId, offer.offer_id), offer);
-      return offer;
+      await validateRemoteOfferContract(offer, worker.provider_status.features, this.inputs, modelTarget);
+      return this.registry.withGeneration(workerId, worker.generation, async () => {
+        if (modelTarget) await this.modelRoutes.prepare(offer, modelTarget);
+        await atomicWriteJSON(this.offerPath(workerId, offer.offer_id), offer);
+        return offer;
+      });
     }, { timeoutCode: "worker_offer_selection_locked", timeoutExitCode: 12 });
   }
 
@@ -93,17 +114,24 @@ export class RemoteWorkerProtocol {
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       if (!entry.isFile() || !/^offer_[a-f0-9]{32}\.json$/.test(entry.name)) continue;
       let offer = parseRemoteWorkOffer(await readJSON(path.join(directory, entry.name)));
+      const cleanup = await this.generationCleanup.read(offer);
+      if (cleanup) { await this.generationCleanup.reconcile(offer, cleanup); continue; }
       if (offer.state === "offered" && Date.parse(offer.expires_at) <= Date.now()) offer = await this.expireOffer(offer);
       if (offer.state === "offered" || offer.state === "accepted" || offer.state === "cancel-requested" || offer.state === "completed" || offer.state === "release-requested") offers.push(offer);
     }
     return offers;
   }
 
-  async acceptOffer(workerId: string, value: unknown): Promise<RemoteWorkOfferV1> {
+  async acceptOffer(workerId: string, value: unknown, ownership?: RemoteWorkerExecutionOwnership): Promise<RemoteWorkOfferV1> {
     const receipt = parseAcceptReceipt(value);
     await this.requireWorkerGeneration(workerId, receipt.generation);
     return this.updateOffer(workerId, receipt.offer_id, async (offer) => {
       assertOfferReceipt(offer, workerId, receipt.generation, receipt.nonce);
+      const admission = await this.ownership.read(offer);
+      if (ownership !== undefined) {
+        parseRemoteExecutionOwnership(ownership, offer);
+        if (!receipt.accepted || offer.state !== "offered" && !admission) throw protocolError("execution ownership cannot be attached after acceptance");
+      } else if (admission) throw protocolError("execution ownership acceptance cannot be downgraded to v1");
       const digest = sha256JSON(receipt);
       if (offer.accept_receipt_digest) {
         if (offer.accept_receipt_digest !== digest) throw replayError("remote work offer acceptance conflicts with its receipt");
@@ -111,7 +139,7 @@ export class RemoteWorkerProtocol {
       }
       if (offer.state !== "offered") throw replayError(`remote work offer cannot be accepted from ${offer.state}`);
       if (Date.parse(offer.expires_at) <= Date.now()) return { ...offer, state: "expired" };
-      const now = new Date().toISOString();
+      const now = admission?.accepted_at ?? new Date().toISOString();
       if (!receipt.accepted) return {
         ...offer,
         state: "rejected",
@@ -119,12 +147,24 @@ export class RemoteWorkerProtocol {
         accept_receipt_digest: digest,
         completed_at: now,
       };
-      await atomicWriteJSON(this.leaseIndexPath(offer.lease.lease_id), {
-        schema_version: "1", worker_id: workerId, offer_id: offer.offer_id,
-        lease_id: offer.lease.lease_id, epoch: offer.lease.epoch,
-      });
       return { ...offer, state: "accepted", accepted_at: now, accept_receipt_digest: digest };
+    }, receipt.generation, ownership === undefined ? undefined : async next => {
+      if (next.accepted_at) await this.ownership.admit(next, ownership);
     });
+  }
+
+  async executionAdmission(workerId: string, offerId: string): Promise<RemoteWorkerExecutionAdmissionV2 | null> {
+    const offer = await this.getOffer(workerId, offerId);
+    return offer ? this.ownership.read(offer) : null;
+  }
+
+  async authorizeExecutionProcess(workerId: string, offerId: string, generation: number, ownershipDigest: unknown, identity: unknown): Promise<RemoteWorkerExecutionAdmissionV2> {
+    let admission!: RemoteWorkerExecutionAdmissionV2;
+    await this.updateOffer(workerId, offerId, async offer => {
+      if (offer.generation !== generation || offer.state !== "accepted") throw protocolError("Harbor process requires the original accepted generation");
+      return offer;
+    }, generation, async offer => { admission = await this.ownership.authorizeProcess(offer, ownershipDigest, identity); });
+    return admission;
   }
 
   async recordEvent(workerId: string, value: unknown): Promise<{ event: RemoteWorkerEventV1; duplicate: boolean }> {
@@ -133,7 +173,7 @@ export class RemoteWorkerProtocol {
     const offer = await this.offerForLease(event.lease_id);
     if (offer.worker_id !== workerId || offer.generation !== event.generation || offer.lease.epoch !== event.epoch
       || !new Set(["accepted", "cancel-requested", "completed", "release-requested"]).has(offer.state)) throw protocolError("remote worker event lease is not active");
-    return withFileLock(this.locks, `event-${event.lease_id}`, async () => {
+    return withFileLock(this.locks, `event-${event.lease_id}`, () => this.registry.withGeneration(workerId, event.generation, async () => {
       const statePath = this.eventStatePath(event.lease_id);
       const state = await readJSON<{ sequence?: unknown } | null>(statePath, null);
       const sequence = state === null ? 0 : validSequence(state.sequence, true);
@@ -150,7 +190,7 @@ export class RemoteWorkerProtocol {
       await atomicWriteJSON(file, event);
       await atomicWriteJSON(statePath, { schema_version: "1", sequence: event.sequence });
       return { event, duplicate: false };
-    }, { timeoutCode: "worker_event_locked", timeoutExitCode: 12 });
+    }), { timeoutCode: "worker_event_locked", timeoutExitCode: 12 });
   }
 
   async completeOffer(workerId: string, value: unknown): Promise<RemoteWorkOfferV1> {
@@ -173,7 +213,7 @@ export class RemoteWorkerProtocol {
         terminal: { status: receipt.status, artifacts: receipt.artifacts, sent_at: receipt.sent_at },
         terminal_receipt_digest: digest,
       };
-    });
+    }, receipt.generation);
   }
 
   async requestCancel(workerId: string, offerId: string): Promise<RemoteWorkOfferV1> {
@@ -221,7 +261,7 @@ export class RemoteWorkerProtocol {
         released_at: receipt.sent_at,
         release_receipt_digest: digest,
       };
-    });
+    }, receipt.generation);
   }
 
   async getOffer(workerId: string, offerId: string): Promise<RemoteWorkOfferV1 | null> {
@@ -267,7 +307,12 @@ export class RemoteWorkerProtocol {
   }) {
     const offer = await this.activeOfferForLease(input.workerId, input.leaseId, input.generation, input.epoch);
     if (offer.state !== "accepted" && offer.state !== "cancel-requested") throw protocolError("remote worker artifact lease is not collecting evidence");
-    return this.artifacts.upload(input);
+    return this.artifacts.upload({ ...input, publish: commit => this.registry.withGeneration(input.workerId, input.generation, async () => {
+      const current = await this.offerForLease(input.leaseId);
+      if (current.worker_id !== input.workerId || current.generation !== input.generation || current.lease.epoch !== input.epoch
+        || !["accepted", "cancel-requested"].includes(current.state)) throw protocolError("remote worker artifact lease is no longer collecting evidence");
+      return commit();
+    }) });
   }
 
   async activeOfferForLease(workerId: string, leaseId: string, generation: number, epoch: number): Promise<RemoteWorkOfferV1> {
@@ -280,6 +325,15 @@ export class RemoteWorkerProtocol {
   async issueCredentialEnvelope(workerId: string, leaseId: string, generation: number, epoch: number): Promise<RemoteCredentialEnvelopeV1> {
     const offer = await this.activeOfferForLease(workerId, leaseId, generation, epoch);
     return this.credentials.issue(offer);
+  }
+
+  async authorizeModelRequest(workerId: string, leaseId: string, generation: number, epoch: number): Promise<RemoteWorkOfferV1> {
+    return this.modelRoutes.authorize(await this.activeOfferForLease(workerId, leaseId, generation, epoch));
+  }
+
+  async executionLease(workerId: string, leaseId: string, generation: number, epoch: number) {
+    const offer = await this.activeOfferForLease(workerId, leaseId, generation, epoch);
+    return { schema_version: "2", offer_id: offer.offer_id, generation, lease: await readRemoteExecutionLease(this.root, offer) };
   }
 
   async validateHeartbeatLeases(workerId: string, heartbeat: RemoteWorkerHeartbeatV1): Promise<void> {
@@ -308,14 +362,22 @@ export class RemoteWorkerProtocol {
     return this.artifacts.pathFor(workerId, leaseId, digest);
   }
 
-  private async updateOffer(workerId: string, offerId: string, update: (offer: RemoteWorkOfferV1) => Promise<RemoteWorkOfferV1>): Promise<RemoteWorkOfferV1> {
+  private async updateOffer(workerId: string, offerId: string, update: (offer: RemoteWorkOfferV1) => Promise<RemoteWorkOfferV1>, generation?: number,
+    beforePublish?: (offer: RemoteWorkOfferV1) => Promise<void>): Promise<RemoteWorkOfferV1> {
     validateOfferIdentity(workerId, offerId);
     return withFileLock(this.locks, offerId, async () => {
       const current = await this.getOffer(workerId, offerId);
       if (!current) throw new HitchError(`remote work offer not found: ${offerId}`, { code: "worker_offer_not_found", exitCode: 3 });
       const next = parseRemoteWorkOffer(await update(current));
-      if (next !== current) await atomicWriteJSON(this.offerPath(workerId, offerId), next);
-      return next;
+      const publish = async () => {
+        await beforePublish?.(next);
+        if (current.state === "offered" && next.state === "accepted") await atomicWriteJSON(this.leaseIndexPath(next.lease.lease_id), {
+          schema_version: "1", worker_id: workerId, offer_id: next.offer_id, lease_id: next.lease.lease_id, epoch: next.lease.epoch,
+        });
+        if (next !== current) await atomicWriteJSON(this.offerPath(workerId, offerId), next);
+        return next;
+      };
+      return generation === undefined ? publish() : this.registry.withGeneration(workerId, generation, publish);
     }, { timeoutCode: "worker_offer_locked", timeoutExitCode: 12 });
   }
 
@@ -352,90 +414,6 @@ export class RemoteWorkerProtocol {
   private eventPath(leaseId: string, sequence: number): string { return path.join(this.directory, "events", leaseId, `${String(sequence).padStart(12, "0")}.json`); }
 }
 
-export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
-  const record = exact(value, [
-    "schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "inputs", "credential_names", "state", "issued_at", "expires_at",
-    "accepted_at", "completed_at", "released_at", "rejection_code", "terminal",
-    "accept_receipt_digest", "terminal_receipt_digest", "release_receipt_digest",
-  ], "remote work offer");
-  const states = new Set(["offered", "accepted", "rejected", "cancel-requested", "completed", "release-requested", "released", "expired"]);
-  if (record.schema_version !== "1" || typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
-    || typeof record.nonce !== "string" || !/^[a-f0-9]{64}$/.test(record.nonce)
-    || !Number.isSafeInteger(record.generation) || (record.generation as number) < 1
-    || typeof record.worker_id !== "string" || !/^worker_[a-z0-9][a-z0-9_-]{0,62}$/.test(record.worker_id)
-    || !states.has(String(record.state)) || !timestamp(record.issued_at) || !timestamp(record.expires_at)) throw protocolError("remote work offer identity is invalid");
-  for (const field of ["accepted_at", "completed_at", "released_at"] as const) if (record[field] !== undefined && !timestamp(record[field])) throw protocolError(`remote work offer ${field} is invalid`);
-  for (const field of ["accept_receipt_digest", "terminal_receipt_digest", "release_receipt_digest"] as const) if (record[field] !== undefined && (typeof record[field] !== "string" || !SHA256.test(record[field] as string))) throw protocolError(`remote work offer ${field} is invalid`);
-  const lease = parseExecutionLease(record.lease);
-  const work = parseRemoteWorkItem(record.work);
-  const inputs = record.inputs === undefined ? undefined : Array.isArray(record.inputs) ? record.inputs.map(parseInputRef) : (() => { throw protocolError("remote work inputs are invalid"); })();
-  if (inputs && new Set(inputs.map((entry) => entry.kind)).size !== inputs.length) throw protocolError("remote work inputs are duplicated");
-  const credentialNames = record.credential_names === undefined ? undefined : canonicalRemoteCredentialNames(record.credential_names as readonly string[]);
-  const terminal = record.terminal === undefined ? undefined : parseTerminal(record.terminal);
-  if (lease.worker_id !== record.worker_id || lease.work_id !== work.work_id || lease.eval_id !== work.eval_id
-    || (record.state === "completed" || record.state === "release-requested" || record.state === "released") !== (terminal !== undefined)) throw protocolError("remote work offer evidence is inconsistent");
-  return { ...record, ...(inputs ? { inputs } : {}), ...(credentialNames?.length ? { credential_names: credentialNames } : {}) } as unknown as RemoteWorkOfferV1;
-}
-
-
-function parseAcceptReceipt(value: unknown): { schema_version: "1"; offer_id: string; nonce: string; generation: number; accepted: boolean; rejection_code?: string; sent_at: string } {
-  const record = exact(value, ["schema_version", "offer_id", "nonce", "generation", "accepted", "rejection_code", "sent_at"], "remote work accept receipt");
-  if (record.schema_version !== "1" || typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
-    || typeof record.nonce !== "string" || !/^[a-f0-9]{64}$/.test(record.nonce) || !Number.isSafeInteger(record.generation) || (record.generation as number) < 1
-    || typeof record.accepted !== "boolean" || !timestamp(record.sent_at)
-    || record.accepted === false !== (typeof record.rejection_code === "string" && Boolean(record.rejection_code))) throw protocolError("remote work accept receipt is invalid");
-  return record as ReturnType<typeof parseAcceptReceipt>;
-}
-
-function parseTerminalReceipt(value: unknown): { schema_version: "1"; offer_id: string; nonce: string; generation: number; lease_id: string; epoch: number; status: "succeeded" | "failed" | "cancelled"; artifacts: RemoteWorkArtifactRefV1[]; sent_at: string } {
-  const record = exact(value, ["schema_version", "offer_id", "nonce", "generation", "lease_id", "epoch", "status", "artifacts", "sent_at"], "remote work terminal receipt");
-  if (record.schema_version !== "1" || typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
-    || typeof record.nonce !== "string" || !/^[a-f0-9]{64}$/.test(record.nonce) || !Number.isSafeInteger(record.generation) || (record.generation as number) < 1
-    || typeof record.lease_id !== "string" || !LEASE_ID.test(record.lease_id) || !Number.isSafeInteger(record.epoch) || (record.epoch as number) < 1
-    || !new Set(["succeeded", "failed", "cancelled"]).has(String(record.status)) || !Array.isArray(record.artifacts) || !timestamp(record.sent_at)) throw protocolError("remote work terminal receipt is invalid");
-  const artifacts = record.artifacts.map(parseArtifactRef).sort((left, right) => left.digest.localeCompare(right.digest));
-  if (new Set(artifacts.map((entry) => `${entry.kind}:${entry.digest}`)).size !== artifacts.length) throw protocolError("remote work terminal artifacts are duplicated");
-  return { ...record, artifacts } as ReturnType<typeof parseTerminalReceipt>;
-}
-
-function parseReleaseReceipt(value: unknown): { schema_version: "1"; offer_id: string; nonce: string; generation: number; lease_id: string; epoch: number; sent_at: string } {
-  const record = exact(value, ["schema_version", "offer_id", "nonce", "generation", "lease_id", "epoch", "sent_at"], "remote work release receipt");
-  if (record.schema_version !== "1" || typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
-    || typeof record.nonce !== "string" || !/^[a-f0-9]{64}$/.test(record.nonce) || !Number.isSafeInteger(record.generation) || (record.generation as number) < 1
-    || typeof record.lease_id !== "string" || !LEASE_ID.test(record.lease_id) || !Number.isSafeInteger(record.epoch) || (record.epoch as number) < 1 || !timestamp(record.sent_at)) throw protocolError("remote work release receipt is invalid");
-  return record as ReturnType<typeof parseReleaseReceipt>;
-}
-
-export function parseRemoteWorkerEvent(value: unknown): RemoteWorkerEventV1 {
-  const record = exact(value, ["schema_version", "generation", "lease_id", "epoch", "sequence", "type", "payload", "sent_at"], "remote worker event");
-  if (record.schema_version !== "1" || !Number.isSafeInteger(record.generation) || (record.generation as number) < 1
-    || typeof record.lease_id !== "string" || !LEASE_ID.test(record.lease_id) || !Number.isSafeInteger(record.epoch) || (record.epoch as number) < 1
-    || !Number.isSafeInteger(record.sequence) || (record.sequence as number) < 1 || typeof record.type !== "string" || !record.type || record.type.length > 256
-    || record.payload !== undefined && (!record.payload || typeof record.payload !== "object" || Array.isArray(record.payload)) || !timestamp(record.sent_at)) throw protocolError("remote worker event is invalid");
-  return record as unknown as RemoteWorkerEventV1;
-}
-
-function parseTerminal(value: unknown): NonNullable<RemoteWorkOfferV1["terminal"]> {
-  const record = exact(value, ["status", "artifacts", "sent_at"], "remote work terminal evidence");
-  if (!new Set(["succeeded", "failed", "cancelled"]).has(String(record.status)) || !Array.isArray(record.artifacts) || !timestamp(record.sent_at)) throw protocolError("remote work terminal evidence is invalid");
-  return { status: record.status as "succeeded" | "failed" | "cancelled", artifacts: record.artifacts.map(parseArtifactRef), sent_at: record.sent_at as string };
-}
-
-function parseArtifactRef(value: unknown): RemoteWorkArtifactRefV1 {
-  const record = exact(value, ["kind", "digest", "size"], "remote work artifact ref");
-  if (record.kind !== "result-bundle" && record.kind !== "diagnostic" || typeof record.digest !== "string" || !SHA256.test(record.digest)
-    || !Number.isSafeInteger(record.size) || (record.size as number) < 0 || (record.size as number) > 512 * 1024 * 1024) throw protocolError("remote work artifact ref is invalid");
-  return { kind: record.kind, digest: record.digest as Sha256, size: record.size as number };
-}
-
-function parseInputRef(value: unknown): RemoteWorkInputRefV1 {
-  const record = exact(value, ["kind", "format", "digest", "size"], "remote work input ref");
-  if (!new Set(["work-spec", "harness-artifact", "controller-runtime", "task-input"]).has(String(record.kind))
-    || !new Set(["json", "hitch-tree-v1"]).has(String(record.format)) || typeof record.digest !== "string" || !SHA256.test(record.digest)
-    || !Number.isSafeInteger(record.size) || (record.size as number) < 1 || (record.size as number) > 256 * 1024 * 1024) throw protocolError("remote work input ref is invalid");
-  return record as unknown as RemoteWorkInputRefV1;
-}
-
 function assertOfferReceipt(offer: RemoteWorkOfferV1, workerId: string, generation: number, nonce: string): void {
   if (offer.worker_id !== workerId || offer.generation !== generation || offer.nonce !== nonce) throw replayError("remote work receipt identity does not match the offer");
 }
@@ -465,15 +443,7 @@ function acceptedOrCollecting(state: RemoteWorkOfferV1["state"]): boolean {
 }
 
 function fields(): Array<keyof ResourceVectorV1> { return ["cpu_millis", "memory_bytes", "container_slots", "build_slots", "gpu_count", "ephemeral_disk_bytes"]; }
-function timestamp(value: unknown): boolean { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
 function validSequence(value: unknown, allowZero: boolean): number { if (!Number.isSafeInteger(value) || (value as number) < (allowZero ? 0 : 1)) throw protocolError("remote worker event sequence state is invalid"); return value as number; }
-
-function exact(value: unknown, keys: string[], label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw protocolError(`${label} must be an object`);
-  const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => !keys.includes(key))) throw protocolError(`${label} has unknown fields`);
-  return record;
-}
 
 function protocolError(message: string): HitchError { return new HitchError(message, { code: "worker_protocol_invalid", exitCode: 2 }); }
 function replayError(message: string): HitchError { return new HitchError(message, { code: "worker_protocol_replay", exitCode: 12 }); }
