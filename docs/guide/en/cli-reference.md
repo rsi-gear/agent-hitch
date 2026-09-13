@@ -270,6 +270,8 @@ See [workspace modes and retention](versions-and-workspaces.md).
 | `hitch trajectory project RUN_ID [--profile analysis] [--max-bytes N] [--json]` | Produce a bounded analysis view. |
 | `hitch trajectory events RUN_ID [EVENT_OPTIONS] [--json]` | Read a bounded cursor page of events. |
 | `hitch verifier inspect RUN_ID [--json]` | Read redacted verifier results and diagnostics. |
+| `hitch verifier artifact RUN_ID NAME [--offset N] [--limit N] [--sha256 DIGEST] [--json]` | Read one UTF-8 byte page from a complete sanitized verifier artifact. The digest fences continuation against a changed source. |
+| `hitch verifier repair RUN_ID [--source EVAL_RELATIVE_TRIAL_DIR] [--json]` | Recover a legacy truncated diagnostic from its exact retained Harbor source into a digest-bound immutable supplement. The sealed run and score remain unchanged. |
 
 ```text
 --types TYPE_A,TYPE_B
@@ -280,6 +282,13 @@ See [workspace modes and retention](versions-and-workspaces.md).
 ```
 
 The block lists event options. Field inspection requires an exact sequence window and the canonical SHA-256 returned by a prior view. Treat cursors as opaque values; preserve the query when continuing a page. See [runs and evidence](runs-and-evidence.md).
+
+Verifier artifact offsets are UTF-8 byte offsets. `--limit` accepts 4 through
+65536 bytes; continue with the returned `next_offset` until `eof` is true.
+`NAME` is one of `ctrf.json`, `test-stdout.txt`, `test-stderr.txt`,
+`stdout.txt`, or `stderr.txt`. Verifier repair accepts only the run's known
+eval-relative legacy Harbor trial path and rejects ambiguous sources and legacy
+credential-value redactions. See the [verifier evidence contract](../../verifier-evidence.md).
 
 ## Feedback
 

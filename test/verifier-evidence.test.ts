@@ -7,9 +7,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunObservationV1 } from "../src/domain/index.js";
 import { validateVerifierEvidence } from "../src/domain/index.js";
-import { captureVerifierDiagnostics, persistTrialVerifierDiagnostics } from "../src/evals/index.js";
+import { captureVerifierDiagnostics, persistTrialVerifierDiagnostics, repairVerifierDiagnostics } from "../src/evals/index.js";
 import { atomicWriteJSON, ensureDir, sha256Bytes } from "../src/foundation/index.js";
-import { loadVerifierEvidence, writeResultBundleIndex } from "../src/runs/index.js";
+import { loadVerifierDiagnosticPage, loadVerifierEvidence, writeResultBundleIndex } from "../src/runs/index.js";
 import { forceRemove } from "../test-support/helpers.js";
 
 const executable = fileURLToPath(new URL("../bin/hitch.js", import.meta.url));
@@ -47,13 +47,10 @@ test("verifier evidence returns reward zero, structured result, bounded diagnost
     `head\nAuthorization: Bearer abcdefghijklmnop\n${secret}\n${path.join(root, "workspace", "test.ts")}\nC:/Users/alice/work/test.ts\n\\\\server\\share\\test.ts\n${"x".repeat(2_000)}\ntail\n`,
   );
   await writeFile(path.join(verifierDirectory, "test-stderr.txt"), "assertion failed\n");
-  const captured = await captureVerifierDiagnostics(trialDirectory, runDirectory, {
-    maxArtifactBytes: 1024,
-    credentialValues: [secret],
-  });
+  const captured = await captureVerifierDiagnostics(trialDirectory, runDirectory, { credentialValues: [secret] });
   assert.ok(captured);
   assert.equal(captured.artifacts.length, 3);
-  assert.equal(captured.artifacts.find((artifact) => artifact.name === "test-stdout.txt")?.truncated, true);
+  assert.equal(captured.artifacts.find((artifact) => artifact.name === "test-stdout.txt")?.truncated, false);
   assert.ok(captured.redactions.some((rule) => rule.rule_id === "known-credential-value-v1"));
   await writeEvalRecord(root, runId);
   await writeResultBundleIndex(runDirectory);
@@ -74,7 +71,7 @@ test("verifier evidence returns reward zero, structured result, bounded diagnost
   assert.deepEqual(evidence.verifier.diagnostics?.stdout?.map((artifact) => artifact.name), ["test-stdout.txt"]);
   assert.deepEqual(evidence.verifier.diagnostics?.stderr?.map((artifact) => artifact.name), ["test-stderr.txt"]);
   const stdout = evidence.verifier.diagnostics?.stdout?.[0];
-  assert.equal(stdout?.truncated, true);
+  assert.equal(stdout?.truncated, false);
   assert.match(stdout?.text ?? "", /head/);
   assert.match(stdout?.text ?? "", /tail/);
   assert.doesNotMatch(JSON.stringify(evidence), new RegExp(secret));
@@ -95,6 +92,220 @@ test("verifier evidence returns reward zero, structured result, bounded diagnost
   });
   assert.equal(cli.status, 0, cli.stderr || undefined);
   assert.deepEqual(validateVerifierEvidence(JSON.parse(cli.stdout)), evidence);
+});
+
+test("complete 90 KiB verifier diagnostics persist as valid JSON and page to a digest-checked EOF", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-pages-"));
+  t.after(() => forceRemove(root));
+  const runId = `run_${"0".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, {
+    status: "valid", reward: 0, verifier_result_ref: "verifier/result.json",
+  });
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "result.json"), { rewards: { reward: 0 } });
+  const trialDirectory = await ensureDir(path.join(root, "large-source"));
+  const verifierDirectory = await ensureDir(path.join(trialDirectory, "verifier"));
+  const ctrf = {
+    results: {
+      summary: { tests: 720, passed: 1, failed: 719 },
+      tests: Array.from({ length: 720 }, (_, index) => ({
+        name: `test-${index}`,
+        status: index === 0 ? "passed" : "failed",
+        message: `failure ${index}: ${"detail".repeat(20)}`,
+      })),
+    },
+  };
+  const ctrfText = JSON.stringify(ctrf);
+  const stdoutText = `head\n${"diagnostic-é🙂-".repeat(7_000)}\ntail\n`;
+  assert.ok(Buffer.byteLength(ctrfText) > 64 * 1024);
+  assert.ok(Buffer.byteLength(stdoutText) > 64 * 1024);
+  await writeFile(path.join(verifierDirectory, "ctrf.json"), ctrfText);
+  await writeFile(path.join(verifierDirectory, "test-stdout.txt"), stdoutText);
+  const captured = await captureVerifierDiagnostics(trialDirectory, runDirectory);
+  assert.equal(captured?.schema_version, "2");
+  assert.deepEqual(captured?.losses, []);
+  assert.ok(captured?.artifacts.every((artifact) => artifact.truncated === false));
+  assert.deepEqual(JSON.parse(await readFile(path.join(runDirectory, "verifier", "ctrf.json"), "utf8")), ctrf);
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+
+  const evidence = await loadVerifierEvidence(root, runId);
+  assert.equal(evidence.verifier.diagnostics?.ctrf?.truncated, true);
+  assert.equal(evidence.verifier.diagnostics?.stdout?.[0]?.truncated, true);
+  for (const [name, expected] of [["ctrf.json", ctrfText], ["test-stdout.txt", stdoutText]] as const) {
+    const preview = name === "ctrf.json" ? evidence.verifier.diagnostics?.ctrf : evidence.verifier.diagnostics?.stdout?.[0];
+    assert.ok(preview);
+    let offset = 0;
+    const chunks: string[] = [];
+    for (;;) {
+      const page = await loadVerifierDiagnosticPage(root, runId, name, {
+        offset, maxBytes: 4097, expectedSha256: preview.sha256,
+      });
+      assert.equal(page.artifact.source_complete, true);
+      assert.equal(page.artifact.bytes, Buffer.byteLength(expected));
+      assert.equal(page.artifact.sha256, sha256Bytes(Buffer.from(expected)));
+      assert.equal(page.page.offset, offset);
+      assert.equal(page.page.bytes, Buffer.byteLength(page.page.text));
+      chunks.push(page.page.text);
+      if (page.page.eof) {
+        assert.equal(page.page.next_offset, undefined);
+        break;
+      }
+      assert.ok(page.page.next_offset);
+      offset = page.page.next_offset;
+    }
+    assert.equal(chunks.join(""), expected);
+  }
+  assert.deepEqual(JSON.parse((await collectDiagnosticPages(root, runId, "ctrf.json")).text), ctrf);
+  await assert.rejects(
+    loadVerifierDiagnosticPage(root, runId, "ctrf.json", { expectedSha256: digestA }),
+    (error: { code?: string }) => error.code === "verifier_diagnostic_version_mismatch",
+  );
+});
+
+test("persistence cap and invalid CTRF are explicit terminal source losses", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-loss-"));
+  t.after(() => forceRemove(root));
+  const runId = `run_${"f".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, {
+    status: "valid", reward: 1, verifier_result_ref: "verifier/result.json",
+  });
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "result.json"), { rewards: { reward: 1 } });
+  const trialDirectory = await ensureDir(path.join(root, "loss-source"));
+  const verifierDirectory = await ensureDir(path.join(trialDirectory, "verifier"));
+  await writeFile(path.join(verifierDirectory, "ctrf.json"), "{ invalid JSON");
+  await writeFile(path.join(verifierDirectory, "test-stdout.txt"), "x".repeat(1024));
+  const captured = await captureVerifierDiagnostics(trialDirectory, runDirectory, { maxArtifactBytes: 128 });
+  assert.deepEqual(captured?.losses.map((loss) => [loss.name, loss.loss_reason]), [
+    ["ctrf.json", "invalid_json"],
+    ["test-stdout.txt", "persistence_limit_exceeded"],
+  ]);
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+  const evidence = await loadVerifierEvidence(root, runId);
+  assert.equal(evidence.verifier.status, "complete");
+  assert.equal(evidence.verifier.diagnostics?.ctrf?.truncated, true);
+  assert.equal(evidence.verifier.diagnostics?.ctrf?.text, "");
+  assert.equal(evidence.verifier.diagnostics?.stdout?.[0]?.truncated, true);
+  for (const [name, reason] of [["ctrf.json", "invalid_json"], ["test-stdout.txt", "persistence_limit_exceeded"]] as const) {
+    const page = await loadVerifierDiagnosticPage(root, runId, name);
+    assert.deepEqual(page.page, { offset: 0, bytes: 0, text: "", eof: true });
+    assert.equal(page.artifact.source_complete, false);
+    assert.equal(page.artifact.loss_reason, reason);
+  }
+  await assert.rejects(stat(path.join(runDirectory, "verifier", "ctrf.json")), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(runDirectory, "verifier", "test-stdout.txt")), { code: "ENOENT" });
+  await assert.rejects(
+    repairVerifierDiagnostics({ root, runId }),
+    (error: { code?: string }) => error.code === "verifier_diagnostic_repair_source_unavailable",
+  );
+});
+
+test("historical repair publishes one digest-pinned supplement without changing the sealed run or score", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-repair-"));
+  t.after(() => forceRemove(root));
+  const runId = `run_${"8".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, {
+    status: "valid", reward: 0, verifier_result_ref: "verifier/result.json",
+  });
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "result.json"), { rewards: { reward: 0 } });
+  const ctrfText = JSON.stringify({ results: { tests: Array.from({ length: 900 }, (_, index) => ({
+    name: `case-${index}`, status: index === 0 ? "passed" : "failed", message: "assertion detail ".repeat(8),
+  })) } });
+  const stdoutText = `head\n${"failure detail ".repeat(7_000)}\ntail\n`;
+  const relativeSource = path.posix.join("harbor", "attempt-0001", "job", trialId);
+  const sourceVerifier = await ensureDir(path.join(root, "evals", evalId, relativeSource, "verifier"));
+  await writeFile(path.join(sourceVerifier, "ctrf.json"), ctrfText);
+  await writeFile(path.join(sourceVerifier, "test-stdout.txt"), stdoutText);
+  const originalIndexSha256 = await writeLegacyTruncatedDiagnostics(runDirectory, {
+    "ctrf.json": Buffer.from(ctrfText),
+    "test-stdout.txt": Buffer.from(stdoutText),
+  });
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+  const originalBundle = await readFile(path.join(runDirectory, "bundle.index.json"));
+  const originalResult = await readFile(path.join(runDirectory, "verifier", "result.json"));
+  const before = await loadVerifierEvidence(root, runId);
+  assert.equal(before.observation?.reward, 0);
+  assert.equal(before.verifier.diagnostics?.ctrf?.truncated, true);
+
+  const outcomes = await Promise.all([
+    repairVerifierDiagnostics({ root, runId, source: relativeSource }),
+    repairVerifierDiagnostics({ root, runId, source: relativeSource }),
+  ]);
+  assert.deepEqual(outcomes.map((outcome) => outcome.status).sort(), ["already_repaired", "repaired"]);
+  assert.deepEqual(await readFile(path.join(runDirectory, "bundle.index.json")), originalBundle);
+  assert.deepEqual(await readFile(path.join(runDirectory, "verifier", "result.json")), originalResult);
+
+  const after = await loadVerifierEvidence(root, runId);
+  assert.equal(after.observation?.reward, 0);
+  assert.equal(after.verifier.scores?.total_score, 0);
+  assert.equal((await collectDiagnosticPages(root, runId, "ctrf.json")).text, ctrfText);
+  assert.equal((await collectDiagnosticPages(root, runId, "test-stdout.txt")).text, stdoutText);
+  assert.deepEqual(JSON.parse((await collectDiagnosticPages(root, runId, "ctrf.json")).text).results.tests.length, 900);
+  const supplement = path.join(root, "derived", "verifier-diagnostics", runId, originalIndexSha256.slice("sha256:".length));
+  assert.equal((await stat(path.join(supplement, "repair.json"))).isFile(), true);
+  assert.equal((await repairVerifierDiagnostics({ root, runId })).status, "already_repaired");
+
+  await writeFile(path.join(supplement, "verifier", "test-stdout.txt"), "tampered");
+  await assert.rejects(
+    loadVerifierDiagnosticPage(root, runId, "test-stdout.txt"),
+    (error: { code?: string }) => error.code === "verifier_evidence_corrupt",
+  );
+  assert.deepEqual(await readFile(path.join(runDirectory, "bundle.index.json")), originalBundle);
+});
+
+test("historical repair refuses retired credential-value redactions", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-repair-privacy-"));
+  t.after(() => forceRemove(root));
+  const runId = `run_${"7".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, {
+    status: "valid", reward: 1, verifier_result_ref: "verifier/result.json",
+  });
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "result.json"), { rewards: { reward: 1 } });
+  const secret = "retired-opaque-secret-value";
+  const raw = Buffer.from(`head\n${secret}\n${"x".repeat(70_000)}\ntail\n`);
+  const relativeSource = path.posix.join("harbor", "attempt-0001", "job", trialId);
+  const sourceVerifier = await ensureDir(path.join(root, "evals", evalId, relativeSource, "verifier"));
+  await writeFile(path.join(sourceVerifier, "test-stdout.txt"), raw);
+  await writeLegacyTruncatedDiagnostics(
+    runDirectory,
+    { "test-stdout.txt": raw },
+    [{ rule_id: "known-credential-value-v1", count: 1 }],
+    { "test-stdout.txt": Buffer.from(raw.toString("utf8").replace(secret, "[REDACTED]")) },
+  );
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+  await assert.rejects(
+    repairVerifierDiagnostics({ root, runId, source: relativeSource, env: {} }),
+    (error: { code?: string }) => error.code === "verifier_diagnostic_repair_credentials_required",
+  );
+  await assert.rejects(stat(path.join(root, "derived")), { code: "ENOENT" });
+});
+
+test("historical repair refuses a symlinked derived ancestor without writing through it", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-verifier-repair-symlink-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "hitch-verifier-repair-outside-"));
+  t.after(() => Promise.all([forceRemove(root), forceRemove(outside)]));
+  const runId = `run_${"6".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, {
+    status: "valid", reward: 0, verifier_result_ref: "verifier/result.json",
+  });
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "result.json"), { rewards: { reward: 0 } });
+  const raw = Buffer.from(`head\n${"diagnostic ".repeat(8_000)}\ntail\n`);
+  const relativeSource = path.posix.join("harbor", "attempt-0001", "job", trialId);
+  const sourceVerifier = await ensureDir(path.join(root, "evals", evalId, relativeSource, "verifier"));
+  await writeFile(path.join(sourceVerifier, "test-stdout.txt"), raw);
+  await writeLegacyTruncatedDiagnostics(runDirectory, { "test-stdout.txt": raw });
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+  await symlink(outside, path.join(root, "derived"));
+
+  await assert.rejects(
+    repairVerifierDiagnostics({ root, runId, source: relativeSource }),
+    /Hitch state directory is unsafe/,
+  );
+  await assert.rejects(stat(path.join(outside, "verifier-diagnostics")), { code: "ENOENT" });
+  assert.equal((await loadVerifierEvidence(root, runId)).verifier.diagnostics?.stdout?.[0]?.truncated, true);
 });
 
 test("verifier evidence distinguishes result-only, missing, corrupt, and legacy diagnostics", async (t) => {
@@ -164,6 +375,11 @@ test("verifier evidence distinguishes result-only, missing, corrupt, and legacy 
   assert.equal(legacyEvidence.verifier.status, "complete");
   assert.deepEqual(legacyEvidence.verifier.diagnostics?.ctrf?.json, { results: { tests: [] } });
   assert.equal(legacyEvidence.verifier.diagnostics?.stdout?.[0]?.text, "legacy verifier output\n");
+  await unlink(path.join(legacy, "resolution.json"));
+  await assert.rejects(
+    loadVerifierDiagnosticPage(root, legacyId, "stdout.txt"),
+    (error: { code?: string }) => error.code === "verifier_evidence_corrupt",
+  );
 
   const largeLegacyId = `run_${"9".repeat(32)}`;
   const largeLegacy = await writeRun(root, largeLegacyId, {
@@ -181,7 +397,13 @@ test("verifier evidence distinguishes result-only, missing, corrupt, and legacy 
   });
   await atomicWriteJSON(path.join(oversizedLegacy, "verifier", "result.json"), { rewards: { reward: 1 } });
   await writeFile(path.join(oversizedLegacy, "verifier", "stdout.txt"), Buffer.alloc(16 * 1024 * 1024 + 1, 120), { mode: 0o600 });
-  assert.equal((await loadVerifierEvidence(root, oversizedLegacyId)).verifier.status, "result_only");
+  const oversizedLegacyEvidence = await loadVerifierEvidence(root, oversizedLegacyId);
+  assert.equal(oversizedLegacyEvidence.verifier.status, "complete");
+  assert.equal(oversizedLegacyEvidence.verifier.diagnostics?.stdout?.[0]?.truncated, true);
+  const unavailable = await loadVerifierDiagnosticPage(root, oversizedLegacyId, "stdout.txt");
+  assert.equal(unavailable.artifact.source_complete, false);
+  assert.equal(unavailable.artifact.loss_reason, "persistence_limit_exceeded");
+  assert.deepEqual(unavailable.page, { offset: 0, bytes: 0, text: "", eof: true });
 });
 
 test("structured verifier channels preserve total-only availability and validate process plus feedback", async (t) => {
@@ -492,4 +714,65 @@ async function writeEvalRecord(root: string, runId: string): Promise<void> {
     eval_id: evalId,
     trials: [{ trial_id: trialId, run_id: runId, task_id: "task-one", attempt: 1 }],
   });
+}
+
+async function collectDiagnosticPages(
+  root: string,
+  runId: string,
+  name: "ctrf.json" | "test-stdout.txt" | "test-stderr.txt" | "stdout.txt" | "stderr.txt",
+): Promise<{ text: string; sha256: string }> {
+  let offset = 0;
+  let expectedSha256: `sha256:${string}` | undefined;
+  const chunks: string[] = [];
+  for (;;) {
+    const page = await loadVerifierDiagnosticPage(root, runId, name, {
+      offset,
+      maxBytes: 4096,
+      ...(expectedSha256 ? { expectedSha256 } : {}),
+    });
+    expectedSha256 = page.artifact.sha256;
+    chunks.push(page.page.text);
+    if (page.page.eof) return { text: chunks.join(""), sha256: expectedSha256 };
+    offset = page.page.next_offset as number;
+  }
+}
+
+async function writeLegacyTruncatedDiagnostics(
+  runDirectory: string,
+  sources: Partial<Record<"ctrf.json" | "test-stdout.txt" | "test-stderr.txt" | "stdout.txt" | "stderr.txt", Buffer>>,
+  redactions: Array<{ rule_id: string; count: number }> = [],
+  contents: Partial<Record<"ctrf.json" | "test-stdout.txt" | "test-stderr.txt" | "stdout.txt" | "stderr.txt", Buffer>> = {},
+): Promise<`sha256:${string}`> {
+  const names = ["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"] as const;
+  const artifacts: Record<string, unknown>[] = [];
+  for (const name of names) {
+    const source = sources[name];
+    if (!source) continue;
+    const content = contents[name] ?? source;
+    const stored = legacyExcerpt(content, 64 * 1024);
+    await writeFile(path.join(runDirectory, "verifier", name), stored, { mode: 0o600 });
+    artifacts.push({
+      name,
+      ref: `verifier/${name}`,
+      media_type: name === "ctrf.json" ? "application/json" : "text/plain",
+      source_bytes: source.length,
+      source_sha256: sha256Bytes(source),
+      bytes: content.length,
+      sha256: sha256Bytes(content),
+      stored_bytes: stored.length,
+      stored_sha256: sha256Bytes(stored),
+      truncated: stored.length !== content.length,
+    });
+  }
+  const index = { schema_version: "1", kind: "verifier-diagnostics", artifacts, redactions };
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "diagnostics.json"), index);
+  return sha256Bytes(await readFile(path.join(runDirectory, "verifier", "diagnostics.json")));
+}
+
+function legacyExcerpt(value: Buffer, limit: number): Buffer {
+  if (value.length <= limit) return value;
+  const marker = Buffer.from("\n[... verifier artifact truncated ...]\n");
+  const payload = limit - marker.length;
+  const head = Math.floor(payload / 2);
+  return Buffer.concat([value.subarray(0, head), marker, value.subarray(value.length - (payload - head))]);
 }

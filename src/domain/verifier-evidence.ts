@@ -20,6 +20,31 @@ export interface VerifierArtifactExcerptV1 {
   text?: string;
 }
 
+export type VerifierDiagnosticLossReason = "persistence_limit_exceeded" | "invalid_json" | "legacy_truncated";
+
+export interface VerifierDiagnosticPageV1 {
+  schema_version: "1";
+  kind: "verifier-diagnostic-page";
+  run_id: string;
+  artifact: {
+    name: VerifierArtifactExcerptV1["name"];
+    media_type: VerifierArtifactExcerptV1["media_type"];
+    /** Size and digest of the sanitized bytes available from this evidence source. */
+    bytes: number;
+    sha256: Sha256;
+    source_complete: boolean;
+    loss_reason?: VerifierDiagnosticLossReason;
+  };
+  page: {
+    /** UTF-8 byte offset within the available sanitized artifact. */
+    offset: number;
+    bytes: number;
+    text: string;
+    eof: boolean;
+    next_offset?: number;
+  };
+}
+
 export interface VerifierScoresV1 {
   total_score: number;
   process_score?: number;

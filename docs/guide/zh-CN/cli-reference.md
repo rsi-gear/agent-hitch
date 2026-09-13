@@ -270,6 +270,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 | `hitch trajectory project RUN_ID [--profile analysis] [--max-bytes N] [--json]` | 生成大小受限的分析视图。 |
 | `hitch trajectory events RUN_ID [EVENT_OPTIONS] [--json]` | 分页读取大小受限的事件。 |
 | `hitch verifier inspect RUN_ID [--json]` | 读取经过脱敏的 Verifier 结果和诊断信息。 |
+| `hitch verifier artifact RUN_ID NAME [--offset N] [--limit N] [--sha256 DIGEST] [--json]` | 从完整脱敏 Verifier 制品读取一页 UTF-8 字节；摘要可防止翻页期间切换来源。 |
+| `hitch verifier repair RUN_ID [--source EVAL_RELATIVE_TRIAL_DIR] [--json]` | 从保留的准确 Harbor 来源恢复旧版截断诊断，写入摘要绑定的不可变补充记录；不会改变封存 Run 和分数。 |
 
 ```text
 --types TYPE_A,TYPE_B
@@ -280,6 +282,13 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 ```
 
 上面的参数用于 events。字段查看要求精确序号范围和先前视图返回的 canonical SHA-256。Cursor 为不透明值，继续翻页时保持查询条件。详见[查看运行与证据](runs-and-evidence.md)。
+
+Verifier 制品的 offset 是 UTF-8 字节偏移量。`--limit` 接受 4 到 65536
+字节；使用返回的 `next_offset` 继续读取，直到 `eof` 为 true。`NAME` 只能是
+`ctrf.json`、`test-stdout.txt`、`test-stderr.txt`、`stdout.txt` 或
+`stderr.txt`。Verifier 修复只接受该 Run 已知的评测相对旧版 Harbor Trial
+路径，并拒绝来源歧义和旧版凭据值脱敏记录。详见
+[Verifier 证据约定](../../verifier-evidence.md)。
 
 ## 反馈
 

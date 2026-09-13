@@ -127,6 +127,8 @@ Usage:
   hitch images unpin <sha256:image-id>
   hitch trajectory inspect <run-id> [--json]
   hitch verifier inspect <run-id> [--json]
+  hitch verifier artifact <run-id> <name> [--offset <bytes>] [--limit <bytes>] [--sha256 <digest>] [--json]
+  hitch verifier repair <run-id> [--source <eval-relative-trial-dir>] [--json]
   hitch trajectory project <run-id> [--profile analysis] [--max-bytes <bytes>] [--json]
   hitch trajectory events <run-id> [--types <a,b>] [--seq-start <n>] [--seq-end <n>] [--field <path>] [--canonical-sha256 <digest>] [--limit <n>] [--cursor <opaque>] [--max-bytes <bytes>] [--json]
   hitch training register --file <PATH|->

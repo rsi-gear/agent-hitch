@@ -43,6 +43,20 @@ hitch verifier inspect RUN_ID --json
 
 对于评测 Trial，这会展示 observation、分数通道和可用的有界 Verifier 诊断。普通本地运行可能没有 Verifier 结果。
 
+新 Run 会保留每个不超过 16 MiB 硬上限的完整脱敏诊断。Inspector 最多返回
+64 KiB 预览；较大的制品可以按摘要校验后的 UTF-8 字节分页读取：
+
+```bash
+hitch verifier artifact RUN_ID test-stdout.txt \
+  --offset 0 \
+  --limit 65536 \
+  --sha256 SHA256 \
+  --json
+```
+
+使用返回的 `next_offset` 读取下一页。`source_complete: false` 和
+`loss_reason` 可以区分过大或无效的来源与普通的有界预览。
+
 | Verifier 状态 | 含义 |
 | --- | --- |
 | `complete` | 存在结构化结果，以及至少一份支持的测试或日志制品。 |
@@ -51,6 +65,12 @@ hitch verifier inspect RUN_ID --json
 | `corrupt` | 身份、引用、JSON 或 checksum 校验失败。 |
 
 有效零分表示任务得了零分；无效 observation 表示分数不可信，不能记为零分。详见[评测结果](evaluations.md)和 [Verifier 约定](../../verifier-evidence.md)。
+
+对于 schema version 1 诊断索引中只保留截断片段的旧 Run，如果仍有且仅有一份
+已知本地 Harbor 来源，`hitch verifier repair RUN_ID --json` 可以恢复完整制品。
+修复会写入摘要绑定的派生补充记录，不会改变封存 Run、observation 或分数。仅当
+自动选择存在歧义时，才用 `--source` 指定准确的评测相对 Harbor Trial 路径。
+修复会拒绝不匹配的来源摘要和旧版凭据值脱敏记录。
 
 ## 添加反馈
 
