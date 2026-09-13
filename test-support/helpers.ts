@@ -405,6 +405,7 @@ export async function writeFakeDeepseek(directory: string, {
   nativeSession = false,
   nativeChildSession = false,
   nativeSessionState = "complete",
+  nativeResultReplay,
   delayMs = 0,
   argvLog,
 }: {
@@ -412,6 +413,7 @@ export async function writeFakeDeepseek(directory: string, {
   nativeSession?: boolean;
   nativeChildSession?: boolean;
   nativeSessionState?: "complete" | "open" | "invalid";
+  nativeResultReplay?: "replace" | "duplicate";
   delayMs?: number;
   argvLog?: string;
 } = {}): Promise<string> {
@@ -454,6 +456,20 @@ if (${JSON.stringify(nativeSession)}) {
     {type:"step/end",seq:12,time:base + 810,data:{turn:1,step:2}},
     {type:"turn/end",seq:13,time:base + 820,data:{turn:1,reason:{kind:"completed"}}}
   ];
+  const replay = ${JSON.stringify(nativeResultReplay)};
+  if (replay) {
+    completeEvents[7].data.message.content[0].content[0].text = "Bearer native-evidence-secret";
+    const repeated = JSON.parse(JSON.stringify(completeEvents[7]));
+    repeated.time = base + 600;
+    if (replay === "replace") {
+      repeated.surfaceOp = {op:"replace",start:7,end:7};
+      repeated.sourceEventSeqs = [7];
+      repeated.data.message.content[0].content[0].text = "compressed";
+    }
+    completeEvents.splice(10, 0, repeated);
+    completeEvents.forEach((row, seq) => { row.seq = seq; });
+    completeEvents[12].sourceEventSeqs = [11];
+  }
   const sessionState = ${JSON.stringify(nativeSessionState)};
   const events = sessionState === "open"
     ? completeEvents.slice(0, 11)
