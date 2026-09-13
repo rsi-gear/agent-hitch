@@ -42,22 +42,19 @@ export async function importDeepseekNativeSession(options: {
   }
   if (located.jsonl.length === 0) return null;
   const sessions = await Promise.all(located.jsonl.map((source) => readNativeSession(source, options.credentialValues ?? [])));
-  const roots = sessions.filter((session) => session.header.parentSession === undefined);
-  if (roots.length !== 1) {
-    throw new Error(`DeepSeek wrote ${roots.length} root native sessions for one run; refusing an ambiguous import`);
-  }
-  const primary = roots[0] as ParsedNativeSession;
-  const header: SessionHeaderLine = { ...primary.header, id: options.runId };
-  const events = options.status === "succeeded"
-    ? primary.events
-    : finalizeInterruptedTrajectory(header, primary.events, options.status);
-  if (options.status === "succeeded") validateTrajectoryInvariants(header, events);
-
-  const ordered = [primary, ...sessions.filter((session) => session !== primary)];
+  // Select a likely root only to preserve established evidence filenames.
+  // All redacted rows are saved before any format or relational validation.
+  const rootCandidates = sessions.filter((session) => {
+    const first = session.providerRows[0];
+    return first && typeof first === "object" && !Array.isArray(first)
+      && (first as Record<string, unknown>).parentSession === undefined;
+  });
+  const first = rootCandidates.length === 1 ? rootCandidates[0] : sessions[0];
+  const ordered = [first as CapturedNativeSession, ...sessions.filter((session) => session !== first)];
   const providerFiles: TrajectoryFileRefV1[] = [];
   const redactionCounts = new Map<string, number>();
   for (let index = 0; index < ordered.length; index += 1) {
-    const session = ordered[index] as ParsedNativeSession;
+    const session = ordered[index] as CapturedNativeSession;
     const relativePath = index === 0
       ? "trajectory/provider/deepseek-session.jsonl"
       : `trajectory/provider/deepseek-child-session-${index}.jsonl`;
@@ -78,6 +75,18 @@ export async function importDeepseekNativeSession(options: {
     }
   }
 
+  const parsed = ordered.map(parseNativeSession);
+  const roots = parsed.filter((session) => session.header.parentSession === undefined);
+  if (roots.length !== 1) {
+    throw new Error(`DeepSeek wrote ${roots.length} root native sessions for one run; refusing an ambiguous import`);
+  }
+  const primary = roots[0] as ParsedNativeSession;
+  const header: SessionHeaderLine = { ...primary.header, id: options.runId };
+  const events = options.status === "succeeded"
+    ? primary.events
+    : finalizeInterruptedTrajectory(header, primary.events, options.status);
+  if (options.status === "succeeded") validateTrajectoryInvariants(header, events);
+
   const result: DeepseekNativeSession = {
     header,
     events,
@@ -96,43 +105,50 @@ export async function importDeepseekNativeSession(options: {
 interface ParsedNativeSession {
   header: SessionHeaderLine;
   events: SessionEvent[];
-  providerRows: unknown[];
-  redactions: Map<string, number>;
 }
 
-async function readNativeSession(source: string, credentialValues: readonly string[]): Promise<ParsedNativeSession> {
+interface CapturedNativeSession {
+  providerRows: unknown[];
+  redactions: Map<string, number>;
+  invalidJSONLine?: number;
+}
+
+async function readNativeSession(source: string, credentialValues: readonly string[]): Promise<CapturedNativeSession> {
   const input = await readFile(source, "utf8");
-  const lines = input.split(/\r?\n/).filter((line) => line.length > 0);
-  if (lines.length === 0) throw new Error(`DeepSeek native session is empty: ${source}`);
-  const redactions = new Map<string, number>();
-  const providerRows: unknown[] = [];
-  const redact = (value: unknown): unknown => {
+  const lines = input.split(/\r?\n/);
+  const captured: CapturedNativeSession = { providerRows: [], redactions: new Map() };
+  for (const [index, line] of lines.entries()) {
+    if (line.length === 0) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line) as unknown;
+    } catch {
+      captured.invalidJSONLine ??= index + 1;
+      // Never retain unparsed text: escaped credentials may evade text redaction.
+      captured.providerRows.push({ hitch_envelope: { kind: "invalid_native_json", line: index + 1 } });
+      continue;
+    }
     const result = redactProviderJSON(value, credentialValues);
     for (const [rule, count] of result.redactions) {
-      redactions.set(rule, (redactions.get(rule) || 0) + count);
+      captured.redactions.set(rule, (captured.redactions.get(rule) || 0) + count);
     }
-    providerRows.push(result.value);
-    return result.value;
-  };
-  const header = parseHeaderLine(redact(parseJSON(lines[0] as string, 1)));
-  const events: SessionEvent[] = [];
-  for (let index = 1; index < lines.length; index += 1) {
-    const parsed = parseEventLine(redact(parseJSON(lines[index] as string, index + 1)));
-    const expected = index - 1;
+    captured.providerRows.push(result.value);
+  }
+  return captured;
+}
+
+function parseNativeSession(session: CapturedNativeSession): ParsedNativeSession {
+  if (session.invalidJSONLine !== undefined) throw new Error(`invalid DeepSeek native session JSON at line ${session.invalidJSONLine}`);
+  if (session.providerRows.length === 0) throw new Error("DeepSeek native session is empty");
+  const header = parseHeaderLine(session.providerRows[0]);
+  const events = session.providerRows.slice(1).map((row, expected): SessionEvent => {
+    const parsed = parseEventLine(row);
     if (parsed.seq !== expected) {
       throw new Error(`DeepSeek native session seq must be contiguous: expected ${expected}, got ${parsed.seq}`);
     }
-    events.push(CANONICAL_EVENT_TYPES.has(parsed.type) ? parsed : { ...parsed, ignorable: true });
-  }
-  return { header, events, providerRows, redactions };
-}
-
-function parseJSON(line: string, lineNumber: number): unknown {
-  try {
-    return JSON.parse(line) as unknown;
-  } catch (error) {
-    throw new Error(`invalid DeepSeek native session JSON at line ${lineNumber}`, { cause: error });
-  }
+    return CANONICAL_EVENT_TYPES.has(parsed.type) ? parsed : { ...parsed, ignorable: true };
+  });
+  return { header, events };
 }
 
 async function findSessionFiles(root: string): Promise<{ jsonl: string[]; compressed: string[] }> {
