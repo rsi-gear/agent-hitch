@@ -5,6 +5,7 @@ import type {
   JsonValue,
   RunRecordV1,
   Sha256,
+  VerifierDiagnosticPageV1,
   VerifierArtifactExcerptV1,
 } from "../domain/index.js";
 import { validateRelativePath } from "../domain/index.js";
@@ -19,28 +20,36 @@ import {
 } from "../foundation/index.js";
 import { verifyResultBundleIndex } from "./bundle.js";
 import { loadRunRecord } from "./records.js";
+import {
+  readVerifierDiagnosticStorage,
+  VERIFIER_DIAGNOSTIC_ARTIFACT_NAMES,
+} from "./verifier-diagnostic-storage.js";
 import { sanitizeVerifierJson, sanitizeVerifierText } from "./verifier-evidence-redaction.js";
+import { loadVerifierDiagnosticSupplement } from "./verifier-diagnostic-supplement.js";
 import { loadStructuredVerifierEvidence } from "./verifier-structured-evidence.js";
 
 export const MAX_VERIFIER_RESULT_BYTES = 1024 * 1024;
 export const MAX_VERIFIER_ARTIFACT_OUTPUT_BYTES = 64 * 1024;
+export const MAX_VERIFIER_DIAGNOSTIC_PAGE_BYTES = 64 * 1024;
 
-const DIAGNOSTICS_INDEX_REF = "verifier/diagnostics.json";
-const ARTIFACT_NAMES: readonly VerifierArtifactExcerptV1["name"][] = [
-  "ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt",
-];
 const JSON_DIAGNOSTIC_REFS = [
   "verifier/infrastructure-error.json",
   "verifier/infrastructure-retry-history.json",
 ] as const;
 const TRUNCATION_MARKER = "\n[... verifier artifact truncated ...]\n";
 const MAX_EVAL_IDENTITY_BYTES = 16 * 1024 * 1024;
-const MAX_PERSISTED_VERIFIER_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 export interface LoadVerifierEvidenceOptions {
   env?: NodeJS.ProcessEnv;
   maxResultBytes?: number;
   maxArtifactBytes?: number;
+}
+
+export interface LoadVerifierDiagnosticPageOptions {
+  env?: NodeJS.ProcessEnv;
+  offset?: number;
+  maxBytes?: number;
+  expectedSha256?: Sha256;
 }
 
 export async function loadVerifierEvidence(
@@ -99,7 +108,8 @@ export async function loadVerifierEvidence(
 
   let diagnostics: NonNullable<HitchVerifierEvidenceV1["verifier"]["diagnostics"]> | undefined;
   try {
-    diagnostics = await loadDiagnostics(runRoot, maxArtifactBytes, credentialValues, redactions);
+    const supplement = await loadVerifierDiagnosticSupplement(root, runRoot, runId);
+    diagnostics = await loadDiagnostics(runRoot, supplement?.directory ?? runRoot, maxArtifactBytes, credentialValues, redactions);
   } catch (error) {
     corrupt = true;
     issues.push(safeIssue("verifier diagnostics are corrupt", error, credentialValues));
@@ -166,16 +176,110 @@ export async function loadVerifierEvidence(
   };
 }
 
+export async function loadVerifierDiagnosticPage(
+  root: string,
+  runId: string,
+  name: VerifierArtifactExcerptV1["name"],
+  options: LoadVerifierDiagnosticPageOptions = {},
+): Promise<VerifierDiagnosticPageV1> {
+  if (!/^run_[a-f0-9]{32}$/.test(runId)) throw new TypeError(`invalid run ID: ${runId}`);
+  if (!VERIFIER_DIAGNOSTIC_ARTIFACT_NAMES.includes(name)) throw new TypeError(`invalid verifier diagnostic artifact: ${name}`);
+  const offset = options.offset ?? 0;
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError("verifier diagnostic offset is invalid");
+  const maxBytes = options.maxBytes ?? MAX_VERIFIER_DIAGNOSTIC_PAGE_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 4 || maxBytes > MAX_VERIFIER_DIAGNOSTIC_PAGE_BYTES) {
+    throw new TypeError("verifier diagnostic page limit is invalid");
+  }
+  const runDirectory = path.join(statePaths(root).runs, runId);
+  const runRoot = await safeRunRoot(runDirectory, runId);
+  let loaded: Awaited<ReturnType<typeof loadRunRecord>>;
+  try {
+    loaded = await loadRunRecord(runDirectory, { verifyTrajectory: false });
+    if (loaded.record_status === "corrupt" || loaded.record.run_id !== runId) throw new TypeError("run record integrity is corrupt");
+    if (await exists(path.join(runDirectory, "bundle.index.json"))) await verifyResultBundleIndex(runDirectory);
+  } catch (error) {
+    throw new HitchError(`run ${runId} record is corrupt`, { code: "verifier_evidence_corrupt", exitCode: 3, cause: error });
+  }
+  const parentIssue = await verifierParentIssue(root, loaded.record);
+  if (parentIssue) {
+    throw new HitchError(`run ${runId} verifier parent is corrupt: ${parentIssue}`, {
+      code: "verifier_evidence_corrupt", exitCode: 3,
+    });
+  }
+  const credentialValues = await runCredentialValues(runRoot, loaded.record, options.env ?? process.env);
+  let source: Awaited<ReturnType<typeof readVerifierDiagnosticStorage>>["artifacts"][number];
+  try {
+    const supplement = await loadVerifierDiagnosticSupplement(root, runRoot, runId);
+    const stored = await readVerifierDiagnosticStorage(supplement?.directory ?? runRoot, credentialValues);
+    const found = stored.artifacts.find((artifact) => artifact.name === name);
+    if (!found) throw diagnosticNotFound(name);
+    source = found;
+  } catch (error) {
+    if (error instanceof HitchError) throw error;
+    throw new HitchError(`verifier diagnostic ${name} is corrupt`, {
+      code: "verifier_evidence_corrupt", exitCode: 3, cause: error,
+    });
+  }
+  if (options.expectedSha256 !== undefined && options.expectedSha256 !== source.sha256) {
+    throw new HitchError(`verifier diagnostic ${name} changed`, {
+      code: "verifier_diagnostic_version_mismatch", exitCode: 3,
+    });
+  }
+  const artifact = {
+    name,
+    media_type: source.mediaType,
+    bytes: source.bytes.length,
+    sha256: source.sha256,
+    source_complete: source.sourceComplete,
+    ...(source.lossReason ? { loss_reason: source.lossReason } : {}),
+  };
+  if (!source.sourceComplete) {
+    if (offset !== 0) throw new TypeError("unavailable verifier diagnostic requires offset zero");
+    return {
+      schema_version: "1", kind: "verifier-diagnostic-page", run_id: runId, artifact,
+      page: { offset: 0, bytes: 0, text: "", eof: true },
+    };
+  }
+  if (offset > source.bytes.length || !isUtf8Boundary(source.bytes, offset)) {
+    throw new TypeError("verifier diagnostic offset is invalid");
+  }
+  let end = Math.min(source.bytes.length, offset + maxBytes);
+  while (end > offset && end < source.bytes.length && !isUtf8Boundary(source.bytes, end)) end -= 1;
+  if (end === offset && end < source.bytes.length) throw new TypeError("verifier diagnostic page limit is too small");
+  const page = source.bytes.subarray(offset, end);
+  const eof = end === source.bytes.length;
+  return {
+    schema_version: "1", kind: "verifier-diagnostic-page", run_id: runId, artifact,
+    page: {
+      offset,
+      bytes: page.length,
+      text: page.toString("utf8"),
+      eof,
+      ...(eof ? {} : { next_offset: end }),
+    },
+  };
+}
+
 async function loadDiagnostics(
   runRoot: string,
+  artifactRoot: string,
   maxBytes: number,
   credentialValues: readonly string[],
   redactions: Map<string, number>,
 ): Promise<NonNullable<HitchVerifierEvidenceV1["verifier"]["diagnostics"]> | undefined> {
-  const indexFile = path.join(runRoot, ...DIAGNOSTICS_INDEX_REF.split("/"));
-  const artifacts = await exists(indexFile)
-    ? await indexedArtifacts(runRoot, maxBytes, credentialValues, redactions)
-    : await legacyArtifacts(runRoot, maxBytes, credentialValues, redactions);
+  const stored = await readVerifierDiagnosticStorage(artifactRoot, credentialValues);
+  mergeCounts(redactions, stored.redactions);
+  const artifacts = stored.artifacts.map((artifact) => {
+    const bounded = truncate(artifact.bytes, maxBytes);
+    return excerpt(
+      artifact.name,
+      artifact.mediaType,
+      artifact.bytes.length,
+      artifact.sha256,
+      !artifact.sourceComplete || bounded.truncated,
+      bounded.bytes,
+    );
+  });
   const ctrf = artifacts.find((artifact) => artifact.name === "ctrf.json");
   const stdout = artifacts.filter((artifact) => artifact.name === "test-stdout.txt" || artifact.name === "stdout.txt");
   const stderr = artifacts.filter((artifact) => artifact.name === "test-stderr.txt" || artifact.name === "stderr.txt");
@@ -191,113 +295,14 @@ async function loadDiagnostics(
   };
 }
 
-async function indexedArtifacts(
-  runRoot: string,
-  maxBytes: number,
-  credentialValues: readonly string[],
-  redactions: Map<string, number>,
-): Promise<VerifierArtifactExcerptV1[]> {
-  const indexBytes = await secureRead(runRoot, DIAGNOSTICS_INDEX_REF, MAX_VERIFIER_RESULT_BYTES);
-  const index = asRecord(JSON.parse(indexBytes.toString("utf8")), "verifier diagnostics index");
-  if (index.schema_version !== "1" || index.kind !== "verifier-diagnostics" || !Array.isArray(index.artifacts) || !Array.isArray(index.redactions)) {
-    throw new TypeError("verifier diagnostics index is invalid");
-  }
-  const seen = new Set<string>();
-  for (const rule of index.redactions) {
-    const parsed = asRecord(rule, "verifier diagnostics redaction");
-    exactFields(parsed, ["rule_id", "count"], "verifier diagnostics redaction");
-    if (typeof parsed.rule_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(parsed.rule_id)
-      || !Number.isSafeInteger(parsed.count) || Number(parsed.count) < 1) {
-      throw new TypeError("verifier diagnostics redaction is invalid");
-    }
-    if (seen.has(`redaction:${parsed.rule_id}`)) throw new TypeError("verifier diagnostics redactions are duplicated");
-    seen.add(`redaction:${parsed.rule_id}`);
-    increment(redactions, parsed.rule_id, Number(parsed.count));
-  }
-  const result: VerifierArtifactExcerptV1[] = [];
-  for (const raw of index.artifacts) {
-    const artifact = asRecord(raw, "verifier diagnostic artifact");
-    exactFields(artifact, [
-      "name", "ref", "media_type", "source_bytes", "source_sha256", "bytes", "sha256",
-      "stored_bytes", "stored_sha256", "truncated",
-    ], "verifier diagnostic artifact");
-    const name = artifact.name as VerifierArtifactExcerptV1["name"];
-    if (!ARTIFACT_NAMES.includes(name) || seen.has(name) || artifact.ref !== `verifier/${name}`) {
-      throw new TypeError("verifier diagnostic artifact identity is invalid");
-    }
-    seen.add(name);
-    const mediaType = name === "ctrf.json" ? "application/json" : "text/plain";
-    if (artifact.media_type !== mediaType) throw new TypeError("verifier diagnostic artifact media type is invalid");
-    const persistedBytes = nonNegativeInteger(artifact.bytes, "verifier diagnostic bytes");
-    const persistedDigest = sha256Value(artifact.sha256, "verifier diagnostic digest");
-    nonNegativeInteger(artifact.source_bytes, "source verifier diagnostic bytes");
-    sha256Value(artifact.source_sha256, "source verifier diagnostic digest");
-    const storedBytes = nonNegativeInteger(artifact.stored_bytes, "stored verifier diagnostic bytes");
-    const storedDigest = sha256Value(artifact.stored_sha256, "stored verifier diagnostic digest");
-    if (typeof artifact.truncated !== "boolean" || storedBytes > MAX_PERSISTED_VERIFIER_ARTIFACT_BYTES) {
-      throw new TypeError("stored verifier diagnostic exceeds its persistence limit");
-    }
-    const stored = await secureRead(runRoot, String(artifact.ref), MAX_PERSISTED_VERIFIER_ARTIFACT_BYTES);
-    if (stored.length !== storedBytes || sha256Bytes(stored) !== storedDigest) throw new TypeError("stored verifier diagnostic integrity mismatch");
-    if (artifact.truncated === false && (persistedBytes !== storedBytes || persistedDigest !== storedDigest)) {
-      throw new TypeError("complete verifier diagnostic metadata mismatch");
-    }
-    const full = sanitizedArtifact(stored, mediaType, artifact.truncated === false, credentialValues, redactions);
-    const bounded = truncate(full, maxBytes);
-    result.push(excerpt(name, mediaType, full.length, sha256Bytes(full), artifact.truncated === true || bounded.truncated, bounded.bytes));
-  }
-  return result;
+function diagnosticNotFound(name: string): HitchError {
+  return new HitchError(`verifier diagnostic not found: ${name}`, {
+    code: "verifier_diagnostic_not_found", exitCode: 3,
+  });
 }
 
-async function legacyArtifacts(
-  runRoot: string,
-  maxBytes: number,
-  credentialValues: readonly string[],
-  redactions: Map<string, number>,
-): Promise<VerifierArtifactExcerptV1[]> {
-  const result: VerifierArtifactExcerptV1[] = [];
-  for (const name of ARTIFACT_NAMES) {
-    const ref = `verifier/${name}`;
-    if (!await exists(path.join(runRoot, ...ref.split("/")))) continue;
-    let raw: Buffer;
-    try {
-      raw = await secureRead(runRoot, ref, MAX_PERSISTED_VERIFIER_ARTIFACT_BYTES);
-    } catch (error) {
-      if ((error as Error)?.message === "contained file exceeds its limit") continue;
-      throw error;
-    }
-    const mediaType = name === "ctrf.json" ? "application/json" : "text/plain";
-    const full = sanitizedArtifact(raw, mediaType, mediaType === "application/json", credentialValues, redactions);
-    const stored = truncate(full, maxBytes);
-    result.push(excerpt(
-      name,
-      mediaType,
-      full.length,
-      sha256Bytes(full),
-      stored.truncated,
-      stored.bytes,
-    ));
-  }
-  return result;
-}
-
-function sanitizedArtifact(
-  stored: Buffer,
-  mediaType: VerifierArtifactExcerptV1["media_type"],
-  parseJson: boolean,
-  credentials: readonly string[],
-  redactions: Map<string, number>,
-): Buffer {
-  if (mediaType === "application/json" && parseJson) {
-    const parsed = JSON.parse(stored.toString("utf8")) as unknown;
-    if (!isJsonValue(parsed)) throw new TypeError("CTRF artifact is not JSON data");
-    const safe = sanitizeVerifierJson(parsed, credentials);
-    mergeCounts(redactions, safe.redactions);
-    return Buffer.from(JSON.stringify(safe.value), "utf8");
-  }
-  const safe = sanitizeVerifierText(stored.toString("utf8"), credentials);
-  mergeCounts(redactions, safe.redactions);
-  return Buffer.from(safe.text, "utf8");
+function isUtf8Boundary(value: Buffer, offset: number): boolean {
+  return offset === 0 || offset === value.length || (value[offset]! & 0xc0) !== 0x80;
 }
 
 function excerpt(
@@ -398,9 +403,17 @@ async function secureRead(root: string, ref: string, maxBytes: number): Promise<
   const relative = validateRelativePath(ref, "verifier evidence ref");
   const opened = await openContainedRegularFile(root, relative, maxBytes);
   try {
-    const bytes = await opened.handle.readFile();
+    const bytes = Buffer.allocUnsafe(opened.size);
+    let position = 0;
+    while (position < bytes.length) {
+      const read = await opened.handle.read(bytes, position, bytes.length - position, position);
+      if (read.bytesRead === 0) throw new TypeError(`${path.basename(ref)} changed while being read`);
+      position += read.bytesRead;
+    }
+    if ((await opened.handle.read(Buffer.allocUnsafe(1), 0, 1, bytes.length)).bytesRead !== 0) {
+      throw new TypeError(`${path.basename(ref)} changed while being read`);
+    }
     await opened.assertUnchanged();
-    if (bytes.length !== opened.size) throw new TypeError(`${path.basename(ref)} changed while being read`);
     return bytes;
   } finally {
     await opened.handle.close();
@@ -446,25 +459,9 @@ function positiveLimit(value: number, label: string): number {
   return value;
 }
 
-function nonNegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new TypeError(`${label} is invalid`);
-  return Number(value);
-}
-
-function sha256Value(value: unknown, label: string): Sha256 {
-  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) throw new TypeError(`${label} is invalid`);
-  return value as Sha256;
-}
-
 function asRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
   return value as Record<string, unknown>;
-}
-
-function exactFields(record: Record<string, unknown>, allowed: readonly string[], label: string): void {
-  const fields = new Set(allowed);
-  const unexpected = Object.keys(record).find((field) => !fields.has(field));
-  if (unexpected) throw new TypeError(`${label} has unknown field: ${unexpected}`);
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

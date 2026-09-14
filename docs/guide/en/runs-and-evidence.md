@@ -41,6 +41,22 @@ hitch verifier inspect RUN_ID --json
 
 For an evaluation trial, this exposes its observation, score channels, and available bounded verifier diagnostics. A regular local run may have no verifier result.
 
+New runs retain each complete sanitized diagnostic up to the 16 MiB hard cap.
+The inspector returns at most a 64 KiB preview. Read larger artifacts in
+digest-checked UTF-8 byte pages:
+
+```bash
+hitch verifier artifact RUN_ID test-stdout.txt \
+  --offset 0 \
+  --limit 65536 \
+  --sha256 SHA256 \
+  --json
+```
+
+Use the returned `next_offset` for the next page. `source_complete: false` and
+`loss_reason` distinguish an oversized or invalid source from an ordinary
+bounded preview.
+
 | Verifier status | Meaning |
 | --- | --- |
 | `complete` | A structured result and at least one supported test or log artifact exist. |
@@ -49,6 +65,14 @@ For an evaluation trial, this exposes its observation, score channels, and avail
 | `corrupt` | An identity, reference, JSON document, or checksum failed validation. |
 
 A valid score of zero means the task earned zero. An invalid observation means its score cannot be trusted; it must not be counted as zero. See [evaluation results](evaluations.md) and the [verifier contract](../../verifier-evidence.md).
+
+For a legacy run whose schema-version-1 diagnostic index retained only a
+truncated excerpt, `hitch verifier repair RUN_ID --json` can recover the full
+artifact when exactly one known local Harbor source remains. The repair writes
+a digest-bound derived supplement and leaves the sealed run, observation, and
+score unchanged. Supply `--source` only to choose the exact known
+eval-relative Harbor trial path when automatic selection is ambiguous. Repair
+rejects mismatched source digests and legacy credential-value redactions.
 
 ## Attach feedback
 
