@@ -109,7 +109,7 @@ export async function loadVerifierEvidence(
   let diagnostics: NonNullable<HitchVerifierEvidenceV1["verifier"]["diagnostics"]> | undefined;
   try {
     const supplement = await loadVerifierDiagnosticSupplement(root, runRoot, runId);
-    diagnostics = await loadDiagnostics(supplement?.directory ?? runRoot, maxArtifactBytes, credentialValues, redactions);
+    diagnostics = await loadDiagnostics(runRoot, supplement?.directory ?? runRoot, maxArtifactBytes, credentialValues, redactions);
   } catch (error) {
     corrupt = true;
     issues.push(safeIssue("verifier diagnostics are corrupt", error, credentialValues));
@@ -262,11 +262,12 @@ export async function loadVerifierDiagnosticPage(
 
 async function loadDiagnostics(
   runRoot: string,
+  artifactRoot: string,
   maxBytes: number,
   credentialValues: readonly string[],
   redactions: Map<string, number>,
 ): Promise<NonNullable<HitchVerifierEvidenceV1["verifier"]["diagnostics"]> | undefined> {
-  const stored = await readVerifierDiagnosticStorage(runRoot, credentialValues);
+  const stored = await readVerifierDiagnosticStorage(artifactRoot, credentialValues);
   mergeCounts(redactions, stored.redactions);
   const artifacts = stored.artifacts.map((artifact) => {
     const bounded = truncate(artifact.bytes, maxBytes);

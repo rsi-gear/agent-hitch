@@ -220,6 +220,13 @@ test("historical repair publishes one digest-pinned supplement without changing 
     "ctrf.json": Buffer.from(ctrfText),
     "test-stdout.txt": Buffer.from(stdoutText),
   });
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "infrastructure-error.json"), {
+    code: "transient", path: path.join(root, "harbor", "attempt-0001"),
+  });
+  await atomicWriteJSON(path.join(runDirectory, "verifier", "infrastructure-retry-history.json"), {
+    schema_version: "1", code: "verifier_infrastructure_retry_history", candidate_rerun: false,
+    attempts: [{ attempt: 1, status: "failed", message: "transient verifier failure" }],
+  });
   await writeEvalRecord(root, runId);
   await writeResultBundleIndex(runDirectory);
   const originalBundle = await readFile(path.join(runDirectory, "bundle.index.json"));
@@ -227,6 +234,11 @@ test("historical repair publishes one digest-pinned supplement without changing 
   const before = await loadVerifierEvidence(root, runId);
   assert.equal(before.observation?.reward, 0);
   assert.equal(before.verifier.diagnostics?.ctrf?.truncated, true);
+  assert.deepEqual(before.verifier.diagnostics?.infrastructure_error, { code: "transient", path: "[path]" });
+  assert.equal(
+    (before.verifier.diagnostics?.retry_history?.[0] as { code?: string } | undefined)?.code,
+    "verifier_infrastructure_retry_history",
+  );
 
   const outcomes = await Promise.all([
     repairVerifierDiagnostics({ root, runId, source: relativeSource }),
@@ -239,6 +251,8 @@ test("historical repair publishes one digest-pinned supplement without changing 
   const after = await loadVerifierEvidence(root, runId);
   assert.equal(after.observation?.reward, 0);
   assert.equal(after.verifier.scores?.total_score, 0);
+  assert.deepEqual(after.verifier.diagnostics?.infrastructure_error, before.verifier.diagnostics?.infrastructure_error);
+  assert.deepEqual(after.verifier.diagnostics?.retry_history, before.verifier.diagnostics?.retry_history);
   assert.equal((await collectDiagnosticPages(root, runId, "ctrf.json")).text, ctrfText);
   assert.equal((await collectDiagnosticPages(root, runId, "test-stdout.txt")).text, stdoutText);
   assert.deepEqual(JSON.parse((await collectDiagnosticPages(root, runId, "ctrf.json")).text).results.tests.length, 900);
