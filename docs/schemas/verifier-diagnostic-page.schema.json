@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/verifier-diagnostic-page.schema.json",
+  "title": "Hitch verifier diagnostic artifact page",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "run_id", "artifact", "page"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "kind": { "const": "verifier-diagnostic-page" },
+    "run_id": { "type": "string", "pattern": "^run_[a-f0-9]{32}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "media_type", "bytes", "sha256", "source_complete"],
+      "properties": {
+        "name": { "enum": ["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"] },
+        "media_type": { "enum": ["application/json", "text/plain"] },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "source_complete": { "type": "boolean" },
+        "loss_reason": { "enum": ["persistence_limit_exceeded", "invalid_json", "legacy_truncated"] }
+      },
+      "allOf": [
+        {
+          "if": { "type": "object", "properties": { "name": { "const": "ctrf.json" } }, "required": ["name"] },
+          "then": { "type": "object", "properties": { "media_type": { "const": "application/json" } } },
+          "else": { "type": "object", "properties": { "media_type": { "const": "text/plain" } } }
+        },
+        {
+          "if": { "type": "object", "properties": { "source_complete": { "const": true } }, "required": ["source_complete"] },
+          "then": { "type": "object", "properties": { "loss_reason": false } },
+          "else": {
+            "type": "object",
+            "properties": { "loss_reason": { "enum": ["persistence_limit_exceeded", "invalid_json", "legacy_truncated"] } },
+            "required": ["loss_reason"]
+          }
+        }
+      ]
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offset", "bytes", "text", "eof"],
+      "properties": {
+        "offset": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 65536 },
+        "text": { "type": "string" },
+        "eof": { "type": "boolean" },
+        "next_offset": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "type": "object", "properties": { "eof": { "const": true } }, "required": ["eof"] },
+          "then": { "type": "object", "properties": { "next_offset": false } },
+          "else": {
+            "type": "object",
+            "properties": { "next_offset": { "type": "integer", "minimum": 1 } },
+            "required": ["next_offset"]
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "artifact": {
+            "type": "object",
+            "properties": { "source_complete": { "const": false } },
+            "required": ["source_complete"]
+          }
+        },
+        "required": ["artifact"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "object",
+            "properties": {
+              "offset": { "const": 0 },
+              "bytes": { "const": 0 },
+              "text": { "const": "" },
+              "eof": { "const": true }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

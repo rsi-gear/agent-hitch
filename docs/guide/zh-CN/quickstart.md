@@ -4,11 +4,9 @@
 
 ## 1. 安装 Hitch
 
-在 0.2.10 发布到 npm 前，请按[源码安装说明](model-inference.md#使用当前-dev-构建)使用当前 dev。
-
 ```bash
 node --version
-npm install --global agent-hitch@0.2.10
+npm install --global agent-hitch
 hitch --version
 hitch list
 ```
@@ -17,13 +15,14 @@ Node 版本必须为 22 或更高。`hitch list` 发现支持的 Harness 并报�
 
 ## 2. 完成 Harness 认证
 
-Hitch 以非交互方式启动 Harness，所以应先完成认证。对于示例中的 Codex 版本：
+Hitch 以非交互方式启动 Harness，所以应先完成认证。安装 Codex 并登录；如果已经安装，可跳过安装命令：
 
 ```bash
-npx --yes @openai/codex@0.92.0 login
+npm install --global @openai/codex
+codex login
 ```
 
-按 Codex 提示完成登录。API key 和无界面环境的配置见 [Codex 认证文档](https://developers.openai.com/codex/auth)。认证方式和模型可用性取决于你的账号。这里固定的 Harness 版本用于示例，不代表最新版本。
+按 Codex 提示完成登录。API key 和无界面环境的配置见 [Codex 认证文档](https://developers.openai.com/codex/auth)。认证方式和模型可用性取决于你的账号。
 
 如果已在使用其他支持的 Harness，可用 `hitch inspect pi --json` 查看其要求，把 `pi` 换成对应 ID，完成该 Harness 的认证后再选择其引用。
 
@@ -41,14 +40,14 @@ git status --short
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "总结这个仓库和它的测试命令，不要修改文件。" \
   --timeout 5m \
   --output json
 ```
 
-首次运行会解析并准备软件包，可能需要访问网络。后续运行会复用经过验证的缓存制品。`--output json` 输出最终结果；想实时观察生命周期事件时，使用 `--output jsonl`。
+Hitch 会记录并运行已安装的 Codex 程序。要在 Hitch 缓存中准备确定的软件包版本，参见[固定版本与隔离工作区](versions-and-workspaces.md)。`--output json` 输出最终结果；想实时观察生命周期事件时，使用 `--output jsonl`。
 
 示例使用 Harness 配置的默认模型。可以添加 `--model MODEL_ID` 显式选择模型，把 `MODEL_ID` 替换为该 Harness 接受、且你的账号可用的 ID。Hitch 会把选择传给 Harness，不同适配器的 provider 前缀写法不能直接互换。
 
@@ -79,12 +78,12 @@ hitch daemon start \
   --capacity-memory-mib 2048 \
   --container-slots 2
 hitch daemon submit \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "总结架构，不要修改文件。" \
   --timeout 5m
 hitch daemon submit \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "找出测试命令，不要修改文件。" \
   --timeout 5m

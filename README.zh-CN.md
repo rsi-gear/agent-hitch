@@ -29,19 +29,19 @@
 - [x] **并行与恢复。** 共享资源预算、并行执行 Trial，在支持的恢复路径中保留已完成工作。
 - [x] **收齐结果证据。** 分数、轨迹、Verifier 证据与来源信息归入同一份结果包。
 
-> **状态：** pre-alpha。以下能力对应当前 `dev`；配置与支持范围见
+> **状态：** pre-alpha。配置与支持范围见
 > [User Guide](https://rsigear.xyz/docs/hitch/zh/)。
 
 ## Quick Start：快速开始
 
 需要 **Node.js 22+**、Git 和模型访问权限。本地运行不需要 Docker。
 
-**1. 安装 Hitch，并完成 Harness 认证。** 示例固定了一个 Codex 版本，
-继续前先完成登录流程。
+**1. 安装 Hitch 和 Codex，并完成认证。** 继续前先完成 Codex 登录流程；
+Hitch 会使用这个已安装的程序。
 
 ```bash
-npm install --global agent-hitch@0.2.10
-npx --yes @openai/codex@0.92.0 login
+npm install --global agent-hitch @openai/codex
+codex login
 ```
 
 **2. 从干净的 Git 仓库运行。** Worktree 模式要求 `git status --short` 没有
@@ -51,7 +51,7 @@ npx --yes @openai/codex@0.92.0 login
 ```bash
 git status --short
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "总结这个仓库及其测试命令，不修改文件。" \
   --timeout 5m \
@@ -131,7 +131,7 @@ Hitch 采用 **Harbor 的任务定义格式**，接入已有 Benchmark 和自定
 
 ## 本地与远程模型推理
 
-当前 `dev` 已包含托管推理。完整的 Hugging Face safetensors checkpoint 只需导入一次，此后继续使用原有
+完整的 Hugging Face safetensors checkpoint 只需导入一次，此后继续使用原有
 run/eval 命令，并把模型写成 `local/<name>`。Hitch 会自动选择固定摘要的 CPU 或
 CUDA preview runtime、按需启动 daemon 和 SGLang 服务，并记录不可变的模型、runtime
 和 inference 身份。
@@ -202,8 +202,9 @@ hitch eval doctor
 | OpenCode | ✓ | ✓ | — |
 | DeepSeek Harness | ✓ | ✓ | ✓ |
 
-使用 `codex@installed` 运行本机程序，使用 `codex@version:0.92.0` 选择确定的
-软件包版本，或把真实上游提交填入 `codex@commit:COMMIT`。评测要求可移植的
+使用 `codex@installed` 运行本机程序，使用 `codex@version:VERSION` 选择确定的
+软件包版本，或把真实上游提交填入 `codex@commit:COMMIT`。将 `VERSION` 替换为
+要运行的精确已发布版本。评测要求可移植的
 版本或提交引用。引用选择、制品准备和工作区模式见
 [固定版本与隔离工作区](docs/guide/zh-CN/versions-and-workspaces.md)。
 

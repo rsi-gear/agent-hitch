@@ -4,11 +4,9 @@ Install Hitch, run Codex on a repository, inspect the evidence, then submit two 
 
 ## 1. Install Hitch
 
-Before 0.2.10 is published to npm, [install from source](model-inference.md#use-the-current-dev-build).
-
 ```bash
 node --version
-npm install --global agent-hitch@0.2.10
+npm install --global agent-hitch
 hitch --version
 hitch list
 ```
@@ -17,13 +15,14 @@ Node must be version 22 or later. `hitch list` discovers supported harnesses and
 
 ## 2. Authenticate the harness
 
-Hitch starts the selected harness non-interactively, so complete its authentication before the run. For the pinned Codex example:
+Hitch starts the selected harness non-interactively, so complete its authentication before the run. Install Codex and sign in; if it is already installed, skip the installation command:
 
 ```bash
-npx --yes @openai/codex@0.92.0 login
+npm install --global @openai/codex
+codex login
 ```
 
-Follow Codex's sign-in flow. For API-key authentication and headless environments, see the [Codex authentication documentation](https://developers.openai.com/codex/auth). Authentication and model availability depend on your provider account. The harness version here is an explicit example, not a claim that it is the newest release.
+Follow Codex's sign-in flow. For API-key authentication and headless environments, see the [Codex authentication documentation](https://developers.openai.com/codex/auth). Authentication and model availability depend on your provider account.
 
 If you already use another supported harness, inspect its requirements with `hitch inspect pi --json` (replace `pi` with its ID), configure that harness, and choose its reference instead.
 
@@ -41,14 +40,14 @@ For `worktree` mode, this must produce no output: staged, unstaged, and untracke
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "Summarize this repository and its test commands. Do not modify files." \
   --timeout 5m \
   --output json
 ```
 
-The first run resolves and prepares the package, which may require network access. Later runs reuse verified cached artifacts. `--output json` prints the final result; use `--output jsonl` when you want lifecycle events as they happen.
+Hitch fingerprints and runs the installed Codex executable. To prepare a specific package version in Hitch's cache, follow [versions and workspaces](versions-and-workspaces.md). `--output json` prints the final result; use `--output jsonl` when you want lifecycle events as they happen.
 
 The example uses the harness's configured default model. Add `--model MODEL_ID` to select one explicitly; replace `MODEL_ID` with an ID accepted by that harness and available to your account. Hitch forwards the selection to the harness, so provider prefixes are not interchangeable across adapters. For hosted APIs, Ollama, or a custom inference server, follow [local and remote model inference](model-inference.md).
 
@@ -77,12 +76,12 @@ hitch daemon start \
   --capacity-memory-mib 2048 \
   --container-slots 2
 hitch daemon submit \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "Summarize the architecture without changing files." \
   --timeout 5m
 hitch daemon submit \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "Find the test commands without changing files." \
   --timeout 5m

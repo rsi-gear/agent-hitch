@@ -728,3 +728,37 @@ async function regularFiles(directory: string): Promise<string[]> {
   }
   return files.sort();
 }
+
+for (const replay of ["replace", "duplicate"] as const) {
+  test(`DeepSeek result ${replay} preserves pairing and archived native evidence`, async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), "hitch-native-replay-"));
+    t.after(() => forceRemove(root));
+    const executable = await writeFakeDeepseek(root, { nativeSession: true, nativeResultReplay: replay });
+    const previous = process.env.HITCH_DEEPSEEK_PATH;
+    process.env.HITCH_DEEPSEEK_PATH = executable;
+    t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
+    const runId = newRunId();
+    const runDirectory = path.join(root, "runs", runId);
+    const result = await executeRun({ runId, request: request({ agent: "deepseek", cwd: root, prompt: "compress", timeout_ms: 5_000, agent_args: [] }), runsRoot: path.join(root, "runs") });
+    assert.equal(result.exit_code, replay === "replace" ? 0 : 12);
+    if (replay === "replace") {
+      assert.equal(result.status, "succeeded");
+      const ref = await loadTrajectoryRef(runDirectory);
+      assert.ok(ref);
+      const { events } = await readTrajectory(ref.path);
+      const results = events.filter((event) => event.type === "tool/result");
+      assert.equal(results.length, 2);
+      assert.deepEqual(results[1]?.surfaceOp, { op: "replace", start: 7, end: 7 });
+      assert.deepEqual(results[1]?.sourceEventSeqs, [7]);
+    } else {
+      assert.equal((result.error as { code: string }).code, "trajectory_recording_failed");
+      assert.equal(await loadTrajectoryRef(runDirectory), null);
+    }
+    const evidencePath = "trajectory/provider/deepseek-session.jsonl";
+    const evidence = await readFile(path.join(runDirectory, evidencePath), "utf8");
+    assert.doesNotMatch(evidence, /native-evidence-secret/);
+    assert.match(evidence, /REDACTED/);
+    const bundle = await readFile(path.join(runDirectory, "bundle.index.json"), "utf8");
+    assert.ok(bundle.includes(evidencePath));
+  });
+}

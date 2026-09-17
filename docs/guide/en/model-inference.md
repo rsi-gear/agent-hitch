@@ -2,8 +2,6 @@
 
 Choose the Harness and the inference service separately. `--harness` selects the agent program; `--model` selects its model. Hitch can forward requests to an existing API, manage SGLang on the local host, or use a registered remote model node.
 
-This chapter describes the managed inference features in Hitch 0.2.10. Before that version is published to npm, [use the current dev build](#use-the-current-dev-build).
-
 ```text
 Hitch → Harness on the host or in a task container → model API
                                                    ├─ hosted provider
@@ -34,7 +32,7 @@ Replace `MODEL_ID` with a model available to your account and accepted by the se
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --model MODEL_ID \
   --workspace-mode worktree \
   --prompt "Summarize this repository without changing files." \
@@ -64,7 +62,7 @@ Hitch resolves the model, pins the serving runtime and inference configuration, 
 
 `--device` defaults to `auto`; select `cpu` or `cuda` explicitly when comparing backends. The local Docker runtime currently targets **Linux/amd64 with an Intel Xeon AMX CPU or one compatible NVIDIA CUDA GPU**. CUDA also needs working GPU container support. macOS/Metal, ordinary non-AMX desktop CPUs, and multi-GPU execution are outside this local preview's support. Unsupported hardware fails preflight and does not fall back to a cloud model. The local Docker runtime remains a preview with its full hardware release gate pending; see the [local-inference implementation status](../../local-model-inference-spec.zh-CN.md).
 
-Managed Codex inference requires **`codex@version:0.145.0`** and a model type with a configured tool parser. The Quick Start's older Codex pin is for its external API example. `model-call` provides a text-only path; `training-tool` has a separate Chat Completions binding described in [training integration](../../slime-training-binding.zh-CN.md). This does not establish support for every Harness or every SGLang-compatible model.
+Managed Codex inference requires **`codex@version:0.145.0`** and a model type with a configured tool parser. `model-call` provides a text-only path; `training-tool` has a separate Chat Completions binding described in [training integration](../../slime-training-binding.zh-CN.md). This does not establish support for every Harness or every SGLang-compatible model.
 
 Optional preparation and inspection commands are:
 
@@ -152,7 +150,7 @@ For a local Ollama installation, select a model already available locally, then 
 ```bash
 ollama list
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --model LOCAL_MODEL_ID \
   --agent-arg --oss \
   --agent-arg --local-provider \
@@ -173,7 +171,7 @@ Assume your service is already listening at `http://127.0.0.1:8000/v1`. Set `MOD
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --model SERVED_MODEL_ID \
   --agent-arg -c \
   --agent-arg 'model_provider="hitch_endpoint"' \
@@ -204,10 +202,12 @@ Docker Desktop provides the [host DNS name](https://docs.docker.com/desktop/feat
 
 For Docker Desktop, after completing [evaluation setup](evaluations.md), use the following from the source checkout. The daemon must already have `MODEL_API_KEY` in its environment, and the service must be reachable from the task container:
 
+Replace `VERSION` with the exact published Codex version you want to evaluate; see [pinning versions](versions-and-workspaces.md).
+
 ```bash
 hitch eval run --daemon \
   --dataset docs/guide/examples \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --model SERVED_MODEL_ID \
   --pass-env MODEL_API_KEY \
   --agent-arg -c \
@@ -273,14 +273,14 @@ Managed inference saves `model_id`, `runtime_id`, `inference_id`, the exact lock
 | Works on the host, fails in Docker | Container loopback, DNS, service bind address, port, and task network policy |
 | Text works, tools fail | Model chat template, tool parser, Responses/tool-call support, and context budget |
 | Timeouts under parallel load | Inference queue depth, KV-cache/memory pressure, provider rate limits, and trial concurrency |
-| `models`, `local`, or `model-node` is unknown | An older CLI is running; check the source revision and installed executable, then rebuild current dev |
+| `models`, `local`, or `model-node` is unknown | Check `hitch --version` and the executable your shell resolves; update with `npm install --global agent-hitch`, or rebuild your source checkout |
 | Managed inference rejects a Harness | Use the supported exact Harness version and required tool protocol/parser |
 | Node runtime/generation mismatch | Inspect and register the actual node; preserve the old binding for existing work and reconcile its resource ownership |
 | GPU remains reserved after failure | Inspect service/lease evidence; a dead daemon or unreachable node does not prove physical release |
 
-## Use the current dev build
+## Install from source
 
-If your installation predates these integrations, build a separate dev checkout with Node.js 22+:
+To try unreleased changes or develop Hitch, build a separate `dev` checkout with Node.js 22+:
 
 ```bash
 git clone --branch dev https://github.com/rsi-gear/agent-hitch.git hitch-dev

@@ -2,8 +2,6 @@
 
 Harness 和推理服务需要分别选择。`--harness` 选择智能体程序，`--model` 选择模型。Hitch 可以调用已有 API、管理本机 SGLang，也可以使用已注册的远程模型节点。
 
-本章对应 Hitch 0.2.10 的托管推理功能。在该版本发布到 npm 前，请[使用当前 dev 构建](#使用当前-dev-构建)。
-
 ```text
 Hitch → 宿主机或任务容器中的 Harness → 模型 API
                                       ├─ 云模型服务
@@ -34,7 +32,7 @@ Hitch → 宿主机或任务容器中的 Harness → 模型 API
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --model MODEL_ID \
   --workspace-mode worktree \
   --prompt "总结这个仓库，不修改文件。" \
@@ -64,7 +62,7 @@ Hitch 解析模型、固定推理运行时与配置，按需启动 daemon 和 SG
 
 `--device` 默认为 `auto`；比较不同后端时，显式选择 `cpu` 或 `cuda`。本机 Docker 运行时目前面向 **Linux/amd64，搭配 Intel Xeon AMX CPU 或一张兼容的 NVIDIA CUDA GPU**；CUDA 还需要可用的容器 GPU 支持。macOS/Metal、普通非 AMX 桌面 CPU 和多卡执行不在这条本机预览路径的支持范围内。不支持的硬件会在预检时失败，不会回退到云模型。本机 Docker 运行时仍为 Preview，完整硬件发布验收尚待完成，详见[本地推理实现状态](../../local-model-inference-spec.zh-CN.md)。
 
-托管 Codex 推理要求 **`codex@version:0.145.0`**，以及配置了工具解析器的模型类型；Quick Start 中较旧的 Codex 固定版本用于外部 API 示例。`model-call` 提供纯文本路径；`training-tool` 使用单独的 Chat Completions 绑定，见[训练集成](../../slime-training-binding.zh-CN.md)。这不代表所有 Harness 或所有 SGLang 兼容模型都受支持。
+托管 Codex 推理要求 **`codex@version:0.145.0`**，以及配置了工具解析器的模型类型。`model-call` 提供纯文本路径；`training-tool` 使用单独的 Chat Completions 绑定，见[训练集成](../../slime-training-binding.zh-CN.md)。这不代表所有 Harness 或所有 SGLang 兼容模型都受支持。
 
 需要提前准备或检查状态时，可使用：
 
@@ -152,7 +150,7 @@ hitch run \
 ```bash
 ollama list
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --model LOCAL_MODEL_ID \
   --agent-arg --oss \
   --agent-arg --local-provider \
@@ -173,7 +171,7 @@ hitch run \
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --model SERVED_MODEL_ID \
   --agent-arg -c \
   --agent-arg 'model_provider="hitch_endpoint"' \
@@ -204,10 +202,12 @@ Docker Desktop 提供[宿主机 DNS 名称](https://docs.docker.com/desktop/feat
 
 对于 Docker Desktop，完成[评测准备](evaluations.md)后，可以从源码仓库执行以下命令。Daemon 自身环境必须已经包含 `MODEL_API_KEY`，服务也必须能从任务容器访问：
 
+将 `VERSION` 替换为要评测的精确已发布 Codex 版本，详见[固定版本](versions-and-workspaces.md)。
+
 ```bash
 hitch eval run --daemon \
   --dataset docs/guide/examples \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --model SERVED_MODEL_ID \
   --pass-env MODEL_API_KEY \
   --agent-arg -c \
@@ -273,14 +273,14 @@ hitch local inspect-service SERVICE_ID --json
 | 宿主机能访问，Docker 不能 | 容器 Loopback、DNS、服务监听地址、端口和任务网络策略 |
 | 文本可用，工具调用失败 | 模型模板、工具解析器、Responses/Tool Call 支持和上下文预算 |
 | 并行后频繁超时 | 推理队列、KV Cache/内存压力、服务商限流和 Trial 并发 |
-| 不认识 `models`、`local` 或 `model-node` 命令 | 正在运行旧 CLI；检查源码提交与实际可执行文件，重新构建当前 dev |
+| 不认识 `models`、`local` 或 `model-node` 命令 | 检查 `hitch --version` 和 Shell 实际解析到的程序；运行 `npm install --global agent-hitch` 更新，或重新构建源码工作目录 |
 | 托管推理拒绝 Harness | 使用支持的确定版本，以及所需的工具协议与解析器 |
 | 节点运行时或 generation 不一致 | 检查并注册实际节点；保留已有任务的旧绑定，并核对旧资源归属 |
 | 失败后 GPU 仍被预留 | 检查服务与租约证据；daemon 退出或节点不可达不能证明资源已释放 |
 
-## 使用当前 dev 构建
+## 从源码安装
 
-如果当前安装早于这些集成，使用 Node.js 22+ 构建独立的 dev 工作目录：
+要试用尚未发布的改动或参与 Hitch 开发，可以使用 Node.js 22+ 构建独立的 `dev` 工作目录：
 
 ```bash
 git clone --branch dev https://github.com/rsi-gear/agent-hitch.git hitch-dev

@@ -29,10 +29,12 @@ hitch daemon start \
 
 把下面的数据集路径替换为包含多个独立任务的本地 Harbor 数据集。指南的 `docs/guide/examples` 也可用于验证提交，但其中只有一个任务，不能展示同一评测内多个 Trial 并行。Codex 权限参数仅用于这些可信任务容器。
 
+将 `VERSION` 替换为要评测的精确已发布 Codex 版本，详见[固定版本](versions-and-workspaces.md)。
+
 ```bash
 hitch eval submit \
   --dataset /absolute/path/to/harbor-dataset \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --pass-env CODEX_API_KEY \
   --agent-arg --dangerously-bypass-approvals-and-sandbox \
   --provider local-docker \

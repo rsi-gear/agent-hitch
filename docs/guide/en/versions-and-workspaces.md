@@ -7,7 +7,7 @@ Select the harness executable and the workspace independently. A fixed executabl
 | Reference | Use it when |
 | --- | --- |
 | `codex@installed` | You want to fingerprint and run the executable already on this machine. |
-| `codex@version:0.92.0` | You want a specific published package version, prepared in Hitch's cache. |
+| `codex@version:VERSION` | You want a specific published package version, prepared in Hitch's cache. |
 | `codex@commit:COMMIT` | You want to build an exact commit from the registered upstream repository. Replace `COMMIT` with a real commit. |
 
 Use `hitch inspect HARNESS --json` to check the adapter before selecting a source. Building a source commit also requires that harness's build toolchain; package versions are the simpler starting point.
@@ -20,11 +20,11 @@ Use `hitch inspect HARNESS --json` to check the adapter before selecting a sourc
 | OpenCode | Yes | Yes | No |
 | DeepSeek Harness | Yes | Yes | Yes |
 
-Resolve the identity without starting an agent, or prepare its runnable files in advance:
+Replace `VERSION` in the examples with the exact published Codex version you want to run. Tags such as `latest` and version ranges are not accepted. Resolve the identity without starting an agent, or prepare its runnable files in advance:
 
 ```bash
-hitch resolve codex@version:0.92.0 --json
-hitch prepare codex@version:0.92.0 --json
+hitch resolve codex@version:VERSION --json
+hitch prepare codex@version:VERSION --json
 ```
 
 Keep the resolved identity and artifact reference with your experiment. `@installed` is useful locally but is not a portable evaluation reference. Harbor evaluations require an immutable package or commit reference.
@@ -39,7 +39,7 @@ Keep the resolved identity and artifact reference with your experiment. `@instal
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --cwd /absolute/path/to/project \
   --workspace-mode copy \
   --prompt "Summarize the current changes" \

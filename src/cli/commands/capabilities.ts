@@ -9,6 +9,7 @@ export function capabilitiesCommand(args: string[]): void {
     trajectory_analysis: "1",
     trajectory_events_page: "1",
     verifier_evidence: "1",
+    verifier_diagnostic_pages: "1",
     training_external_binding: "1",
     exact_policy_tokens: "1",
     training_policy_fencing: "1",

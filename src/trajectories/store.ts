@@ -12,6 +12,7 @@ import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, readJSON } from "../foundation/index.js";
 import { eventLine, headerLine, logPath, parseEventLine, parseHeaderLine } from "./format.js";
+import { IncrementalSurfaceFold, isSurfaceEvent } from "./surface-fold.js";
 import { TRAJECTORY_FORMAT } from "./contract.js";
 import type {
   SessionEvent,
@@ -217,10 +218,16 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
   let openTurn: number | null = null;
   let openStep: { turn: number; step: number } | null = null;
   const openCalls = new Set<string>();
+  const surface = new IncrementalSurfaceFold();
   let seq = 0;
   for (const event of events) {
     if (event.seq !== seq) throw new Error(`trajectory seq must be contiguous: expected ${seq}, got ${event.seq}`);
     seq += 1;
+    // Legacy normalized logs omit markers. Infer append only for validation;
+    // provider evidence and canonical event rows remain untouched.
+    surface.accept(isSurfaceEvent(event) && event.surfaceOp === undefined
+      ? { ...event, surfaceOp: "append" }
+      : event);
     const data = (event.data || {}) as Record<string, unknown>;
     switch (event.type) {
       case "turn/start": {
@@ -258,6 +265,10 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
         break;
       }
       case "tool/result": {
+        if (isResultReplacement(event)) {
+          if (!turnOpen) throw new Error(`tool/result surface replacement outside a turn at seq ${event.seq}`);
+          break;
+        }
         const message = (data.message || {}) as Record<string, unknown>;
         const source = (message.source || {}) as Record<string, unknown>;
         const content = Array.isArray(message.content) ? message.content as Array<Record<string, unknown>> : [];
@@ -317,6 +328,7 @@ export function finalizeInterruptedTrajectory(
         break;
       }
       case "tool/result": {
+        if (isResultReplacement(event)) break;
         const message = (data.message || {}) as Record<string, unknown>;
         const source = (message.source || {}) as Record<string, unknown>;
         const content = Array.isArray(message.content) ? message.content as Array<Record<string, unknown>> : [];
@@ -368,6 +380,10 @@ export function finalizeInterruptedTrajectory(
 
   validateTrajectoryInvariants(header, finalized);
   return finalized;
+}
+
+function isResultReplacement(event: SessionEvent): boolean {
+  return event.surfaceOp !== null && typeof event.surfaceOp === "object" && event.surfaceOp.op === "replace";
 }
 
 function interruptedTerminalReason(status: "failed" | "cancelled" | "timed_out"): Record<string, unknown> {

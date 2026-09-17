@@ -9,6 +9,13 @@ applicable Hitch version, and review date. Keep translated pages aligned. Update
 the version and date after checking the commands against that release; a source
 commit identifies the content snapshot separately from the package version.
 
+Keep installation commands and general examples independent of release numbers.
+Use `codex@installed` for local walkthroughs and `codex@version:VERSION` with an
+explicit replacement instruction where a portable, exact package is required.
+Keep concrete versions when the implementation requires them, such as managed
+inference compatibility. Describe source builds as an optional development path
+instead of adding temporary pre-publication notices to user workflows.
+
 Use ordinary Markdown with one leading H1 matching the manifest title. Relative
 links between guide pages work on GitHub and are converted to website routes.
 Links to other repository documents stay available as GitHub references. Avoid
