@@ -8,14 +8,12 @@ Hitch 接受 Harbor 兼容的任务定义，接入已有 Benchmark 和自定义�
 
 需要 Node.js 22+、Git、模型访问权限，以及一个干净的 Git 仓库。从该仓库运行以下命令；使用 `worktree` 模式时，`git status --short` 必须没有变更输出。Login 命令会启动 Codex 的认证流程。
 
-在 0.2.10 发布到 npm 前，请按[源码安装说明](model-inference.md#使用当前-dev-构建)使用当前 dev。
-
 ```bash
-npm install --global agent-hitch@0.2.10
-npx --yes @openai/codex@0.92.0 login
+npm install --global agent-hitch @openai/codex
+codex login
 git status --short
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "总结这个仓库，不要修改文件。" \
   --timeout 5m \
@@ -70,7 +68,7 @@ Daemon 崩溃后，支持恢复的本地 Docker 评测可以重新接管经过�
 - 本地运行不需要 Docker。Harbor 评测需要 Python 3.12 或更高版本，以及正常运行的 Docker daemon。
 - 示例使用 macOS 或 Linux 的 POSIX Shell。Windows 用户可使用对应 PowerShell 写法或 POSIX Shell；恢复能力的限制见[日常运行](operations.md)。
 
-本指南对应处于 pre-alpha 阶段的 Hitch 0.2.10。运行 `hitch --version` 查看本机版本；使用其他版本时，以该版本的命令和 Schema 为准。
+Hitch 处于 pre-alpha 阶段。运行 `hitch --version` 查看本机版本，并使用与该版本匹配的命令和 Schema 参考。
 
 ## 深入阅读
 

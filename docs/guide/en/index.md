@@ -8,14 +8,12 @@ Hitch accepts Harbor-compatible task definitions for existing benchmarks and cus
 
 You need Node.js 22+, Git, model access, and a clean Git repository. Run these commands from that repository; `git status --short` must show no changes for `worktree` mode. The login command opens Codex's authentication flow.
 
-Before 0.2.10 is published to npm, [install from source](model-inference.md#use-the-current-dev-build).
-
 ```bash
-npm install --global agent-hitch@0.2.10
-npx --yes @openai/codex@0.92.0 login
+npm install --global agent-hitch @openai/codex
+codex login
 git status --short
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "Summarize this repository without changing files." \
   --timeout 5m \
@@ -70,7 +68,7 @@ Pinning a harness makes its executable identifiable. Repeating an experiment als
 - Local runs do not require Docker. Harbor evaluations require Python 3.12 or later and a working Docker daemon.
 - Examples use a POSIX shell on macOS or Linux. On Windows, use equivalent PowerShell commands or a POSIX shell; consult [operations](operations.md) for the recovery limitation.
 
-This guide describes Hitch 0.2.10, which is pre-alpha. Run `hitch --version` to check your installation. The versioned command and schema references in your checkout are authoritative when using a different release.
+Hitch is pre-alpha. Run `hitch --version` to check your installation, and use the command and schema references that match your release.
 
 ## Go deeper
 

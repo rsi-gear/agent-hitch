@@ -12,7 +12,7 @@
 hitch daemon start --max-concurrent 2
 hitch daemon status --json
 hitch daemon submit \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "总结这个仓库，不修改文件" \
   --timeout 5m
@@ -33,10 +33,12 @@ Daemon 启动后，从评测教程使用的源码仓库提交：
 
 这个 Codex 示例需要在启动 daemon 前，为其进程环境配置 `CODEX_API_KEY`，详见[评测准备](evaluations.md)。下面的 Codex 权限参数仅作用于可信任务容器。
 
+将 `VERSION` 替换为要评测的精确已发布 Codex 版本，详见[固定版本](versions-and-workspaces.md)。
+
 ```bash
 hitch eval submit \
   --dataset docs/guide/examples \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --pass-env CODEX_API_KEY \
   --agent-arg --dangerously-bypass-approvals-and-sandbox \
   --attempts 1 \

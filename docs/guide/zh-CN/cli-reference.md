@@ -1,6 +1,6 @@
 # CLI 命令参考
 
-这里集中列出 Hitch 0.2.10 的所有用户命令，已对照 CLI 分发与参数解析器核对。首次使用请先看 [Quick Start](quickstart.md)。在 0.2.10 发布到 npm 前，请按[源码安装说明](model-inference.md#使用当前-dev-构建)使用当前 dev。
+这里集中列出 Hitch 的所有用户命令，已对照 CLI 分发与参数解析器核对。首次使用请先看 [Quick Start](quickstart.md)。
 
 语法中，`VALUE` 是占位符，`[OPTIONS]` 表示可选，`A|B` 表示二选一。运行时替换占位符、去掉方括号，参数名和取值用空格分隔。下面是查询用的命令参考，不是需要从头执行的脚本。
 
@@ -43,7 +43,7 @@
 | `hitch resolve HARNESS_REF [--json]` | 将引用解析为确定的版本身份。 |
 | `hitch prepare HARNESS_REF [--json]` | 准备或复用已验证的可执行制品。 |
 
-引用包括 `codex@installed`、`codex@version:0.92.0`、`codex@commit:COMMIT` 和 `codex@git+file:///absolute/repository#FULL_COMMIT`。只写 Harness 名称会选择本机已安装程序。评测需要可移植的不可变引用；本地 Git 评测要求干净仓库和完整的小写提交哈希。详见[固定版本与隔离工作区](versions-and-workspaces.md)。
+引用包括 `codex@installed`、`codex@version:VERSION`、`codex@commit:COMMIT` 和 `codex@git+file:///absolute/repository#FULL_COMMIT`。将 `VERSION` 替换为精确的已发布软件包版本。只写 Harness 名称会选择本机已安装程序。评测需要可移植的不可变引用；本地 Git 评测要求干净仓库和完整的小写提交哈希。详见[固定版本与隔离工作区](versions-and-workspaces.md)。
 
 ## 运行任务
 

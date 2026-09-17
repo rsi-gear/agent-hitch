@@ -12,7 +12,7 @@ Start the daemon from a shell with the credentials needed by your harness. The l
 hitch daemon start --max-concurrent 2
 hitch daemon status --json
 hitch daemon submit \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "Summarize this repository without editing files" \
   --timeout 5m
@@ -33,10 +33,12 @@ With the daemon running, submit from the source checkout used in the evaluation 
 
 For this Codex example, configure `CODEX_API_KEY` in the daemon's environment before starting it, as described in the [evaluation setup](evaluations.md). The Codex permission argument below is scoped to the trusted task container.
 
+Replace `VERSION` with the exact published Codex version you want to evaluate; see [pinning versions](versions-and-workspaces.md).
+
 ```bash
 hitch eval submit \
   --dataset docs/guide/examples \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --pass-env CODEX_API_KEY \
   --agent-arg --dangerously-bypass-approvals-and-sandbox \
   --attempts 1 \

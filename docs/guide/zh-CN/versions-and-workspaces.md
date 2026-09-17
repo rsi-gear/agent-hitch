@@ -7,7 +7,7 @@ Harness 程序和工作区需要分别选择。固定程序版本，并不意味
 | 引用 | 使用场景 |
 | --- | --- |
 | `codex@installed` | 对本机现有可执行程序生成指纹并运行。 |
-| `codex@version:0.92.0` | 在 Hitch 缓存中准备并运行确定的已发布软件包版本。 |
+| `codex@version:VERSION` | 在 Hitch 缓存中准备并运行确定的已发布软件包版本。 |
 | `codex@commit:COMMIT` | 从已注册的上游仓库构建确定提交，把 `COMMIT` 换成实际提交。 |
 
 使用 `hitch inspect HARNESS --json` 查看适配器。构建源码提交还需要对应 Harness 的构建工具链；软件包版本更适合初次使用。
@@ -20,11 +20,11 @@ Harness 程序和工作区需要分别选择。固定程序版本，并不意味
 | OpenCode | 支持 | 支持 | 不支持 |
 | DeepSeek Harness | 支持 | 支持 | 支持 |
 
-可以只解析身份而不启动智能体，或提前准备可执行文件：
+将示例中的 `VERSION` 替换为要运行的精确已发布 Codex 版本；不接受 `latest` 等标签或版本范围。可以只解析身份而不启动智能体，或提前准备可执行文件：
 
 ```bash
-hitch resolve codex@version:0.92.0 --json
-hitch prepare codex@version:0.92.0 --json
+hitch resolve codex@version:VERSION --json
+hitch prepare codex@version:VERSION --json
 ```
 
 随实验保留解析后的身份和制品引用。`@installed` 适合本地使用，但不能作为可移植的评测引用。Harbor 评测要求不可变的软件包版本或提交。
@@ -39,7 +39,7 @@ hitch prepare codex@version:0.92.0 --json
 
 ```bash
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --cwd /absolute/path/to/project \
   --workspace-mode copy \
   --prompt "总结当前修改" \

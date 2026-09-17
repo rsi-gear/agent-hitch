@@ -6,7 +6,7 @@
 
 - [x] **比较模型：** 固定 Harness、任务和评测配置，更换 `--model`。
 - [x] **比较 Harness：** 固定模型和任务，更换 `--harness` 或其版本。
-- [x] **无工具模型评测：** 对兼容的无工具任务使用可信的 `model-call` 驱动，直接请求模型，不运行智能体工具循环。当前 `dev` 的接入要求见 [Benchmark Package](../../benchmark-packages.md)。
+- [x] **无工具模型评测：** 对兼容的无工具任务使用可信的 `model-call` 驱动，直接请求模型，不运行智能体工具循环。接入要求见 [Benchmark Package](../../benchmark-packages.md)。
 
 保持任务输入和预算一致，同时记录模型配置与 Harness 版本。先运行下面的单任务 Docker 示例，再选择完整 Benchmark。
 
@@ -31,13 +31,15 @@ Setup 在 `~/.hitch/tools/` 下的独立环境安装 Hitch 固定的 Harbor，�
 
 在包含本指南的 agent-hitch 源码仓库中，使用 `docs/guide/examples` 作为数据集。其中唯一的 `hello-hitch` 任务要求智能体写入一个小文本文件，Shell Verifier 检查其精确内容，无需外部 Benchmark 数据。
 
+将 `VERSION` 替换为要评测的精确已发布 Codex 版本，详见[固定版本](versions-and-workspaces.md)。
+
 ```bash
 git clone https://github.com/rsi-gear/agent-hitch.git
 cd agent-hitch
 hitch eval run \
   --backend harbor \
   --dataset docs/guide/examples \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --pass-env CODEX_API_KEY \
   --agent-arg --dangerously-bypass-approvals-and-sandbox \
   --attempts 1 \

@@ -6,7 +6,7 @@ An evaluation measures a model and harness configuration on a set of tasks and p
 
 - [x] **Compare models:** keep the harness, tasks, and evaluation settings fixed; change `--model`.
 - [x] **Compare harnesses:** keep the model and tasks fixed; change `--harness` or its revision.
-- [x] **Evaluate without tools:** use the trusted `model-call` driver for compatible no-tools tasks. This path makes a model request without an agent tool loop; see [benchmark packages](../../benchmark-packages.md) for requirements in current `dev`.
+- [x] **Evaluate without tools:** use the trusted `model-call` driver for compatible no-tools tasks. This path makes a model request without an agent tool loop; see [benchmark packages](../../benchmark-packages.md) for integration requirements.
 
 Keep task inputs and budgets consistent, and record model settings alongside the harness version. Begin with the one-task Docker example below before selecting a full benchmark.
 
@@ -31,13 +31,15 @@ For managed models, follow the [local SGLang evaluation](model-inference.md#run-
 
 From an agent-hitch source checkout containing this guide, use `docs/guide/examples` as the dataset. Its single `hello-hitch` task asks the agent to write a small text file, and a shell verifier checks its exact content. No external benchmark data is required.
 
+Replace `VERSION` with the exact published Codex version you want to evaluate; see [pinning versions](versions-and-workspaces.md).
+
 ```bash
 git clone https://github.com/rsi-gear/agent-hitch.git
 cd agent-hitch
 hitch eval run \
   --backend harbor \
   --dataset docs/guide/examples \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --pass-env CODEX_API_KEY \
   --agent-arg --dangerously-bypass-approvals-and-sandbox \
   --attempts 1 \

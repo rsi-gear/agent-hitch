@@ -29,10 +29,12 @@ Keep these resource settings for subsequent starts. If a daemon is already runni
 
 Replace the dataset path below with a local Harbor dataset containing several independent tasks. The guide's `docs/guide/examples` dataset also works, but its single task cannot demonstrate parallel trials within one evaluation. The Codex permission argument is for these trusted task containers only.
 
+Replace `VERSION` with the exact published Codex version you want to evaluate; see [pinning versions](versions-and-workspaces.md).
+
 ```bash
 hitch eval submit \
   --dataset /absolute/path/to/harbor-dataset \
-  --harness codex@version:0.92.0 \
+  --harness codex@version:VERSION \
   --pass-env CODEX_API_KEY \
   --agent-arg --dangerously-bypass-approvals-and-sandbox \
   --provider local-docker \

@@ -1,6 +1,6 @@
 # CLI reference
 
-A searchable reference for every user-facing command in Hitch 0.2.10, checked against the CLI dispatch and argument parsers. Start with [Quick Start](quickstart.md) for a runnable walkthrough. Before 0.2.10 is published to npm, use the [source installation instructions](model-inference.md#use-the-current-dev-build).
+A searchable reference for every user-facing Hitch command, checked against the CLI dispatch and argument parsers. Start with [Quick Start](quickstart.md) for a runnable walkthrough.
 
 Syntax: `VALUE` is a placeholder, `[OPTIONS]` is optional, and `A|B` means choose one. Replace placeholders with actual values and omit brackets. Separate option names and values with spaces. Commands below are a reference, not a script to run from top to bottom.
 
@@ -43,7 +43,7 @@ Use top-level `hitch --help`; subcommands do not implement their own `--help`. `
 | `hitch resolve HARNESS_REF [--json]` | Resolve a requested reference to its exact revision identity. |
 | `hitch prepare HARNESS_REF [--json]` | Prepare or reuse the verified executable artifact. |
 
-References include `codex@installed`, `codex@version:0.92.0`, `codex@commit:COMMIT`, and `codex@git+file:///absolute/repository#FULL_COMMIT`. A bare harness name selects its installed executable. Evaluations require portable, immutable references; local Git evaluations require a clean repository and a full lowercase commit hash. See [versions and workspaces](versions-and-workspaces.md).
+References include `codex@installed`, `codex@version:VERSION`, `codex@commit:COMMIT`, and `codex@git+file:///absolute/repository#FULL_COMMIT`. Replace `VERSION` with an exact published package version. A bare harness name selects its installed executable. Evaluations require portable, immutable references; local Git evaluations require a clean repository and a full lowercase commit hash. See [versions and workspaces](versions-and-workspaces.md).
 
 ## Run a task
 

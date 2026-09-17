@@ -31,19 +31,19 @@ compare models, or fix the model to compare harnesses.
 - [x] **Run and recover.** Share resource budgets, run trials in parallel, and preserve completed work through supported recovery paths.
 - [x] **Collect the evidence.** Keep scores, trajectories, verifier evidence, and provenance in one result bundle.
 
-> **Status:** pre-alpha. Capabilities below describe current `dev`; setup and
-> support limits are covered in the [User Guide](https://rsigear.xyz/docs/hitch/).
+> **Status:** pre-alpha. Setup and support limits are covered in the
+> [User Guide](https://rsigear.xyz/docs/hitch/).
 
 ## Quick Start
 
 You need **Node.js 22+**, Git, and model access. Local runs do not require Docker.
 
-**1. Install Hitch and authenticate the harness.** This example pins Codex to
-an explicit version; complete its login flow before continuing.
+**1. Install Hitch and Codex, then authenticate.** Complete the Codex login
+flow before continuing; Hitch will use this installed executable.
 
 ```bash
-npm install --global agent-hitch@0.2.10
-npx --yes @openai/codex@0.92.0 login
+npm install --global agent-hitch @openai/codex
+codex login
 ```
 
 **2. Run from a clean Git repository.** `git status --short` must show no changes
@@ -53,7 +53,7 @@ for worktree mode. To include uncommitted files, choose
 ```bash
 git status --short
 hitch run \
-  --harness codex@version:0.92.0 \
+  --harness codex@installed \
   --workspace-mode worktree \
   --prompt "Summarize this repository and its test commands. Do not modify files." \
   --timeout 5m \
@@ -136,7 +136,7 @@ and resource admission; it is not a speed or cost comparison against native Harb
 
 ## Local and remote model inference
 
-Managed inference is included in current `dev`. Import a complete Hugging Face safetensors checkpoint once, then use the same
+Import a complete Hugging Face safetensors checkpoint once, then use the same
 run and eval commands with a `local/<name>` model. Hitch chooses a pinned
 CPU or CUDA preview runtime, starts the daemon and SGLang service when needed, and
 records the immutable model/runtime/inference identities automatically.
@@ -211,9 +211,10 @@ for benchmark, resource, and portability contracts.
 | OpenCode | ✓ | ✓ | — |
 | DeepSeek Harness | ✓ | ✓ | ✓ |
 
-Use `codex@installed` for a local executable, `codex@version:0.92.0` for an exact
-package, or `codex@commit:COMMIT` with a real upstream commit. Evaluations require
-a portable version or commit reference. See
+Use `codex@installed` for a local executable, `codex@version:VERSION` for an exact
+package, or `codex@commit:COMMIT` with a real upstream commit. Replace `VERSION`
+with the exact published version you want to run. Evaluations require a portable
+version or commit reference. See
 [versions and workspaces](docs/guide/en/versions-and-workspaces.md) for reference
 selection, artifact preparation, and workspace modes.
 
