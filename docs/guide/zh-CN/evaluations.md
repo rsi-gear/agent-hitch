@@ -10,6 +10,10 @@
 
 保持任务输入和预算一致，同时记录模型配置与 Harness 版本。先运行下面的单任务 Docker 示例，再选择完整 Benchmark。
 
+标准数据集可以在 `benchmark.adapter.json` 的可选 `raw_metrics` 注册表中声明
+额外指标。Hitch 保留这些声明并校验完整性；指标提取和目标权重由 Gear 等使用方
+定义。详见 [Benchmark manifest 合同](../../benchmark-packages.md)。
+
 ## 检查环境
 
 需要 Python 3.12 或更高版本、已启动 daemon 的 Docker、下载软件包和镜像的网络，以及能在容器中使用的模型认证。
