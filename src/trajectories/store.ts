@@ -15,6 +15,7 @@ import { eventLine, headerLine, logPath, parseEventLine, parseHeaderLine } from 
 import { IncrementalSurfaceFold, isSurfaceEvent } from "./surface-fold.js";
 import { TRAJECTORY_FORMAT } from "./contract.js";
 import { IncrementalDshInvariant } from "./dsh-contract.js";
+import { IncrementalUnstartedToolRepair } from "./unstarted-tool-repair.js";
 import type {
   SessionEvent,
   SessionHeaderLine,
@@ -226,11 +227,13 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
   const openCalls = new Set<string>();
   const surface = new IncrementalSurfaceFold(header.version);
   const invariant = header.version > 0 ? new IncrementalDshInvariant(header.version, header.isSeeded) : undefined;
+  const unstartedRepairs = new IncrementalUnstartedToolRepair(header.version);
   let seq = 0;
   for (const event of events) {
     if (event.seq !== seq) throw new Error(`trajectory seq must be contiguous: expected ${seq}, got ${event.seq}`);
     seq += 1;
     invariant?.accept(event, event);
+    const unstartedRepair = unstartedRepairs.accept(event);
     // Legacy normalized logs omit markers. Infer append only for validation;
     // provider evidence and canonical event rows remain untouched.
     surface.accept(header.version === 0 && isSurfaceEvent(event) && event.surfaceOp === undefined
@@ -281,7 +284,7 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
         const source = (message.source || {}) as Record<string, unknown>;
         const content = Array.isArray(message.content) ? message.content as Array<Record<string, unknown>> : [];
         const callId = (source.callId ?? message.toolCallId ?? content[0]?.toolCallId) as string | undefined;
-        if (!callId || !openCalls.has(callId)) {
+        if (!callId || (!openCalls.has(callId) && !unstartedRepair)) {
           throw new Error(`tool/result without a matching open tool call at seq ${event.seq}`);
         }
         openCalls.delete(callId);

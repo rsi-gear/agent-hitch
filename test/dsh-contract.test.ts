@@ -158,3 +158,68 @@ test("modern lineage metadata agrees with inherited seed markers", () => {
   validateTrajectoryInvariants({ ...header(4), isSeeded: true }, events);
   assert.throws(() => validateTrajectoryInvariants(header(4), events), /isSeeded disagrees/);
 });
+
+function notStartedRepair(version: 3 | 4): { events: SessionEvent[]; result: SessionEvent } {
+  const original = fixture(version);
+  const events = original.slice(0, original.findIndex((event) => event.type === "tool/call"));
+  const text = [{ type: "text", text: "The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed." }];
+  const result: SessionEvent = {
+    type: "tool/result", seq: events.length, time: events.length + 1, surfaceOp: "append",
+    data: { turn: 1, step: 1, error: { name: "ToolNotStartedError", code: "TOOL_NOT_STARTED" }, message: {
+      id: `interrupted-tool-result-call-${events.length}`, source: { kind: "tool", callId: "call" },
+      ...(version === 4 ? { role: "tool", toolCallId: "call", isError: true, content: text }
+        : { role: "user", content: [{ type: "tool-result", toolCallId: "call", isError: true, content: text }] }),
+    } },
+  };
+  events.push(result);
+  events.push({ type: "step/end", seq: events.length, time: events.length + 1, data: { turn: 1, step: 1 } });
+  events.push({ type: "turn/end", seq: events.length, time: events.length + 1, data: { turn: 1, reason: { kind: "completed" } } });
+  return { events, result };
+}
+
+for (const version of [3, 4] as const) {
+  test(`v${version} accepts exact native repairs of advertised tools that never started`, () => {
+    const { events, result } = notStartedRepair(version);
+    validateTrajectoryInvariants(header(version), events);
+    // Migration preserves historical identity suffixes while changing event coordinates.
+    (result.data as { message: Record<string, unknown> }).message.id = "interrupted-tool-result-call-200";
+    validateTrajectoryInvariants(header(version), events);
+  });
+
+  test(`v${version} rejects orphaned, repeated, and fabricated not-started repairs`, () => {
+    for (const invalid of ["orphan", "duplicate", "wrong-call", "wrong-error", "wrong-id", "wrong-content", "provenance"] as const) {
+      const { events, result } = notStartedRepair(version);
+      const data = result.data as Record<string, unknown>;
+      const message = data.message as Record<string, unknown>;
+      const content = message.content as Array<Record<string, unknown>>;
+      if (invalid === "orphan") {
+        const assistant = events.find((event) => event.type === "assistant/message")!;
+        (assistant.data as { message: Record<string, unknown> }).message.content = [];
+      } else if (invalid === "duplicate") {
+        events.splice(result.seq + 1, 0, structuredClone(result));
+        events.forEach((event, seq) => { event.seq = seq; });
+      } else if (invalid === "wrong-call") {
+        message.source = { kind: "tool", callId: "other" };
+        message.id = `interrupted-tool-result-other-${result.seq}`;
+        if (version === 4) message.toolCallId = "other";
+        else content[0]!.toolCallId = "other";
+      } else if (invalid === "wrong-error") data.error = { name: "OtherError", code: "TOOL_NOT_STARTED" };
+      else if (invalid === "wrong-id") message.id = "interrupted-tool-result-call-01";
+      else if (invalid === "wrong-content") {
+        const body = version === 4 ? content : content[0]!.content as Array<Record<string, unknown>>;
+        body[0]!.text = "fabricated repair";
+      } else result.sourceEventSeqs = [result.seq - 1];
+      assert.throws(() => validateTrajectoryInvariants(header(version), events), /matching open tool call/, invalid);
+    }
+  });
+}
+
+test("v4 accepts fork-generated not-started repairs only at their original sequence", () => {
+  const { events, result } = notStartedRepair(4);
+  const message = (result.data as { message: Record<string, unknown> }).message;
+  message.id = `forked-tool-result-call-${result.seq}`;
+  message.content = [{ type: "text", text: "The fork cut interrupted this tool before it started." }];
+  validateTrajectoryInvariants(header(4), events);
+  message.id = `forked-tool-result-call-${result.seq - 1}`;
+  assert.throws(() => validateTrajectoryInvariants(header(4), events), /matching open tool call/);
+});
