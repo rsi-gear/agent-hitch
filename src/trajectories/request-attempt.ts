@@ -9,12 +9,15 @@ export interface RequestAttempt {
 /** Track DSH model request attempts incrementally so every projection uses the same retry boundary. */
 export class IncrementalRequestAttemptTracker {
   private readonly attempts = new Map<string, RequestAttempt>();
+  private readonly settled = new Set<string>();
 
   accept(event: SessionEvent): RequestAttempt | null {
     const identity = eventStep(event);
     if (!identity) return null;
+    const key = stepKey(identity.turn, identity.step);
     if (event.type === "step/start") {
-      this.attempts.set(stepKey(identity.turn, identity.step), { attempt: 0 });
+      this.attempts.set(key, { attempt: 0 });
+      this.settled.delete(key);
     } else if (event.type === "llm/retry-started") {
       const current = this.current(identity.turn, identity.step);
       const data = event.data as Record<string, unknown>;
@@ -23,9 +26,18 @@ export class IncrementalRequestAttemptTracker {
         retryId: data.retryId as string,
         retrySeq: event.seq,
       });
+      this.settled.delete(key);
+    } else if ((event.type === "assistant/attempt" || event.type === "assistant/message")
+      && Array.isArray((event.data as Record<string, unknown>).stream)) {
+      // A settlement is one attempt even when recovery did not emit llm/retry-started.
+      if (this.settled.has(key)) this.attempts.set(key, { attempt: this.current(identity.turn, identity.step).attempt + 1 });
+      this.settled.add(key);
     }
     const current = this.current(identity.turn, identity.step);
-    if (event.type === "step/end") this.attempts.delete(stepKey(identity.turn, identity.step));
+    if (event.type === "step/end") {
+      this.attempts.delete(key);
+      this.settled.delete(key);
+    }
     return current;
   }
 

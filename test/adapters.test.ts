@@ -253,7 +253,6 @@ test("DeepSeek adapter runs the headless profile with an isolated home and model
       config: {
         root: path.join(runtimeHome, "sessions"),
         compression: "none",
-        packChunks: false,
       },
     },
     {

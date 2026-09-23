@@ -22,6 +22,9 @@ export interface ChunkGroup {
   finishReason?: { seq: number; value: unknown };
   terminalFailure: boolean;
   assembled: boolean;
+  embeddedRecordCount?: number;
+  usageField?: string;
+  finishReasonField?: string;
 }
 
 interface ChunkPartialStream {
@@ -30,6 +33,7 @@ interface ChunkPartialStream {
   kind: "text" | "reasoning" | "tool_arguments";
   accumulator: BoundedTextAccumulator;
   sourceCount: number;
+  sourceField: string;
 }
 
 export function chunkGroupKey(turn: number, step: number, attempt: number): string {
@@ -48,6 +52,7 @@ export function acceptChunk(
   credentialValues: readonly string[],
   pathValues: readonly string[],
   redactions: Map<string, number>,
+  embedded?: { recordIndex: number; recordCount: number },
 ): void {
   const key = chunkGroupKey(turn, step, attempt);
   let group = groups.get(key);
@@ -72,10 +77,14 @@ export function acceptChunk(
   }
   group.lastSeq = event.seq;
   group.count += 1;
+  if (embedded) group.embeddedRecordCount = embedded.recordCount;
   const type = typeof chunk.type === "string" ? chunk.type : "unknown";
   increment(group.types, type);
-  if (type === "block-start") {
-    const kind = partialStreamKind(chunk.blockType);
+  const implicitKind = embedded && !group.openPartialStreams.has(chunk.index as number)
+    ? type === "text-delta" ? "text" : type === "reasoning-delta" ? "reasoning" : type === "tool-call-delta" ? "tool_arguments" : undefined
+    : undefined;
+  if (type === "block-start" || implicitKind) {
+    const kind = implicitKind ?? partialStreamKind(chunk.blockType);
     if (kind && Number.isSafeInteger(chunk.index)) {
       const stream: ChunkPartialStream = {
         blockIndex: chunk.index as number,
@@ -83,14 +92,19 @@ export function acceptChunk(
         kind,
         accumulator: chunkAccumulator(credentialValues, pathValues, redactions),
         sourceCount: 0,
+        sourceField: embedded ? `data.stream.${embedded.recordIndex}.delta` : "data.chunk.delta",
       };
       group.partialStreams.push(stream);
       group.openPartialStreams.set(stream.blockIndex, stream);
     }
   }
-  if (type === "usage") group.usage = { seq: event.seq, value: chunk.usage };
+  if (type === "usage") {
+    group.usage = { seq: event.seq, value: chunk.usage };
+    group.usageField = embedded ? `data.stream.${embedded.recordIndex}.chunk.usage` : "data.chunk.usage";
+  }
   if (type === "finish") {
     group.finishReason = { seq: event.seq, value: chunk.reason };
+    group.finishReasonField = embedded ? `data.stream.${embedded.recordIndex}.chunk.reason` : "data.chunk.reason";
     group.terminalFailure = isTerminalFailure(chunk.reason);
   }
   if (typeof chunk.text === "string") {
@@ -127,11 +141,12 @@ export function chunkSummary(
     count: group.count,
     types: sortedCounts(Object.fromEntries(group.types)),
     model_boundary_seq: group.firstSeq,
+    ...(group.embeddedRecordCount === undefined ? {} : { stream_field: "data.stream", record_count: group.embeddedRecordCount }),
     ...(group.usage === undefined ? {} : {
-      usage: projectBoundedJson(group.usage.value, contextFor(group.usage.seq), "data.chunk.usage"),
+      usage: projectBoundedJson(group.usage.value, contextFor(group.usage.seq), group.usageField ?? "data.chunk.usage"),
     }),
     ...(group.finishReason === undefined ? {} : {
-      finish_reason: projectBoundedJson(group.finishReason.value, contextFor(group.finishReason.seq), "data.chunk.reason"),
+      finish_reason: projectBoundedJson(group.finishReason.value, contextFor(group.finishReason.seq), group.finishReasonField ?? "data.chunk.reason"),
     }),
   };
   if (group.assembled || group.terminalFailure) return base;
@@ -168,9 +183,10 @@ function partialEvidence(group: ChunkGroup, runId: string): unknown {
       content: (stream?.accumulator ?? group.emptyPartialAccumulator).excerpt({
         runId,
         seq: stream?.blockStartSeq ?? group.firstSeq,
-        field: "data.chunk.delta",
+        field: stream?.sourceField ?? (group.embeddedRecordCount === undefined ? "data.chunk.delta" : "data.stream"),
       }),
-      source_seq_count: sourceCount,
+      source_seq_count: group.embeddedRecordCount === undefined ? sourceCount : Math.min(1, sourceCount),
+      ...(group.embeddedRecordCount === undefined ? {} : { source_chunk_count: sourceCount }),
     };
   }
   return {
@@ -182,11 +198,13 @@ function partialEvidence(group: ChunkGroup, runId: string): unknown {
       content: stream.accumulator.excerpt({
         runId,
         seq: stream.blockStartSeq,
-        field: "data.chunk.delta",
+        field: stream.sourceField,
       }),
-      source_seq_count: stream.sourceCount,
+      source_seq_count: group.embeddedRecordCount === undefined ? stream.sourceCount : Math.min(1, stream.sourceCount),
+      ...(group.embeddedRecordCount === undefined ? {} : { source_chunk_count: stream.sourceCount }),
     })),
-    source_seq_count: sourceCount,
+    source_seq_count: group.embeddedRecordCount === undefined ? sourceCount : Math.min(1, sourceCount),
+    ...(group.embeddedRecordCount === undefined ? {} : { source_chunk_count: sourceCount }),
   };
 }
 

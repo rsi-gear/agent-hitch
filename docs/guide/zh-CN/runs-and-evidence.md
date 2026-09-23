@@ -35,6 +35,8 @@ Cursor 保留筛选条件，应作为不透明值使用。通过 `--field` 钻�
 
 `hitch trajectory inspect RUN_ID --json` 会读取完整轨迹，适合明确的审计或小记录；自动化优先使用有界命令。不同 Harness 的采集保真度不同。启动过早失败可能没有轨迹，没有固定 canonical checksum 的旧引用也不能使用有界视图。
 
+DSH 采集支持 Session v0–v4，包括 DSH 0.1.5-rc.3（v3）和 0.1.7-rc.1（v4）。分析视图包含内嵌 Assistant 流、System/Developer 消息和 Tool 角色结果。会话中存在图片卸载操作时，消息表面覆盖度标为 partial，原始事件仍可查询。
+
 ## 查看评测证据
 
 ```bash
