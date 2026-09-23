@@ -112,7 +112,7 @@ export async function loadCanonicalTrajectorySource(
  */
 export async function scanCanonicalTrajectory(
   source: CanonicalTrajectorySource,
-  onEvent: (event: SessionEvent) => void,
+  onEvent: (event: SessionEvent, header: SessionHeaderLine) => void,
 ): Promise<CanonicalTrajectoryScan> {
   if (source.expectedSha256 === undefined) {
     throw trajectoryIntegrityError("canonical trajectory is not digest-pinned by its trajectory ref");
@@ -139,8 +139,8 @@ export async function scanCanonicalTrajectory(
     let header: SessionHeaderLine | undefined;
     let eventCount = 0;
     const eventTypes: Record<string, number> = Object.create(null) as Record<string, number>;
-    const invariant = new IncrementalDshInvariant();
-    const surface = new IncrementalSurfaceFold();
+    let invariant: IncrementalDshInvariant;
+    let surface: IncrementalSurfaceFold;
 
     const acceptLine = (rawLine: string): void => {
       const line = rawLine.replace(/\r$/, "");
@@ -154,6 +154,8 @@ export async function scanCanonicalTrajectory(
       if (!header) {
         try {
           header = parseHeaderLine(value);
+          invariant = new IncrementalDshInvariant(header.version, header.isSeeded);
+          surface = new IncrementalSurfaceFold(header.version);
           if (!/^[A-Za-z0-9._:-]{1,256}$/.test(header.id)) throw new Error("session header id is invalid");
         } catch (error) {
           throw trajectoryIntegrityError(`canonical trajectory header is invalid: ${(error as Error).message}`, error);
@@ -162,7 +164,7 @@ export async function scanCanonicalTrajectory(
       }
       let event: SessionEvent;
       try {
-        event = parseEventLine(value);
+        event = parseEventLine(value, header.version);
       } catch (error) {
         throw trajectoryIntegrityError(`canonical trajectory event ${eventCount} is invalid: ${(error as Error).message}`, error);
       }
@@ -177,7 +179,7 @@ export async function scanCanonicalTrajectory(
       }
       eventCount += 1;
       eventTypes[event.type] = (eventTypes[event.type] ?? 0) + 1;
-      onEvent(event);
+      onEvent(event, header);
     };
 
     for await (const rawChunk of handle.createReadStream({ autoClose: false })) {
@@ -195,6 +197,9 @@ export async function scanCanonicalTrajectory(
     buffer += decoder.end();
     if (buffer.length > 0) acceptLine(buffer);
     if (!header) throw trajectoryIntegrityError("canonical trajectory is empty");
+    try { invariant!.finish(); } catch (error) {
+      throw trajectoryIntegrityError(`canonical trajectory violates the DSH contract: ${(error as Error).message}`, error);
+    }
     if (header.id !== sourceHeaderId(source)) {
       throw trajectoryIntegrityError("canonical session id does not match trajectory ref");
     }

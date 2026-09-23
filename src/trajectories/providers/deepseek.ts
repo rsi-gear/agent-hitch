@@ -3,13 +3,15 @@ import { lstat, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { SessionEvent, SessionHeaderLine, TrajectoryFileRefV1 } from "../../domain/index.js";
 import { writePrivateFile } from "../../foundation/index.js";
-import { parseEventLine, parseHeaderLine } from "../format.js";
+import { parseHeaderLine } from "../format.js";
 import { redactProviderJSON } from "../provider-capture.js";
 import { finalizeInterruptedTrajectory, validateTrajectoryInvariants } from "../store.js";
+import { decodeDeepseekEventRows } from "./deepseek-codec.js";
 
 const CANONICAL_EVENT_TYPES = new Set([
   "turn/start", "turn/end", "step/start", "step/end",
-  "request/header", "user/message", "assistant/chunk", "assistant/message",
+  "request/header", "request/context", "user/message", "system/message", "developer/message",
+  "assistant/chunk", "assistant/message", "assistant/attempt", "session/end-seed",
   "tool/call", "tool/result",
 ]);
 
@@ -37,11 +39,11 @@ export async function importDeepseekNativeSession(options: {
   credentialValues?: readonly string[];
 }): Promise<DeepseekNativeSession | null> {
   const located = await findSessionFiles(path.join(options.runtimeHome, "sessions"));
-  if (located.compressed.length > 0) {
+  if (located.some((file) => file.compressed)) {
     throw new Error("DeepSeek wrote a compressed native session despite Hitch's compression:none runtime patch");
   }
-  if (located.jsonl.length === 0) return null;
-  const sessions = await Promise.all(located.jsonl.map((source) => readNativeSession(source, options.credentialValues ?? [])));
+  if (located.length === 0) return null;
+  const sessions = await Promise.all(located.map((source) => readNativeSession(source, options.credentialValues ?? [])));
   // Select a likely root only to preserve established evidence filenames.
   // All redacted rows are saved before any format or relational validation.
   const rootCandidates = sessions.filter((session) => {
@@ -108,15 +110,22 @@ interface ParsedNativeSession {
 }
 
 interface CapturedNativeSession {
+  version: number;
   providerRows: unknown[];
   redactions: Map<string, number>;
   invalidJSONLine?: number;
 }
 
-async function readNativeSession(source: string, credentialValues: readonly string[]): Promise<CapturedNativeSession> {
-  const input = await readFile(source, "utf8");
+interface NativeSessionFile {
+  path: string;
+  version: number;
+  compressed: boolean;
+}
+
+async function readNativeSession(source: NativeSessionFile, credentialValues: readonly string[]): Promise<CapturedNativeSession> {
+  const input = await readFile(source.path, "utf8");
   const lines = input.split(/\r?\n/);
-  const captured: CapturedNativeSession = { providerRows: [], redactions: new Map() };
+  const captured: CapturedNativeSession = { version: source.version, providerRows: [], redactions: new Map() };
   for (const [index, line] of lines.entries()) {
     if (line.length === 0) continue;
     let value: unknown;
@@ -141,18 +150,18 @@ function parseNativeSession(session: CapturedNativeSession): ParsedNativeSession
   if (session.invalidJSONLine !== undefined) throw new Error(`invalid DeepSeek native session JSON at line ${session.invalidJSONLine}`);
   if (session.providerRows.length === 0) throw new Error("DeepSeek native session is empty");
   const header = parseHeaderLine(session.providerRows[0]);
-  const events = session.providerRows.slice(1).map((row, expected): SessionEvent => {
-    const parsed = parseEventLine(row);
-    if (parsed.seq !== expected) {
-      throw new Error(`DeepSeek native session seq must be contiguous: expected ${expected}, got ${parsed.seq}`);
-    }
+  if (header.version !== session.version) {
+    throw new Error(`DeepSeek native session filename version ${session.version} does not match header version ${header.version}`);
+  }
+  const events = decodeDeepseekEventRows(session.providerRows.slice(1), header.version).map((parsed): SessionEvent => {
     return CANONICAL_EVENT_TYPES.has(parsed.type) ? parsed : { ...parsed, ignorable: true };
   });
   return { header, events };
 }
 
-async function findSessionFiles(root: string): Promise<{ jsonl: string[]; compressed: string[] }> {
-  const result = { jsonl: [] as string[], compressed: [] as string[] };
+/** One current generation per directory; never silently fall back to stale evidence. */
+async function findSessionFiles(root: string): Promise<NativeSessionFile[]> {
+  const result: NativeSessionFile[] = [];
   let rootInfo: Awaited<ReturnType<typeof lstat>>;
   try {
     rootInfo = await lstat(root);
@@ -164,21 +173,29 @@ async function findSessionFiles(root: string): Promise<{ jsonl: string[]; compre
 
   const visit = async (directory: string, depth: number): Promise<void> => {
     if (depth > 8) throw new Error("DeepSeek native session directory nesting is unexpectedly deep");
+    const generations: NativeSessionFile[] = [];
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const candidate = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         await visit(candidate, depth + 1);
-      } else if (entry.isFile() && entry.name === "session.jsonl") {
-        result.jsonl.push(candidate);
-      } else if (entry.isFile() && entry.name === "session.jsonl.zstd") {
-        result.compressed.push(candidate);
+      } else if (entry.isFile()) {
+        const match = /^session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?$/.exec(entry.name);
+        if (!match) continue;
+        const version = match[1] === undefined ? 0 : Number(match[1]);
+        if (!Number.isSafeInteger(version)) throw new Error("DeepSeek native session filename version is not a safe integer");
+        generations.push({ path: candidate, version, compressed: match[2] !== undefined });
       }
     }
+    generations.sort((left, right) => right.version - left.version);
+    const current = generations[0];
+    if (current && generations[1]?.version === current.version) {
+      throw new Error(`DeepSeek wrote multiple encodings for native session version ${current.version}`);
+    }
+    if (current) result.push(current);
   };
   await visit(root, 0);
-  result.jsonl.sort();
-  result.compressed.sort();
+  result.sort((left, right) => left.path.localeCompare(right.path));
   return result;
 }
 

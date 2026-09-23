@@ -117,15 +117,11 @@ export function eventLine(event: SessionEvent): string {
 }
 
 export function parseHeaderLine(value: unknown): SessionHeaderLine {
-  const header = validateSessionHeaderLine(value);
-  if (header.version !== SESSION_FORMAT_VERSION) {
-    throw new Error(`unsupported session format version ${header.version}; expected ${SESSION_FORMAT_VERSION} at contract ${CONTRACT_COMMIT}`);
-  }
-  return header;
+  return validateSessionHeaderLine(value);
 }
 
-export function parseEventLine(value: unknown): SessionEvent {
-  return validateSessionEvent(value);
+export function parseEventLine(value: unknown, version?: number): SessionEvent {
+  return validateSessionEvent(value, version);
 }
 
 export { SESSION_FORMAT_VERSION, CONTRACT_COMMIT };

@@ -16,6 +16,8 @@ import type { ContentProjectionContext } from "./content-projection.js";
 import { canonicalRequestHeader } from "./dsh-contract.js";
 import {
   canonicalChunkDeltaField,
+  embeddedChunkDeltaRecordIndex,
+  embeddedChunkDeltas,
   IncrementalChunkStreamTracker,
   locateChunkDrillTarget,
   sameChunkStream,
@@ -108,6 +110,7 @@ export async function pageTrajectoryEvents(
     ? Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, Math.floor(maxBytes / (limit + 4))))
     : Math.min(MAX_INLINE_EVENT_BYTES, Math.max(1_024, maxBytes - 4 * 1024));
   const chunkDeltaDrill = canonicalChunkDeltaField(filter.field);
+  const embeddedDeltaRecord = embeddedChunkDeltaRecordIndex(filter.field);
   const chunkDrillTarget = chunkDeltaDrill
     ? await locateChunkDrillTarget(source, filter, chunkDeltaDrill)
     : undefined;
@@ -177,7 +180,24 @@ export async function pageTrajectoryEvents(
       hasMore = true;
       return;
     }
-    events.push(projectRawEvent(event, source.runId, perEventBytes, credentialValues, pathValues, redactions, filter.field));
+    if (embeddedDeltaRecord !== undefined) {
+      if (event.type !== "assistant/message" && event.type !== "assistant/attempt") {
+        throw new HitchError(`trajectory event ${event.seq} has no embedded assistant stream`, { code: "trajectory_field_not_found", exitCode: 3 });
+      }
+      const accumulator = new BoundedTextAccumulator(Math.floor(perEventBytes / 3), Math.floor(perEventBytes / 6), credentialValues, pathValues, redactions);
+      let sourceChunkCount = 0;
+      for (const value of embeddedChunkDeltas(event.data as Record<string, unknown>, embeddedDeltaRecord)) {
+        accumulator.append(value);
+        sourceChunkCount += 1;
+      }
+      events.push({
+        type: event.type, seq: event.seq, time: event.time, field: filter.field,
+        value: accumulator.excerpt({ runId: source.runId, seq: event.seq, field: filter.field as string }),
+        source_seq_count: sourceChunkCount > 0 ? 1 : 0, source_chunk_count: sourceChunkCount,
+      });
+    } else {
+      events.push(projectRawEvent(event, source.runId, perEventBytes, credentialValues, pathValues, redactions, filter.field));
+    }
     lastSelectedSeq = event.seq;
   });
   if (chunkDrill) {
@@ -272,6 +292,23 @@ function projectRawEvent(
 }
 
 function omitUnprocessedStreamDelta(event: SessionEvent, redactions: Map<string, number>): SessionEvent {
+  if ((event.type === "assistant/message" || event.type === "assistant/attempt") && Array.isArray((event.data as Record<string, unknown>).stream)) {
+    const data = event.data as Record<string, unknown>;
+    const stream = (data.stream as Record<string, unknown>[]).map((record) => {
+      if (record.type === "chunk") {
+        const chunk = record.chunk as Record<string, unknown>;
+        const field = chunk.type === "text-delta" || chunk.type === "reasoning-delta" ? "text"
+          : chunk.type === "tool-call-delta" ? "argumentsDelta" : undefined;
+        if (!field) return record;
+        incrementStreamRedactions(redactions, 1);
+        return { ...record, chunk: { ...chunk, [field]: STREAM_DELTA_OMITTED } };
+      }
+      const field = record.type === "tool-call-chunks" ? "args" : "texts";
+      incrementStreamRedactions(redactions, (record[field] as unknown[]).length);
+      return { ...record, [field]: STREAM_DELTA_OMITTED };
+    });
+    return { ...event, data: { ...data, stream } };
+  }
   if (event.type !== "assistant/chunk" || !event.data || typeof event.data !== "object" || Array.isArray(event.data)) return event;
   const data = event.data as Record<string, unknown>;
   if (!data.chunk || typeof data.chunk !== "object" || Array.isArray(data.chunk)) return event;
@@ -282,7 +319,7 @@ function omitUnprocessedStreamDelta(event: SessionEvent, redactions: Map<string,
       ? "argumentsDelta"
       : null;
   if (!deltaField) return event;
-  redactions.set("stream-delta-omitted-v1", (redactions.get("stream-delta-omitted-v1") ?? 0) + 1);
+  incrementStreamRedactions(redactions, 1);
   return {
     ...event,
     data: {
@@ -290,6 +327,10 @@ function omitUnprocessedStreamDelta(event: SessionEvent, redactions: Map<string,
       chunk: { ...chunk, [deltaField]: STREAM_DELTA_OMITTED },
     },
   };
+}
+
+function incrementStreamRedactions(redactions: Map<string, number>, count: number): void {
+  redactions.set("stream-delta-omitted-v1", (redactions.get("stream-delta-omitted-v1") ?? 0) + count);
 }
 
 function isContentExcerpt(value: unknown): boolean {

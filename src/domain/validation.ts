@@ -183,7 +183,10 @@ export function validateSessionHeaderLine(value: unknown): SessionHeaderLine {
   const record = asRecord(value, "session header line");
   if (record.type !== "session") throw new TypeError("session header line must have type 'session'");
   const version = asInteger(record.version, "session header version");
-  if (version !== 0) throw new TypeError(`unsupported session format version: ${version}`);
+  if (version < 0 || version > 4) throw new TypeError(`unsupported session format version: ${version}; supported versions are 0 through 4`);
+  if (version >= 2) assertExactFields(record, [
+    "type", "version", "id", "createdAt", "delegationDepth", "isSeeded", "cwd", "parentSession", "origin", "agentPreset",
+  ], "session header");
   const id = asString(record.id, "session id");
   const createdAt = asEpochMillis(record.createdAt, "session createdAt");
   const delegationDepth = asInteger(record.delegationDepth, "delegationDepth");
@@ -200,7 +203,15 @@ export function validateSessionHeaderLine(value: unknown): SessionHeaderLine {
   const parentSession = asOptionalString(record.parentSession, "parentSession");
   if (parentSession !== undefined) header.parentSession = parentSession;
   const seedLength = record.seedLength === undefined ? undefined : asInteger(record.seedLength, "seedLength");
-  if (seedLength !== undefined) header.seedLength = seedLength;
+  if (seedLength !== undefined) {
+    if (version >= 2) throw new TypeError("session format v2 and later must not carry seedLength");
+    if (seedLength < 0) throw new TypeError("seedLength must be non-negative");
+    header.seedLength = seedLength;
+  }
+  if (version >= 2 || record.isSeeded !== undefined) {
+    if (typeof record.isSeeded !== "boolean") throw new TypeError("session isSeeded must be a boolean");
+    header.isSeeded = record.isSeeded;
+  }
   if (record.origin !== undefined) {
     if (record.origin !== "subagent") throw new TypeError("origin must be 'subagent'");
     header.origin = "subagent";
@@ -210,19 +221,27 @@ export function validateSessionHeaderLine(value: unknown): SessionHeaderLine {
   return header;
 }
 
-export function validateSessionEvent(value: unknown): SessionEvent {
+export function validateSessionEvent(value: unknown, version?: number): SessionEvent {
   const record = asRecord(value, "session event");
   const type = asString(record.type, "event type");
   const seq = asInteger(record.seq, "event seq");
   if (seq < 0) throw new TypeError("event seq must be non-negative");
-  const time = asEpochMillis(record.time, "event time");
+  const time = version !== undefined && version >= 1 ? asInteger(record.time, "event time") : asEpochMillis(record.time, "event time");
+  if (!Number.isSafeInteger(time)) throw new TypeError("event time must be a safe integer");
   if (!("data" in record) || !isRecord(record.data)) {
     throw new TypeError("event data must be a JSON object");
   }
   const event: SessionEvent = { type, seq, time, data: record.data };
+  const envelopeKeys = new Set(["type", "seq", "time", "data", "ignorable", "sourceEventSeqs", "surfaceOp"]);
+  if (Object.keys(record).some((key) => !envelopeKeys.has(key))) throw new TypeError("session event has an invalid event envelope");
+  if (record.ignorable !== undefined && record.ignorable !== true) throw new TypeError("event ignorable must be true when present");
   if (record.ignorable === true) event.ignorable = true;
   if (record.sourceEventSeqs !== undefined) {
     event.sourceEventSeqs = asArray(record.sourceEventSeqs, "sourceEventSeqs").map((item) => asInteger(item, "sourceEventSeq"));
+    if (event.sourceEventSeqs.some((source) => !Number.isSafeInteger(source) || source < 0 || source >= seq)
+      || new Set(event.sourceEventSeqs).size !== event.sourceEventSeqs.length) {
+      throw new TypeError("sourceEventSeqs must contain unique earlier event sequences");
+    }
   }
   if (record.surfaceOp !== undefined) {
     if (record.surfaceOp === "append") {
@@ -230,7 +249,16 @@ export function validateSessionEvent(value: unknown): SessionEvent {
     } else {
       const op = asRecord(record.surfaceOp, "surfaceOp");
       if (op.op !== "replace") throw new TypeError("surfaceOp must be 'append' or { op: 'replace' }");
-      event.surfaceOp = { op: "replace", start: asInteger(op.start, "surfaceOp.start"), end: asInteger(op.end, "surfaceOp.end") };
+      const modern = version === undefined ? "startSeq" in op || "endSeq" in op : version >= 3;
+      const startKey = modern ? "startSeq" : "start";
+      const endKey = modern ? "endSeq" : "end";
+      if (Object.keys(op).sort().join(",") !== ["op", startKey, endKey].sort().join(",")) {
+        throw new TypeError(`surfaceOp must contain exactly op, ${startKey}, and ${endKey}`);
+      }
+      const start = asInteger(op[startKey], `surfaceOp.${startKey}`);
+      const end = asInteger(op[endKey], `surfaceOp.${endKey}`);
+      if (start < 0 || end < 0 || start >= seq || end >= seq) throw new TypeError("surfaceOp endpoints must reference earlier events");
+      event.surfaceOp = modern ? { op: "replace", startSeq: start, endSeq: end } : { op: "replace", start, end };
     }
   }
   return event;

@@ -14,6 +14,7 @@ import { ensureDir, readJSON } from "../foundation/index.js";
 import { eventLine, headerLine, logPath, parseEventLine, parseHeaderLine } from "./format.js";
 import { IncrementalSurfaceFold, isSurfaceEvent } from "./surface-fold.js";
 import { TRAJECTORY_FORMAT } from "./contract.js";
+import { IncrementalDshInvariant } from "./dsh-contract.js";
 import type {
   SessionEvent,
   SessionHeaderLine,
@@ -196,7 +197,7 @@ export async function readTrajectory(file: string): Promise<TrajectoryReadResult
   const header = parseHeaderLine(JSON.parse(nonEmpty[0] as string) as unknown);
   const events: SessionEvent[] = [];
   for (let i = 1; i < nonEmpty.length; i += 1) {
-    const parsed = parseEventLine(JSON.parse(nonEmpty[i] as string) as unknown);
+    const parsed = parseEventLine(JSON.parse(nonEmpty[i] as string) as unknown, header.version);
     if (parsed.seq !== i - 1) {
       throw new Error(`trajectory seq must be contiguous: expected ${i - 1}, got ${parsed.seq}`);
     }
@@ -208,24 +209,31 @@ export async function readTrajectory(file: string): Promise<TrajectoryReadResult
 
 /** Validate the required relational invariants of a canonical trajectory (spec §5.4). */
 export function validateTrajectoryInvariants(header: SessionHeaderLine, events: SessionEvent[]): void {
+  parseHeaderLine(header);
   const knownTypes = new Set([
     "turn/start", "turn/end", "step/start", "step/end",
     "request/header", "user/message", "assistant/chunk", "assistant/message",
     "tool/call", "tool/result",
+    ...(header.version >= 1 ? ["request/context", "session/end-seed", "llm/retry", "llm/retry-started", "todo/write"] : []),
+    ...(header.version >= 2 ? ["assistant/attempt"] : []),
+    ...(header.version >= 3 ? ["system/message"] : []),
+    ...(header.version >= 4 ? ["developer/message"] : []),
   ]);
   let turnOpen = false;
   let stepOpen = false;
   let openTurn: number | null = null;
   let openStep: { turn: number; step: number } | null = null;
   const openCalls = new Set<string>();
-  const surface = new IncrementalSurfaceFold();
+  const surface = new IncrementalSurfaceFold(header.version);
+  const invariant = header.version > 0 ? new IncrementalDshInvariant(header.version, header.isSeeded) : undefined;
   let seq = 0;
   for (const event of events) {
     if (event.seq !== seq) throw new Error(`trajectory seq must be contiguous: expected ${seq}, got ${event.seq}`);
     seq += 1;
+    invariant?.accept(event, event);
     // Legacy normalized logs omit markers. Infer append only for validation;
     // provider evidence and canonical event rows remain untouched.
-    surface.accept(isSurfaceEvent(event) && event.surfaceOp === undefined
+    surface.accept(header.version === 0 && isSurfaceEvent(event) && event.surfaceOp === undefined
       ? { ...event, surfaceOp: "append" }
       : event);
     const data = (event.data || {}) as Record<string, unknown>;
@@ -272,7 +280,7 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
         const message = (data.message || {}) as Record<string, unknown>;
         const source = (message.source || {}) as Record<string, unknown>;
         const content = Array.isArray(message.content) ? message.content as Array<Record<string, unknown>> : [];
-        const callId = (source.callId ?? content[0]?.toolCallId) as string | undefined;
+        const callId = (source.callId ?? message.toolCallId ?? content[0]?.toolCallId) as string | undefined;
         if (!callId || !openCalls.has(callId)) {
           throw new Error(`tool/result without a matching open tool call at seq ${event.seq}`);
         }
@@ -285,6 +293,7 @@ export function validateTrajectoryInvariants(header: SessionHeaderLine, events: 
         }
     }
   }
+  invariant?.finish();
   if (turnOpen) throw new Error("trajectory ends with an open turn");
   if (stepOpen) throw new Error("trajectory ends with an open step");
   if (openCalls.size > 0) throw new Error("trajectory ends with open tool calls");
@@ -332,7 +341,7 @@ export function finalizeInterruptedTrajectory(
         const message = (data.message || {}) as Record<string, unknown>;
         const source = (message.source || {}) as Record<string, unknown>;
         const content = Array.isArray(message.content) ? message.content as Array<Record<string, unknown>> : [];
-        const callId = (source.callId ?? content[0]?.toolCallId) as string | undefined;
+        const callId = (source.callId ?? message.toolCallId ?? content[0]?.toolCallId) as string | undefined;
         if (callId) openCalls.delete(callId);
         break;
       }
@@ -359,13 +368,16 @@ export function finalizeInterruptedTrajectory(
         step: openStep.step,
         message: {
           id: randomUUID(),
-          role: "user",
-          content: [{
-            type: "tool-result",
-            toolCallId: callId,
+          ...(header.version >= 4 ? {
+            role: "tool", toolCallId: callId, isError: true,
             content: [{ type: "text", text: `tool call interrupted: ${call.name} outcome unknown` }],
-            isError: true,
-          }],
+          } : {
+            role: "user",
+            content: [{
+              type: "tool-result", toolCallId: callId,
+              content: [{ type: "text", text: `tool call interrupted: ${call.name} outcome unknown` }], isError: true,
+            }],
+          }),
           source: { kind: "tool", callId },
         },
         error: { name: call.name, code: "TOOL_OUTCOME_UNKNOWN" },

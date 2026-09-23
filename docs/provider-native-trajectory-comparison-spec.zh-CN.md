@@ -231,6 +231,15 @@ MUST 保存在该 run 目录内；`reward` MAY 被 EvalResult 冗余缓存，但
 
 ## 7. Provider-Native 轨迹
 
+DSH 兼容基线：读取 Session v0–v4；v4 对齐 DSH `0.1.7-rc.1`，提交
+`46a7f68b0922371ce7144b668b90e377d8e799f4`（`0.1.5-rc.3` 使用 v3）。
+每个 Session 目录选择最高的 `session.vN.jsonl` 代际，v0 文件名仍为
+`session.jsonl`；遇到未知版本、损坏或文件名与 header 版本不符时拒绝导入，
+不得回退较旧代际。运行配置使用 `compression: none`，不传已移除的 `packChunks`。
+旧版 packed rows 和物理引用范围会解码，provider evidence 保留脱敏后的原始行。
+Canonical 保留来源的格式版本、事件序号和内嵌流；分析视图覆盖 v3 system 消息、
+v4 developer 消息和 tool-role 结果。其他 provider 的 normalized v0 写入合约不变。
+
 ### 7.1 权威关系
 
 每个支持原生事件输出的 adapter MUST 保存 provider-native trajectory。Provider-native 文件是行为分析的首选证据。
