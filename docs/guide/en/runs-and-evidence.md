@@ -33,6 +33,8 @@ The cursor retains the selection. Treat it as opaque. For field-level inspection
 
 `hitch trajectory inspect RUN_ID --json` reads the full trajectory. Reserve it for explicit audits or small records; prefer the bounded commands in automation. Capture fidelity varies by harness. No trajectory may exist if startup failed before capture, and old references without a pinned canonical checksum cannot use the bounded views.
 
+DSH capture supports Session formats v0–v4, including DSH 0.1.5-rc.3 (v3) and 0.1.7-rc.1 (v4). The analysis view includes embedded assistant streams, system and developer messages, and tool-role results. If a session contains an image offload operation, its surface coverage is marked partial; the original event remains available for inspection.
+
 ## Inspect evaluation evidence
 
 ```bash
