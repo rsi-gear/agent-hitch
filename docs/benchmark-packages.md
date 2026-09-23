@@ -54,6 +54,15 @@ digest. `task_completed_correctly` becomes `total_score`; `partial_credit`
 becomes optional `process_score` with sanitized assertion components. It has no
 native feedback channel.
 
+`benchmark.adapter.json` also accepts an optional `raw_metrics` registry with
+`schema_version: "1"` and a `metrics` array of objects with unique valid `id`
+values. Hitch preserves every metric declaration, including producer-specific
+fields, and includes the complete registry in `dataset_digest` verification.
+Changing a declaration requires a new dataset digest. Metric extraction,
+normalization, and weighted objectives remain the consumer's responsibility;
+the registry does not change Hitch's `total_score` or `process_score` handling.
+Manifests without this field retain their existing identity and behavior.
+
 All currently runnable benchmark adapters use this score mapping:
 
 | Benchmark | Standard input | `total_score` source | `process_score` | `feedback` |

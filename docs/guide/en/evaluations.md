@@ -10,6 +10,11 @@ An evaluation measures a model and harness configuration on a set of tasks and p
 
 Keep task inputs and budgets consistent, and record model settings alongside the harness version. Begin with the one-task Docker example below before selecting a full benchmark.
 
+Standard datasets may declare additional metrics in `benchmark.adapter.json`
+through an optional `raw_metrics` registry. Hitch preserves and integrity-checks
+these declarations; consumers such as Gear define their extraction and objective
+weights. See the [benchmark manifest contract](../../benchmark-packages.md).
+
 ## Check the environment
 
 You need Python 3.12 or later, Docker with a running daemon, network access for package/image downloads, and model credentials usable inside a container.

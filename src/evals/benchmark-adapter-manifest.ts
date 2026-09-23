@@ -24,6 +24,8 @@ export interface BenchmarkAdapterManifestV1 {
   benchmark: { id: string; revision: string };
   adapter: { id: string; revision: string; output_protocol: "gear-harbor-eval-result-v1" };
   scoring: BenchmarkScoreContractV1;
+  /** Gear owns extraction semantics; Hitch retains and integrity-binds this registry. */
+  raw_metrics?: { schema_version: "1"; metrics: Array<Record<string, unknown>> };
   tasks: Array<{ task_id: string; task_digest: Sha256 }>;
   dataset_digest: Sha256;
 }
@@ -104,6 +106,7 @@ export async function loadBenchmarkAdapterManifest(dataset: string): Promise<Ben
     benchmark: manifest.benchmark,
     adapter: manifest.adapter,
     scoring: manifest.scoring,
+    ...(manifest.raw_metrics === undefined ? {} : { raw_metrics: manifest.raw_metrics }),
     tasks: actualTasks,
   };
   const expected = sha256(canonicalJson(body));
@@ -117,7 +120,7 @@ export function scoreWithinRange(score: number, definition: BenchmarkScoreDefini
 
 function parseManifest(value: unknown): BenchmarkAdapterManifestV1 {
   const record = object(value, "benchmark adapter manifest");
-  exact(record, ["schema_version", "kind", "benchmark", "adapter", "scoring", "tasks", "dataset_digest"], "benchmark adapter manifest");
+  exact(record, ["schema_version", "kind", "benchmark", "adapter", "scoring", "raw_metrics", "tasks", "dataset_digest"], "benchmark adapter manifest");
   if (record.schema_version !== "1" || record.kind !== "gear-harbor-benchmark") throw invalidInput("unsupported benchmark adapter manifest");
   const benchmark = namedRevision(record.benchmark, "benchmark");
   const adapterRecord = object(record.adapter, "adapter");
@@ -146,9 +149,27 @@ function parseManifest(value: unknown): BenchmarkAdapterManifestV1 {
     benchmark,
     adapter,
     scoring,
+    ...(record.raw_metrics === undefined ? {} : { raw_metrics: rawMetricRegistry(record.raw_metrics) }),
     tasks,
     dataset_digest: digest(record.dataset_digest, "dataset digest"),
   };
+}
+
+function rawMetricRegistry(value: unknown): NonNullable<BenchmarkAdapterManifestV1["raw_metrics"]> {
+  const registry = object(value, "raw_metrics");
+  exact(registry, ["schema_version", "metrics"], "raw_metrics");
+  if (registry.schema_version !== "1" || !Array.isArray(registry.metrics)) {
+    throw invalidInput("unsupported raw metric registry");
+  }
+  const metrics = registry.metrics.map((value, index) => {
+    const metric = object(value, `raw metric ${index}`);
+    identifier(metric.id, `raw metric ${index} id`);
+    return metric;
+  });
+  if (new Set(metrics.map((metric) => metric.id)).size !== metrics.length) {
+    throw invalidInput("duplicate raw metric id");
+  }
+  return { schema_version: "1", metrics };
 }
 
 function namedRevision(value: unknown, label: string): { id: string; revision: string } {
