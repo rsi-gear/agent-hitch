@@ -57,7 +57,6 @@ export async function writeDeepseekRuntimePatch(
     config: {
       root: path.join(runtimeHome, "sessions"),
       compression: "none",
-      packChunks: false,
     },
   }];
   if (value) {

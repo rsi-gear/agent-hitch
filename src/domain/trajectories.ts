@@ -55,6 +55,7 @@ export interface SessionHeaderLine {
   cwd?: string;
   parentSession?: string;
   seedLength?: number;
+  isSeeded?: boolean;
   origin?: "subagent";
   delegationDepth: number;
   agentPreset?: string;
@@ -67,5 +68,7 @@ export interface SessionEvent<T = unknown> {
   data: T;
   ignorable?: true;
   sourceEventSeqs?: number[];
-  surfaceOp?: "append" | { op: "replace"; start: number; end: number };
+  surfaceOp?: "append"
+    | { op: "replace"; start: number; end: number }
+    | { op: "replace"; startSeq: number; endSeq: number };
 }

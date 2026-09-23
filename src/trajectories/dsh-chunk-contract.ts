@@ -119,7 +119,7 @@ export function validateContentBlock(value: unknown, label: string): Record<stri
   return block;
 }
 
-function validateUsage(value: unknown): void {
+export function validateUsage(value: unknown): void {
   const usage = record(value, "usage chunk usage");
   tokenCount(usage.inputTokens, "usage.inputTokens");
   tokenCount(usage.outputTokens, "usage.outputTokens");
@@ -128,7 +128,7 @@ function validateUsage(value: unknown): void {
   }
 }
 
-function validateFinishReason(value: unknown): string {
+export function validateFinishReason(value: unknown): string {
   const reason = record(value, "finish chunk reason");
   const kind = nonEmptyString(reason.kind, "finish chunk reason.kind");
   if (kind === "error" || kind === "aborted") {

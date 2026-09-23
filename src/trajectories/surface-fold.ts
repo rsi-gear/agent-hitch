@@ -1,7 +1,7 @@
 import type { SessionEvent } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
 
-const SURFACE_TYPES = new Set(["user/message", "assistant/message", "tool/result"]);
+const SURFACE_TYPES = new Set(["system/message", "developer/message", "user/message", "assistant/message", "tool/result"]);
 
 export interface SurfaceReplacement {
   seq: number;
@@ -17,6 +17,8 @@ export class IncrementalSurfaceFold {
   private readonly toolResultSignatures = new Map<number, string>();
   private operationCount = 0;
   readonly replacements: SurfaceReplacement[] = [];
+
+  constructor(private readonly version = 0) {}
 
   get revision(): number {
     return this.operationCount;
@@ -38,13 +40,17 @@ export class IncrementalSurfaceFold {
       throw new Error(`surface-eligible event at seq ${event.seq} requires a surfaceOp marker`);
     }
     if (event.surfaceOp === "append") {
+      if (event.type === "system/message" && this.current.length > 0
+        && this.nodeTypes.get(this.current[0] as number) !== "system/message") {
+        throw new Error("system/message requires a protected first system surface node");
+      }
       assertProvenance(event, []);
       this.current.push(event.seq);
       this.rememberNode(event);
       this.operationCount += 1;
       return;
     }
-    const { start, end } = event.surfaceOp;
+    const { start, end } = surfaceReplacementRange(event.surfaceOp) as { start: number; end: number };
     if (!isEventSeq(start) || !isEventSeq(end)) throw new Error(`invalid surface replacement at seq ${event.seq}`);
     const startIndex = this.current.indexOf(start);
     const endIndex = this.current.indexOf(end);
@@ -52,6 +58,10 @@ export class IncrementalSurfaceFold {
     if (endIndex < 0) throw new Error(`surface replace: end seq ${end} not found in surface`);
     if (startIndex > endIndex) throw new Error(`surface replace: start seq ${start} is after end seq ${end}`);
     const shadowed = this.current.slice(startIndex, endIndex + 1);
+    if (this.nodeTypes.get(this.current[0] as number) === "system/message" && startIndex === 0
+      && (event.type !== "system/message" || shadowed.length !== 1)) {
+      throw new Error("surface replacement cannot shadow the protected system head");
+    }
     assertProvenance(event, shadowed);
     this.assertToolResultRewrite(event, shadowed);
     for (const seq of shadowed) {
@@ -66,7 +76,7 @@ export class IncrementalSurfaceFold {
 
   private rememberNode(event: SessionEvent): void {
     this.nodeTypes.set(event.seq, event.type);
-    if (event.type === "tool/result") this.toolResultSignatures.set(event.seq, toolResultSignature(event));
+    if (event.type === "tool/result") this.toolResultSignatures.set(event.seq, toolResultSignature(event, this.version));
   }
 
   private assertToolResultRewrite(event: SessionEvent, shadowed: number[]): void {
@@ -75,7 +85,7 @@ export class IncrementalSurfaceFold {
       throw new Error("tool/result surface replacement must rewrite exactly one current tool/result");
     }
     const original = this.toolResultSignatures.get(shadowed[0] as number);
-    if (original === undefined || original !== toolResultSignature(event)) {
+    if (original === undefined || original !== toolResultSignature(event, this.version)) {
       throw new Error("tool/result surface replacement may change only content");
     }
   }
@@ -84,7 +94,7 @@ export class IncrementalSurfaceFold {
 export function deriveSurfaceMessage(event: SessionEvent): unknown {
   const data = event.data as Record<string, unknown>;
   if (event.type === "user/message") return data;
-  if (event.type === "assistant/message") {
+  if (event.type === "assistant/message" || event.type === "system/message" || event.type === "developer/message") {
     const message = data.message as Record<string, unknown> | undefined;
     const content = message?.content;
     return Array.isArray(content) && content.length === 0 ? null : message ?? null;
@@ -95,6 +105,12 @@ export function deriveSurfaceMessage(event: SessionEvent): unknown {
 
 export function isSurfaceEvent(event: SessionEvent): boolean {
   return SURFACE_TYPES.has(event.type);
+}
+
+/** Read either generation's endpoints without rewriting the native event. */
+export function surfaceReplacementRange(op: SessionEvent["surfaceOp"]): { start: number; end: number } | undefined {
+  if (op === undefined || op === "append") return undefined;
+  return "startSeq" in op ? { start: op.startSeq, end: op.endSeq } : { start: op.start, end: op.end };
 }
 
 function assertProvenance(event: SessionEvent, shadowed: number[]): void {
@@ -117,11 +133,12 @@ function assertProvenance(event: SessionEvent, shadowed: number[]): void {
   }
 }
 
-function toolResultSignature(event: SessionEvent): string {
+function toolResultSignature(event: SessionEvent, version: number): string {
   const data = event.data as Record<string, unknown>;
   const message = data.message && typeof data.message === "object" && !Array.isArray(data.message)
     ? data.message as Record<string, unknown>
     : {};
+  if (version >= 4 || message.role === "tool") return sha256JSON({ ...data, message: { ...message, content: null } });
   const content = Array.isArray(message.content) ? message.content : [];
   const first = content[0] && typeof content[0] === "object" && !Array.isArray(content[0])
     ? { ...(content[0] as Record<string, unknown>), content: null }

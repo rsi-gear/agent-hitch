@@ -2,6 +2,42 @@ import { HitchError } from "../foundation/index.js";
 import { IncrementalRequestAttemptTracker } from "./request-attempt.js";
 import { scanCanonicalTrajectory } from "./stream-reader.js";
 import type { CanonicalTrajectorySource } from "./stream-reader.js";
+import { iterateEmbeddedAssistantStream } from "./embedded-stream.js";
+
+export function embeddedChunkDeltaRecordIndex(field: string | undefined): number | undefined {
+  const canonical = field?.startsWith("event.") ? field.slice("event.".length) : field;
+  const match = /^data\.stream\.(\d+)\.delta$/.exec(canonical ?? "");
+  return match && Number.isSafeInteger(Number(match[1])) ? Number(match[1]) : undefined;
+}
+
+/** Join only one embedded block so redaction sees split credentials across its compact records. */
+export function* embeddedChunkDeltas(data: Record<string, unknown>, recordIndex: number): Generator<string> {
+  const blocks = new Map<number, number>();
+  let target: number | undefined;
+  for (const item of iterateEmbeddedAssistantStream(data.stream)) {
+    const index = item.chunk.index as number;
+    if (item.chunk.type === "block-start" || isImplicitStart(item.chunk, blocks)) blocks.set(index, item.recordIndex);
+    if (item.recordIndex === recordIndex) target = blocks.get(index);
+    if (item.chunk.type === "block-end") blocks.delete(index);
+  }
+  if (target === undefined) throw new HitchError("selected embedded stream record does not identify a content block", {
+    code: "trajectory_field_not_found", exitCode: 3,
+  });
+  blocks.clear();
+  for (const item of iterateEmbeddedAssistantStream(data.stream)) {
+    const index = item.chunk.index as number;
+    if (item.chunk.type === "block-start" || isImplicitStart(item.chunk, blocks)) blocks.set(index, item.recordIndex);
+    if (blocks.get(index) === target) {
+      const value = item.chunk.text ?? item.chunk.argumentsDelta;
+      if (typeof value === "string") yield value;
+    }
+    if (item.chunk.type === "block-end") blocks.delete(index);
+  }
+}
+
+function isImplicitStart(chunk: Record<string, unknown>, blocks: Map<number, number>): boolean {
+  return !blocks.has(chunk.index as number) && ["text-delta", "reasoning-delta", "tool-call-delta"].includes(String(chunk.type));
+}
 
 export type ChunkDeltaField = "data.chunk.delta" | "data.chunk.text" | "data.chunk.argumentsDelta";
 

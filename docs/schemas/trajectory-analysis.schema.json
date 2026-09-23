@@ -38,7 +38,7 @@
             "required": ["seq", "event_type", "surface_op", "message"],
             "properties": {
               "seq": { "$ref": "#/$defs/seq" },
-              "event_type": { "enum": ["user/message", "assistant/message", "tool/result"] },
+              "event_type": { "enum": ["user/message", "assistant/message", "system/message", "developer/message", "tool/result"] },
               "surface_op": { "$ref": "#/$defs/surface_op" },
               "message": true
             }
@@ -107,6 +107,8 @@
           "count": { "type": "integer", "minimum": 1 },
           "types": { "$ref": "#/$defs/counts" },
           "model_boundary_seq": { "$ref": "#/$defs/seq" },
+          "stream_field": { "const": "data.stream" },
+          "record_count": { "type": "integer", "minimum": 1 },
           "usage": true,
           "finish_reason": true,
           "partial": {
@@ -132,11 +134,13 @@
                     "block_start_seq": { "$ref": "#/$defs/seq" },
                     "kind": { "enum": ["text", "reasoning", "tool_arguments"] },
                     "content": { "$ref": "#/$defs/content_excerpt" },
-                    "source_seq_count": { "type": "integer", "minimum": 0 }
+                    "source_seq_count": { "type": "integer", "minimum": 0 },
+                    "source_chunk_count": { "type": "integer", "minimum": 0 }
                   }
                 }
               },
-              "source_seq_count": { "type": "integer", "minimum": 0 }
+              "source_seq_count": { "type": "integer", "minimum": 0 },
+              "source_chunk_count": { "type": "integer", "minimum": 0 }
             }
           }
         }
@@ -163,6 +167,16 @@
     "surface_op": {
       "oneOf": [
         { "const": "append" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "startSeq", "endSeq"],
+          "properties": {
+            "op": { "const": "replace" },
+            "startSeq": { "$ref": "#/$defs/seq" },
+            "endSeq": { "$ref": "#/$defs/seq" }
+          }
+        },
         {
           "type": "object",
           "additionalProperties": false,

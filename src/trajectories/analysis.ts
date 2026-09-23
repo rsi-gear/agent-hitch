@@ -17,6 +17,7 @@ import {
 } from "./content-projection.js";
 import type { ContentExcerpt, ContentProjectionContext } from "./content-projection.js";
 import { canonicalRequestHeader } from "./dsh-contract.js";
+import { iterateEmbeddedAssistantStream } from "./embedded-stream.js";
 import { IncrementalRequestAttemptTracker } from "./request-attempt.js";
 import type { RequestAttempt } from "./request-attempt.js";
 import { scanCanonicalTrajectory } from "./stream-reader.js";
@@ -30,19 +31,22 @@ const DEFAULT_TAIL_BYTES = 4 * 1024;
 
 const KNOWN_EVENT_TYPES = new Set([
   "agent-preset/selected", "agent/inbox/spliced", "approval/asked", "approval/decided", "approval/policy",
-  "assistant/chunk", "assistant/message", "command/done", "command/run", "compaction/end", "compaction/prune",
+  "assistant/chunk", "assistant/message", "assistant/attempt", "system/message", "developer/message", "command/done", "command/run", "compaction/end", "compaction/prune",
   "compaction/start", "compaction/summary", "feedback/record", "goal/change", "hook/invoked", "hook/result",
   "llm/retry", "llm/retry-started", "permission/preset", "plan/mode", "request/context", "request/header",
   "sandbox/mode", "schedule/change", "session/end-seed", "session/title", "session/title-llm-request", "step/end",
   "step/start", "subagent/descriptor", "todo/write", "tool-workflow/agent-end", "tool-workflow/agent-start",
   "tool-workflow/run-end", "tool-workflow/run-start", "tool/call", "tool/code-dispatch", "tool/code-dispatch-start",
   "tool/result", "turn/end", "turn/start", "user/message", "web/deepseek-search-llm-request",
+  "deliverables/presented", "feedback/message-delete", "feedback/message-put", "image/offload", "model/selection",
+  "session-log-deepseek/delivery-accepted", "subagent/catalog", "subagent/model-selection-policy", "team/member",
+  "team/message/delivered", "team/message/queued", "team/task", "tool/ptc-dispatch", "tool/ptc-dispatch-start", "workspace/changes",
 ]);
 
 interface SurfaceNodeV1 {
   seq: number;
-  event_type: "user/message" | "assistant/message" | "tool/result";
-  surface_op: "append" | { op: "replace"; start: number; end: number };
+  event_type: "user/message" | "assistant/message" | "system/message" | "developer/message" | "tool/result";
+  surface_op: NonNullable<SessionEvent["surfaceOp"]>;
   message: unknown;
 }
 
@@ -107,7 +111,8 @@ export async function projectTrajectoryAnalysis(
   const pathValues = sensitivePathValues(source.path);
   const redactions = new Map<string, number>();
   if (source.redactions) mergeRedactionCounts(redactions, source.redactions);
-  const fold = new IncrementalSurfaceFold();
+  let fold = new IncrementalSurfaceFold();
+  let foldInitialized = false;
   const nodes: SurfaceNodeV1[] = [];
   const diagnostics: unknown[] = [];
   const requestHeaders: Array<{ seq: number; header: unknown }> = [];
@@ -118,6 +123,7 @@ export async function projectTrajectoryAnalysis(
   const omitted = new Map<string, number>();
   let latestHeader: unknown = null;
   let latestHeaderSeq: number | undefined;
+  let hasUnprojectedSurfaceEffects = false;
 
   const contextFor = (seq: number): ContentProjectionContext => ({
     runId: source.runId,
@@ -150,7 +156,11 @@ export async function projectTrajectoryAnalysis(
     });
   };
 
-  const scan = await scanCanonicalTrajectory(source, (event) => {
+  const scan = await scanCanonicalTrajectory(source, (event, header) => {
+    if (!foldInitialized) {
+      fold = new IncrementalSurfaceFold(header.version);
+      foldInitialized = true;
+    }
     if (!isPublicEventType(event.type, credentialValues, pathValues)) {
       throw new HitchError(`trajectory event ${event.seq} has an unsafe public event type`, {
         code: "trajectory_projection_unsafe_event_type",
@@ -158,8 +168,9 @@ export async function projectTrajectoryAnalysis(
       });
     }
     const step = eventStep(event);
+    if (event.type === "image/offload") hasUnprojectedSurfaceEffects = true;
     const requestAttempt = requestAttempts.accept(event);
-    if ((event.type === "assistant/message" || event.type === "llm/retry") && step && requestAttempt) {
+    if ((event.type === "assistant/message" || event.type === "assistant/attempt" || event.type === "llm/retry") && step && requestAttempt) {
       recordBoundary(event, step.turn, step.step, requestAttempt);
     }
     try {
@@ -201,6 +212,14 @@ export async function projectTrajectoryAnalysis(
       increment(omitted, event.type);
       return;
     }
+    const data = event.data as Record<string, unknown>;
+    if ((event.type === "assistant/message" || event.type === "assistant/attempt") && Array.isArray(data.stream) && step && requestAttempt) {
+      for (const { chunk, recordIndex } of iterateEmbeddedAssistantStream(data.stream)) {
+        acceptChunk(chunkGroups, event, step.turn, step.step, requestAttempt.attempt,
+          requestAttempt.retryId, requestAttempt.retrySeq, chunk, credentialValues, pathValues, redactions,
+          { recordIndex, recordCount: data.stream.length });
+      }
+    }
     if (isSurfaceEvent(event)) {
       nodes.push({
         seq: event.seq,
@@ -215,7 +234,7 @@ export async function projectTrajectoryAnalysis(
     }
     if (event.type === "request/header") {
       const data = event.data as Record<string, unknown>;
-      latestHeader = projectBoundedJson(canonicalRequestHeader(data.header), contextFor(event.seq), "header");
+      latestHeader = projectBoundedJson(canonicalRequestHeader(data.header, header.version), contextFor(event.seq), "header");
       latestHeaderSeq = event.seq;
       requestHeaders.push({ seq: event.seq, header: latestHeader });
     }
@@ -241,7 +260,7 @@ export async function projectTrajectoryAnalysis(
     },
     header: latestHeader,
     surface: {
-      fidelity: "exact",
+      fidelity: hasUnprojectedSurfaceEffects ? "partial" : "exact",
       nodes,
       current_node_seqs: fold.currentNodeSeqs,
       replacements: fold.replacements,
@@ -252,7 +271,7 @@ export async function projectTrajectoryAnalysis(
     chunk_summaries: chunkSummaries,
     omitted_event_types: sortedCounts(Object.fromEntries(omitted)),
     coverage: {
-      surface: "complete",
+      surface: hasUnprojectedSurfaceEffects ? "partial" : "complete",
       chunks: chunkGroups.size === 0 ? "omitted" : hasPartialChunks ? "partial" : "coalesced",
       content: containsExcerpt({ nodes, diagnostics, requestBoundaries, requestHeaders, chunkSummaries })
         ? "excerpted"
@@ -325,9 +344,12 @@ function projectDiagnosticEvent(event: SessionEvent, context: ContentProjectionC
     projectedData = { reason: data.reason, request_header_seq: event.seq };
   } else if (event.type === "user/message") {
     projectedData = { surface_node_seq: event.seq };
-  } else if (event.type === "assistant/message" || event.type === "tool/result") {
-    const { message: _message, ...metadata } = data;
+  } else if (event.type === "assistant/message" || event.type === "tool/result" || event.type === "system/message" || event.type === "developer/message") {
+    const { message: _message, stream: _stream, ...metadata } = data;
     projectedData = { ...metadata, surface_node_seq: event.seq };
+  } else if (event.type === "assistant/attempt") {
+    const { stream: _stream, ...metadata } = data;
+    projectedData = { ...metadata, stream_summary_seq: event.seq };
   } else {
     projectedData = data;
   }

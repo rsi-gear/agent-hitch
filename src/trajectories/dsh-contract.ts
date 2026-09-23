@@ -1,12 +1,14 @@
 import type { SessionEvent } from "../domain/index.js";
 import { IncrementalChunkInvariant, validateContentBlock } from "./dsh-chunk-contract.js";
+import { validateEmbeddedAssistantStream } from "./embedded-stream.js";
 
 const EVENT_ENVELOPE_KEYS = new Set(["type", "seq", "time", "data", "surfaceOp", "sourceEventSeqs", "ignorable"]);
 const ADAPTER_DEFAULT_KEYS = new Set(["reasoningEffort", "maxTokens"]);
 
 /** Canonical counterpart of DSH canonicalHeader(). Validation happens before normalization. */
-export function canonicalRequestHeader(value: unknown): Record<string, unknown> {
+export function canonicalRequestHeader(value: unknown, version = 0): Record<string, unknown> {
   const header = record(value, "request header");
+  if (version >= 3 && Object.hasOwn(header, "system")) throw new Error("request header must not contain retired system field");
   const config = record(header.config, "request header config");
   nonEmptyString(config.provider, "request header config.provider");
   nonEmptyString(config.model, "request header config.model");
@@ -31,6 +33,15 @@ export class IncrementalDshInvariant {
   private readonly pendingCalls = new Set<string>();
   private readonly scheduledRetries = new Set<string>();
   private chunkStream: IncrementalChunkInvariant | null = null;
+  private inheritedMarker = false;
+
+  constructor(private readonly version = 0, private readonly isSeeded?: boolean) {}
+
+  finish(): void {
+    if (this.version >= 2 && this.isSeeded !== undefined && this.isSeeded !== this.inheritedMarker) {
+      throw new Error("session isSeeded disagrees with its inherited session/end-seed marker");
+    }
+  }
 
   accept(event: SessionEvent, raw: unknown): void {
     const envelope = record(raw, `session event at seq ${event.seq}`);
@@ -53,9 +64,12 @@ export class IncrementalDshInvariant {
     const rawSurfaceOp = envelope.surfaceOp;
     if (rawSurfaceOp !== undefined && rawSurfaceOp !== "append") {
       const op = record(rawSurfaceOp, `session event at seq ${event.seq} surfaceOp`);
-      if (Object.keys(op).sort().join(",") !== "end,op,start" || op.op !== "replace"
-        || !Number.isSafeInteger(op.start) || (op.start as number) < 0
-        || !Number.isSafeInteger(op.end) || (op.end as number) < 0) {
+      const start = this.version >= 3 ? op.startSeq : op.start;
+      const end = this.version >= 3 ? op.endSeq : op.end;
+      const keys = this.version >= 3 ? "endSeq,op,startSeq" : "end,op,start";
+      if (Object.keys(op).sort().join(",") !== keys || op.op !== "replace"
+        || !Number.isSafeInteger(start) || (start as number) < 0 || (start as number) >= event.seq
+        || !Number.isSafeInteger(end) || (end as number) < 0 || (end as number) >= event.seq) {
         throw new Error(`session event at seq ${event.seq} has an invalid replace surfaceOp`);
       }
     }
@@ -67,37 +81,81 @@ export class IncrementalDshInvariant {
   private validateShape(event: SessionEvent): void {
     const data = record(event.data, `${event.type} data`);
     switch (event.type) {
-      case "request/header": {
-        if (!new Set(["initial", "resume", "change"]).has(String(data.reason))) {
-          throw new Error("request/header reason must be initial, resume, or change");
+      case "session/end-seed":
+        if (this.version >= 2 && data.inherited !== undefined) {
+          if (data.inherited !== true) throw new Error("session/end-seed inherited must be true when present");
+          this.inheritedMarker = true;
         }
-        canonicalRequestHeader(data.header);
+        break;
+      case "request/header": {
+        const reasons = this.version >= 3 ? ["initial", "resume", "change", "series"] : ["initial", "resume", "change"];
+        if (!reasons.includes(String(data.reason))) throw new Error(`request/header reason must be ${reasons.join(", ")}`);
+        if (data.startsSeries !== undefined && (this.version < 3 || data.startsSeries !== true)) {
+          throw new Error("request/header has an invalid startsSeries marker");
+        }
+        canonicalRequestHeader(data.header, this.version);
         break;
       }
       case "user/message":
-        validateMessage(data, "user", "user/message");
+        validateMessage(data, "user", "user/message", this.version);
         break;
       case "assistant/message":
         stepIdentity(data, "assistant/message");
-        validateMessage(record(data.message, "assistant/message message"), "assistant", "assistant/message");
+        validateMessage(record(data.message, "assistant/message message"), "assistant", "assistant/message", this.version);
         validateModelSource(record(data.message, "assistant/message message").source);
-        this.chunkStream?.assertReadyForMessage();
+        if (this.version >= 2) {
+          if (event.sourceEventSeqs !== undefined) throw new Error("assistant/message embeds its stream and cannot carry sourceEventSeqs");
+          validateEmbeddedAssistantStream(data.stream);
+        } else this.chunkStream?.assertReadyForMessage();
         break;
+      case "assistant/attempt":
+        if (this.version < 2) throw new Error("assistant/attempt requires session format v2 or later");
+        stepIdentity(data, event.type);
+        validateEmbeddedAssistantStream(data.stream);
+        break;
+      case "system/message":
+      case "developer/message": {
+        const role = event.type === "system/message" ? "system" : "developer";
+        if (this.version < (role === "system" ? 3 : 4)) throw new Error(`${event.type} is unsupported in session format v${this.version}`);
+        stepIdentity(data, event.type);
+        const message = record(data.message, `${event.type} message`);
+        validateMessage(message, role, event.type, this.version);
+        const source = record(message.source, `${event.type} source`);
+        if (role === "system") {
+          const expected = this.version >= 4 ? "system-prompt" : "plugin";
+          if (source.kind !== expected) throw new Error(`system/message requires ${expected} source`);
+          if (this.version === 3) nonEmptyString(source.plugin, "system/message source.plugin");
+        } else {
+          const additions = (message.content as Array<Record<string, unknown>>).some((block) => block.type === "tool-addition");
+          if (additions) {
+            if (nonNegativeInteger(data.headerSeq, "developer/message headerSeq") >= event.seq) throw new Error("developer/message headerSeq must reference an earlier request/header");
+          } else if (data.headerSeq !== undefined) throw new Error("developer/message must omit headerSeq without tool additions");
+        }
+        break;
+      }
       case "tool/result": {
         stepIdentity(data, "tool/result");
         const message = record(data.message, "tool/result message");
-        validateMessage(message, "user", "tool/result");
+        validateMessage(message, this.version >= 4 ? "tool" : "user", "tool/result", this.version);
         const source = record(message.source, "tool/result source");
         if (source.kind !== "tool") throw new Error("tool/result message must have tool source");
         const callId = nonEmptyString(source.callId, "tool/result source.callId");
         const content = message.content as unknown[];
-        const block = content.length === 1 ? record(content[0], "tool/result content block") : null;
-        if (!block || block.type !== "tool-result" || !Array.isArray(block.content) || block.toolCallId !== callId) {
-          throw new Error("tool/result message must contain one matching tool-result block");
+        if (this.version >= 4) {
+          if (message.toolCallId !== callId) throw new Error("tool/result toolCallId must match its tool source");
+          if (message.isError !== undefined && typeof message.isError !== "boolean") throw new Error("tool/result isError must be boolean");
+          if (data.error !== undefined && message.isError !== true) throw new Error("tool/result error metadata requires an error result");
+        } else {
+          const block = content.length === 1 ? record(content[0], "tool/result content block") : null;
+          if (!block || block.type !== "tool-result" || !Array.isArray(block.content) || block.toolCallId !== callId) {
+            throw new Error("tool/result message must contain one matching tool-result block");
+          }
+          if (data.error !== undefined && block.isError !== true) throw new Error("tool/result error metadata requires an error result");
         }
         break;
       }
       case "assistant/chunk": {
+        if (this.version >= 2) throw new Error("assistant/chunk is retired in session format v2 and later");
         stepIdentity(data, "assistant/chunk");
         this.chunkStream?.accept(data.chunk);
         break;
@@ -171,6 +229,9 @@ export class IncrementalDshInvariant {
       }
       case "assistant/chunk":
       case "assistant/message":
+      case "assistant/attempt":
+      case "system/message":
+      case "developer/message":
         this.requireOpenStep(event.type, data.turn as number, data.step as number);
         break;
       case "llm/retry": {
@@ -204,7 +265,7 @@ export class IncrementalDshInvariant {
         const source = message.source as Record<string, unknown>;
         const callId = source.callId as string;
         const content = message.content as Array<Record<string, unknown>>;
-        const synthetic = content[0]?.isError === true
+        const synthetic = (this.version >= 4 ? message.isError === true : content[0]?.isError === true)
           && (data.error as Record<string, unknown> | undefined)?.code === "TOOL_NOT_STARTED";
         if (!this.pendingCalls.has(callId) && !synthetic) throw new Error("tool/result has no prior tool/call in this step");
         this.pendingCalls.delete(callId);
@@ -237,13 +298,22 @@ function validateAdapterDefaults(value: unknown, config: Record<string, unknown>
   return defaults as Record<string, true>;
 }
 
-function validateMessage(message: Record<string, unknown>, role: "user" | "assistant", label: string): void {
+function validateMessage(message: Record<string, unknown>, role: "user" | "assistant" | "system" | "developer" | "tool", label: string, version: number): void {
   nonEmptyString(message.id, `${label} message.id`);
   if (message.role !== role) throw new Error(`${label} message must have role ${role}`);
   const source = record(message.source, `${label} message.source`);
   nonEmptyString(source.kind, `${label} message.source.kind`);
+  if (version >= 4 && source.kind === "plugin") throw new Error(`${label} requires a producer-owned source kind`);
   if (!Array.isArray(message.content)) throw new Error(`${label} message content must be an array`);
-  message.content.forEach((entry, index) => validateContentBlock(entry, `${label} message.content[${index}]`));
+  message.content.forEach((entry, index) => {
+    const block = validateContentBlock(entry, `${label} message.content[${index}]`);
+    if (version >= 4 && block.type === "tool-result") throw new Error(`${label} must not contain a retired tool-result wrapper`);
+    if (block.type === "tool-addition" || block.type === "tool-removal") {
+      if (version < 4 || role !== "developer") throw new Error("tool-change content requires a v4 developer message");
+      nonEmptyString(block.toolName, `${label} toolName`);
+      if (block.type === "tool-addition" && Object.hasOwn(block, "tool")) throw new Error("tool-addition must omit inline tool definitions");
+    }
+  });
 }
 
 function validateModelSource(value: unknown): void {

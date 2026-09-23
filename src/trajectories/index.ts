@@ -1,4 +1,4 @@
-export { CONTRACT_COMMIT, SESSION_FORMAT_VERSION, TRAJECTORY_FORMAT } from "./contract.js";
+export { CONTRACT_COMMIT, LATEST_SESSION_FORMAT_VERSION, READER_CONTRACT_COMMIT, SESSION_FORMAT_VERSION, SUPPORTED_SESSION_FORMAT_VERSIONS, TRAJECTORY_FORMAT } from "./contract.js";
 export type { TrajectoryFormatRef } from "./contract.js";
 export { decodeSegment, encodeSegment, eventLine, headerLine, logPath, logSuffix, parseEventLine, parseHeaderLine, projectDir, projectKey, sessionDir } from "./format.js";
 export type { JsonlCompression } from "./format.js";
