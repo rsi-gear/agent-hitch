@@ -1,3 +1,4 @@
+import { readResourceInput } from "../resources/index.js";
 import path from "node:path";
 import { remoteBackendResult } from "./remote-backend-result.js";
 import type { BackendWorkItemV1, EvalId, ExecutionLeaseV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerPublicRecordV1, ResourceVectorV1 } from "../domain/index.js";
@@ -200,10 +201,12 @@ export class RemoteWorkCoordinator {
   }
 
   private async dispatch(input: Parameters<EvalRemoteWorkExecutor>[0], inputsFor: (capture: boolean) => Promise<RemoteWorkInputRefV1[]>, credentialNames: readonly string[], modelTarget?: RemoteModelTargetV2) {
+    const needsResources = Boolean(await readResourceInput(input.request.dataset));
     for (;;) {
       if (input.signal?.aborted) throw cancelled();
       const registered = (await this.registry.list()).filter((worker) => !worker.revoked_at && worker.worker.provider === input.workItem.provider);
       const capable = registered.filter((worker) => supports(worker, input.workItem, input.preparedArtifact.platform, input.verifierOnly ? undefined : input.modelCapturePlan)
+        && (!needsResources || worker.provider_status.features.benchmark_resources === "1")
         && (!input.physicalExecution || worker.provider_status.features.physical_work === "2")
         && (!input.verifierOnly || worker.provider_status.features.verifier_only === "2")
         && (!modelTarget || worker.provider_status.features[modelTarget.kind === "training-external" ? "training_external_binding" : "managed_model_node"] === "2"));
@@ -219,7 +222,7 @@ export class RemoteWorkCoordinator {
       }
       const workers = capable.filter((worker) => compatible(worker, input.workItem));
       for (const worker of workers.sort(workerOrder)) {
-        const inputs = await inputsFor(worker.provider_status.features.verifier_source === "2");
+        const inputs = await inputsFor(!needsResources && worker.provider_status.features.verifier_source === "2");
         const collisionKey = evalTaskCollisionKey(input.request, input.workItem.task_ids[0] as string, worker.worker.collision_domain_id);
         const collision = this.collisions.tryAcquire(`${input.evalId}:${input.workItem.work_id}`, [collisionKey]);
         if (!collision) continue;

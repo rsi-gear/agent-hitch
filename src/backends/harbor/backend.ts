@@ -1,4 +1,5 @@
 import { readdir } from "node:fs/promises";
+import { withResourceAdmission } from "./resource-admission.js";
 import path from "node:path";
 import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, readJSON, sha256JSON } from "../../foundation/index.js";
 import type { DockerResourceOwnershipV1, EvalRequest, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
@@ -81,7 +82,10 @@ export interface HarborBackendResult {
   summary: Record<string, unknown> | null;
 }
 
-export async function runHarborBackend({
+export async function runHarborBackend(options: RunHarborBackendOptions): Promise<HarborBackendResult> {
+  return withResourceAdmission(options, executeHarborBackend);
+}
+async function executeHarborBackend({
   evalId,
   evalDirectory,
   backendDirectory: requestedBackendDirectory,

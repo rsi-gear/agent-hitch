@@ -1,7 +1,7 @@
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { EnvironmentImageManifestV1, Sha256 } from "../domain/index.js";
-import { HitchError, atomicWriteJSON, hitchRootId, readEvalEnvironmentImageReferences, readJSON, runCommand, sha256JSON, statePaths, withEnvironmentImageReferenceLock, withFileLock } from "../foundation/index.js";
+import { HitchError, atomicWriteJSON, hitchRootId, readEvalEnvironmentImageReferences, readJSON, resourceImageReferences, runCommand, sha256JSON, statePaths, withEnvironmentImageReferenceLock, withFileLock } from "../foundation/index.js";
 import { parseEnvironmentBuildRecord, parseEnvironmentImageManifest } from "./manifest.js";
 import { ENVIRONMENT_IMAGE_LABELS } from "./ownership.js";
 import { environmentBuildRecordPath, environmentImageManifestPath, loadEnvironmentImageManifest } from "./service.js";
@@ -143,7 +143,7 @@ async function inspectGcCandidate(
 }
 
 async function referencedEnvironmentImages(root: string): Promise<Map<Sha256, Set<string>>> {
-  const result = new Map<Sha256, Set<string>>();
+  const result = await resourceImageReferences(root);
   const paths = statePaths(root);
   for (const entry of await directories(paths.evals)) {
     if (!/^eval_[a-f0-9]{32}$/.test(entry)) continue;

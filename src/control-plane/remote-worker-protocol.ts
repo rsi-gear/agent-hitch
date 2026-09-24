@@ -1,3 +1,4 @@
+import { configuredResourceStore, parseResourceDelivery } from "../resources/index.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
@@ -354,8 +355,15 @@ export class RemoteWorkerProtocol {
       throw protocolError("remote work input lease is not active");
     }
     const ref = offer.inputs?.find((entry) => entry.digest === digest);
-    if (!ref) throw protocolError("remote work input is not authorized for this lease");
-    return this.inputs.verify(ref);
+    if (ref) return this.inputs.verify(ref);
+    const resourceRef = offer.inputs?.find(entry => entry.kind === "task-input" && entry.format === "hitch-resource-delivery-v1");
+    if (!resourceRef) throw protocolError("remote work input is not authorized for this lease");
+    const delivery = parseResourceDelivery(await readJSON((await this.inputs.verify(resourceRef)).path));
+    const item = delivery.objects.find(o => o.digest === digest);
+    if (!item) throw protocolError("resource digest is not authorized for this lease");
+    const { store } = await configuredResourceStore(this.root);
+    await store.objects.verify(item.digest, item.size);
+    return { path: store.objects.objectPath(item.digest), size: item.size };
   }
 
   artifactPath(workerId: string, leaseId: string, digest: Sha256): string {

@@ -1,3 +1,5 @@
+import { emitWorkLeaseRelease } from "./resource-eval-lifecycle.js";
+import { configuredResourceStore, reclaimResourceExecution } from "../resources/index.js";
 import { ProgressPublisher } from "./planned-progress-publisher.js";
 import path from "node:path";
 import type { ResolvedRevision } from "../artifacts/index.js";
@@ -327,20 +329,7 @@ async function executeWorkItem(
     await heartbeatTail;
     if (providerProcess.recorded) await releaseLocalDockerProcessRecord({ root: options.root, leaseId: lease.leaseId, epoch });
     const released = await lease.release(epoch);
-    options.sink.emit({
-      type: "lease.released",
-      work_id: item.work_id,
-      lease_id: lease.leaseId,
-      lease_epoch: released.epoch,
-      worker_id: options.worker.workerId,
-    });
-    options.sink.emit({
-      type: "eval.work-item.lease-released",
-      work_id: item.work_id,
-      lease_id: lease.leaseId,
-      lease_epoch: released.epoch,
-      state: released.state,
-    });
+    emitWorkLeaseRelease(options.sink, item.work_id, lease.leaseId, released.epoch, options.worker.workerId, released.state);
     if (options.dockerResourceReaper) {
       options.sink.emit({ type: "sandbox.cleanup.started", work_id: item.work_id, lease_id: lease.leaseId });
       try {
@@ -350,6 +339,8 @@ async function executeWorkItem(
           env: options.env,
         });
         options.sink.emit({ type: "eval.work-item.resources-reaped", work_id: item.work_id, lease_id: lease.leaseId, scanned: report.scanned, deleted: report.deleted.length, issues: report.issues.length });
+        if (report.issues.length === 0) await reclaimResourceExecution((await configuredResourceStore(options.root)).store,
+          path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(epoch).padStart(6, "0")}`, "resource-evidence.json"), true);
         options.sink.emit({ type: "sandbox.cleanup.completed", work_id: item.work_id, lease_id: lease.leaseId, scanned: report.scanned, deleted: report.deleted.length, residual_resources: report.issues.length });
       } catch (error) {
         options.sink.emit({ type: "eval.work-item.reaper-failed", work_id: item.work_id, lease_id: lease.leaseId, code: (error as { code?: string }).code || "docker_reaper_failed" });

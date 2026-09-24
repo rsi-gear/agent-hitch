@@ -9,6 +9,7 @@ import type { TrialEnvironmentImagesV1 } from "../evals/index.js";
 import type { RemoteVerifierSourceCapture } from "../evals/index.js";
 import { encodeVerifierSource, importVerifierSource, parseVerifierSource } from "./remote-verifier-source-transport.js";
 import type { RemoteVerifierSourceTransportV2 } from "./remote-verifier-source-transport.js";
+import { configuredResourceStore, readResourceInput, retainResourceResult } from "../resources/index.js";
 
 const MAX_ENVELOPE_BYTES = 128 * 1024 * 1024;
 const MAX_FILES = 100_000;
@@ -123,6 +124,14 @@ export async function importRemoteResultEnvelope(input: {
     const sealVerifierSource = envelope.schema_version === "2" ? await importVerifierSource({ source: envelope.verifier_source, trial: envelope.trial,
       trialDirectory, bundleDirectory, taskId: input.work.task_ids[0]!, taskDirectory: path.join(input.request.dataset, input.work.task_ids[0]!),
       ...(input.runtimeId ? { runtimeId: input.runtimeId } : {}) }) : undefined;
+    const resources = await readResourceInput(input.request.dataset);
+    if (resources) {
+      const task = resources.tasks.find(t => t.task_id === input.work.task_ids[0]);
+      if (!task) throw transportError("remote resource task is absent from controller admission");
+      const record = await readJSON<{ run_id: string; observation?: { status?: string } }>(path.join(bundleDirectory, "manifest.json"));
+      await retainResourceResult({ store: (await configuredResourceStore(input.root)).store, directory: bundleDirectory, task,
+        runId: record.run_id, execution, requireObserved: record.observation?.status === "valid" });
+    }
     await writeTransportCompletionMarker(bundleDirectory, envelope, trialId);
     const ref = await importEvalTrialRun({
       root: input.root,

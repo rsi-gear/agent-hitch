@@ -343,8 +343,9 @@ function parseBackends(value: unknown): Array<{ id: string; version: string }> {
 function parseFeatures(value: unknown): RemoteWorkerRegistrationV1["features"] {
   const booleans = ["docker", "buildkit", "model_proxy", "isolated_same_task_attempts"];
   const bindings = ["training_external_binding", "managed_model_node"];
-  const features = exact(value, [...booleans, ...bindings, "physical_work", "execution_observation", "verifier_source", "verifier_only"], "remote worker features");
+  const features = exact(value, [...booleans, ...bindings, "physical_work", "execution_observation", "verifier_source", "verifier_only", "benchmark_resources"], "remote worker features");
   if (booleans.some(key => typeof features[key] !== "boolean")
+    || features.benchmark_resources !== undefined && (features.benchmark_resources !== "1" || !features.docker || !features.buildkit)
     || features.physical_work !== undefined && (features.physical_work !== "2" || !features.docker)
     || features.execution_observation !== undefined && features.execution_observation !== "2"
     || features.verifier_source !== undefined && (features.verifier_source !== "2" || !features.docker)
