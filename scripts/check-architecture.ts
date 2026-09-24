@@ -4,7 +4,7 @@ import path from "node:path";
 const SRC_ROOT = path.resolve("src");
 const MODULES = new Set([
   "domain", "foundation", "benchmarks", "adapters", "revisions", "artifacts", "controller-runtime",
-  "images", "inference", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
+  "images", "resources", "inference", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
 ]);
 const ALLOWED = new Map<string, Set<string>>([
   ["domain", new Set()],
@@ -15,16 +15,17 @@ const ALLOWED = new Map<string, Set<string>>([
   ["artifacts", new Set(["domain", "foundation", "adapters", "revisions"])],
   ["controller-runtime", new Set(["domain", "foundation"])],
   ["images", new Set(["domain", "foundation"])],
+  ["resources", new Set(["domain", "foundation", "images"])],
   ["inference", new Set(["domain", "foundation"])],
   ["model-access", new Set(["domain", "foundation"])],
   ["trajectories", new Set(["domain", "foundation", "adapters"])],
   ["feedback", new Set(["domain", "foundation", "trajectories"])],
   ["workspaces", new Set(["domain", "foundation"])],
   ["runs", new Set(["domain", "foundation", "adapters", "revisions", "artifacts", "workspaces", "trajectories", "model-access"])],
-  ["backends", new Set(["domain", "foundation"])],
-  ["evals", new Set(["domain", "foundation", "benchmarks", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
-  ["control-plane", new Set(["domain", "foundation", "adapters", "model-access", "evals", "images", "inference"])],
-  ["workers", new Set(["domain", "foundation", "artifacts", "backends", "controller-runtime", "evals", "control-plane", "model-access"])],
+  ["backends", new Set(["domain", "foundation", "resources"])],
+  ["evals", new Set(["domain", "foundation", "resources", "benchmarks", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
+  ["control-plane", new Set(["domain", "foundation", "resources", "adapters", "model-access", "evals", "images", "inference"])],
+  ["workers", new Set(["domain", "foundation", "resources", "artifacts", "backends", "controller-runtime", "evals", "control-plane", "model-access"])],
   ["daemon", new Set(["domain", "foundation", "runs", "workspaces", "control-plane"])],
   ["cli", new Set([...MODULES].filter((name) => name !== "cli"))],
 ]);

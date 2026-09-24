@@ -90,6 +90,7 @@ export interface RemoteWorkerRegistrationV1 {
     execution_observation?: "2";
     verifier_source?: "2";
     verifier_only?: "2";
+    benchmark_resources?: "1";
     isolated_same_task_attempts: boolean;
   };
   task_membership: Array<"known" | "opaque">;
@@ -124,7 +125,7 @@ export interface RemoteWorkArtifactRefV1 {
 
 export interface RemoteWorkInputRefV1 {
   kind: "work-spec" | "harness-artifact" | "controller-runtime" | "task-input" | "verifier-source" | "verifier-runtime";
-  format: "json" | "hitch-tree-v1";
+  format: "json" | "hitch-tree-v1" | "hitch-resource-delivery-v1";
   digest: Sha256;
   size: number;
 }

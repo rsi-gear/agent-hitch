@@ -16,6 +16,7 @@ import { feedbackCommand } from "./commands/feedback.js";
 import { daemonCommand } from "./commands/daemon.js";
 import { workerCommand } from "./commands/worker.js";
 import { imagesCommand } from "./commands/images.js";
+import { resourcesCommand } from "./commands/resources.js";
 import { benchmarkCommand } from "./commands/benchmark.js";
 import { verifierCommand } from "./commands/verifier.js";
 import { capabilitiesCommand } from "./commands/capabilities.js";
@@ -46,6 +47,7 @@ export async function main(argv: string[]): Promise<void> {
     case "daemon": return daemonCommand(args, root);
     case "worker": return workerCommand(args, root);
     case "images": return imagesCommand(args, root);
+    case "resources": return resourcesCommand(args, root);
     case "models": return modelsCommand(args, root);
     case "training": return trainingCommand(args, root);
     case "local": return localCommand(args, root);

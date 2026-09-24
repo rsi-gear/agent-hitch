@@ -177,7 +177,8 @@
         "format": {
           "enum": [
             "json",
-            "hitch-tree-v1"
+            "hitch-tree-v1",
+            "hitch-resource-delivery-v1"
           ]
         },
         "digest": {

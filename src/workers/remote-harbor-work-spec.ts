@@ -23,10 +23,14 @@ export type RemoteHarborWorkSpecV2 = Omit<RemoteHarborWorkSpecV1, "schema_versio
   verifier_only?: RemoteVerifierWorkV2;
 };
 
-export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOfferV1): RemoteHarborWorkSpecV1 | RemoteHarborWorkSpecV2 {
-  const v2 = object(value) && value.schema_version === "2";
+export type RemoteHarborWorkSpecV3 = Omit<RemoteHarborWorkSpecV2, "schema_version"> & { schema_version: "3"; resource_delivery: `sha256:${string}` };
+
+export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOfferV1): RemoteHarborWorkSpecV1 | RemoteHarborWorkSpecV2 | RemoteHarborWorkSpecV3 {
+  const v3 = object(value) && value.schema_version === "3";
+  const v2 = v3 || object(value) && value.schema_version === "2";
   const spec = exact(value, [
     "schema_version", "request", "plan", "work", "resolution", "harness_artifact", "controller_runtime", "task", "credential_names",
+    ...(v3 ? ["resource_delivery"] : []),
     ...(v2 ? ["model_binding", "physical_execution", "verifier_source", "verifier_only"] : []),
   ], "remote Harbor work spec", v2 ? ["model_binding", "physical_execution", "verifier_source", "verifier_only"] : ["credential_names"]);
   if (spec.schema_version !== "1" && !v2) throw specError("remote Harbor work spec version is invalid");
@@ -34,7 +38,9 @@ export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOffer
   const physical = v2 && spec.physical_execution !== undefined ? parsePhysicalExecution(spec.physical_execution) : undefined;
   const capture = v2 && spec.verifier_source === "2";
   if (spec.verifier_source !== undefined && !capture) throw specError("remote verifier source version is invalid");
-  if (v2 && !binding && !physical && !capture) throw specError("remote work spec v2 requires a model binding, physical execution or verifier source capture");
+  if (v2 && !v3 && !binding && !physical && !capture) throw specError("remote work spec v2 requires a model binding, physical execution or verifier source capture");
+  if (v3 && (!digest(spec.resource_delivery) || offer.inputs?.find(i => i.kind === "task-input")?.format !== "hitch-resource-delivery-v1" || spec.verifier_only !== undefined)) throw specError("invalid resource-aware work spec");
+  if (!v3 && offer.inputs?.some(i => i.format === "hitch-resource-delivery-v1")) throw specError("resource inputs require work spec v3");
   const request = parseRequest(spec.request, v2);
   const plan = parseEvalExecutionPlan(spec.plan);
   const work = offer.work;
@@ -69,7 +75,7 @@ export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOffer
   } else if (binding) validateModelGraph(binding, request, plan, credentialNames);
   else if (plan.training_binding || request.model.startsWith("local/") || request.model.startsWith("training/")) throw specError("bound models require remote work spec v2");
   return {
-    ...(v2 ? { schema_version: "2" as const, ...(binding ? { model_binding: binding } : {}), ...(physical ? { physical_execution: physical } : {}), ...(capture ? { verifier_source: "2" as const } : {}), ...(verifier ? { verifier_only: verifier } : {}) } : { schema_version: "1" as const }),
+    ...(v2 ? { ...(v3 ? { schema_version: "3" as const, resource_delivery: spec.resource_delivery as `sha256:${string}` } : { schema_version: "2" as const }), ...(binding ? { model_binding: binding } : {}), ...(physical ? { physical_execution: physical } : {}), ...(capture ? { verifier_source: "2" as const } : {}), ...(verifier ? { verifier_only: verifier } : {}) } : { schema_version: "1" as const }),
     request, plan, work, resolution, harness_artifact: harnessArtifact,
     controller_runtime: { runtime_id: runtime.runtime_id, directory: "controller-runtime" },
     task: { task_id: task.task_id as string, directory: "task-input" },

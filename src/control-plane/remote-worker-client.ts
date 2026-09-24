@@ -116,6 +116,14 @@ export class RemoteWorkerHttpClient {
     return body;
   }
 
+  async streamResource(offer: RemoteWorkOfferV1, item: { digest: Sha256; size: number }, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
+    this.assertOffer(offer);
+    if (!/^sha256:[a-f0-9]{64}$/.test(item.digest) || !Number.isSafeInteger(item.size) || item.size < 0 || item.size > 1024 ** 3) throw clientError("invalid resource object request");
+    const response = await this.call(`v1/workers/${this.workerId}/leases/${offer.lease.lease_id}/inputs/${item.digest}?generation=${this.generation}`, signal ? { signal } : {});
+    if (response.headers.get("content-length") !== String(item.size) || !response.body) { await response.body?.cancel(); throw clientError("resource transfer size header mismatch"); }
+    return (async function* () { const reader = response.body!.getReader(); try { for (;;) { const next = await reader.read(); if (next.done) break; yield next.value; } } finally { await reader.cancel(); reader.releaseLock(); } })();
+  }
+
   async accept(offer: RemoteWorkOfferV1, ownership?: RemoteWorkerExecutionOwnership, sentAt = new Date().toISOString()): Promise<RemoteWorkOfferV1> {
     if (!ownership) return this.receipt(offer, "accept", { accepted: true }, sentAt);
     this.assertOffer(offer);

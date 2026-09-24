@@ -1,3 +1,4 @@
+import { configuredResourceStore, createResourceDelivery, readResourceInput, selectResources, identity as resourceIdentity } from "../resources/index.js";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -95,10 +96,19 @@ export async function prepareRemoteWorkInputs(input: {
   await store.initialize();
   const taskId = input.work.task_ids[0];
   if (!taskId || input.work.task_ids.length !== 1) throw inputError("remote work input requires exactly one task");
-  const taskDirectory = await resolveTaskDirectory(input.request.dataset, taskId);
+  const resource = await readResourceInput(input.request.dataset);
+  if (resource && input.verifierOnly) throw inputError("resource-aware verifier-only transport is not supported by this execution contract");
+  const host = resource ? await configuredResourceStore(input.root) : undefined;
+  const selection = resource ? ("schema_version" in resource ? selectResources(resource, [taskId]) : { ...resource, tasks: resource.tasks.filter(t => t.task_id === taskId) }) : undefined;
+  if (selection && !("schema_version" in resource!)) {
+    const { digest: _digest, ...body } = selection; selection.digest = resourceIdentity(selection.protocol, body);
+  }
+  const delivery = selection ? await createResourceDelivery(host!.store, selection, `remote:${input.work.eval_id}:${input.work.work_id}`, 1) : undefined;
+  const taskDirectory = resource ? undefined : await resolveTaskDirectory(input.request.dataset, taskId);
   const { storage: _hostStorage, ...portableArtifact } = input.preparedArtifact;
   const spec = Buffer.from(`${JSON.stringify({
-    schema_version: input.modelBinding || input.physicalExecution || input.captureVerifierSource ? "2" : "1",
+    schema_version: delivery ? "3" : input.modelBinding || input.physicalExecution || input.captureVerifierSource ? "2" : "1",
+    ...(delivery ? { resource_delivery: delivery.digest } : {}),
     ...(input.modelBinding ? { model_binding: input.modelBinding } : {}),
     ...(input.physicalExecution ? { physical_execution: input.physicalExecution } : {}),
     ...(input.captureVerifierSource ? { verifier_source: "2" } : {}),
@@ -114,7 +124,7 @@ export async function prepareRemoteWorkInputs(input: {
     store.put("work-spec", "json", spec),
     encodeTree(input.preparedArtifact.directory).then((body) => store.put("harness-artifact", "hitch-tree-v1", body)),
     encodeTree(input.runtimeDirectory).then((body) => store.put("controller-runtime", "hitch-tree-v1", body)),
-    encodeTree(taskDirectory).then((body) => store.put("task-input", "hitch-tree-v1", body)),
+    delivery ? store.put("task-input", "hitch-resource-delivery-v1", Buffer.from(JSON.stringify(delivery))) : encodeTree(taskDirectory!).then((body) => store.put("task-input", "hitch-tree-v1", body)),
   ]);
   if (!verifier || !input.verifierOnly) return [workSpec, harness, runtime, task];
   const source = await encodeVerifierSource({ manifest: verifier.source_manifest, directory: input.verifierOnly.sourceSnapshotDirectory });
@@ -164,7 +174,7 @@ export async function materializeRemoteTreeEnvelope(value: unknown, destination:
 
 function validateRef(ref: RemoteWorkInputRefV1): void {
   if (!new Set(["work-spec", "harness-artifact", "controller-runtime", "task-input", "verifier-source", "verifier-runtime"]).has(ref.kind)
-    || !new Set(["json", "hitch-tree-v1"]).has(ref.format) || !SHA256.test(ref.digest)
+    || !new Set(["json", "hitch-tree-v1", "hitch-resource-delivery-v1"]).has(ref.format) || !SHA256.test(ref.digest)
     || !Number.isSafeInteger(ref.size) || ref.size < 1 || ref.size > MAX_INPUT_BYTES) throw inputError("remote work input ref is invalid");
 }
 

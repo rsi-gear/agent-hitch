@@ -108,6 +108,9 @@
         },
         "verifier_only": {
           "const": "2"
+        },
+        "benchmark_resources": {
+          "const": "1"
         }
       },
       "allOf": [
@@ -127,6 +130,23 @@
               },
               "physical_work": {
                 "const": "2"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "benchmark_resources"
+            ]
+          },
+          "then": {
+            "properties": {
+              "docker": {
+                "const": true
+              },
+              "buildkit": {
+                "const": true
               }
             }
           }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-hitch.local/schemas/remote-harbor-work-spec.schema.json",
-  "title": "Hitch remote Harbor work spec V1/V2",
+  "title": "Hitch remote Harbor work spec V1/V2/V3",
   "description": "The worker additionally validates equality with its offer and the complete request/plan/model graph before execution.",
   "type": "object",
   "additionalProperties": false,
@@ -19,7 +19,8 @@
     "schema_version": {
       "enum": [
         "1",
-        "2"
+        "2",
+        "3"
       ]
     },
     "request": {
@@ -149,6 +150,9 @@
     },
     "verifier_only": {
       "$ref": "remote-verifier-work.schema.json"
+    },
+    "resource_delivery": {
+      "$ref": "#/$defs/sha256"
     }
   },
   "allOf": [
@@ -156,7 +160,10 @@
       "if": {
         "properties": {
           "schema_version": {
-            "const": "2"
+            "enum": [
+              "2",
+              "3"
+            ]
           }
         }
       },
@@ -178,6 +185,11 @@
           {
             "required": [
               "verifier_source"
+            ]
+          },
+          {
+            "required": [
+              "resource_delivery"
             ]
           }
         ]
@@ -203,6 +215,11 @@
             {
               "required": [
                 "verifier_only"
+              ]
+            },
+            {
+              "required": [
+                "resource_delivery"
               ]
             }
           ]
@@ -307,6 +324,33 @@
               }
             }
           }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": "3"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "resource_delivery",
+          "credential_names"
+        ],
+        "not": {
+          "required": [
+            "verifier_only"
+          ]
+        }
+      },
+      "else": {
+        "not": {
+          "required": [
+            "resource_delivery"
+          ]
         }
       }
     }

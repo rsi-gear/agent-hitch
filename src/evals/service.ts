@@ -1,6 +1,7 @@
+import { admitEvalResources } from "./resource-eval-lifecycle.js";
 import path from "node:path";
 import { resolveHarness } from "../artifacts/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, credentialValuesFromEnv, ensureDir, invalidInput, safeDiagnosticMessage, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, ensureDir, invalidInput, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
 import { parseHarnessReference } from "../revisions/index.js";
 import { buildLocalGitTransport, lockedHarnessRef, runHarborBackend, verifyLocalGitTransport } from "../backends/index.js";
 import type { HarborBackendResult, LocalGitTransportUse } from "../backends/index.js";
@@ -30,7 +31,7 @@ import { emitEvalPlanLifecycle } from "./eval-lifecycle-events.js";
 import { materializeEvalPlan, writeEvalPlanningCheckpoint, type EvalLogicalPlanV1 } from "./eval-logical-plan.js";
 import { planTaskSchedulingHints, schedulingHintsFromPlan } from "./duration-estimator.js";
 import type { EvalSchedulerSummaryV1 } from "../domain/index.js";
-import { buildCompletedEvalResult } from "./eval-result-builder.js";
+import { buildCompletedEvalResult, buildFailedEvalResult } from "./eval-result-builder.js";
 import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, inferenceCoordinator, inferenceRerunId, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
@@ -41,6 +42,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     throw invalidInput("control-plane max concurrency override is invalid");
   }
   const normalized = maxConcurrentOverride === undefined ? persistedRequest : { ...persistedRequest, max_concurrent: maxConcurrentOverride };
+  await admitEvalResources(root, normalized, evalId, environmentBuildMode, signal);
   const evalsDirectory = await ensureDir(statePaths(root).evals);
   const evalDirectory = await prepareEvalDirectory({ evalsDirectory, evalId, request: persistedRequest, precreated, replaceTerminal });
   let startedAt = new Date();
@@ -475,24 +477,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     });
   } catch (error) {
     trialRefs = progress?.trials ?? trialRefs;
-    const typed = error instanceof HitchError;
-    result = {
-      schema_version: SCHEMA_VERSION,
-      eval_id: evalId,
-      status: signal?.aborted ? "cancelled" : "failed",
-      exit_code: signal?.aborted ? 9 : typed ? error.exitCode : 12,
-      error: {
-        code: signal?.aborted ? "cancelled" : typed ? error.code : "internal_error",
-        message: safeDiagnosticMessage(error, credentialValuesFromEnv(normalized.pass_env, env)),
-      },
-      failure_stage: failureStage,
-      benchmark_id: normalized.benchmark_id,
-      benchmark_revision: normalized.benchmark_revision,
-      ...(progress === null ? {} : { generation: progress.generation }),
-      trials: trialRefs,
-      started_at: startedAt.toISOString(),
-      completed_at: new Date().toISOString(),
-    };
+    result = buildFailedEvalResult({ error, evalId, request: normalized, env, failureStage, startedAt, trials: trialRefs, progress, cancelled: signal?.aborted === true });
   }
   if (captureRuntime) await captureRuntime.close().catch((error) => sink.emit({ type: "interaction.capture.close-failed", code: (error as { code?: string }).code || "model_capture_close_failed" }));
   if (inferenceLease) await inferenceLease.release().catch((error) => sink.emit({ type: "inference.release.failed", code: (error as { code?: string }).code || "inference_release_failed" }));

@@ -46,5 +46,6 @@ test("package exports contain only module facades", () => {
     "./workspaces",
     "./cli",
     "./package.json",
+    "./resources",
   ]);
 });

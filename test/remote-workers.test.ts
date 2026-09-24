@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createReadStream } from "node:fs";
+import { createServer } from "node:http";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { RemoteWorkInputStore, RemoteWorkerProtocol, RemoteWorkerRegistry, recoverRemoteWorkerEvalLeases } from "../src/control-plane/index.js";
@@ -9,11 +11,51 @@ import { assertRemoteLeaseRelease, createExecutionLease, heartbeatExecutionLease
 import { sha256Bytes, statePaths } from "../src/foundation/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import type { EvalId } from "../src/domain/index.js";
+import { resourceFixture } from "../test-support/resource-fixture.js";
+import { auditResources, confirmResourceResultSealed, createResourceDelivery, materializeResourceTask, preflightResourceTask, reclaimResourceExecution, sealResourceEvidence, selectResources, hash, receiveResourceDelivery, ResourceStore } from "../src/resources/index.js";
+import { FixtureImageProvider } from "../test-support/resource-fixture.js";
+import { RemoteWorkerHttpClient } from "../src/control-plane/index.js";
 
 const ZERO = { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 };
 const TOTAL = { cpu_millis: 8_000, memory_bytes: 16 * 1024 ** 3, container_slots: 4, build_slots: 2 };
 const RESERVED = { cpu_millis: 1_000, memory_bytes: 1024 ** 3, container_slots: 0, build_slots: 1 };
 const ALLOCATABLE = { cpu_millis: 7_000, memory_bytes: 15 * 1024 ** 3, container_slots: 4, build_slots: 1 };
+
+test("resource offers fence old workers and authorize only objects in the leased delivery", async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hitch-remote-resources-")); t.after(() => rm(directory, { recursive: true, force: true }));
+  const { store, dataset } = await resourceFixture(directory, 1), root = store.root;
+  const registry = new RemoteWorkerRegistry({ root }), protocol = new RemoteWorkerProtocol({ root, registry }), inputs = new RemoteWorkInputStore(root);
+  await Promise.all([registry.initialize(), protocol.initialize(), inputs.initialize()]);
+  await registry.register(registration());
+  const delivery = await createResourceDelivery(store, selectResources(dataset, ['task-0']), 'remote-test', 1);
+  const refs = [await inputs.put('work-spec', 'json', Buffer.from(JSON.stringify({ schema_version: '3', resource_delivery: delivery.digest }))), await inputs.put('task-input', 'hitch-resource-delivery-v1', Buffer.from(JSON.stringify(delivery)))];
+  const { lease, work } = remoteWork(); work.task_ids = ['task-0'];
+  await assert.rejects(protocol.createOffer('worker_remote_a', lease, work, refs), /benchmark_resources/);
+  assert.equal((await protocol.listOffers('worker_remote_a', 1)).length, 0);
+  const registered = await registry.register(registration({ features: { docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false, benchmark_resources: '1' } }));
+  const offer = await protocol.createOffer('worker_remote_a', lease, work, refs);
+  const item = delivery.objects[0]!, verified = await protocol.resolveInput('worker_remote_a', lease.lease_id, offer.generation, item.digest);
+  assert.equal(sha256Bytes(await readFile(verified.path)), item.digest);
+  await assert.rejects(protocol.resolveInput('worker_remote_a', lease.lease_id, offer.generation, hash('unrelated private object')), /not authorized/);
+  await assert.rejects(protocol.resolveInput('worker_remote_a', lease.lease_id, offer.generation - 1, item.digest), /generation/);
+  let transferredObjects = 0;
+  const server = createServer(async (request, response) => {
+    try {
+      if (request.headers.authorization !== `Bearer ${registered.token}`) { response.writeHead(401).end(); return; }
+      const url = new URL(request.url!, 'http://localhost');
+      const requested = url.pathname.split('/').at(-1) as `sha256:${string}`;
+      const resource = await protocol.resolveInput('worker_remote_a', lease.lease_id, Number(url.searchParams.get('generation')), requested);
+      transferredObjects++; response.writeHead(200, { 'content-length': resource.size }); createReadStream(resource.path).pipe(response);
+    } catch { response.writeHead(403).end(); }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const address = server.address() as {port:number}, client = new RemoteWorkerHttpClient({ baseUrl: `http://127.0.0.1:${address.port}`, credential: { schema_version:'1', worker_id:'worker_remote_a', generation:offer.generation, token:registered.token } });
+  const receiver = new ResourceStore(path.join(directory, 'receiver'), {images:new FixtureImageProvider(),limits:{minFreeBytes:0}});
+  const reader = (entry: {digest:`sha256:${string}`;size:number}) => client.streamResource(offer, entry);
+  assert.equal((await receiveResourceDelivery(receiver, delivery, reader, 'worker-test', 1)).missingObjects, delivery.objects.length);
+  assert.equal((await receiveResourceDelivery(receiver, delivery, reader, 'worker-test', 1)).transferredBytes, 0);
+  assert.equal(transferredObjects, delivery.objects.length);
+});
 
 function registration(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -273,17 +315,32 @@ test("remote recovery withdraws an unaccepted offer before it can be safely requ
   assert.equal((await readExecutionLeases(evalDirectory))[0]?.state, "released");
 });
 
-test("remote recovery cannot acknowledge cleanup or retry a lease after release times out", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "hitch-remote-release-timeout-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+for (const resourceAware of [false, true]) test(`remote ${resourceAware ? "resource v3" : "legacy"} recovery cannot acknowledge cleanup or retry a lease after release times out`, async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hitch-remote-release-timeout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const fixture = resourceAware ? await resourceFixture(directory, 1) : undefined, root = fixture?.store.root ?? directory;
   const registry = new RemoteWorkerRegistry({ root }), protocol = new RemoteWorkerProtocol({ root, registry });
-  await registry.initialize(); await protocol.initialize(); await registry.register(registration());
+  await registry.initialize(); await protocol.initialize(); await registry.register(registration(resourceAware ? { features: { docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false, benchmark_resources: '1' } } : {}));
   const { work } = remoteWork(), evalDirectory = path.join(root, "evals", work.eval_id);
+  const inputs = new RemoteWorkInputStore(root); await inputs.initialize();
+  const refs = [], workerStore = new ResourceStore(path.join(directory, 'worker'), { images: new FixtureImageProvider(), limits: { minFreeBytes: 0 } });
+  const resourceEvidence = path.join(directory, 'resource-evidence.json');
+  let workspace: Awaited<ReturnType<typeof materializeResourceTask>> | undefined;
+  if (fixture) {
+    work.task_ids = ['task-0'];
+    const delivery = await createResourceDelivery(fixture.store, selectResources(fixture.dataset, work.task_ids), 'remote-loss', 1);
+    refs.push(await inputs.put('work-spec', 'json', Buffer.from(JSON.stringify({ schema_version: '3', resource_delivery: delivery.digest }))),
+      await inputs.put('task-input', 'hitch-resource-delivery-v1', Buffer.from(JSON.stringify(delivery))));
+    await receiveResourceDelivery(workerStore, delivery, async entry => createReadStream(fixture.store.objects.objectPath(entry.digest)), 'worker-loss', 1);
+    const checked = await preflightResourceTask(workerStore, delivery.selection.tasks[0]!, { owner: 'worker-execution', generation: 1, platform: 'linux/amd64' });
+    workspace = await materializeResourceTask(workerStore, checked.plan, { owner: 'worker-execution', generation: 1, policy: { mode: 'copy' } });
+    await writeFile(resourceEvidence, JSON.stringify({ ...workspace, executionEnded: false, preflightPlanDigest: checked.plan.digest }));
+  }
   await mkdir(evalDirectory, { recursive: true });
   const handle = await createExecutionLease({ evalDirectory, evalId: work.eval_id, workId: work.work_id,
     worker: { workerId: "worker_remote_a", provider: "remote-docker", collisionDomainId: "docker-engine:remote-a" },
     reservation: work.reservation, ttlMs: 60_000, initialState: "offered" });
-  const offer = await protocol.createOffer("worker_remote_a", handle.current(), work);
+  const offer = await protocol.createOffer("worker_remote_a", handle.current(), work, refs);
   await protocol.acceptOffer(offer.worker_id, { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
     generation: offer.generation, accepted: true, sent_at: new Date().toISOString() });
   await protocol.completeOffer(offer.worker_id, { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
@@ -302,10 +359,29 @@ test("remote recovery cannot acknowledge cleanup or retry a lease after release 
   assert.equal(again.status, "ambiguous"); assert.equal(again.code, "execution_state_ambiguous");
   assert.deepEqual(await readExecutionLeases(evalDirectory), [fenced]);
   assert.equal(events.some(event => event.type === "sandbox.cleanup.completed"), false);
+  if (workspace) {
+    const restartedStore = new ResourceStore(workerStore.root, { images: new FixtureImageProvider(), limits: { minFreeBytes: 0 } });
+    await auditResources(restartedStore, { apply: true, graceMs: 0 });
+    assert.equal(await reclaimResourceExecution(restartedStore, resourceEvidence, true), false, 'unknown execution and unsealed result retain the workspace');
+    assert.ok((await lstat(workspace.taskDirectory)).isDirectory());
+    await restartedStore.objects.verify(workspace.materializedTree!.manifestDigest);
+    const resultDirectory = path.join(directory, 'late-result'); await mkdir(resultDirectory);
+    await writeFile(resourceEvidence, JSON.stringify({ ...workspace, executionEnded: true, preflightPlanDigest: workspace.plan.digest }));
+    await sealResourceEvidence({ store: restartedStore, file: resourceEvidence, runDirectory: resultDirectory, owner: `run:run_${'a'.repeat(32)}`, taskId: 'task-0', requireObserved: false });
+    await confirmResourceResultSealed(resourceEvidence);
+    assert.equal(await reclaimResourceExecution(restartedStore, resourceEvidence, false), false, 'a late sealed result alone is not cleanup acknowledgement');
+    await auditResources(restartedStore, { apply: true, graceMs: 0 });
+    assert.ok((await lstat(workspace.taskDirectory)).isDirectory());
+    await assert.rejects(restartedStore.release('worker-execution', 2), /stale/);
+    assert.equal((await restartedStore.readRecord<{ state: string }>('roots', 'worker-execution'))!.state, 'active');
+  }
   const receipt = { schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce,
     generation: offer.generation, lease_id: handle.leaseId, epoch: 1, sent_at: new Date().toISOString() };
   await assert.rejects(protocol.releaseOffer(offer.worker_id, { ...receipt, epoch: 2 }));
-  const acknowledged = await protocol.releaseOffer(offer.worker_id, receipt);
+  const restartedRegistry = new RemoteWorkerRegistry({ root }), restartedProtocol = new RemoteWorkerProtocol({ root, registry: restartedRegistry });
+  await restartedRegistry.initialize(); await restartedProtocol.initialize();
+  await assert.rejects(restartedProtocol.releaseOffer(offer.worker_id, { ...receipt, generation: receipt.generation - 1 }));
+  const acknowledged = await restartedProtocol.releaseOffer(offer.worker_id, receipt);
   for (const changed of [{ ...acknowledged, generation: acknowledged.generation + 1 },
     { ...acknowledged, release_receipt_digest: `sha256:${"f".repeat(64)}` as const },
     { ...acknowledged, lease: { ...acknowledged.lease, reservation: { ...work.reservation, container_slots: 0 } } }]) {
@@ -321,6 +397,13 @@ test("remote recovery cannot acknowledge cleanup or retry a lease after release 
   await assert.rejects(heartbeatExecutionLease({ evalDirectory, leaseId: handle.leaseId, expectedEpoch: 2 }), { code: "lease_not_active" });
   await assert.rejects(protocol.authorizeModelRequest(offer.worker_id, handle.leaseId, offer.generation, 1));
   await recover(); assert.deepEqual(await readExecutionLeases(evalDirectory), [confirmed]);
+  if (workspace) {
+    assert.equal(await reclaimResourceExecution(workerStore, resourceEvidence, true), true);
+    await assert.rejects(lstat(workspace.taskDirectory), { code: 'ENOENT' });
+    await auditResources(workerStore, { apply: true, graceMs: 0 });
+    await workerStore.objects.verify(workspace.materializedTree!.manifestDigest);
+    const sealed = await workerStore.readRecord<{ state: string }>('roots', `run:run_${'a'.repeat(32)}`); assert.equal(sealed!.state, 'active');
+  }
 });
 
 test("accepted remote work reconnects with exact lease proof instead of being replayed", async (t) => {

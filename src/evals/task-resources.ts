@@ -10,6 +10,7 @@ import type {
   TaskResourceRequirementV1,
 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
+import { configuredResourceStore, preflightResourceInput, readResourceInput, resourceDescriptorDirectory } from "../resources/index.js";
 
 const MIB = 1024 * 1024;
 export const HARBOR_EGRESS_SIDECAR_RESOURCES: ResourceVectorV1 = {
@@ -54,9 +55,14 @@ export async function resolveLocalTaskPlanningInputs(input: {
   signal?: AbortSignal;
 }): Promise<LocalTaskPlanningInputV1[]> {
   const dataset = path.resolve(input.dataset);
+  const resource = await readResourceInput(dataset);
+  const resourceHost = resource ? await configuredResourceStore(input.root) : undefined;
+  if (resourceHost) await preflightResourceInput(resourceHost.store, dataset, { owner: `admission:${"schema_version" in resource! ? resource!.dataset_digest : resource!.digest}`, generation: 1, platform: resourceHost.config.platform, ...(input.signal ? { signal: input.signal } : {}) });
   const singleTask = await exists(path.join(dataset, "task.toml"));
   return Promise.all(input.taskIds.map(async (taskId) => {
-    const taskDirectory = singleTask ? dataset : path.join(dataset, taskId);
+    const task = resource?.tasks.find(t => t.task_id === taskId);
+    if (resource && !task) throw new Error("resource task selection mismatch");
+    const taskDirectory = task ? await resourceDescriptorDirectory(resourceHost!.store, task) : singleTask ? dataset : path.join(dataset, taskId);
     let declaration: HarborTaskResourceDeclarationV1;
     try {
       declaration = await inspectHarborTaskResources({
@@ -81,9 +87,9 @@ export async function resolveLocalTaskPlanningInputs(input: {
       task_id: taskId,
       ...(declaration.runtime_platform ? { runtime_platform: declaration.runtime_platform } : {}),
       resources,
-      environment_images: declaration.environment_images,
-      environment_image_fallbacks: declaration.environment_image_fallbacks,
-      environment_builds: declaration.environment_builds.map((build) => ({ ...build, context_directory: path.join(taskDirectory, build.context) })),
+      environment_images: resource ? [] : declaration.environment_images,
+      environment_image_fallbacks: resource ? [] : declaration.environment_image_fallbacks,
+      environment_builds: (resource ? [] : declaration.environment_builds).map((build) => ({ ...build, context_directory: path.join(taskDirectory, build.context) })),
     };
   }));
 }

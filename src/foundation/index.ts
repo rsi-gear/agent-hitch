@@ -6,6 +6,8 @@ export { appendLine, atomicWriteJSON, ensureDir, readJSON, removeIfExists, write
 export { openContainedRegularFile, type ContainedRegularFile } from "./contained-file.js";
 export { reclaimStaleLock } from "./locks.js";
 export { withFileLock } from "./locks.js";
+export { writeResourceImageFence, removeResourceImageFence, resourceImageReferences } from "./resource-image-references.js";
+export type { ResourceImageFence } from "./resource-image-references.js";
 export { captureProcessIdentity, inspectProcessIdentity, validateProcessIdentity } from "./process-identity.js";
 export type { ProcessIdentityStatus, ProcessIdentityV1 } from "./process-identity.js";
 export type { FileLockOptions } from "./locks.js";
@@ -20,3 +22,4 @@ export { canonicalJSON, digest, sha256Bytes, sha256JSON } from "./hash.js";
 export { isBase64 } from "./base64.js";
 export { CREDENTIAL_REDACTION_MARKER, PROVIDER_ENVIRONMENT_NAMES, createCredentialRedactionTransform, credentialValuesFromEnv, isSensitiveFieldName, redactCredentialText, safeDiagnosticMessage } from "./credential-redaction.js";
 export type { CredentialRedactionResult } from "./credential-redaction.js";
+export { durableWriteJSON, syncDirectory } from "./durable-json.js";
