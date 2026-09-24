@@ -1,4 +1,5 @@
 export { DEFAULT_EVAL_SETUP_TIMEOUT_MS, DEFAULT_EVAL_TIMEOUT_MS, DEFAULT_INFRASTRUCTURE_RETRIES, DEFAULT_INFRASTRUCTURE_RETRY_BACKOFF_MS, newEvalId, resolveBenchmarkReference, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
+export { exportResourceLegacy } from "./resource-legacy-export.js";
 export { buildBenchmarkAdapterManifest, loadBenchmarkAdapterManifest, scoreWithinRange } from "./benchmark-adapter-manifest.js";
 export type { BenchmarkAdapterManifestV1, BenchmarkScoreContractV1, BenchmarkScoreDefinitionV1 } from "./benchmark-adapter-manifest.js";
 export type { EvalRequestInput } from "./request.js";

@@ -1,3 +1,4 @@
+import { readResourceInput } from "../resources/index.js";
 import { parseModelNodeBinding } from "../domain/index.js";
 export const DEFAULT_EVAL_TIMEOUT_MS = 15 * 60 * 1_000;
 export const DEFAULT_EVAL_SETUP_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -153,10 +154,12 @@ export async function resolveBenchmarkReference(dataset: string): Promise<{ benc
 async function resolveDatasetReference(dataset: string): Promise<{
   benchmark_id: string;
   benchmark_revision: string;
-  manifest: BenchmarkAdapterManifestV1 | null;
+  manifest: BenchmarkAdapterManifest | null;
 }> {
   const raw = dataset.trim();
   const local = path.resolve(raw);
+  const resource = await readResourceInput(local);
+  if (resource) { const manifest = await loadBenchmarkAdapterManifest(local); return { benchmark_id: manifest!.benchmark.id, benchmark_revision: manifest!.dataset_digest, manifest }; }
   try {
     if ((await stat(local)).isDirectory()) {
       const manifest = await loadBenchmarkAdapterManifest(local);
@@ -188,6 +191,8 @@ async function resolveDatasetReference(dataset: string): Promise<{
 
 export async function resolveLocalDatasetTaskIds(dataset: string): Promise<string[] | null> {
   const local = path.resolve(dataset.trim());
+  const resource = await readResourceInput(local);
+  if (resource) return resource.tasks.map(t => t.task_id);
   try {
     if (!(await stat(local)).isDirectory()) return null;
   } catch (error) {
@@ -236,6 +241,6 @@ import type { EvalId, EvalRequest } from "../domain/index.js";
 import { SCHEMA_VERSION, invalidInput } from "../foundation/index.js";
 import { assertExactLocalGitEvalReference, parseHarnessReference } from "../revisions/index.js";
 import { workspaceDigest } from "../workspaces/index.js";
-import { loadBenchmarkAdapterManifest, type BenchmarkAdapterManifestV1 } from "./benchmark-adapter-manifest.js";
+import { loadBenchmarkAdapterManifest, type BenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 import { assertStandardBenchmarkCandidate } from "./benchmark-candidate.js";
 import { parseTrainingBinding } from "../model-access/index.js";

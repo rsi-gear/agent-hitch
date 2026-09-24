@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { configuredResourceStore, parseResourceDelivery, receiveResourceDelivery, reclaimResourceExecution } from "../resources/index.js";
+import { chmod, lstat, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { verifyPreparedArtifact } from "../artifacts/index.js";
 import { runHarborBackend } from "../backends/index.js";
@@ -26,25 +27,35 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
   if (!options.root) throw new TypeError("remote Harbor worker root is required");
   const root = path.resolve(options.root);
   const env = options.env ?? process.env;
-  const execute: RemoteWorkerExecutor = async ({ offer, inputs, credentials, signal, emit, relayModel, readExecutionLease, authorizeProcess }) => {
+  const execute: RemoteWorkerExecutor = async ({ offer, inputs, credentials, signal, emit, relayModel, readExecutionLease, authorizeProcess, readResourceObject }) => {
     const workspace = path.join(statePaths(root).workerStaging, offer.lease.lease_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
     await removeWorkerWorkspace(workspace);
     await mkdir(workspace, { recursive: true, mode: 0o700 });
     const spec = parseRemoteHarborWorkSpec(parseJSON(required(inputs, "work-spec")), offer);
-    if (spec.schema_version === "2" && spec.verifier_only && !readExecutionLease) throw new TypeError("remote verifier requires current controller execution lease grants");
+    if (spec.schema_version !== "1" && spec.verifier_only && !readExecutionLease) throw new TypeError("remote verifier requires current controller execution lease grants");
     if (JSON.stringify([...credentials.keys()].sort()) !== JSON.stringify(spec.credential_names)) {
       throw new TypeError("remote credential envelope does not match its work spec");
     }
-    const binding = spec.schema_version === "2" ? spec.model_binding : undefined;
+    const binding = spec.schema_version !== "1" ? spec.model_binding : undefined;
     if (binding && !relayModel) throw new TypeError("remote worker lacks the v2 model relay protocol");
-    const executionEnv: NodeJS.ProcessEnv = { ...(binding || spec.schema_version === "2" && spec.verifier_only ? scrubLocalInferenceEnvironment(env) : env), ...Object.fromEntries(credentials) };
+    const executionEnv: NodeJS.ProcessEnv = { ...(binding || spec.schema_version !== "1" && spec.verifier_only ? scrubLocalInferenceEnvironment(env) : env), ...Object.fromEntries(credentials) };
     const harnessDirectory = path.join(workspace, "harness-artifact");
     const runtimeDirectory = path.join(workspace, "controller-runtime");
-    const datasetDirectory = await ensureDir(path.join(workspace, "dataset"));
+    let datasetDirectory = await ensureDir(path.join(workspace, "dataset"));
+    if (spec.schema_version === "3") {
+      if (!readResourceObject) throw new Error("resource object streaming is unavailable");
+      const delivery = parseResourceDelivery(parseJSON(required(inputs, "task-input")));
+      if (delivery.digest !== spec.resource_delivery) throw new Error("resource delivery differs from work spec");
+      const { store, config } = await configuredResourceStore(root);
+      if (config.platform !== delivery.selection.manifest.execution.platform) throw new Error("worker resource platform mismatch");
+      await receiveResourceDelivery(store, delivery, readResourceObject, `worker:${offer.lease.lease_id}:${offer.lease.epoch}`, 1, signal);
+      datasetDirectory = path.join(workspace, "resource-selection.json");
+      await writeFile(datasetDirectory, JSON.stringify(delivery.selection), { flag: "wx" });
+    }
     await Promise.all([
       materializeRemoteTreeEnvelope(parseJSON(required(inputs, "harness-artifact")), harnessDirectory),
       materializeRemoteTreeEnvelope(parseJSON(required(inputs, "controller-runtime")), runtimeDirectory),
-      materializeRemoteTreeEnvelope(parseJSON(required(inputs, "task-input")), path.join(datasetDirectory, spec.task.task_id)),
+      spec.schema_version === "3" ? Promise.resolve() : materializeRemoteTreeEnvelope(parseJSON(required(inputs, "task-input")), path.join(datasetDirectory, spec.task.task_id)),
     ]);
     const prepared = await verifyPreparedArtifact(harnessDirectory, spec.harness_artifact);
     if (JSON.stringify(prepared.resolved_revision) !== JSON.stringify(spec.resolution)
@@ -119,7 +130,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
       }, trial);
       if (ref.run_group) throw new Error("remote single-bundle transport cannot export native phase groups");
       const bundleDirectory = path.join(statePaths(root).runs, ref.run_id);
-      const verifierSource = spec.schema_version === "2" && spec.verifier_source === "2" ? await captureRemoteVerifierSource({
+      const verifierSource = spec.schema_version !== "1" && spec.verifier_source === "2" ? await captureRemoteVerifierSource({
         taskId, taskDirectory: path.join(datasetDirectory, taskId), trialDirectory: path.join(backendDirectory, "job", ref.trial_id),
         bundleDirectory, runId: ref.run_id, runtimeId: runtime.runtime_id, trial, destination: path.join(workspace, "verifier-source"),
       }) : undefined;
@@ -141,7 +152,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
   };
   const owned: RemoteWorkerExecutor = async input => {
     const spec = parseRemoteHarborWorkSpec(parseJSON(required(input.inputs, "work-spec")), input.offer);
-    if (spec.schema_version === "2" && spec.verifier_only && !input.readExecutionLease) throw new TypeError("remote verifier requires current controller execution lease grants");
+    if (spec.schema_version !== "1" && spec.verifier_only && !input.readExecutionLease) throw new TypeError("remote verifier requires current controller execution lease grants");
     // Also admit direct in-process callers. The packaged runner calls prepare
     // before acceptance, so its crash window already has durable ownership.
     const ownership = await prepareRemoteHarborOffer(options, input.offer);
@@ -160,6 +171,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
 export async function releaseRemoteHarborOffer(options: RemoteHarborWorkerOptions, offer: RemoteWorkOfferV1): Promise<void> {
   const root = path.resolve(options.root);
   await cleanRemoteHarborOffer(options, offer);
+  await reclaimResourceExecution((await configuredResourceStore(root)).store, path.join(statePaths(root).evals, offer.lease.eval_id, "remote-work", offer.work.work_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`, "resource-evidence.json"), true);
   const workspace = path.join(statePaths(root).workerStaging, offer.lease.lease_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
   await removeWorkerWorkspace(workspace);
 }

@@ -1,6 +1,6 @@
 {
   "name": "agent-hitch",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "description": "Content-addressed version control and evidence storage for agent harnesses",
   "keywords": [
     "ai-agents",
@@ -39,7 +39,8 @@
     "./trajectories": "./dist/src/trajectories/index.js",
     "./workspaces": "./dist/src/workspaces/index.js",
     "./cli": "./dist/src/cli/index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./resources": "./dist/src/resources/index.js"
   },
   "bin": {
     "hitch": "dist/bin/hitch.js"
@@ -61,7 +62,12 @@
     "integrations/harbor/hitch_benchmark.py",
     "integrations/harbor/hitch_tool_client.mjs",
     "integrations/model-call/cli.js",
-    "integrations/training-tool/cli.js"
+    "integrations/training-tool/cli.js",
+    "docs/resource-storage.zh-CN.md",
+    "benchmark-packages/shared-tree/",
+    "benchmark-packages/automationbench/resources.mjs",
+    "benchmark-packages/automationbench/RESOURCES.md",
+    "test-contracts/hitch-resources-v1.json"
   ],
   "scripts": {
     "docs:check": "node scripts/check-guide.mjs",

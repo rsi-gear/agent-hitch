@@ -73,7 +73,9 @@ export async function resolveRegistryEnvironmentImage(input: {
   const cacheHit = await regularFile(file);
   if (cacheHit) {
     const persisted = parseEnvironmentImageManifest(await readJSON(file));
-    if (persisted.image_id !== manifest.image_id || persisted.output.manifest_digest !== manifest.output.manifest_digest) throw new TypeError("registry image cache identity changed");
+    if (persisted.image_id !== manifest.image_id || persisted.output.manifest_digest !== manifest.output.manifest_digest
+      || persisted.output.config_digest !== manifest.output.config_digest || persisted.platform !== manifest.platform
+      || persisted.output.reference !== manifest.output.reference) throw new TypeError("registry image cache identity changed");
     return { manifest: persisted, cacheHit: true };
   }
   await ensureDir(path.dirname(file));
@@ -82,26 +84,47 @@ export async function resolveRegistryEnvironmentImage(input: {
 }
 
 export interface DockerRegistryResolverOptions {
+  policy?: "registry" | "cache-first" | "cache-only";
   dockerExecutable?: string;
   env?: NodeJS.ProcessEnv;
   id?: string;
+  beforePull?: (reference: string, platform: string, signal?: AbortSignal) => Promise<void>;
 }
 
 export class DockerRegistryResolver implements RegistryImageResolver {
   readonly id: string;
   private readonly docker: string;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly policy: "registry" | "cache-first" | "cache-only";
+  private readonly beforePull?: DockerRegistryResolverOptions["beforePull"];
 
-  constructor({ dockerExecutable, env = process.env, id = "local-docker-registry" }: DockerRegistryResolverOptions = {}) {
+  constructor({ dockerExecutable, env = process.env, id = "local-docker-registry", policy = "registry", beforePull }: DockerRegistryResolverOptions = {}) {
     if (!id) throw new TypeError("Docker registry resolver id is invalid");
     this.id = id;
     this.docker = dockerExecutable || env.HITCH_DOCKER_PATH || "docker";
     this.env = env;
+    if (!["registry", "cache-first", "cache-only"].includes(policy)) throw new TypeError("invalid registry resolution policy");
+    this.policy = policy;
+    this.beforePull = beforePull;
+  }
+
+  withBeforePull(check: NonNullable<DockerRegistryResolverOptions["beforePull"]>): DockerRegistryResolver {
+    return new DockerRegistryResolver({ dockerExecutable: this.docker, env: this.env, id: this.id, policy: this.policy,
+      beforePull: async (...args) => { await this.beforePull?.(...args); await check(...args); } });
   }
 
   async resolve(reference: string, platform: string, signal?: AbortSignal): Promise<RegistryImageResolution> {
     if (!validReference(reference) || !platform) throw new TypeError("Docker registry image request is invalid");
+    if (this.policy !== "registry" && !/@sha256:[a-f0-9]{64}$/.test(reference)) throw new TypeError("cached image resolution requires an immutable reference");
+    const inspect = async () => parseDockerInspection(reference, platform, (await runCommand(this.docker,
+      ["image", "inspect", "--format", "{{json .}}", reference], { env: this.env, failureCode: "image_unavailable", failureExitCode: 12, timeoutMs: 30_000, ...(signal ? { signal } : {}) })).stdout);
     try {
+      if (this.policy !== "registry") {
+        try { return await inspect(); } catch (error) {
+          if (this.policy === "cache-only" || (error as { code?: string }).code !== "image_unavailable") throw error;
+        }
+      }
+      await this.beforePull?.(reference, platform, signal);
       await runCommand(this.docker, ["pull", "--platform", platform, reference], {
         env: this.env,
         failureCode: "image_registry_unavailable",

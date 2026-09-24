@@ -1,11 +1,11 @@
 import type { HarborBackendResult, LocalGitTransportUse } from "../backends/index.js";
-import type { EvalId, EvalProgressV1, EvalRequest, EvalSchedulerSummaryV1 } from "../domain/index.js";
-import { SCHEMA_VERSION } from "../foundation/index.js";
+import type { EvalId, EvalProgressV1, EvalRequest, EvalSchedulerSummaryV1, EvalTrialRefV1 } from "../domain/index.js";
+import { HitchError, credentialValuesFromEnv, safeDiagnosticMessage, SCHEMA_VERSION } from "../foundation/index.js";
 import { preparedArtifactPlanFields, type PreparedEvalArtifactAssignment } from "./eval-artifact-planning.js";
 import { infrastructureFailureTrials, type InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { invalidTrialSlots } from "./rerun-slots.js";
 import { localSourceBackendFailure, summarizeTrialRefs, transportSummary } from "./result-helpers.js";
-import type { EvalResult } from "./service-types.js";
+import type { EvalResult, EvalExecutionPhase } from "./service-types.js";
 
 interface CompletedBackendRun {
   attempt: number;
@@ -105,4 +105,26 @@ export function buildCompletedEvalResult(input: {
     started_at: input.startedAt.toISOString(),
     completed_at: new Date().toISOString(),
   };
+}
+
+export function buildFailedEvalResult(input: { error: unknown; evalId: EvalId; request: EvalRequest; env: NodeJS.ProcessEnv; failureStage: EvalExecutionPhase; startedAt: Date; trials: EvalTrialRefV1[]; progress: EvalProgressV1 | null; cancelled: boolean }): EvalResult {
+  const { error, evalId, request: normalized, env, failureStage, startedAt, trials: trialRefs, progress, cancelled } = input;
+  const typed = error instanceof HitchError;
+  return {
+      schema_version: SCHEMA_VERSION,
+      eval_id: evalId,
+      status: cancelled ? "cancelled" : "failed",
+      exit_code: cancelled ? 9 : typed ? error.exitCode : 12,
+      error: {
+        code: cancelled ? "cancelled" : typed ? error.code : "internal_error",
+        message: safeDiagnosticMessage(error, credentialValuesFromEnv(normalized.pass_env, env)),
+      },
+      failure_stage: failureStage,
+      benchmark_id: normalized.benchmark_id,
+      benchmark_revision: normalized.benchmark_revision,
+      ...(progress === null ? {} : { generation: progress.generation }),
+      trials: trialRefs,
+      started_at: startedAt.toISOString(),
+      completed_at: new Date().toISOString(),
+    };
 }

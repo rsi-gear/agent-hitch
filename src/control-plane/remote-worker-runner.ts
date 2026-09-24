@@ -23,6 +23,7 @@ export interface RemoteWorkerExecutorInput {
   relayModel?: (runId: string, operation: "bind" | "generate", body: unknown, signal: AbortSignal) => Promise<Response>;
   readExecutionLease?: (signal: AbortSignal) => Promise<import("../domain/index.js").ExecutionLeaseV1>;
   ownership?: RemoteWorkerExecutionOwnership;
+  readResourceObject?: (item: { digest: `sha256:${string}`; size: number }, signal?: AbortSignal) => Promise<AsyncIterable<Uint8Array>>;
   authorizeProcess?: (identity: RemoteWorkerProcessIdentityV2) => Promise<void>;
 }
 
@@ -211,7 +212,7 @@ export class RemoteWorkerRunner {
       for (const [name, value] of Object.entries((await retry(
         () => this.client.credentials(job.offer), this.retryIntervalMs, job.signal,
       )).credentials)) credentials.set(name, value);
-      result = await this.execute({ offer: job.offer, inputs, credentials, signal: job.signal, emit,
+      result = await this.execute({ readResourceObject: (item, signal) => this.client.streamResource(job.offer, item, signal ? AbortSignal.any([signal, job.signal]) : job.signal), offer: job.offer, inputs, credentials, signal: job.signal, emit,
         ...(ownership ? { ownership, authorizeProcess: identity => retry(
           () => this.client.authorizeProcess(job.offer, ownership!, identity), this.retryIntervalMs, job.signal) } : {}),
         readExecutionLease: signal => this.client.executionLease(job.offer, AbortSignal.any([signal, job.signal])),

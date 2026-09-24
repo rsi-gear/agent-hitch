@@ -171,7 +171,7 @@ function parseArtifactRef(value: unknown): RemoteWorkArtifactRefV1 {
 export function parseInputRef(value: unknown): RemoteWorkInputRefV1 {
   const record = exact(value, ["kind", "format", "digest", "size"], "remote work input ref");
   const kinds = new Set(["work-spec", "harness-artifact", "controller-runtime", "task-input", "verifier-source", "verifier-runtime"]);
-  if (!kinds.has(String(record.kind)) || !new Set(["json", "hitch-tree-v1"]).has(String(record.format))
+  if (!kinds.has(String(record.kind)) || !new Set(["json", "hitch-tree-v1", "hitch-resource-delivery-v1"]).has(String(record.format))
     || typeof record.digest !== "string" || !SHA256.test(record.digest)
     || !Number.isSafeInteger(record.size) || (record.size as number) < 1 || (record.size as number) > 256 * 1024 * 1024) {
     throw protocolError("remote work input ref is invalid");

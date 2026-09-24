@@ -1,7 +1,8 @@
+import { configuredResourceStore, resourceDescriptorDirectory } from "../resources/index.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { invalidInput } from "../foundation/index.js";
-import type { BenchmarkAdapterManifestV1 } from "./benchmark-adapter-manifest.js";
+import type { BenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 
 interface CandidateRequirements {
   driver: { kind: string };
@@ -20,15 +21,22 @@ export function assertBenchmarkCandidate(tasks: readonly CandidateRequirements[]
 /** The verified task trees contain the Package v1 requirements after export. */
 export async function assertStandardBenchmarkCandidate(
   dataset: string,
-  manifest: BenchmarkAdapterManifestV1,
+  manifest: BenchmarkAdapterManifest,
   harnessId: string,
   agentArgs: readonly string[],
+  root?: string,
 ): Promise<void> {
+  // Resource descriptors are resolved from their sealed source tree during
+  // resource admission; a selection reference is not a filesystem task root.
+  if (manifest.schema_version === "2" && !root) return;
+  const host = manifest.schema_version === "2" ? await configuredResourceStore(root!) : undefined;
   const tasks: CandidateRequirements[] = [];
-  for (const { task_id } of manifest.tasks) {
+  for (const item of manifest.tasks) {
+    const { task_id } = item;
+    const directory = host && "sourceTree" in item ? await resourceDescriptorDirectory(host.store, item) : path.join(dataset, task_id);
     let descriptor;
     try {
-      descriptor = JSON.parse(await readFile(path.join(dataset, task_id, ".hitch-benchmark.json"), "utf8"));
+      descriptor = JSON.parse(await readFile(path.join(directory, ".hitch-benchmark.json"), "utf8"));
     } catch (error) {
       // Direct Harbor adapters need not use the Package v1 execution bridge.
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;

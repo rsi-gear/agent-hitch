@@ -3,6 +3,7 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { Sha256 } from "../domain/index.js";
 import { invalidInput } from "../foundation/index.js";
+import { readResourceInput, type ResourceDataset } from "../resources/index.js";
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 
@@ -29,6 +30,7 @@ export interface BenchmarkAdapterManifestV1 {
   tasks: Array<{ task_id: string; task_digest: Sha256 }>;
   dataset_digest: Sha256;
 }
+export type BenchmarkAdapterManifest = BenchmarkAdapterManifestV1 | ResourceDataset;
 
 /** Build the canonical manifest for an already-materialized Harbor dataset. */
 export async function buildBenchmarkAdapterManifest(input: {
@@ -62,7 +64,9 @@ export async function buildBenchmarkAdapterManifest(input: {
 }
 
 /** Load and integrity-check the optional Gear standardized-dataset manifest. */
-export async function loadBenchmarkAdapterManifest(dataset: string): Promise<BenchmarkAdapterManifestV1 | null> {
+export async function loadBenchmarkAdapterManifest(dataset: string): Promise<BenchmarkAdapterManifest | null> {
+  const resource = await readResourceInput(dataset);
+  if (resource) return "schema_version" in resource ? resource : { ...resource.manifest, tasks: resource.tasks, dataset_digest: resource.digest };
   const root = path.resolve(dataset);
   let raw: unknown;
   try {
