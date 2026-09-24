@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import path from "node:path";
@@ -122,13 +123,17 @@ export async function validateOciLayer(file: string, start: number, size: number
   if (!gzip && mediaType !== "application/vnd.oci.image.layer.v1.tar" && mediaType !== "application/vnd.docker.image.rootfs.diff.tar") throw new Error(`unsupported OCI layer media type: ${mediaType}`);
   if (!size) throw new Error("empty OCI layer blob");
   const parser = new TarBudget(budget), hash = createHash("sha256"); let expandedBytes = 0;
-  const consume = async (source: AsyncIterable<Buffer>) => {
-    for await (const chunk of source) {
-      signal?.throwIfAborted(); expandedBytes += chunk.length;
-      if (expandedBytes > budget.maxExpandedBytes) throw new Error("OCI layer expanded byte budget exceeded");
-      hash.update(chunk); parser.accept(chunk);
+  // A Writable preserves the parser failure across pipeline teardown on Node 22;
+  // throwing from an async-iterator sink can replace it with an AbortError.
+  const consume = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      try {
+        signal?.throwIfAborted(); expandedBytes += chunk.length;
+        if (expandedBytes > budget.maxExpandedBytes) throw new Error("OCI layer expanded byte budget exceeded");
+        hash.update(chunk); parser.accept(chunk); callback();
+      } catch (error) { callback(error instanceof Error ? error : new Error(String(error))); }
     }
-  };
+  });
   const input = createReadStream(file, { start, end: start + size - 1 });
   if (gzip) await pipeline(input, createGunzip(), consume, { signal });
   else await pipeline(input, consume, { signal });
