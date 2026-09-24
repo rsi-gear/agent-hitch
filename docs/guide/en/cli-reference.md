@@ -13,6 +13,7 @@ Durations accept `ms`, `s`, `m`, or `h` (for example `500ms` or `5m`); a bare nu
 - [Run a task](#run-a-task): `run`
 - [Evaluations](#evaluations): `eval`
 - [Benchmark packages](#benchmark-packages): `benchmark`
+- [Benchmark resources](#benchmark-resources): `resources`
 - [Models and inference](#models-and-inference): `models, local, model-node`
 - [Daemon and capacity](#daemon-and-capacity): `daemon`
 - [Remote workers](#remote-workers): `worker`
@@ -146,6 +147,17 @@ Ordered controls are an integration workflow: preserve the evaluation key and in
 | `hitch benchmark compile --package DIRECTORY --out DATASET_DIRECTORY` | Compile to a Harbor-compatible dataset. Output directory must not already exist. |
 
 Each command requires `--package`. Only lock accepts optional `--out`; compile requires it and validate rejects it. None accepts `--json`, because output is already JSON. See [benchmark packages](../../benchmark-packages.md).
+
+## Benchmark resources
+
+| Command / options | Purpose and notes |
+| --- | --- |
+| `hitch resources request OPERATION [--input JSON_FILE]` | Invoke the resource API in the selected `--root`; always returns JSON. The input file supplies the operation-specific object; omitting it supplies `{}`. |
+| `hitch resources legacy-export --ref DATASET_OR_SELECTION --output NEW_DIRECTORY` | Materialize an explicit legacy dataset with a new identity. The destination must not already exist. |
+
+Operations are `capabilities`, `configure`, `inspect`, `import`, `seal-task`, `seal-dataset`, `selection`, `preflight`, `pin`, `release`, `materialize`, `workspace-end`, `lease-end`, `audit`, `bundle-export`, and `bundle-import`. Resource datasets are opt-in v2 inputs; ordinary v1 datasets retain their existing behavior. Inspection and audit can be requested without an input file; audit is dry-run unless the request explicitly sets `apply: true`.
+
+Release uses the original owner and generation. End an execution workspace only after execution and result sealing are confirmed; a timeout or disconnected worker does not establish that resources are safe to release. See the [resource storage protocol and request examples (Chinese)](../../resource-storage.zh-CN.md) for request fields, fixed OCI identities, role isolation, offline bundles, and recovery limits.
 
 ## Models and inference
 

@@ -13,6 +13,7 @@
 - [运行任务](#运行任务): `run`
 - [评测](#评测): `eval`
 - [Benchmark 包](#benchmark-包): `benchmark`
+- [Benchmark 资源](#benchmark-资源): `resources`
 - [模型与推理](#模型与推理): `models, local, model-node`
 - [Daemon 与容量](#daemon-与容量): `daemon`
 - [远程 Worker](#远程-worker): `worker`
@@ -146,6 +147,17 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 | `hitch benchmark compile --package DIRECTORY --out DATASET_DIRECTORY` | 编译为 Harbor 兼容数据集，输出目录不能已存在。 |
 
 每个命令都需要 `--package`。Lock 可选 `--out`，compile 必须提供，validate 不接受。输出本身就是 JSON，因此均不接受 `--json`。详见 [Benchmark Package](../../benchmark-packages.md)。
+
+## Benchmark 资源
+
+| 命令 / 参数 | 用途与说明 |
+| --- | --- |
+| `hitch resources request OPERATION [--input JSON_FILE]` | 在选定的 `--root` 下调用资源 API，始终返回 JSON。输入文件提供该操作的请求对象；省略时传入 `{}`。 |
+| `hitch resources legacy-export --ref DATASET_OR_SELECTION --output NEW_DIRECTORY` | 显式物化为具有新身份的旧协议数据集；目标目录必须尚不存在。 |
+
+操作包括 `capabilities`、`configure`、`inspect`、`import`、`seal-task`、`seal-dataset`、`selection`、`preflight`、`pin`、`release`、`materialize`、`workspace-end`、`lease-end`、`audit`、`bundle-export` 和 `bundle-import`。资源数据集通过 v2 输入显式启用，普通 v1 数据集保持原有行为。查看和审计可以省略输入文件；审计默认 dry-run，只有请求显式设置 `apply: true` 才变更存储。
+
+释放引用须使用原 owner 和 generation。只有执行结束且结果封存得到确认后才能结束执行工作区；超时或 Worker 失联不能证明资源可以安全释放。请求字段、固定 OCI 身份、角色隔离、离线包与恢复边界见[资源存储协议及请求示例](../../resource-storage.zh-CN.md)。
 
 ## 模型与推理
 
