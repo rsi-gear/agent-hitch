@@ -25,7 +25,7 @@ import { buildManifest, safeAgentArgsForPersistence } from "./manifest.js";
 import { assertQueuedRunIdentity } from "./queued.js";
 import { adapterFidelity, applyEffectiveModelIdentity, failureResult, mergeRedactions, providerModelId } from "./outcome.js";
 import { writeResultBundleIndex } from "./bundle.js";
-import { prepareAdapterProcess, prepareAdapterRuntimeHome } from "./adapter-process.js";
+import { prepareAdapterProcess } from "./adapter-process.js";
 import { completedRunManifest } from "./finalizer.js";
 import { harnessChildEnvironment, managedHarborModelRuntime } from "./local-inference-environment.js";
 import type { ExecuteRunOptions } from "./executor-types.js";
@@ -63,13 +63,13 @@ export async function executeRun({
   }
   workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
   const runDirectory = path.join(runsRoot, runId);
+  const runtimeHome = path.join(runDirectory, "runtime-home");
   const priorManifest = await readJSON<Record<string, unknown> | null>(path.join(runDirectory, "manifest.json"), null);
   if (priorManifest && ["succeeded", "failed", "timed_out", "cancelled"].includes(String(priorManifest.status))) {
     throw new HitchError(`run ${runId} is sealed and cannot be overwritten`, { code: "run_sealed", exitCode: 11 });
   }
   if (priorManifest) assertQueuedRunIdentity(priorManifest, buildManifest(runId, normalized, workspacePlan));
   await ensureDir(runDirectory);
-  const runtimeHome = await prepareAdapterRuntimeHome(root, runId);
   const workspacePath = workspaceRecordPath(root, runId);
   await atomicWriteJSON(workspacePath, workspacePlan);
   const manifestPath = path.join(runDirectory, "manifest.json");
