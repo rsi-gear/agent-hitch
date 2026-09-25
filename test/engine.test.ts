@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { executeRun, newRunId } from "../src/runs/index.js";
+import { executeRun, newRunId, verifyResultBundleIndex } from "../src/runs/index.js";
 import type { RunRequestInput } from "../src/runs/index.js";
 import { readJSON, sha256JSON } from "../src/foundation/index.js";
 import { forceRemove, writeFakeCodex, writeFakeDeepseek, writeFakeOpenCode, writeFakePi } from "../test-support/helpers.js";
@@ -19,7 +19,7 @@ async function readJSONLines(file: string): Promise<Record<string, unknown>[]> {
 }
 
 async function writeDeepseekTimeoutSessionFixture(options: {
-  runDirectory: string;
+  runtimeHome: string;
   cwd: string;
   state: "open" | "invalid";
 }): Promise<string> {
@@ -54,8 +54,7 @@ async function writeDeepseekTimeoutSessionFixture(options: {
     ? openEvents
     : [openEvents[0], openEvents[1], { ...openEvents[1], seq: 2, time: base + 20 }];
   const file = path.join(
-    options.runDirectory,
-    "runtime-home",
+    options.runtimeHome,
     "sessions",
     "--fake--",
     "session-native",
@@ -406,6 +405,39 @@ test("DeepSeek imports its native session with tool events, usage, and original 
   assert.equal(manifest.model.effective_id, "deepseek-v4-flash");
 });
 
+for (const exitCode of [0, 1]) test(`DeepSeek keeps private runtime state outside the sealed bundle after exit ${exitCode}`, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-private-runtime-"));
+  const runId = newRunId(), runDirectory = path.join(root, "runs", runId);
+  const home = path.join(root, "tmp", "runtime-homes", runId);
+  t.after(async () => {
+    await rm(path.join(home, "dependency-link"), { force: true });
+    await forceRemove(root);
+  });
+  const executable = await writeFakeDeepseek(root, { nativeSession: true });
+  const secret = "synthetic-private-runtime-secret";
+  await writeFile(executable, (await readFile(executable, "utf8")).replace("const launcherArgs =", `
+fs.mkdirSync(process.env.DSH_HOME, {recursive:true});
+fs.writeFileSync(path.join(process.env.DSH_HOME, "auth.json"), ${JSON.stringify(secret)});
+fs.symlinkSync(process.cwd(), path.join(process.env.DSH_HOME, "dependency-link"), "dir");
+process.exitCode = ${exitCode};
+const launcherArgs =`));
+  const previous = process.env.HITCH_DEEPSEEK_PATH;
+  process.env.HITCH_DEEPSEEK_PATH = executable;
+  t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
+  const result = await executeRun({ runId, root, runsRoot: path.join(root, "runs"),
+    request: request({ agent: "deepseek", cwd: root }) });
+  assert.equal(result.status, exitCode === 0 ? "succeeded" : "failed");
+  assert.equal((await stat(home)).mode & 0o777, 0o700);
+  assert.equal(await readFile(path.join(home, "auth.json"), "utf8"), secret);
+  assert.ok(!(await readdir(runDirectory)).includes("runtime-home"));
+  const index = await verifyResultBundleIndex(runDirectory);
+  for (const file of index.files) assert.ok(!(await readFile(path.join(runDirectory, file.path), "utf8")).includes(secret));
+  const ref = await loadTrajectoryRef(runDirectory);
+  assert.ok(ref);
+  assert.equal(ref.fidelity, "provider_native");
+  assert.ok((await readTrajectory(ref.path)).events.some(event => event.type === "turn/end"));
+});
+
 test("DeepSeek timeout seals an open native turn without masking timed_out", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-deepseek-timeout-native-"));
   const executable = await writeFakeDeepseek(root, {
@@ -416,7 +448,7 @@ test("DeepSeek timeout seals an open native turn without masking timed_out", asy
   t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
   const runId = newRunId();
   const runDirectory = path.join(root, "runs", runId);
-  const fixture = await writeDeepseekTimeoutSessionFixture({ runDirectory, cwd: root, state: "open" });
+  const fixture = await writeDeepseekTimeoutSessionFixture({ runtimeHome: path.join(root, "tmp", "runtime-homes", runId), cwd: root, state: "open" });
   assert.equal((await readJSONLines(fixture)).at(-1)?.type, "assistant/chunk", "native timeout fixture must exist before launch");
 
   const result = await executeRun({
@@ -454,7 +486,7 @@ test("trajectory recording failure remains secondary to an established timeout",
   t.after(() => restoreEnv("HITCH_DEEPSEEK_PATH", previous));
   const runId = newRunId();
   const runDirectory = path.join(root, "runs", runId);
-  const fixture = await writeDeepseekTimeoutSessionFixture({ runDirectory, cwd: root, state: "invalid" });
+  const fixture = await writeDeepseekTimeoutSessionFixture({ runtimeHome: path.join(root, "tmp", "runtime-homes", runId), cwd: root, state: "invalid" });
   assert.equal((await readJSONLines(fixture)).length, 4, "invalid native timeout fixture must exist before launch");
 
   const result = await executeRun({
