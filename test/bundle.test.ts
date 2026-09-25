@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { atomicWriteJSON, sha256JSON } from "../src/foundation/index.js";
@@ -84,6 +84,10 @@ test("result bundle index seals every run file and detects later mutation", asyn
     redaction: { policy: "hitch-provider-redaction-v1", status: "not-needed", rules: [] },
   });
   assert.ok(degraded.files.some((file) => file.path === "interactions/capture.policy.json" && file.role === "interaction-capture"));
+
+  await symlink(path.join(directory, "result.json"), path.join(directory, "unsafe-link"));
+  await assert.rejects(writeResultBundleIndex(directory), /non-regular entry/);
+  await rm(path.join(directory, "unsafe-link"));
 
   await atomicWriteJSON(path.join(directory, "result.json"), { schema_version: "1", run_id: runId, status: "failed", exit_code: 12 });
   await assert.rejects(verifyResultBundleIndex(directory), /file set or integrity does not match/);
