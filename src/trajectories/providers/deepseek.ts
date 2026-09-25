@@ -15,11 +15,6 @@ const CANONICAL_EVENT_TYPES = new Set([
   "tool/call", "tool/result",
 ]);
 
-// DSH 0.1.1 emits these metadata extensions in a v0 session. Preserve
-// their payloads and coordinates, using v0's extension marker instead of
-// incorrectly requiring the v1 canonical event contract.
-const LEGACY_METADATA_EVENT_TYPES = new Set(["request/context", "session/end-seed"]);
-
 export interface DeepseekNativeSession {
   header: SessionHeaderLine;
   events: SessionEvent[];
@@ -159,8 +154,7 @@ function parseNativeSession(session: CapturedNativeSession): ParsedNativeSession
     throw new Error(`DeepSeek native session filename version ${session.version} does not match header version ${header.version}`);
   }
   const events = decodeDeepseekEventRows(session.providerRows.slice(1), header.version).map((parsed): SessionEvent => {
-    const legacyMetadata = header.version === 0 && LEGACY_METADATA_EVENT_TYPES.has(parsed.type);
-    return CANONICAL_EVENT_TYPES.has(parsed.type) && !legacyMetadata ? parsed : { ...parsed, ignorable: true };
+    return CANONICAL_EVENT_TYPES.has(parsed.type) ? parsed : { ...parsed, ignorable: true };
   });
   return { header, events };
 }

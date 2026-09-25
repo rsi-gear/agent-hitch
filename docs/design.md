@@ -674,19 +674,13 @@ Each run gets an isolated directory containing:
 ```text
 run_<id>/
   manifest.json
+  runtime-home/
   config/
   events.jsonl
   stdout.log
   stderr.log
   result.json
 ```
-
-Writable harness homes are private execution state under
-`<hitch-root>/tmp/runtime-homes/<run-id>/` (mode `0700`), outside the sealed run
-directory. They may contain credentials, unredacted sessions, and dependency
-symlinks; only the redacted provider evidence and canonical trajectory are
-published. The private homes remain available for local diagnostics and follow
-the lifetime of the Hitch temporary state (or the disposable worker container).
 
 ### 15.2 Environment
 
