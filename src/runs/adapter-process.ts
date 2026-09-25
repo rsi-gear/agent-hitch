@@ -1,5 +1,16 @@
 import type { AdapterDefinition, AdapterProcessRuntime, AdapterRequest, ProcessSpecification } from "../adapters/index.js";
 import type { PreparedArtifact, ResolvedRevision } from "../artifacts/index.js";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { statePaths } from "../foundation/index.js";
+
+export async function prepareAdapterRuntimeHome(root: string, runId: string): Promise<string> {
+  // Harness homes contain private state and dependency symlinks. Only redacted
+  // provider evidence and canonical trajectories belong in the sealed bundle.
+  const runtimeHome = path.join(statePaths(root).temporary, "runtime-homes", runId);
+  await mkdir(runtimeHome, { recursive: true, mode: 0o700 });
+  return runtimeHome;
+}
 
 /** Bind a verified artifact and its invocation prefix to the adapter request. */
 export async function prepareAdapterProcess(
