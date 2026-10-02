@@ -22,7 +22,7 @@ if (![maxTokens, maxSteps].every(n => Number.isSafeInteger(n) && n > 0)) throw n
 let prompt = '';
 for await (const chunk of process.stdin) { prompt += chunk; if (Buffer.byteLength(prompt) > 8 * 1024 * 1024) throw new Error('prompt exceeds 8 MiB'); }
 const messages = [
-  { role: 'system', content: "Carry out the user's task in the provided terminal. Use the bash tool to inspect the workspace, make the requested changes, and verify the result. Give your final response after performing the work." },
+  { role: 'system', content: `You are operating a live terminal in the task container. The current working directory is ${process.cwd()}. Complete the user's task autonomously using the bash tool. Inspect the actual files and command output before choosing paths or actions. Run the commands needed to make the requested changes, check their results, and correct errors. Do not substitute instructions or placeholder commands for performing the work. Give your final response only after checking that the requested result exists.` },
   { role: 'user', content: prompt },
 ];
 const tools = [{ type: 'function', function: { name: 'bash', description: 'Run a command in the task container.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } } }];
