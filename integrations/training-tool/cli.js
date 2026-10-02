@@ -54,9 +54,22 @@ for (let step = 0; step < maxSteps; step++) {
   if (choice.finish_reason !== 'tool_calls') throw new Error('missing tool terminal state');
   for (const call of calls) {
     abort.signal.throwIfAborted();
-    if (call.function?.name !== 'bash' || typeof call.id !== 'string') throw new Error('unsupported tool');
-    const input = JSON.parse(call.function.arguments);
-    if (typeof input.command !== 'string' || Object.keys(input).join(',') !== 'command') throw new Error('invalid bash arguments');
+    if (typeof call.id !== 'string') throw new Error('missing tool call identity');
+    let input; let toolError;
+    if (call.function?.name !== 'bash') toolError = 'Unknown tool. The available tool is bash, with arguments {"command":"shell command"}.';
+    else {
+      try { input = JSON.parse(call.function.arguments); }
+      catch { toolError = 'Invalid JSON arguments. bash expects {"command":"shell command"}.'; }
+      if (!toolError && (!input || typeof input !== 'object' || Array.isArray(input)
+        || typeof input.command !== 'string' || Object.keys(input).join(',') !== 'command'))
+        toolError = 'Invalid arguments. bash expects only a string command field.';
+    }
+    if (toolError) {
+      const result = `Tool error: ${toolError} No command was executed.`;
+      messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+      emit({ type: 'tool.rejected', call_id: call.id, name: call.function?.name ?? null, error: toolError });
+      continue;
+    }
     emit({ type: 'tool.started', call_id: call.id, name: 'bash', arguments: input });
     const result = await new Promise((resolve, reject) => {
       let output = ''; let truncated = false; let timedOut = false;

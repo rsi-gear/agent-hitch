@@ -130,3 +130,42 @@ test("training cancellation stops the active tool and fences later calls in the 
   assert.deepEqual(events.filter(event => event.type === "tool.started").map(event => event.call_id), ["call-0"]);
   assert.equal(events.some(event => event.type === "training.terminated"), false, "cancellation must not become a normal terminal sample");
 });
+
+test("training tool returns recoverable errors without executing invalid calls", async t => {
+  const run = `run_${'2'.repeat(32)}`; let requests = 0;
+  const invalid = [
+    { name: 'logging.conf', arguments: JSON.stringify({ command: 'printf must-not-run' }) },
+    { name: 'bash', arguments: '{' },
+    { name: 'bash', arguments: JSON.stringify({ command: 'printf must-not-run', extra: true }) },
+  ];
+  const server = http.createServer(async (req, res) => {
+    let text = ''; for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text); requests++;
+    if (requests === 2) {
+      const feedback = body.messages.filter((m: { role: string }) => m.role === 'tool');
+      assert.equal(feedback.length, 3);
+      for (const m of feedback) assert.match(m.content, /Tool error:.*No command was executed/);
+    }
+    if (requests === 3) assert.match(body.messages.at(-1).content, /exit=0\nrecovered/);
+    res.setHeader('content-type', 'application/json');
+    const functions = requests === 1 ? invalid : [{ name: 'bash', arguments: JSON.stringify({ command: 'printf recovered' }) }];
+    res.end(JSON.stringify({ choices: [{ finish_reason: requests < 3 ? 'tool_calls' : 'stop', message: requests < 3
+      ? { role: 'assistant', content: null, tool_calls: functions.map((f, i) => ({ id: `call-${requests}-${i}`, type: 'function', function: f })) }
+      : { role: 'assistant', content: 'done' } }] }));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const child = spawn(process.execPath, ['integrations/training-tool/cli.js', '--model', 'training/binding_test'], { env: { ...process.env,
+    HITCH_HARBOR_INTERNAL: '1', HITCH_TRAINING_EXTERNAL: '1', HITCH_TRAINING_RUN_ID: run,
+    HITCH_TRAINING_BINDING: JSON.stringify({ binding_id: 'binding_test', max_output_tokens: 16, max_episode_steps: 4 }),
+    OPENAI_API_KEY: 'synthetic-contract-probe',
+    OPENAI_BASE_URL: `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/${'f'.repeat(48)}/${run}/openai`,
+  }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(async () => { if (child.exitCode === null) child.kill('SIGKILL'); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  let output = '', errors = ''; child.stdout.on('data', c => output += c); child.stderr.on('data', c => errors += c);
+  child.stdin.end('synthetic error-recovery contract probe');
+  const [code] = await once(child, 'close'); assert.equal(code, 0, errors); assert.equal(requests, 3);
+  const events = output.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(events.filter(e => e.type === 'tool.rejected').length, 3);
+  assert.deepEqual(events.filter(e => e.type === 'tool.started').map(e => e.arguments.command), ['printf recovered']);
+  assert.deepEqual(events.filter(e => e.type === 'training.terminated'), [{ type: 'training.terminated', termination: 'terminated' }]);
+});
