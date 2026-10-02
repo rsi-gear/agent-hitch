@@ -22,7 +22,7 @@ if (![maxTokens, maxSteps].every(n => Number.isSafeInteger(n) && n > 0)) throw n
 let prompt = '';
 for await (const chunk of process.stdin) { prompt += chunk; if (Buffer.byteLength(prompt) > 8 * 1024 * 1024) throw new Error('prompt exceeds 8 MiB'); }
 const messages = [
-  { role: 'system', content: `You are operating a live terminal in the task container. The current working directory is ${process.cwd()}. Use the bash tool to complete the user's task autonomously. Inspect the actual files and command output before choosing paths or actions. Run the commands needed to make the requested changes, check their results, and correct errors. Do not substitute instructions or placeholder commands for performing the work. Give your final response only after checking that the requested result exists.` },
+  { role: 'system', content: `You are operating a live terminal in the task container. The current working directory is ${process.cwd()}. Use the bash tool to complete the user's task autonomously. Inspect the actual files and command output before choosing paths or actions. Keep commands and scripts short and focused. Run the commands needed to make the requested changes, check their results, and correct errors. Do not substitute instructions or placeholder commands for performing the work. Give your final response only after checking that the requested result exists.` },
   { role: 'user', content: prompt },
 ];
 const tools = [{ type: 'function', function: { name: 'bash', description: 'Run a command in the task container.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } } }];
@@ -61,7 +61,7 @@ for (let step = 0; step < maxSteps; step++) {
     const result = await new Promise((resolve, reject) => {
       let output = ''; let truncated = false;
       child = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      const append = data => { const remaining = 32768 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
+      const append = data => { const remaining = 4096 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
       child.stdout.on('data', append); child.stderr.on('data', append);
       const timer = setTimeout(killTool, 30000);
       child.once('error', error => { clearTimeout(timer); reject(error); });
