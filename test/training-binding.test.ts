@@ -169,3 +169,32 @@ test("training tool returns recoverable errors without executing invalid calls",
   assert.deepEqual(events.filter(e => e.type === 'tool.started').map(e => e.arguments.command), ['printf recovered']);
   assert.deepEqual(events.filter(e => e.type === 'training.terminated'), [{ type: 'training.terminated', termination: 'terminated' }]);
 });
+
+test("training tool completes when a background service holds the output pipe", { timeout: 10_000 }, async t => {
+  const run = `run_${'3'.repeat(32)}`; let requests = 0; let backgroundPid: number | undefined;
+  const server = http.createServer(async (req, res) => {
+    let text = ''; for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text); requests++;
+    if (requests === 2) {
+      const output = body.messages.at(-1).content;
+      assert.match(output, /exit=0\npid=\d+ parent-done/);
+      assert.match(output, /background process kept output streams open/);
+      backgroundPid = Number(/pid=(\d+)/.exec(output)![1]);
+      process.kill(backgroundPid, 0);
+    }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ finish_reason: requests === 1 ? 'tool_calls' : 'stop', message: requests === 1
+      ? { role: 'assistant', content: null, tool_calls: [{ id: 'background-call', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'sleep 20 & printf "pid=%s parent-done" "$!"' }) } }] }
+      : { role: 'assistant', content: 'done' } }] }));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const child = spawn(process.execPath, ['integrations/training-tool/cli.js', '--model', 'training/binding_test'], { env: { ...process.env,
+    HITCH_HARBOR_INTERNAL: '1', HITCH_TRAINING_EXTERNAL: '1', HITCH_TRAINING_RUN_ID: run,
+    HITCH_TRAINING_BINDING: JSON.stringify({ binding_id: 'binding_test', max_output_tokens: 16, max_episode_steps: 3 }),
+    OPENAI_API_KEY: 'synthetic-contract-probe',
+    OPENAI_BASE_URL: `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/${'f'.repeat(48)}/${run}/openai`,
+  }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(async () => { if (backgroundPid) { try { process.kill(backgroundPid, 'SIGKILL'); } catch {} } if (child.exitCode === null) child.kill('SIGKILL'); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  let errors = ''; child.stdout.resume(); child.stderr.on('data', c => errors += c); child.stdin.end('synthetic background-service contract probe');
+  const [code] = await once(child, 'close'); assert.equal(code, 0, errors); assert.equal(requests, 2);
+});

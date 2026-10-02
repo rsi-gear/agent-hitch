@@ -73,12 +73,32 @@ for (let step = 0; step < maxSteps; step++) {
     emit({ type: 'tool.started', call_id: call.id, name: 'bash', arguments: input });
     const result = await new Promise((resolve, reject) => {
       let output = ''; let truncated = false; let timedOut = false;
-      child = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const tool = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = tool;
       const append = data => { const remaining = 4096 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
-      child.stdout.on('data', append); child.stderr.on('data', append);
+      tool.stdout.on('data', append); tool.stderr.on('data', append);
       const timer = setTimeout(() => { timedOut = true; killTool(); }, 120000);
-      child.once('error', error => { clearTimeout(timer); reject(error); });
-      child.once('close', code => { clearTimeout(timer); child = undefined; resolve(`exit=${code}\n${output}${truncated ? '\n[tool output truncated]' : ''}${timedOut ? '\n[command timed out after 120 seconds]' : ''}`); });
+      let settled = false; let postExitTimer;
+      const finish = (code, background = false) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); clearTimeout(postExitTimer);
+        if (child === tool) child = undefined;
+        resolve(`exit=${code}\n${output}${truncated ? '\n[tool output truncated]' : ''}${timedOut ? '\n[command timed out after 120 seconds]' : ''}${background ? '\n[command exited; background process kept output streams open]' : ''}`);
+      };
+      tool.once('error', error => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); clearTimeout(postExitTimer);
+        if (child === tool) child = undefined;
+        reject(error);
+      });
+      tool.once('exit', code => {
+        clearTimeout(timer);
+        // Let ordinary output drain; daemons must not hold the command open.
+        postExitTimer = setTimeout(() => {
+          finish(code, true); tool.stdout.destroy(); tool.stderr.destroy();
+        }, 1000);
+      });
+      tool.once('close', code => finish(code));
     });
     messages.push({ role: 'tool', tool_call_id: call.id, content: result });
     emit({ type: 'tool.completed', call_id: call.id, output: result });
