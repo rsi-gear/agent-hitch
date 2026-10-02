@@ -21,7 +21,10 @@ const maxSteps = training ? binding.max_episode_steps : Number(process.env.HITCH
 if (![maxTokens, maxSteps].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error('invalid harness budget');
 let prompt = '';
 for await (const chunk of process.stdin) { prompt += chunk; if (Buffer.byteLength(prompt) > 8 * 1024 * 1024) throw new Error('prompt exceeds 8 MiB'); }
-const messages = [{ role: 'user', content: prompt }];
+const messages = [
+  { role: 'system', content: "Carry out the user's task in the provided terminal. Use the bash tool to inspect the workspace, make the requested changes, and verify the result. Give your final response after performing the work." },
+  { role: 'user', content: prompt },
+];
 const tools = [{ type: 'function', function: { name: 'bash', description: 'Run a command in the task container.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } } }];
 const emit = event => console.log(JSON.stringify(event));
 let child;

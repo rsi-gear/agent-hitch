@@ -82,7 +82,10 @@ test("fixed training harness appends tool observations and emits a single termin
   const server = http.createServer(async (req, res) => {
     let text = ''; for await (const chunk of req) text += chunk; const body = JSON.parse(text); requests++;
     assert.equal(req.headers['idempotency-key'], `${run}-${requests - 1}`);
-    if (requests === 2) { assert.equal(body.messages.length, 3); assert.match(body.messages[2].content, /gear-tool-test/); }
+    assert.equal(body.messages[0].role, 'system');
+    assert.match(body.messages[0].content, /Use the bash tool/);
+    assert.deepEqual(body.messages[1], { role: 'user', content: 'use the tool' });
+    if (requests === 2) { assert.equal(body.messages.length, 4); assert.match(body.messages[3].content, /gear-tool-test/); }
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ choices: [{ finish_reason: requests === 1 ? 'tool_calls' : 'stop', message: requests === 1
       ? { role: 'assistant', content: null, tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'printf gear-tool-test' }) } }] }
