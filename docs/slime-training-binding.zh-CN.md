@@ -26,6 +26,8 @@ hitch eval submit ... \
 
 固定 `training-tool` runner 使用 Chat Completions，按顺序追加 assistant/tool 消息，不做 compaction、分支或辅助模型调用。退出时提供明确的 terminated/truncated 标记；`hitch training evidence RUN --json` 验证 canonical run 完整性后公开训练身份和终止原因。有效 task reward=0 仍是有效观察。
 
+shell 退出后，runner 最多等待一秒排空工具输出；后台服务仍持有输出管道时，返回工具结果并在 runner 存活期间继续排空、丢弃后续日志。这些管道不阻塞 runner 退出，后续日志不追加到已返回的工具观察。runner 退出会关闭管道；需要在退出后继续写日志的服务应将 stdout/stderr 重定向到任务内文件。后台进程最终由 Harbor task 容器清理。
+
 完整配置、Slime 固定版本与 export patch、checkpoint/replay 语义、GPU 探针和训练操作见 [Gear 训练文档](https://github.com/rsi-gear/gear/blob/codex/slime-model-training/docs/training/README.zh-CN.md)。发布只更新 Gear 的 immutable model 指针，现有 Hitch episode 继续使用原模型 ID。
 
 ## 独立评估与有序暂停
