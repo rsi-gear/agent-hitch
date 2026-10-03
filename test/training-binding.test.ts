@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { HostModelProxy } from "../src/model-access/index.js";
@@ -170,22 +170,55 @@ test("training tool returns recoverable errors without executing invalid calls",
   assert.deepEqual(events.filter(e => e.type === 'training.terminated'), [{ type: 'training.terminated', termination: 'terminated' }]);
 });
 
-test("training tool completes when a background service holds the output pipe", { timeout: 10_000 }, async t => {
+test("training tool drains background service output after returning and exits without waiting for it", { timeout: 10_000 }, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hitch-training-background-'));
+  const servicePath = path.join(root, 'service.cjs'); const addressPath = path.join(root, 'address.json');
+  await writeFile(servicePath, `
+    const http = require('node:http');
+    const fs = require('node:fs');
+    const server = http.createServer((req, res) => {
+      process.stdout.write('background stdout after tool return\\n'.repeat(4096), error => {
+        if (error) throw error;
+        process.stderr.write('background stderr after tool return\\n'.repeat(4096), error => {
+          if (error) throw error;
+          res.end('healthy');
+        });
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      fs.writeFileSync(${JSON.stringify(addressPath)}, JSON.stringify({ pid: process.pid, port: server.address().port }));
+    });
+  `);
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const command = `${quote(process.execPath)} ${quote(servicePath)} & background_pid=$!; `
+    + `for attempt in {1..100}; do if [ -s ${quote(addressPath)} ]; then printf 'pid=%s parent-done' "$background_pid"; exit 0; fi; sleep 0.05; done; `
+    + 'kill "$background_pid"; exit 1';
   const run = `run_${'3'.repeat(32)}`; let requests = 0; let backgroundPid: number | undefined;
+  let probeError: unknown;
   const server = http.createServer(async (req, res) => {
-    let text = ''; for await (const chunk of req) text += chunk;
-    const body = JSON.parse(text); requests++;
-    if (requests === 2) {
-      const output = body.messages.at(-1).content;
-      assert.match(output, /exit=0\npid=\d+ parent-done/);
-      assert.match(output, /background process kept output streams open/);
-      backgroundPid = Number(/pid=(\d+)/.exec(output)![1]);
-      process.kill(backgroundPid, 0);
+    try {
+      let text = ''; for await (const chunk of req) text += chunk;
+      const body = JSON.parse(text); requests++;
+      if (requests === 2) {
+        const output = body.messages.at(-1).content;
+        assert.match(output, /exit=0\npid=\d+ parent-done/);
+        assert.match(output, /background process kept output streams open/);
+        backgroundPid = Number(/pid=(\d+)/.exec(output)![1]);
+        const address = JSON.parse(await readFile(addressPath, 'utf8'));
+        assert.equal(address.pid, backgroundPid);
+        for (let request = 0; request < 2; request++) {
+          const response = await fetch(`http://127.0.0.1:${address.port}`, { signal: AbortSignal.timeout(2000) });
+          assert.equal(response.status, 200);
+          assert.equal(await response.text(), 'healthy');
+        }
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ finish_reason: requests === 1 ? 'tool_calls' : 'stop', message: requests === 1
+        ? { role: 'assistant', content: null, tool_calls: [{ id: 'background-call', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command }) } }] }
+        : { role: 'assistant', content: 'done' } }] }));
+    } catch (error) {
+      probeError = error; res.writeHead(500); res.end('background service probe failed');
     }
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ choices: [{ finish_reason: requests === 1 ? 'tool_calls' : 'stop', message: requests === 1
-      ? { role: 'assistant', content: null, tool_calls: [{ id: 'background-call', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'sleep 20 & printf "pid=%s parent-done" "$!"' }) } }] }
-      : { role: 'assistant', content: 'done' } }] }));
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const child = spawn(process.execPath, ['integrations/training-tool/cli.js', '--model', 'training/binding_test'], { env: { ...process.env,
@@ -194,7 +227,16 @@ test("training tool completes when a background service holds the output pipe", 
     OPENAI_API_KEY: 'synthetic-contract-probe',
     OPENAI_BASE_URL: `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}/${'f'.repeat(48)}/${run}/openai`,
   }, stdio: ['pipe', 'pipe', 'pipe'] });
-  t.after(async () => { if (backgroundPid) { try { process.kill(backgroundPid, 'SIGKILL'); } catch {} } if (child.exitCode === null) child.kill('SIGKILL'); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  t.after(async () => {
+    try {
+      backgroundPid ??= JSON.parse(await readFile(addressPath, 'utf8')).pid;
+      if (backgroundPid) process.kill(backgroundPid, 'SIGKILL');
+    } catch {}
+    if (child.exitCode === null) child.kill('SIGKILL');
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  });
   let errors = ''; child.stdout.resume(); child.stderr.on('data', c => errors += c); child.stdin.end('synthetic background-service contract probe');
-  const [code] = await once(child, 'close'); assert.equal(code, 0, errors); assert.equal(requests, 2);
+  const [code] = await once(child, 'close'); assert.ifError(probeError); assert.equal(code, 0, errors); assert.equal(requests, 2);
+  assert.ok(backgroundPid); process.kill(backgroundPid, 0);
 });

@@ -75,10 +75,10 @@ for (let step = 0; step < maxSteps; step++) {
       let output = ''; let truncated = false; let timedOut = false;
       const tool = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
       child = tool;
-      const append = data => { const remaining = 4096 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
+      let settled = false; let postExitTimer;
+      const append = data => { if (settled) return; const remaining = 4096 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
       tool.stdout.on('data', append); tool.stderr.on('data', append);
       const timer = setTimeout(() => { timedOut = true; killTool(); }, 120000);
-      let settled = false; let postExitTimer;
       const finish = (code, background = false) => {
         if (settled) return;
         settled = true; clearTimeout(timer); clearTimeout(postExitTimer);
@@ -95,7 +95,10 @@ for (let step = 0; step < maxSteps; step++) {
         clearTimeout(timer);
         // Let ordinary output drain; daemons must not hold the command open.
         postExitTimer = setTimeout(() => {
-          finish(code, true); tool.stdout.destroy(); tool.stderr.destroy();
+          finish(code, true);
+          // Keep draining and discard later logs while the harness is alive.
+          // Unref lets it exit; Harbor owns cleanup of the task's processes.
+          tool.stdout.unref(); tool.stderr.unref(); tool.unref();
         }, 1000);
       });
       tool.once('close', code => finish(code));
