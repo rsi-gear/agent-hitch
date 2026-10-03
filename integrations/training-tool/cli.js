@@ -21,8 +21,11 @@ const maxSteps = training ? binding.max_episode_steps : Number(process.env.HITCH
 if (![maxTokens, maxSteps].every(n => Number.isSafeInteger(n) && n > 0)) throw new Error('invalid harness budget');
 let prompt = '';
 for await (const chunk of process.stdin) { prompt += chunk; if (Buffer.byteLength(prompt) > 8 * 1024 * 1024) throw new Error('prompt exceeds 8 MiB'); }
-const messages = [{ role: 'user', content: prompt }];
-const tools = [{ type: 'function', function: { name: 'bash', description: 'Run a command in the task container.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } } }];
+const messages = [
+  { role: 'system', content: `You are operating a live terminal in the task container. The current working directory is ${process.cwd()}. Use the bash tool to complete the user's task autonomously. Inspect the actual files and command output before choosing paths or actions. Keep commands and scripts short and focused. Run the commands needed to make the requested changes, check their results, and correct errors. Do not substitute instructions or placeholder commands for performing the work. Give your final response only after checking that the requested result exists.` },
+  { role: 'user', content: prompt },
+];
+const tools = [{ type: 'function', function: { name: 'bash', description: 'Run a command in the task container, with a 120-second timeout and up to 4096 characters of output.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'], additionalProperties: false } } }];
 const emit = event => console.log(JSON.stringify(event));
 let child;
 const abort = new AbortController();
@@ -51,18 +54,54 @@ for (let step = 0; step < maxSteps; step++) {
   if (choice.finish_reason !== 'tool_calls') throw new Error('missing tool terminal state');
   for (const call of calls) {
     abort.signal.throwIfAborted();
-    if (call.function?.name !== 'bash' || typeof call.id !== 'string') throw new Error('unsupported tool');
-    const input = JSON.parse(call.function.arguments);
-    if (typeof input.command !== 'string' || Object.keys(input).join(',') !== 'command') throw new Error('invalid bash arguments');
+    if (typeof call.id !== 'string') throw new Error('missing tool call identity');
+    let input; let toolError;
+    if (call.function?.name !== 'bash') toolError = 'Unknown tool. The available tool is bash, with arguments {"command":"shell command"}.';
+    else {
+      try { input = JSON.parse(call.function.arguments); }
+      catch { toolError = 'Invalid JSON arguments. bash expects {"command":"shell command"}.'; }
+      if (!toolError && (!input || typeof input !== 'object' || Array.isArray(input)
+        || typeof input.command !== 'string' || Object.keys(input).join(',') !== 'command'))
+        toolError = 'Invalid arguments. bash expects only a string command field.';
+    }
+    if (toolError) {
+      const result = `Tool error: ${toolError} No command was executed.`;
+      messages.push({ role: 'tool', tool_call_id: call.id, content: result });
+      emit({ type: 'tool.rejected', call_id: call.id, name: call.function?.name ?? null, error: toolError });
+      continue;
+    }
     emit({ type: 'tool.started', call_id: call.id, name: 'bash', arguments: input });
     const result = await new Promise((resolve, reject) => {
-      let output = ''; let truncated = false;
-      child = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      const append = data => { const remaining = 32768 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
-      child.stdout.on('data', append); child.stderr.on('data', append);
-      const timer = setTimeout(killTool, 30000);
-      child.once('error', error => { clearTimeout(timer); reject(error); });
-      child.once('close', code => { clearTimeout(timer); child = undefined; resolve(`exit=${code}\n${output}${truncated ? '\n[tool output truncated]' : ''}`); });
+      let output = ''; let truncated = false; let timedOut = false;
+      const tool = spawn('/bin/bash', ['-lc', input.command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = tool;
+      let settled = false; let postExitTimer;
+      const append = data => { if (settled) return; const remaining = 4096 - output.length; if (remaining > 0) output += data.toString().slice(0, remaining); if (data.length > remaining) truncated = true; };
+      tool.stdout.on('data', append); tool.stderr.on('data', append);
+      const timer = setTimeout(() => { timedOut = true; killTool(); }, 120000);
+      const finish = (code, background = false) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); clearTimeout(postExitTimer);
+        if (child === tool) child = undefined;
+        resolve(`exit=${code}\n${output}${truncated ? '\n[tool output truncated]' : ''}${timedOut ? '\n[command timed out after 120 seconds]' : ''}${background ? '\n[command exited; background process kept output streams open]' : ''}`);
+      };
+      tool.once('error', error => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); clearTimeout(postExitTimer);
+        if (child === tool) child = undefined;
+        reject(error);
+      });
+      tool.once('exit', code => {
+        clearTimeout(timer);
+        // Let ordinary output drain; daemons must not hold the command open.
+        postExitTimer = setTimeout(() => {
+          finish(code, true);
+          // Keep draining and discard later logs while the harness is alive.
+          // Unref lets it exit; Harbor owns cleanup of the task's processes.
+          tool.stdout.unref(); tool.stderr.unref(); tool.unref();
+        }, 1000);
+      });
+      tool.once('close', code => finish(code));
     });
     messages.push({ role: 'tool', tool_call_id: call.id, content: result });
     emit({ type: 'tool.completed', call_id: call.id, output: result });
