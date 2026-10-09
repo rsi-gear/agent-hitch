@@ -108,12 +108,21 @@ def pinned_dockerfile(source):
 
 
 async def snapshot_context(source, target):
+    listxattr = getattr(os, "listxattr", None)
+    if not callable(listxattr):
+        raise UnsupportedBuild("context-xattr-inspection")
     entries = []
 
     async def copy(current, destination, relative):
         info = current.lstat()
         mode = stat.S_IMODE(info.st_mode)
-        if os.listxattr(current, follow_symlinks=False):
+        try:
+            attributes = listxattr(current, follow_symlinks=False)
+        except (OSError, NotImplementedError) as error:
+            # An uninspectable context must use the original build path; never
+            # assume unsupported metadata is absent from the cache identity.
+            raise UnsupportedBuild("context-xattr-inspection") from error
+        if attributes:
             raise UnsupportedBuild("context-xattrs")
         if stat.S_ISDIR(info.st_mode):
             destination.mkdir(mode=0o700)

@@ -1,6 +1,7 @@
 """Deterministic cache/lifecycle regression tests without a Docker daemon."""
 import asyncio
 import copy
+import errno
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integrations/harbor"))
 import hitch_image_cache as cache_module
@@ -24,6 +25,12 @@ BASE = "example.test/base@sha256:" + "a" * 64
 
 class CacheTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        if not hasattr(os, "listxattr"):
+            # Exercise supported-host cache logic with the same fake Docker
+            # backend on macOS. Unsupported metadata inspection is tested below.
+            probe = patch.object(os, "listxattr", return_value=[], create=True)
+            probe.start()
+            self.addCleanup(probe.stop)
         self.temporary = tempfile.TemporaryDirectory()
         # macOS commonly places TMPDIR below the /var -> /private/var symlink.
         self.root = Path(self.temporary.name).resolve()
@@ -135,6 +142,40 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
             await self.cache.prepare(self.service)
         self.assertEqual(self.builds[0]["content"], "first")
         self.assertFalse((await self.cache.prepare(self.service))["cache_hit"])
+
+    async def test_uninspectable_metadata_falls_back_without_publishing(self):
+        async def compose_call(args):
+            self.assertEqual(args, ["config", "--format", "json"])
+            return SimpleNamespace(stdout=json.dumps({"services": {"main": self.service}}))
+
+        cases = (
+            ("missing-api", None, "context-xattr-inspection"),
+            ("unsupported-api", Mock(side_effect=NotImplementedError), "context-xattr-inspection"),
+            ("unsupported-filesystem", Mock(side_effect=OSError(errno.ENOTSUP, "unsupported")), "context-xattr-inspection"),
+            ("unreadable-metadata", Mock(side_effect=OSError(errno.EACCES, "denied")), "context-xattr-inspection"),
+            ("partially-copied", Mock(side_effect=[[], [], OSError(errno.EACCES, "denied")]), "context-xattr-inspection"),
+            ("present-metadata", Mock(return_value=["user.fixture"]), "context-xattrs"),
+        )
+        for name, probe, reason in cases:
+            with self.subTest(case=name):
+                host_os = SimpleNamespace(**vars(os))
+                if probe is None:
+                    del host_os.listxattr
+                else:
+                    host_os.listxattr = probe
+                environment = SimpleNamespace(
+                    _compose_env_vars=lambda: {}, logger=logging.getLogger("test"),
+                    trial_paths=SimpleNamespace(trial_dir=self.root / "trial"), session_id=name,
+                )
+                preparation = ComposePreparation(environment, cache_directory=str(self.root / "cache"))
+                with patch("hitch_build_inputs.os", host_os):
+                    self.assertIsNone(await preparation.build(compose_call))
+                self.assertEqual(preparation.receipts, [{"event": "fallback", "reason": reason}])
+                self.assertEqual(preparation.overlay, {})
+                self.assertIsNone(preparation.path)
+                self.assertEqual(self.builds, [])
+                self.assertEqual(list((self.root / "cache").glob("image-*.json")), [])
+                self.assertEqual(list((self.root / "cache").glob(".context-*")), [])
 
     async def test_unsupported_build_inputs_and_base_triggers_fall_back(self):
         for addition in ({"secrets": ["secret"]}, {"ssh": ["default"]}, {"pull": True}, {"no_cache": True}, {"additional_contexts": {"x": "service:peer"}}, {"args": {"UNRESOLVED": None}}, {"labels": {"io.hitch.prepared-key": "mine"}}):

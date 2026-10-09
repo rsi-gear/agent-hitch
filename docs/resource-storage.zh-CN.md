@@ -156,7 +156,7 @@ bridge 在 Harbor 的实际环境目录上读取 Compose 最终解析后的构�
 
 构建消费独立复制的快照。相同内容在不同目录、task、轮次或角色之间可复用；进程间文件锁合并同一个构建，原子写入记录。每次命中仍核对 Docker 中的镜像 ID、平台和缓存身份标签。镜像被删除或记录不匹配时重新构建；失败和取消不发布记录，取消先收回构建子进程再释放锁。配置、构建参数及凭据值不写入缓存记录或诊断收据。
 
-目前缓存支持普通文件/目录的本地上下文、标准 Dockerfile、固定摘要基础镜像、build args、target 和 labels。基础镜像配置也检查继承的 ONBUILD。可变基础镜像、自定义 frontend、ADD、RUN 外部挂载、SSH/secrets、额外上下文、符号链接/特殊文件/xattr、显式 pull/no_cache 等不能完整确定输入的配置，整组 Compose 保留原构建路径。首次获取基础镜像配置可能需要 registry；校验后的固定摘要配置可在后续直接复用。force_build 绕过准备缓存。只有 Harbor 显式发出的 build 请求进入缓存；已选择预构建镜像时，up 保留原有镜像及 pull policy 的优先级。
+目前缓存支持普通文件/目录的本地上下文、标准 Dockerfile、固定摘要基础镜像、build args、target 和 labels。基础镜像配置也检查继承的 ONBUILD。可变基础镜像、自定义 frontend、ADD、RUN 外部挂载、SSH/secrets、额外上下文、符号链接/特殊文件/xattr、显式 pull/no_cache 等不能完整确定输入的配置，整组 Compose 保留原构建路径。宿主 Python 不提供扩展属性检查（如 macOS），或文件系统不支持、拒绝该检查时，也回退原构建流程，不假定扩展属性为空。首次获取基础镜像配置可能需要 registry；校验后的固定摘要配置可在后续直接复用。force_build 绕过准备缓存。只有 Harbor 显式发出的 build 请求进入缓存；已选择预构建镜像时，up 保留原有镜像及 pull policy 的优先级。
 
 命中后用不可变镜像 ID 启动，移除对应 build 字段并设置 pull_policy=never，防止 up 再次构建。候选、验证器和配套服务仍各自创建容器、可写层、工作目录和日志；缓存目录不挂入任何任务容器，评分、产物传递、资源和网络限制不变。候选预构建镜像参数不会传递成验证器的镜像。
 
