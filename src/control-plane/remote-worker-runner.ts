@@ -78,6 +78,7 @@ export class RemoteWorkerRunner {
   private readonly jobs = new Map<string, ActiveJob>();
   private handled = 0;
   private lastHeartbeat = 0;
+  private heartbeatTail: Promise<void> = Promise.resolve();
   private readonly observations: RemoteObservationReporter | undefined;
   private readonly generationRecovery: RemoteWorkerGenerationRecovery | undefined;
 
@@ -156,11 +157,21 @@ export class RemoteWorkerRunner {
   }
 
   async heartbeat(health: "healthy" | "degraded" | "unavailable" = "healthy"): Promise<void> {
-    const active = [...this.jobs.values()].filter((job) => job.accepted).map((job) => ({
-      lease_id: job.offer.lease.lease_id, epoch: job.offer.lease.epoch,
-    }));
-    await this.client.heartbeat(this.ledger.snapshot().allocated, active, health);
-    this.lastHeartbeat = Date.now();
+    // Polling, acceptance and release can publish concurrently. Capture state
+    // only when this publication starts, after the previous request settles,
+    // so a delayed older heartbeat cannot overwrite newer lease/allocation data.
+    const publication = this.heartbeatTail.then(async () => {
+      // Stopping a worker must not drain a backlog of new network requests.
+      this.signal?.throwIfAborted();
+      const active = [...this.jobs.values()].filter((job) => job.accepted).map((job) => ({
+        lease_id: job.offer.lease.lease_id, epoch: job.offer.lease.epoch,
+      }));
+      await this.client.heartbeat(this.ledger.snapshot().allocated, active, health);
+      this.lastHeartbeat = Date.now();
+    });
+    // Propagate this failure to its caller without poisoning later heartbeats.
+    this.heartbeatTail = publication.catch(() => {});
+    await publication;
   }
 
   private startOffer(offer: RemoteWorkOfferV1): void {
