@@ -31,7 +31,11 @@ for (const resourceAware of [false, true]) test(`packaged worker executes a stag
   const fixture = resourceAware ? await resourceFixture(directory, 1, ["one"]) : undefined;
   const controllerRoot = fixture?.store.root ?? directory;
   const workerRoot = await mkdtemp(path.join(tmpdir(), "hitch-remote-host-"));
-  t.after(() => Promise.all([forceRemove(directory), forceRemove(workerRoot)]));
+  let stopServerAndWorker: (() => Promise<void>) | undefined;
+  t.after(async () => {
+    await stopServerAndWorker?.();
+    await Promise.all([forceRemove(directory), forceRemove(workerRoot)]);
+  });
   const dataset = fixture?.source ?? path.join(controllerRoot, "dataset");
   if (!fixture) { await mkdir(path.join(dataset, "one"), { recursive: true }); await writeFile(path.join(dataset, "one", "task.toml"), ""); }
   const secret = "controller-only-short-ttl-secret";
@@ -65,8 +69,11 @@ fs.writeFileSync(${JSON.stringify(path.join(workerRoot, "materialization-observe
     credentialEnv: { CUSTOM_REMOTE_SECRET: secret },
     evalExecutor: (options) => runEval({ ...options, harborExecutable: harbor, env: controllerEnv }),
   });
+  const workerController = new AbortController();
+  let worker: Promise<void> | undefined;
+  const workerErrors: string[] = [];
   await server.start();
-  t.after(() => server.close());
+  stopServerAndWorker = async () => { workerController.abort(); await worker?.catch(() => {}); await server.close(); };
   const baseUrl = `http://127.0.0.1:${server.port}`;
   const adminToken = (await readFile(statePaths(controllerRoot).token, "utf8")).trim();
   const registration = {
@@ -80,11 +87,12 @@ fs.writeFileSync(${JSON.stringify(path.join(workerRoot, "materialization-observe
   const client = new RemoteWorkerHttpClient({ baseUrl, credential });
   const execution = { root: workerRoot, env: workerEnv, harborExecutable: harbor, dockerExecutable: docker, trialBundleGraceMs: 0 };
   const runner = new RemoteWorkerRunner({
-    client, capacity: TRIAL, execute: remoteHarborWorker(execution), once: true,
+    client, capacity: TRIAL, execute: remoteHarborWorker(execution), once: true, signal: workerController.signal,
+    onError: error => workerErrors.push((error as Error).stack ?? String(error)),
     releaseUnknown: (offer) => releaseRemoteHarborOffer(execution, offer),
     pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
   });
-  const worker = runner.run();
+  worker = runner.run();
   const admin = await daemonClient(controllerRoot);
   const submitted = await admin.request("/v1/evals", {
     method: "POST",
@@ -100,10 +108,16 @@ fs.writeFileSync(${JSON.stringify(path.join(workerRoot, "materialization-observe
     }),
   });
   const evalId = submitted.eval_id as string;
-  const status = await waitFor(async () => {
-    const current = await admin.request(`/v1/evals/${evalId}`);
-    return current.result ? current : undefined;
-  }, 20_000);
+  let status: Record<string, unknown>;
+  try {
+    status = await waitFor(async () => {
+      const current = await admin.request(`/v1/evals/${evalId}`);
+      return current.result ? current : undefined;
+    }, 20_000);
+  } catch (error) {
+    const current = await admin.request(`/v1/evals/${evalId}`), offers = await client.listOffers();
+    throw new Error(`remote staged eval timed out: ${JSON.stringify({ current, offers, workerErrors })}`, { cause: error });
+  }
   await worker;
   assert.equal((status.result as { status: string }).status, "failed", JSON.stringify(status.result));
   assert.equal(((status.result as { error?: { code?: string } }).error?.code), "eval_has_infrastructure_failures");
@@ -398,9 +412,9 @@ for (const mode of ["api", "api-verifier-source", "managed", "managed-verifier-s
     const initialExecution = JSON.parse(await readFile(path.join(runDirectory, "execution.json"), "utf8"));
     assert.notEqual(executionEvidence.work_id, initialExecution.work_id); assert.notEqual(executionEvidence.lease_id, initialExecution.lease_id);
     if (managed) { assert.deepEqual(scopes, [evalId, `${evalId}:${rerunId}`]); assert.equal(acquisitions, 2); assert.equal(releases, 2); }
-    if (managed) await verifyRemoteModelRecovery(controllerRoot, evalId, repairedRunId, { rerunId, prior: (status.result as { trials: EvalTrialRefV1[] }).trials[0]! });
+    if (managed) await verifyRemoteModelRecovery(controllerRoot, evalId, repairedRunId, { rerunId, prior: (status.result as { trials: EvalTrialRefV1[] }).trials[0]!, priorResult: status.result as Record<string, unknown> });
     await verifyRemoteRerunDaemonRecovery({ server, options: serverOptions, root: controllerRoot, evalId, rerunId,
-      prior: (status.result as { trials: EvalTrialRefV1[] }).trials[0]! });
+      prior: (status.result as { trials: EvalTrialRefV1[] }).trials[0]!, priorResult: status.result as Record<string, unknown> });
     if (managed) { assert.equal(acquisitions, 2, "completion recovery must not restart the model service"); assert.equal(releases, 2); }
     assert.equal(generations, 2);
   }

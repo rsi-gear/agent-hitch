@@ -1,3 +1,4 @@
+import { persistTerminalEvalResult } from "./eval-state.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
@@ -208,7 +209,7 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           progress = replaceInvalidEvalProgressTrial(progress, ref);
           repaired.set(key, slot);
           if (progress.generation === previousGeneration) return;
-          await writeEvalProgress(options.evalDirectory, progress);
+          await writeEvalProgress(options.evalDirectory, progress, { terminalRepair: true });
           await writeRerunState(statePath, {
             rerunId,
             evalId: options.evalId,
@@ -448,7 +449,7 @@ async function finalizeRerun(
     completed_at: completedAt,
   };
   if (succeeded) delete result.error;
-  await atomicWriteJSON(path.join(evalDirectory, "result.json"), result);
+  await persistTerminalEvalResult(evalDirectory, result);
   return result;
 }
 

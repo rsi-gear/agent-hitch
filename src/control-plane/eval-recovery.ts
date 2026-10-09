@@ -1,3 +1,5 @@
+import { readEvalProgress } from "../evals/index.js";
+import { persistTerminalEvalResult } from "../evals/index.js";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ExecutionLeaseV1 } from "../domain/index.js";
@@ -48,6 +50,7 @@ export async function recoverPersistedEvals(input: {
     }
     const result = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
     if (result) {
+      await readEvalProgress(directory);
       if (!isTerminalControl(control.state)) await updateControl(directory, (current) => ({ ...withoutAllocation(current), state: terminalControlState(result.status) }));
       continue;
     }
@@ -179,7 +182,7 @@ async function writeSyntheticResult(
   completedAt: string,
 ): Promise<void> {
   if (await readJSON(path.join(directory, "result.json"), null)) return;
-  await atomicWriteJSON(path.join(directory, "result.json"), {
+  await persistTerminalEvalResult(directory, {
     schema_version: SCHEMA_VERSION,
     eval_id: evalId,
     status,

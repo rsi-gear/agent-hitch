@@ -112,7 +112,9 @@ export async function remoteVerifierFixture(t: TestContext, graderTtlMs = 60_000
       controller_runtime: { runtime_id: runtime.runtime_id, manifest_digest: runtime.manifest_digest } });
     await writeEvalProgress(evalDirectory, mergeEvalProgressTrial(createEvalProgress({ evalId, benchmarkId: request.benchmark_id,
       benchmarkRevision: request.benchmark_revision, plannedTasks: 1, plannedTrials: 1, startedAt: timestamp }), descriptor.source_ref));
-    await atomicWriteJSON(path.join(evalDirectory, "result.json"), { status: "failed", trials: [descriptor.source_ref], exit_code: 13 });
+    await atomicWriteJSON(path.join(evalDirectory, "result.json"), { schema_version: "1", eval_id: evalId, benchmark_id: request.benchmark_id,
+      benchmark_revision: request.benchmark_revision, status: "failed", trials: [descriptor.source_ref], exit_code: 13,
+      started_at: timestamp, completed_at: timestamp });
     await atomicWriteJSON(path.join(evalDirectory, "submission.json"), { execution: { provider: plan.provider } });
   }
   return { root, evalId, runId, evalDirectory, runDirectory, taskDirectory, runtime, descriptor, plan, work, physical, owner, execution, trialDirectory, request, artifact, resolution,

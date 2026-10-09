@@ -223,7 +223,8 @@ async function collectRemoteResult(input: Parameters<typeof recoverRemoteWorkerE
   const progress = dynamic || journal
     ? imported.ref.observation_status === "valid" ? replaceInvalidEvalProgressTrial(state.progress, imported.ref) : state.progress
     : mergeEvalProgressTrial(state.progress, imported.ref);
-  if (progress.generation !== state.progress.generation) await writeEvalProgress(input.evalDirectory, progress);
+  if (progress.generation !== state.progress.generation) await writeEvalProgress(input.evalDirectory, progress,
+    journal ? { terminalRepair: true } : {});
   if (journal) await collectRemoteRerunJournal(journal, { leaseId: lease.lease_id, refs: [imported.ref],
     ...(grading ? { assessments: [grading.assessment] } : {}),
     run: remoteBackendResult(offer, offer, imported.trial, imported.backendDirectory, journal.record.result?.run.backend.version,

@@ -3,6 +3,7 @@ import path from "node:path";
 import { inspectEvalRuntimeKind } from "../controller-runtime/index.js";
 import type { ExecutionLeaseV1 } from "../domain/index.js";
 import { HitchError, SCHEMA_VERSION, invalidInput, readJSON, statePaths } from "../foundation/index.js";
+import { readEvalState } from "./progress.js";
 import { readExecutionLeases } from "./execution-leases.js";
 
 export interface ListedEval {
@@ -67,6 +68,7 @@ export async function inspectEval(evalId: string, { root }: { root: string }): P
   const directory = path.join(statePaths(root).evals, evalId);
   const request = await readJSON<Record<string, unknown> | null>(path.join(directory, "request.json"), null);
   if (!request) throw new HitchError(`eval not found: ${evalId}`, { code: "eval_not_found", exitCode: 3 });
+  const { progress, result } = await readEvalState(directory);
   return {
     schema_version: SCHEMA_VERSION,
     eval_id: evalId,
@@ -77,9 +79,9 @@ export async function inspectEval(evalId: string, { root }: { root: string }): P
     execution_plan: await readJSON<Record<string, unknown> | null>(path.join(directory, "execution-plan.json"), null),
     submission: await readJSON<Record<string, unknown> | null>(path.join(directory, "submission.json"), null),
     control: await readJSON<Record<string, unknown> | null>(path.join(directory, "control.json"), null),
-    progress: await readJSON<Record<string, unknown> | null>(path.join(directory, "progress.json"), null),
+    progress: progress === null ? null : { ...progress },
     leases: await readExecutionLeases(directory),
-    result: await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null),
+    result,
     runtime_storage: await inspectEvalRuntimeKind(directory),
   };
 }

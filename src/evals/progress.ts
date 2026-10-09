@@ -1,6 +1,7 @@
 import path from "node:path";
+import { lstat } from "node:fs/promises";
 import type { EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
-import { atomicWriteJSON, readJSON } from "../foundation/index.js";
+import { atomicWriteJSON, readJSON, withFileLock } from "../foundation/index.js";
 
 const EVAL_ID = /^eval_[a-f0-9]{32}$/;
 const RUN_ID = /^run_[a-f0-9]{32}$/;
@@ -32,13 +33,91 @@ export function createEvalProgress(input: {
   };
 }
 
-export async function readEvalProgress(evalDirectory: string): Promise<EvalProgressV1 | null> {
-  const value = await readJSON<unknown | null>(path.join(evalDirectory, "progress.json"), null);
-  return value === null ? null : parseEvalProgress(value);
+export function withEvalProgressLock<T>(evalDirectory: string, action: () => Promise<T>): Promise<T> {
+  return withFileLock(path.join(evalDirectory, ".progress-locks"), "publication", action);
 }
 
-export async function writeEvalProgress(evalDirectory: string, progress: EvalProgressV1): Promise<void> {
-  await atomicWriteJSON(path.join(evalDirectory, "progress.json"), parseEvalProgress(progress));
+/** Read the result and its progress projection under the publication lock. */
+export async function readEvalState(evalDirectory: string): Promise<{
+  progress: EvalProgressV1 | null; result: Record<string, unknown> | null;
+}> {
+  const exists = await lstat(evalDirectory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!exists) return { progress: null, result: null };
+  return withEvalProgressLock(evalDirectory, async () => {
+    const value = await readJSON<unknown | null>(path.join(evalDirectory, "progress.json"), null);
+    const result = await readJSON<Record<string, unknown> | null>(path.join(evalDirectory, "result.json"), null);
+    if (value === null) return { progress: null, result };
+    const progress = parseEvalProgress(value);
+    if (!result) return { progress, result };
+    const terminal = terminalEvalProgress(progress, result);
+    if (JSON.stringify(terminal) !== JSON.stringify(progress)) await atomicWriteJSON(path.join(evalDirectory, "progress.json"), terminal);
+    return { progress: terminal, result };
+  });
+}
+
+export async function readEvalProgress(evalDirectory: string): Promise<EvalProgressV1 | null> {
+  return (await readEvalState(evalDirectory)).progress;
+}
+
+/** A late running projection cannot resurrect a terminal eval. */
+export async function writeEvalProgress(evalDirectory: string, input: EvalProgressV1,
+  options: { terminalRepair?: boolean } = {}): Promise<EvalProgressV1> {
+  return withEvalProgressLock(evalDirectory, async () => {
+    const incoming = parseEvalProgress(input);
+    const saved = await readJSON<unknown | null>(path.join(evalDirectory, "progress.json"), null);
+    let current = saved === null ? null : parseEvalProgress(saved);
+    const result = await readJSON<Record<string, unknown> | null>(path.join(evalDirectory, "result.json"), null);
+    if (current && result) current = terminalEvalProgress(current, result);
+    if (!current) {
+      if (result) throw new TypeError("terminal eval progress requires an explicit preparation restart");
+      await atomicWriteJSON(path.join(evalDirectory, "progress.json"), incoming);
+      return incoming;
+    }
+    if (incoming.eval_id !== current.eval_id || incoming.benchmark_id !== current.benchmark_id
+      || incoming.benchmark_revision !== current.benchmark_revision || incoming.started_at !== current.started_at
+      || incoming.planned_tasks !== current.planned_tasks || incoming.planned_trials !== current.planned_trials) {
+      throw new TypeError("eval progress identity changed");
+    }
+    let next = current;
+    for (const trial of incoming.trials) {
+      const previous = next.trials.find(item => evalTrialKey(item) === evalTrialKey(trial));
+      if (previous && JSON.stringify(previous) === JSON.stringify(trial)) continue;
+      if (current.status !== "running" && !options.terminalRepair) throw new TypeError("terminal eval cannot publish a new running projection");
+      next = previous?.observation_status === "invalid" && trial.observation_status === "valid"
+        ? replaceInvalidEvalProgressTrial(next, trial, incoming.updated_at) : mergeEvalProgressTrial(next, trial, incoming.updated_at);
+    }
+    // Reruns retain terminal status until their own final result is persisted.
+    next = parseEvalProgress({ ...next, status: current.status === "running" ? incoming.status : current.status,
+      updated_at: next.generation === current.generation ? current.updated_at : incoming.updated_at });
+    await atomicWriteJSON(path.join(evalDirectory, "progress.json"), next);
+    return next;
+  });
+}
+
+export function terminalEvalProgress(progress: EvalProgressV1, result: Record<string, unknown>): EvalProgressV1 {
+  if (!["succeeded", "failed", "cancelled"].includes(String(result.status)) || result.eval_id !== progress.eval_id
+    || result.benchmark_id !== progress.benchmark_id || result.benchmark_revision !== progress.benchmark_revision) {
+    throw new TypeError("terminal eval result/progress identity differs");
+  }
+  if (typeof result.completed_at !== "string" || !Number.isFinite(Date.parse(result.completed_at))) throw new TypeError("terminal eval result timestamp is invalid");
+  const updatedAt = Date.parse(result.completed_at) >= Date.parse(progress.updated_at) ? result.completed_at : progress.updated_at;
+  // This is shared by the terminal writer and crash recovery. A newer explicit
+  // repair may already have replaced an old invalid reference in result.json.
+  for (const value of Array.isArray(result.trials) ? result.trials : []) {
+    const trial = parseEvalTrialRef(value);
+    const previous: EvalTrialRefV1 | undefined = progress.trials.find(item => evalTrialKey(item) === evalTrialKey(trial));
+    if (previous && JSON.stringify(previous) === JSON.stringify(trial)) continue;
+    if (previous?.observation_status === "valid") {
+      if (trial.observation_status === "valid") throw new TypeError("terminal result conflicts with a durable valid trial");
+      continue;
+    }
+    progress = previous?.observation_status === "invalid" && trial.observation_status === "valid"
+      ? replaceInvalidEvalProgressTrial(progress, trial, updatedAt) : mergeEvalProgressTrial(progress, trial, updatedAt);
+  }
+  return parseEvalProgress({ ...progress, status: result.status, updated_at: updatedAt });
 }
 
 export function mergeEvalProgressTrial(progress: EvalProgressV1, trial: EvalTrialRefV1, now = new Date().toISOString()): EvalProgressV1 {
@@ -124,7 +203,7 @@ export function parseEvalProgress(value: unknown): EvalProgressV1 {
   }
   if (typeof record.benchmark_id !== "string" || !record.benchmark_id
     || typeof record.benchmark_revision !== "string" || !record.benchmark_revision
-    || record.status !== "running") throw new TypeError("eval progress benchmark/status is invalid");
+    || !["running", "succeeded", "failed", "cancelled"].includes(String(record.status))) throw new TypeError("eval progress benchmark/status is invalid");
   if (!Number.isSafeInteger(record.generation) || (record.generation as number) < 0) throw new TypeError("eval progress generation is invalid");
   for (const name of ["planned_tasks", "planned_trials"] as const) {
     const planned = record[name];
@@ -159,7 +238,7 @@ export function parseEvalProgress(value: unknown): EvalProgressV1 {
     eval_id: record.eval_id,
     benchmark_id: record.benchmark_id,
     benchmark_revision: record.benchmark_revision,
-    status: "running",
+    status: record.status as EvalProgressV1["status"],
     generation: record.generation as number,
     planned_tasks: record.planned_tasks as number | null,
     planned_trials: record.planned_trials as number | null,

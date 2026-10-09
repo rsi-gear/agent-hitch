@@ -53,7 +53,7 @@ export interface EvalProgressV1 {
   eval_id: string;
   benchmark_id: string;
   benchmark_revision: string;
-  status: "running";
+  status: "running" | "succeeded" | "failed" | "cancelled";
   generation: number;
   planned_tasks: number | null;
   planned_trials: number | null;

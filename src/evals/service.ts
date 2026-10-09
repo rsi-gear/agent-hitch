@@ -9,7 +9,7 @@ import { ensureControllerRuntime, writeRuntimeReference, type ControllerRuntimeU
 import type { EvalProgressV1, EvalTrialRefV1 } from "../domain/index.js";
 import { importEvalTrialRun, importEvalTrialRuns, TrialBundlePendingError, validateEvalTrialReferences } from "./trial-import.js";
 import { EvalEventSink } from "./events.js";
-import { createEvalProgress, mergeEvalProgressTrial, writeEvalProgress } from "./progress.js";
+import { createEvalProgress, mergeEvalProgressTrial, readEvalProgress, writeEvalProgress } from "./progress.js";
 import { runInfrastructureRetries, type InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { newEvalId, resolveLocalDatasetTaskIds, validateEvalId, validateEvalRequest } from "./request.js";
 import { prepareEvalDirectory } from "./directory.js";
@@ -32,7 +32,7 @@ import { materializeEvalPlan, writeEvalPlanningCheckpoint, type EvalLogicalPlanV
 import { planTaskSchedulingHints, schedulingHintsFromPlan } from "./duration-estimator.js";
 import type { EvalSchedulerSummaryV1 } from "../domain/index.js";
 import { buildCompletedEvalResult, buildFailedEvalResult } from "./eval-result-builder.js";
-import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
+import { verifyBenchmarkExecution } from "./benchmark-verification.js";
 export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, inferenceCoordinator, inferenceRerunId, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   if (inferenceRerunId && !/^rerun_[a-f0-9]{32}$/.test(inferenceRerunId)) throw invalidInput("invalid inference repair scope");
@@ -51,6 +51,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   let result: EvalResult;
   let trialRefs: import("../domain/index.js").EvalTrialRefV1[] = [];
   let progress: EvalProgressV1 | null = null;
+  let progressRecoveryError: unknown;
   let schedulerSummary: EvalSchedulerSummaryV1 | undefined;
   let captureRuntime: Awaited<ReturnType<typeof startEvalModelCaptureRuntime>> | undefined;
   let inferenceLease: Awaited<ReturnType<import("../domain/index.js").ManagedInferenceCoordinator["acquire"]>> | undefined;
@@ -96,7 +97,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       reference: runtimeRefFile,
     });
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
-    const standardDataset = localTaskIds !== null && await loadBenchmarkAdapterManifest(normalized.dataset) !== null;
+    const verifiedBenchmark = localTaskIds !== null ? await verifyBenchmarkExecution({ root, evalId, evalDirectory, request: normalized, revisionIdentity: resolvedRevision.identity }) : null;
+    const standardDataset = localTaskIds !== null && (verifiedBenchmark !== null || await import("../resources/index.js").then(m => m.readResourceInput(normalized.dataset)) !== undefined);
     const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
     await withEnvironmentImageReferenceLock(root, () => beginEvalEnvironmentImagePlanning(evalDirectory, evalId));
     const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, harborTaskResourceInspector: path.join(controllerRuntime.directory, "payload", "integrations", "harbor", "hitch_harbor_task_resources.py"), ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
@@ -288,6 +290,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         evalId,
         evalDirectory,
         plan: executionPlan,
+        ...(verifiedBenchmark ? { verifiedBenchmark } : {}),
         progress,
         request: normalized,
         root,
@@ -347,13 +350,13 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         if (!shardRefs.some((current) => current.trial_id === ref.trial_id)) shardRefs.push(ref);
         if (progress === null) throw new Error("eval progress was not initialized");
         const previousGeneration = progress.generation;
-        progress = mergeEvalProgressTrial(progress, ref);
-        if (progress.generation === previousGeneration) return;
+        const next = mergeEvalProgressTrial(progress, ref);
+        if (next.generation === previousGeneration) return;
         await validateEvalTrialReferences(root, evalId, [ref], {
           benchmarkId: normalized.benchmark_id,
           benchmarkRevision: normalized.benchmark_revision,
         });
-        await writeEvalProgress(evalDirectory, progress);
+        progress = await writeEvalProgress(evalDirectory, next);
         sink.emit({
           type: "eval.trial.published",
           trial_id: ref.trial_id,
@@ -393,6 +396,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
               harborJobDirectory,
               expectedAttempt: logicalAttempt,
               request: normalized,
+              ...(verifiedBenchmark ? { verifiedBenchmark } : {}),
               resolvedRevision,
               benchmarkId: normalized.benchmark_id,
               benchmarkRevision: normalized.benchmark_revision,
@@ -419,6 +423,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         harborJobDirectory,
         expectedAttempt: logicalAttempt,
         request: normalized,
+        ...(verifiedBenchmark ? { verifiedBenchmark } : {}),
         resolvedRevision,
         benchmarkId: normalized.benchmark_id,
         benchmarkRevision: normalized.benchmark_revision,
@@ -476,10 +481,13 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       cancelled: signal?.aborted === true,
     });
   } catch (error) {
+    try { progress = await readEvalProgress(evalDirectory) ?? progress; }
+    catch (stateError) { progressRecoveryError = stateError; }
     trialRefs = progress?.trials ?? trialRefs;
     result = buildFailedEvalResult({ error, evalId, request: normalized, env, failureStage, startedAt, trials: trialRefs, progress, cancelled: signal?.aborted === true });
   }
   if (captureRuntime) await captureRuntime.close().catch((error) => sink.emit({ type: "interaction.capture.close-failed", code: (error as { code?: string }).code || "model_capture_close_failed" }));
   if (inferenceLease) await inferenceLease.release().catch((error) => sink.emit({ type: "inference.release.failed", code: (error as { code?: string }).code || "inference_release_failed" }));
+  if (progressRecoveryError) { await sink.close(); throw progressRecoveryError; }
   return finalizeEvalResult(evalDirectory, sink, result);
 }

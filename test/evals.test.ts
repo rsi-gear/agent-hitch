@@ -1800,6 +1800,10 @@ test("eval rerun executes only invalid tasks and preserves valid rewards", async
     ? { ...trial, invalid_reason: "verifier_infrastructure_failure" }
     : trial);
   await atomicWriteJSON(progressPath, verifierInvalidProgress);
+  // Simulate the same classified failure in both durable projections.
+  const resultPath = path.join(root, "evals", evalId, "result.json");
+  const verifierInvalidResult = await readJSON<Record<string, unknown>>(resultPath);
+  await atomicWriteJSON(resultPath, { ...verifierInvalidResult, trials: verifierInvalidProgress.trials });
 
   const rerun = await rerunEval({
     evalId,
@@ -1885,7 +1889,8 @@ test("eval rerun restores frozen local transport after interruption without re-e
   await atomicWriteJSON(path.join(evalDirectory, "execution-plan.json"), {});
   await atomicWriteJSON(path.join(evalDirectory, "progress.json"), progress);
 
-  for (const previousResult of [null, { status: "succeeded", trials: progress.trials }]) {
+  for (const previousResult of [null, { schema_version: "1", eval_id: evalId, benchmark_id: request.benchmark_id,
+    benchmark_revision: request.benchmark_revision, status: "succeeded", trials: progress.trials, started_at: progress.started_at, completed_at: progress.updated_at }]) {
     if (previousResult) await atomicWriteJSON(path.join(evalDirectory, "result.json"), previousResult);
     const rerun = await rerunEval({
       root, evalId, selector: { mode: "invalid" },
@@ -2128,7 +2133,7 @@ test("eval preparation restart stays failed when preparation fails again", async
   });
   const rerunId = "rerun_34343434343434343434343434343434";
   const evalDirectory = path.join(root, "evals", first.eval_id);
-  let previousTerminalVisible = false;
+  let previousTerminalArchived = false;
 
   await assert.rejects(rerunEval({
     evalId: first.eval_id,
@@ -2138,13 +2143,14 @@ test("eval preparation restart stays failed when preparation fails again", async
     harborExecutable: harbor,
     env: { ...process.env, HITCH_NPM_PATH: npm },
     harborArtifactBuilder: async () => {
-      const terminal = await readJSON<{ error: { code: string } }>(path.join(evalDirectory, "result.json"));
-      previousTerminalVisible = terminal.error.code === "first_preparation_failed";
+      const terminal = await readJSON<{ eval_id: string; error: { code: string } }>(path.join(evalDirectory, "reruns", rerunId, "previous-attempt", "result.json"));
+      previousTerminalArchived = terminal.eval_id === first.eval_id && terminal.error.code === "first_preparation_failed";
+      assert.equal(await readJSON(path.join(evalDirectory, "result.json"), null), null, "a new preparation attempt cannot retain the old terminal projection");
       throw new HitchError("second preparation failed", { code: "second_preparation_failed", exitCode: 12 });
     },
   }), (error: unknown) => (error as { code?: string }).code === "second_preparation_failed");
 
-  assert.equal(previousTerminalVisible, true);
+  assert.equal(previousTerminalArchived, true);
   const current = await readJSON<{ status: string; error: { code: string }; failure_stage: string }>(path.join(evalDirectory, "result.json"));
   assert.equal(current.status, "failed");
   assert.equal(current.error.code, "second_preparation_failed");

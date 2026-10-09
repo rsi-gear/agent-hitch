@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { RemoteWorkerProtocol, RemoteWorkerRegistry, recoverRemoteWorkerEvalLeases } from "../src/control-plane/index.js";
-import { createEvalProgress, mergeEvalProgressTrial, readEvalProgress, readExecutionLeases, stageRemoteRerunCompletion, validateEvalId, writeEvalProgress } from "../src/evals/index.js";
+import { createEvalProgress, mergeEvalProgressTrial, readEvalProgress, readExecutionLeases, persistTerminalEvalResult, stageRemoteRerunCompletion, validateEvalId } from "../src/evals/index.js";
 import type { EvalTrialRefV1 } from "../src/domain/index.js";
 import { atomicWriteJSON, statePaths } from "../src/foundation/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 
 /** Reconstruct the durable crash boundary after bundle upload but before controller publication/release. */
-export async function verifyRemoteModelRecovery(root: string, evalIdValue: string, runId: string, repair?: { rerunId: string; prior: EvalTrialRefV1 }): Promise<void> {
+export async function verifyRemoteModelRecovery(root: string, evalIdValue: string, runId: string, repair?: { rerunId: string; prior: EvalTrialRefV1; priorResult: Record<string, unknown> }): Promise<void> {
   const evalId = validateEvalId(evalIdValue), directory = path.join(root, "evals", evalId);
   const original = await readEvalProgress(directory); assert.ok(original);
+  const originalResult = JSON.parse(await readFile(path.join(directory, "result.json"), "utf8")) as Record<string, unknown>;
   const originalLeases = await readExecutionLeases(directory);
   const execution = JSON.parse(await readFile(path.join(root, "runs", runId, "execution.json"), "utf8")) as { lease_id: string };
   const released = originalLeases.find(lease => lease.lease_id === execution.lease_id); assert.ok(released);
@@ -26,7 +27,16 @@ export async function verifyRemoteModelRecovery(root: string, evalIdValue: strin
     await atomicWriteJSON(path.join(directory, "leases", `${lease.lease_id}.json`), lease);
     const progress = createEvalProgress({ evalId, benchmarkId: original.benchmark_id, benchmarkRevision: original.benchmark_revision,
       plannedTasks: original.planned_tasks, plannedTrials: original.planned_trials, startedAt: original.started_at });
-    await writeEvalProgress(directory, repair ? mergeEvalProgressTrial(progress, repair.prior) : progress);
+    // Restore the historical crash snapshot directly: production publication
+    // is monotonic and must never be used to rewind an already sealed result.
+    if (repair) {
+      assert.equal(repair.priorResult.eval_id, evalId); assert.equal(repair.priorResult.status, "failed");
+      await atomicWriteJSON(path.join(directory, "result.json"), repair.priorResult);
+      await atomicWriteJSON(path.join(directory, "progress.json"), { ...mergeEvalProgressTrial(progress, repair.prior), status: "failed" });
+    } else {
+      await rm(path.join(directory, "result.json"));
+      await atomicWriteJSON(path.join(directory, "progress.json"), progress);
+    }
     if (journalPath) await atomicWriteJSON(journalPath, { identity: journal!.identity, lease_id: lease.lease_id, state: "running" });
   };
   const recover = async () => recoverRemoteWorkerEvalLeases({ root, evalId, evalDirectory: directory,
@@ -49,12 +59,16 @@ export async function verifyRemoteModelRecovery(root: string, evalIdValue: strin
   // Replay does not create another physical execution or publication generation.
   const before = await readEvalProgress(directory); await recover(); assert.deepEqual(await readEvalProgress(directory), before);
   assert.equal((await readExecutionLeases(directory)).length, originalLeases.length);
+  // Complete the fixture's recovered publication before subsequent public
+  // rerun checks; lease recovery itself does not finalize the eval result.
+  await persistTerminalEvalResult(directory, originalResult);
+  assert.equal((await readEvalProgress(directory))!.status, originalResult.status);
 }
 
 /** Restart a real daemon over the crash fixture; no worker or model call may be needed. */
 export async function verifyRemoteRerunDaemonRecovery(input: {
   server: DaemonServer; options: ConstructorParameters<typeof DaemonServer>[0];
-  root: string; evalId: string; rerunId: string; prior: EvalTrialRefV1;
+  root: string; evalId: string; rerunId: string; prior: EvalTrialRefV1; priorResult: Record<string, unknown>;
 }): Promise<void> {
   await input.server.close();
   const directory = path.join(input.root, "evals", input.evalId), rerun = path.join(directory, "reruns", input.rerunId);
@@ -73,7 +87,9 @@ export async function verifyRemoteRerunDaemonRecovery(input: {
   const resetProgress = mergeEvalProgressTrial(createEvalProgress({ evalId: validateEvalId(input.evalId),
     benchmarkId: progress.benchmark_id, benchmarkRevision: progress.benchmark_revision,
     plannedTasks: progress.planned_tasks, plannedTrials: progress.planned_trials, startedAt: progress.started_at }), input.prior);
-  await writeEvalProgress(directory, { ...resetProgress, generation: progress.generation });
+  assert.equal(input.priorResult.eval_id, input.evalId); assert.equal(input.priorResult.status, "failed");
+  await atomicWriteJSON(path.join(directory, "result.json"), input.priorResult);
+  await atomicWriteJSON(path.join(directory, "progress.json"), { ...resetProgress, status: "failed", generation: progress.generation });
   await atomicWriteJSON(path.join(rerun, "state.json"), { ...state, status: "running" });
   await rm(path.join(rerun, "result.json"));
   const restarted = new DaemonServer(input.options);
