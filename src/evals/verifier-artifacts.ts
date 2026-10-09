@@ -68,6 +68,7 @@ export async function persistTrialVerifierDiagnostics(input: {
   verifierResult?: Record<string, unknown> | null;
   dataset?: string | undefined;
   benchmarkRevision?: string | undefined;
+  taskId?: string | undefined;
   signal?: AbortSignal | undefined;
 }): Promise<CapturedVerifierScoreEvidenceV1> {
   const env = input.env ?? process.env;
@@ -85,6 +86,7 @@ export async function persistTrialVerifierDiagnostics(input: {
     credentialValues,
     ...(input.dataset === undefined ? {} : { dataset: input.dataset }),
     ...(input.benchmarkRevision === undefined ? {} : { benchmarkRevision: input.benchmarkRevision }),
+    ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
     ...(input.signal ? { signal: input.signal } : {}),
   });
   await captureVerifierDiagnostics(input.trialDirectory, input.runDirectory, {

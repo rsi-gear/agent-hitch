@@ -17,6 +17,7 @@ test("Harbor ownership environment labels every controlled Compose resource and 
   const script = String.raw`
 import importlib.util, json, pathlib, sys, types
 root, source = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(source.parent))
 class DockerEnvironment:
     _EGRESS_CONTROL_SERVICE_NAME = "egress"
     def __init__(self, *args, environment_dir, extra_docker_compose=None, **kwargs):
@@ -89,6 +90,32 @@ gateway_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_mo
 gateway_overlay = json.loads(gateway_env._hitch_ownership_compose_path.read_text())
 assert gateway_overlay["services"]["main"] == {"extra_hosts": ["host.docker.internal:host-gateway"]}
 assert gateway_overlay["services"]["database"] == {}
+(root / "controller/payload").mkdir(parents=True)
+(root / "artifact").mkdir()
+shared_paths = {"runtime_directory": str(root / "controller"), "artifact_directory": str(root / "artifact")}
+shared_env = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="task__env", hitch_shared_runtime=shared_paths)
+shared_overlay = json.loads(shared_env._hitch_ownership_compose_path.read_text())
+assert len(shared_overlay["services"]["main"]["volumes"]) == 2
+assert all(mount["read_only"] for mount in shared_overlay["services"]["main"]["volumes"])
+assert "volumes" not in shared_overlay["services"]["database"]
+verifier_env = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="task__verifier__trial", hitch_shared_runtime=shared_paths)
+assert verifier_env._hitch_shared_runtime is None
+assert verifier_env._hitch_ownership_compose_path is None
+verifier_prebuilt = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="task__verifier__trial", task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt)
+assert verifier_prebuilt.task_env_config.docker_image is None
+assert verifier_prebuilt._hitch_prebuilt_task_image is None
+for trial_name in ("short", "task-" + "a" * 80, "task__verifier__name"):
+    trial_paths = types.SimpleNamespace(trial_dir=root / trial_name)
+    candidate = module.HitchHarborDockerEnvironment(environment_dir=root, session_id=trial_name + "__env", trial_paths=trial_paths,
+        task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt, hitch_shared_runtime=shared_paths)
+    assert candidate.task_env_config.docker_image == prebuilt
+    assert candidate._hitch_shared_runtime is not None
+    for session in (trial_name + "__verifier__env", trial_name[:53] + "__12345678"):
+        verifier = module.HitchHarborDockerEnvironment(environment_dir=root, session_id=session, trial_paths=trial_paths,
+            task_env_config=TaskEnvironment("verifier-image"), hitch_prebuilt_task_image=prebuilt, hitch_shared_runtime=shared_paths)
+        assert verifier.task_env_config.docker_image == "verifier-image"
+        assert verifier._hitch_prebuilt_task_image is None
+        assert verifier._hitch_shared_runtime is None
 gpu_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_main_gpu_count=2)
 gpu_overlay_text = gpu_env._hitch_ownership_compose_path.read_text()
 assert '"devices": !override [{"capabilities": ["gpu"], "count": 2}]' in gpu_overlay_text

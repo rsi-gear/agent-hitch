@@ -39,6 +39,8 @@ export interface ExecutePlannedHarborOptions {
   plan: EvalExecutionPlanV1;
   progress: EvalProgressV1;
   request: EvalRequest;
+  /** The owning eval verifies the entire dataset at both lifecycle boundaries. */
+  datasetVerification?: "task" | undefined;
   root: string;
   resolvedRevision: ResolvedRevision;
   controllerRuntime: ControllerRuntimeUseResult;
@@ -440,6 +442,7 @@ async function executeLeasedWorkItem(
           resolvedRevision: options.resolvedRevision,
           benchmarkId: options.request.benchmark_id,
           benchmarkRevision: options.request.benchmark_revision,
+          datasetVerification: options.datasetVerification,
           runtimeId: options.controllerRuntime.runtime_id,
           env: options.env, ...(options.signal ? { signal: options.signal } : {}),
           ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),
@@ -474,6 +477,7 @@ async function executeLeasedWorkItem(
     resolvedRevision: options.resolvedRevision,
     benchmarkId: options.request.benchmark_id,
     benchmarkRevision: options.request.benchmark_revision,
+    datasetVerification: options.datasetVerification,
     runtimeId: options.controllerRuntime.runtime_id,
     env: options.env, ...(options.signal ? { signal: options.signal } : {}),
     ...(options.plan.model_capture ? { modelCapturePlan: options.plan.model_capture } : {}),

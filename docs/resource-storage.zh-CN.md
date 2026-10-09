@@ -77,6 +77,51 @@ hitch --root ROOT resources legacy-export --ref /absolute/v2-dataset --output /a
 
 崩溃后用 `inspect`/`audit` 检查引用；确认导入已经结束后 `lease-end {"leaseId":"...","confirmation":"ended"}` 清理该 UUID 的 staging 并结束保护。无法证明远程结束时使用 `unknown`，不得按 PID、年龄或超时释放。执行 workspace 通过 `workspace-end` 要求明确 `executionEnded:true` 和 `resultSealed:true`；CLI 确认由操作方负责，正常执行链自动提供实际结束证明。
 
+## v1 目录数据集校验
+
+各阶段优化的测量方法、冷/热缓存收益及证据边界见 [2026-10-09 性能记录](evidence/eval-preparation-2026-10-09.md)。
+
+标准 v1 数据集的正常 eval 在 admission/planning 时校验全部 task，收集每个结果时校验锁定的 manifest 摘要、评分契约、task 集合和当前 task 的全部文件，最终完成前再校验一次全部数据。已收集 task 后续发生的变化会使最终 eval 失败。取消不增加全量扫描；没有前后校验边界的独立导入、恢复和手动重跑入口继续使用全量校验。
+
+这个优化按 manifest 的 task 身份工作，不依赖 benchmark 名称、文件布局或 task 数量，不缓存路径或文件修改时间。文件内容、执行权限、文件增删和链接仍参与检查，失败后重试会重新读取。无 native phase 描述的 task 直接跳过描述解析所需的校验；导出的 native phase task 仍校验描述所在的 task。Package-native 编译包原有的 source/compiled 整包证明保持不变。v2 数据集和 selection 继续使用资源闭包校验。
+
+对每个 task 收集一次、无 native phase 描述的 v1 eval，task payload 的读取量由随 task 数量平方增长变为线性增长；manifest 解析和 task 集合检查仍逐次执行。这不改变 task 数据的物理副本，也不替代 v2 的 CAS 去重。可用不调用模型的脚本复现校验开销，先运行优化版，再运行旧版，再运行优化版，检查身份和描述结果完全一致：
+
+```sh
+npm run build
+node dist/scripts/benchmark-dataset-verification.js \
+  --dataset /absolute/v1-dataset \
+  --baseline /absolute/old-agent-hitch-package \
+  --output /absolute/comparison.json
+```
+
+输出区分整个校验序列与逐 task 收集阶段，记录文件读取次数及逻辑读取字节；这是校验回放，不是完整 eval 加速比，也不是物理磁盘吞吐量。
+
+## 共享 controller 与 harness 安装目录
+
+本地 Linux Docker eval 可显式启用 `HITCH_HARBOR_RUNTIME_TRANSPORT=readonly-bind`：
+
+```sh
+HITCH_HARBOR_RUNTIME_TRANSPORT=readonly-bind hitch --root ROOT eval run \
+  --dataset DATASET --harness HARNESS --model MODEL --max-concurrent 16
+```
+
+每个 eval 为 controller bundle 创建一次独立快照，为每种固定内容身份的 harness artifact 创建一次快照。优先使用文件系统 reflink，不支持时复制；不使用硬链接。目录填充完成后恢复原始权限，完整校验固定身份与内容，再通过原子重命名发布。不同 task 将这些快照分别只读挂载到 `/opt/hitch` 和 `/opt/hitch-harness-artifact`，共用依赖文件和宿主页缓存，减少逐 task 上传与容器可写层副本。实现不依赖数据集名称、任务布局或 harness 类型。
+
+任务的工作目录、状态、凭据和 Node 解包目录仍各自隔离。bridge 与容器内原有内容校验保留，不使用路径、mtime 或“校验过一次”的全局缓存跳过检查。bridge 检查 Docker 实际挂载源、只读标志、嵌套遮挡和候选容器权限；冲突、缺失或内容错误会失败。额外的 verifier 容器不会获得这些安装目录。
+
+此模式要求 harness 运行时不改写安装目录，并使用能够访问快照路径的本地 Linux Docker daemon；远程 worker 不支持该选项。需要改写安装目录的 harness 使用默认上传方式：不设置该变量，或设置为 `upload`。显式选用共享模式后不会因挂载错误静默回退。
+
+快照保留在 `<eval-directory>/shared-runtime/`，随 eval 的本地工作文件一起留存，避免取消、恢复或另一轮执行清理仍在使用的文件。原缓存的后续改写不会改变已发布快照；宿主自身仍是受信任边界，不能由同权限进程改写这些快照。只在确认该 eval 的容器全部结束且无需保留本地 job 重放后，才能清理其快照。持久化的 artifact 身份不包含这些临时传输路径，既有恢复和远程交付继续采用原上传路径。
+
+真实 Docker 回归检查只使用已存在的固定 Node 镜像，不调用模型或下载镜像：
+
+```sh
+npm run build
+HITCH_NODE_RUNTIME_DOCKER_TEST=1 \
+  node --test dist/test/shared-runtime.integration.test.js dist/test/harbor-node-runtime.integration.test.js
+```
+
 ## 验证
 
 单元/集成覆盖共享对象、隔离写入、未知能力、摘要/路径/平台错误、预算、两进程发布与 GC、SIGKILL、旧 generation、view/quarantine 重获、旧 worker 和 lease 对象授权；`resource-transfer.test.ts` 另覆盖镜像清单与任务声明的完整对应，以及停滞 reader/迭代器的取消和锁释放。真实 Docker canary 单独运行，无模型调用：
@@ -93,3 +138,40 @@ node dist/scripts/canary-resource-empty-daemon.js SHARED_TREE_CANARY_BUNDLE
 空 daemon canary 需要预先缓存 `mirror.gcr.io/library/docker:27-dind` 和 `registry:2` 基础设施镜像。它新建隔离 VFS daemon，不挂载宿主 Docker socket 或用户目录，检查初始镜像/BuildKit 为空；导入后停止 registry、断开 daemon 外网再执行及评分。默认 loopback 52990；记录基础设施、导入和执行阶段的 Docker/BuildKit 快照，并连续采样源 dataset、selection、文件 CAS、视图、工作区、导入 staging、bundle 和封存证据。Docker 总项只计一次；allocated blocks 不作为 CoW 独占物理字节，短于采样间隔的瞬态可能遗漏。证据封存后确认 execution lease 和 workspace 回收，最后只删除自身容器及匿名卷。
 
 后者运行 candidate 隔离检查、模拟器 API 调用和官方 verifier，并将同一 snapshot 交叉评分；初始化随机 ID/时间戳不当作存储语义变化。canary 只删除自身创建的容器和镜像 tag，保留证据目录，不 prune 现有缓存。
+
+
+## 候选、配套服务与独立验证器的镜像准备缓存
+
+POSIX 宿主上的 Linux Docker 环境可显式启用：
+
+```sh
+export HITCH_HARBOR_IMAGE_CACHE_DIR=/absolute/private/path/prepared-images
+export HITCH_HARBOR_IMAGE_BUILD_SLOTS=2
+export HITCH_HARBOR_MANAGED_KEEPALIVE=1
+```
+
+未设置时使用原构建与停止行为。缓存目录由当前用户所有，不能由其他用户写入。同一目录的使用者应采用相同的 build slots 设置；这是缓存内的构建限流，不替代 eval 的资源预算。冷缓存仍要构建并载入镜像，默认最多两个构建同时进行；缓存命中只需快照校验和镜像检查，不占构建槽位。
+
+bridge 在 Harbor 的实际环境目录上读取 Compose 最终解析后的构建配置，因此同一逻辑覆盖候选、Compose 配套服务、独立验证器及多步骤验证器。身份包括完整上下文的相对路径、内容和权限、Dockerfile、固定摘要的基础镜像、平台、target、显式参数/标签、实际 daemon、builder 配置以及代理配置。mtime 不代替内容校验；完整上下文参与身份，未被 COPY 使用的文件变化也会保守地使缓存失效。不按数据集、task 名称或文件名写特殊规则。
+
+构建消费独立复制的快照。相同内容在不同目录、task、轮次或角色之间可复用；进程间文件锁合并同一个构建，原子写入记录。每次命中仍核对 Docker 中的镜像 ID、平台和缓存身份标签。镜像被删除或记录不匹配时重新构建；失败和取消不发布记录，取消先收回构建子进程再释放锁。配置、构建参数及凭据值不写入缓存记录或诊断收据。
+
+目前缓存支持普通文件/目录的本地上下文、标准 Dockerfile、固定摘要基础镜像、build args、target 和 labels。基础镜像配置也检查继承的 ONBUILD。可变基础镜像、自定义 frontend、ADD、RUN 外部挂载、SSH/secrets、额外上下文、符号链接/特殊文件/xattr、显式 pull/no_cache 等不能完整确定输入的配置，整组 Compose 保留原构建路径。首次获取基础镜像配置可能需要 registry；校验后的固定摘要配置可在后续直接复用。force_build 绕过准备缓存。只有 Harbor 显式发出的 build 请求进入缓存；已选择预构建镜像时，up 保留原有镜像及 pull policy 的优先级。
+
+命中后用不可变镜像 ID 启动，移除对应 build 字段并设置 pull_policy=never，防止 up 再次构建。候选、验证器和配套服务仍各自创建容器、可写层、工作目录和日志；缓存目录不挂入任何任务容器，评分、产物传递、资源和网络限制不变。候选预构建镜像参数不会传递成验证器的镜像。
+
+managed keepalive 只替换 Harbor 默认的 sh/sleep 保活命令，让 shell 接收停止信号、终止并等待 sleep、正常退出。任务声明 command、entrypoint、init、停止信号/超时或 pre_stop，镜像含 ENTRYPOINT 或使用其他停止信号时，保留其行为。不会缩短用户停止宽限期或复用有状态验证器。
+
+准备镜像持久保留；使用缓存的 down 不执行 --rmi local，容器、卷和网络仍按原参数清理。目录中的 image-*.json 给出对应的 Hitch 专用镜像 tag，可在确认不再被使用后按 tag 清理；删除缓存记录不等于删除 Docker 镜像。缓存镜像或记录被外部清理后，下次使用会重新准备。宿主同权限进程仍属于受信任边界。
+
+每个环境在 trial 根目录写入 hitch-preparation-*.json，包含命中/回退、镜像 ID、缓存 key 以及快照、基础镜像检查、锁等待、构建和探测时间。可移植验证器重放移除宿主安装与缓存路径，保留评分设置。
+
+真实 Docker 回归使用独立应用 fixture，不调用模型；基础镜像以摘要指定，可从 registry 获取：
+
+```sh
+npm run build
+HITCH_IMAGE_PREPARATION_DOCKER_TEST=1 \
+HITCH_HARBOR_TEST_PYTHON=/path/to/harbor/venv/bin/python \
+HITCH_IMAGE_PREPARATION_TEST_IMAGE='node@sha256:YOUR_DIGEST' \
+  node --test dist/test/image-preparation.integration.test.js
+```

@@ -52,12 +52,13 @@ export async function nativePhaseDescriptor(input: ImportEvalRunOptions, taskId:
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(taskId)) return null;
   if (!pkg) {
     if (typeof input.request.dataset !== "string" || !input.request.dataset) return null;
-    const manifest = await loadBenchmarkAdapterManifest(input.request.dataset);
-    if (!manifest || manifest.benchmark.id !== input.benchmarkId || manifest.dataset_digest !== input.benchmarkRevision) return null;
     const descriptor = await readJSON<RecordValue | null>(path.join(input.request.dataset, taskId, ".hitch-benchmark.json"), null);
     if (!descriptor) return null;
     const task = descriptor.task as BenchmarkTaskV1;
     if (task?.driver?.kind !== "tool-server" || !task.driver.config.native_phases) return null;
+    const manifest = await loadBenchmarkAdapterManifest(input.request.dataset,
+      input.datasetVerification === "task" ? { taskId, expectedRevision: input.benchmarkRevision } : undefined);
+    if (!manifest || manifest.benchmark.id !== input.benchmarkId || manifest.dataset_digest !== input.benchmarkRevision) return null;
     const contract = descriptor.score_contract as RecordValue | undefined;
     if (descriptor.task_id !== taskId || typeof descriptor.task_digest !== "string"
       || descriptor.primary_metric !== manifest.scoring.total_score.source_metric

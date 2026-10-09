@@ -63,6 +63,7 @@ constants = ModuleType("harbor.constants"); constants.MAIN_SERVICE_NAME = "main"
 docker = ModuleType("harbor.environments.docker.docker"); docker.DockerEnvironment = Environment
 yaml = ModuleType("yaml"); yaml.safe_load = json.loads
 sys.modules.update({"harbor.constants": constants, "harbor.environments.docker.docker": docker, "yaml": yaml})
+sys.path.insert(0, str(bridge.parent))
 env_spec = importlib.util.spec_from_file_location("environment_wrapper", bridge.with_name("hitch_harbor_environment.py"))
 wrapper = importlib.util.module_from_spec(env_spec); env_spec.loader.exec_module(wrapper)
 

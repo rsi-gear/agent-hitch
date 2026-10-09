@@ -96,7 +96,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       reference: runtimeRefFile,
     });
     const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
-    const standardDataset = localTaskIds !== null && await loadBenchmarkAdapterManifest(normalized.dataset) !== null;
+    const standardManifest = localTaskIds === null ? null : await loadBenchmarkAdapterManifest(normalized.dataset, { expectedRevision: normalized.benchmark_revision });
+    const standardDataset = standardManifest !== null;
     const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
     await withEnvironmentImageReferenceLock(root, () => beginEvalEnvironmentImagePlanning(evalDirectory, evalId));
     const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, harborTaskResourceInspector: path.join(controllerRuntime.directory, "payload", "integrations", "harbor", "hitch_harbor_task_resources.py"), ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
@@ -178,7 +179,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       writeEvalPlanningCheckpoint(evalDirectory, logicalPlan, progress),
     ]);
     const selectedArtifactBuilder = harborArtifactBuilder ?? (env.NODE_ENV === "test" && env.HITCH_TEST_HOST_ARTIFACT_BUILDER === "1" ? prepareHostHarborArtifactForTest : prepareHarborArtifact);
-    const prepared = await prepareEvalArtifactAssignments({ builder: selectedArtifactBuilder, root, resolvedRevision, requestedReference, controllerRuntime, ...(localTransport ? { localTransport } : {}), taskRuntimeContracts: localPlanning.taskRuntimeContracts, sink, env, ...(signal ? { signal } : {}) });
+    const prepared = await prepareEvalArtifactAssignments({ builder: selectedArtifactBuilder, root, resolvedRevision, requestedReference, controllerRuntime, ...(!remoteWorkExecutor ? { sharedRuntimeDirectory: path.join(evalDirectory, "shared-runtime") } : {}), ...(localTransport ? { localTransport } : {}), taskRuntimeContracts: localPlanning.taskRuntimeContracts, sink, env, ...(signal ? { signal } : {}) });
     const preparedAssignments = prepared.assignments;
     const preparedArtifact = prepared.primary;
     const preparedArtifacts = prepared.artifactsById;
@@ -290,6 +291,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         plan: executionPlan,
         progress,
         request: normalized,
+        datasetVerification: standardDataset ? "task" : undefined,
         root,
         resolvedRevision,
         controllerRuntime,
@@ -467,6 +469,11 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     failureStage = "finalizing";
     await onControlPhase?.("finalizing");
     trialRefs = progress.trials;
+    // Collection checks each task, so sweep the dataset again to detect edits to
+    // already-collected or unselected tasks before declaring the eval complete.
+    if (standardDataset && !signal?.aborted && !await loadBenchmarkAdapterManifest(normalized.dataset, { expectedRevision: normalized.benchmark_revision })) {
+      throw invalidInput("benchmark adapter manifest disappeared after eval admission");
+    }
     result = buildCompletedEvalResult({
       evalId, request: normalized, plannedTaskExecution, plannedTrials,
       executionWorkItems: executionPlan.work_items.length, localTaskIds, backendRuns,

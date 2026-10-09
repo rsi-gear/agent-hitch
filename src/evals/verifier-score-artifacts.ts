@@ -42,11 +42,14 @@ export async function captureVerifierScoreEvidence(input: {
   credentialValues?: readonly string[];
   dataset?: string;
   benchmarkRevision?: string;
+  taskId?: string;
   signal?: AbortSignal;
 }): Promise<CapturedVerifierScoreEvidenceV1> {
   try {
     throwIfAborted(input.signal);
-    const adapterManifest = input.dataset === undefined ? null : await loadBenchmarkAdapterManifest(input.dataset);
+    const adapterManifest = input.dataset === undefined ? null : await loadBenchmarkAdapterManifest(input.dataset,
+      input.taskId !== undefined && input.benchmarkRevision !== undefined
+        ? { taskId: input.taskId, expectedRevision: input.benchmarkRevision } : undefined);
     if (adapterManifest && adapterManifest.dataset_digest !== input.benchmarkRevision) {
       throw new TypeError("benchmark adapter manifest changed after eval admission");
     }
