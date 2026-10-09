@@ -28,6 +28,11 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Prepare Python bridge test dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/hitch-test-python"
+          "$RUNNER_TEMP/hitch-test-python/bin/python" -m pip install -r test-support/requirements.txt
+          echo "$RUNNER_TEMP/hitch-test-python/bin" >> "$GITHUB_PATH"
       - run: npm ci
       # The build invokes tsc with the same configuration as typecheck.
       - name: Build and typecheck

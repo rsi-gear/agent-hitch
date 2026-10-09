@@ -1,0 +1,3 @@
+# Real Compose parsing in the daemon-free Harbor bridge tests.
+# PyYAML is already provided by Harbor for integration/runtime execution.
+PyYAML==6.0.3

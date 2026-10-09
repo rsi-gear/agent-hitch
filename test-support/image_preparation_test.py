@@ -322,10 +322,12 @@ class ComposeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_custom_runtime_declarations_and_entrypoints_are_preserved(self):
         for key in ("command", "entrypoint", "init", "stop_signal", "stop_grace_period", "pre_stop"):
-            self.env._environment_docker_compose_path.write_text(json.dumps({"services": {"main": {key: None}}}))
-            candidate = ComposePreparation(self.env, managed_keepalive=True)
-            await candidate.runtime(self.compose_call)
-            self.assertIsNone(candidate.path)
+            for content in (json.dumps({"services": {"main": {key: None}}}), f"services:\n  main:\n    {key}: null\n"):
+                with self.subTest(key=key, content=content):
+                    self.env._environment_docker_compose_path.write_text(content)
+                    candidate = ComposePreparation(self.env, managed_keepalive=True)
+                    await candidate.runtime(self.compose_call)
+                    self.assertIsNone(candidate.path)
         self.env._environment_docker_compose_path.unlink()
         for config in ({"Entrypoint": ["/custom"]}, {"StopSignal": "SIGQUIT"}):
             self.image["Config"] = config
