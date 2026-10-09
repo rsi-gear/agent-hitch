@@ -9,6 +9,7 @@ import type { EvalHarborArtifactBuilder } from "./harbor-artifact-builder.js";
 import type { LocalEvalPlanningResultV1 } from "./local-eval-planning.js";
 import { prepareEvalHarborArtifact, preparedHarnessEvent } from "./prepared-harness.js";
 import { preparedArtifactSummary } from "./result-helpers.js";
+import { SharedRuntimeSnapshots } from "./shared-runtime.js";
 
 export interface PreparedEvalArtifactAssignment {
   taskIds: string[];
@@ -19,6 +20,7 @@ export interface PreparedEvalArtifactAssignment {
 export async function prepareEvalArtifactAssignments(input: {
   builder: EvalHarborArtifactBuilder;
   root: string;
+  sharedRuntimeDirectory?: string;
   resolvedRevision: ResolvedRevision;
   requestedReference: ParsedHarnessReference;
   controllerRuntime: ControllerRuntimeUseResult;
@@ -33,6 +35,7 @@ export async function prepareEvalArtifactAssignments(input: {
   artifactsById: Map<string, HarborPreparedArtifactUse>;
 }> {
   const assignments: PreparedEvalArtifactAssignment[] = [];
+  const snapshots = new SharedRuntimeSnapshots(input.sharedRuntimeDirectory, input.controllerRuntime, input.env.HITCH_HARBOR_RUNTIME_TRANSPORT);
   for (const assignment of input.taskRuntimeContracts) {
     const runtimeContract = harborTrialRuntimeContract(assignment.docker_platform);
     const prepared = await prepareEvalHarborArtifact({
@@ -46,7 +49,14 @@ export async function prepareEvalArtifactAssignments(input: {
       env: input.env,
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    assignments.push({ taskIds: assignment.task_ids, runtimeContract, artifact: prepared.artifact });
+    const artifact = await snapshots.prepare(prepared.artifact, input.signal);
+    assignments.push({ taskIds: assignment.task_ids, runtimeContract, artifact });
+    if (artifact.sharedRuntime) {
+      input.sink.emit({
+        type: "eval.shared-runtime.prepared", transport: "readonly-bind",
+        artifact_id: artifact.artifact_id, runtime_id: input.controllerRuntime.runtime_id, task_ids: assignment.task_ids,
+      });
+    }
     input.sink.emit({
       ...preparedHarnessEvent(prepared.artifact, prepared.cacheHit, prepared.source, {
         ...(prepared.builderImage ? { image: prepared.builderImage } : {}),

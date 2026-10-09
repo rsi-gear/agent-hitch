@@ -8,7 +8,7 @@ import { harborAgentTimeoutOverride } from "./agent-budget.js";
 import { DEFAULT_HARBOR_VERSION, HARBOR_CREDENTIAL_ENV, locateHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
 import { invokeHarbor } from "./process.js";
-import { harborEnvironmentConfig } from "./environment-config.js";
+import { harborEnvironmentConfig, harborPreparationOptions } from "./environment-config.js";
 import type { HarborDockerServiceLimitsV1 } from "./environment-config.js";
 import { parseHarborModelProxyRoute } from "./model-proxy-config.js";
 import { HARBOR_NODE_VERSION_WITH_PREFIX } from "./runtime-toolchain.js";
@@ -50,6 +50,7 @@ export interface RunHarborBackendOptions {
 }
 
 export interface HarborPreparedArtifactUse {
+  sharedRuntime?: { runtime_directory: string; artifact_directory: string };
   directory: string;
   artifact_id: string;
   artifact_integrity: string;
@@ -358,11 +359,11 @@ export async function buildHarborJobConfig({
       // The bridge consumes the shared compiled runtime cache. The local
       // absolute cache path is diagnostic machine-local state, not identity
       // (spec §4.2); `runtime_id` records the exact execution payload.
-      hitch_runtime_dir: runtimeDirectory,
+      hitch_runtime_dir: preparedArtifact.sharedRuntime?.runtime_directory ?? runtimeDirectory,
       ...(runtimeId ? { controller_runtime_id: runtimeId } : {}),
       node_version: HARBOR_NODE_VERSION_WITH_PREFIX,
       harness_artifact: {
-        directory: preparedArtifact.directory,
+        directory: preparedArtifact.sharedRuntime?.artifact_directory ?? preparedArtifact.directory,
         artifact_id: preparedArtifact.artifact_id,
         artifact_integrity: preparedArtifact.artifact_integrity,
         entrypoint_integrity: preparedArtifact.entrypoint_integrity,
@@ -399,6 +400,8 @@ export async function buildHarborJobConfig({
       prebuiltTaskImage,
       Boolean(modelProxy && process.platform === "linux"),
       hostCredentialHelper !== null,
+      preparedArtifact.sharedRuntime,
+      harborPreparationOptions(env),
     ),
     verifier: harborVerifierConfig(request),
     agents: [agent],

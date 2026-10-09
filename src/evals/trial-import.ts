@@ -39,6 +39,8 @@ export interface ImportEvalRunsOptions {
   resolvedRevision: ResolvedRevision;
   benchmarkId: string;
   benchmarkRevision: string;
+  /** Only enable when the caller fully verifies the dataset before and after execution. */
+  datasetVerification?: "task" | undefined;
   runtimeId?: string;
   harborJobDirectory?: string;
   expectedAttempt?: number;
@@ -223,7 +225,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     );
     const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(staging, verifierInfrastructure);
-    const structured = await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
+    const structured = await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, taskId: input.datasetVerification === "task" ? input.taskId : undefined, signal: input.signal });
     const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(input.trialDirectory, credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env))
@@ -302,7 +304,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     );
     const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
+    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, taskId: input.datasetVerification === "task" ? input.taskId : undefined, signal: input.signal });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(
         input.trialDirectory,

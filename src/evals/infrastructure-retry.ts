@@ -72,6 +72,7 @@ export interface RunInfrastructureRetriesOptions {
   initialRefs: readonly EvalTrialRefV1[];
   progress: EvalProgressV1;
   request: EvalRequest;
+  datasetVerification?: "task" | undefined;
   root: string;
   resolvedRevision: ResolvedRevision;
   controllerRuntime: ControllerRuntimeUseResult;
@@ -255,6 +256,7 @@ export async function runInfrastructureRetries(
               resolvedRevision: options.resolvedRevision,
               benchmarkId: options.request.benchmark_id,
               benchmarkRevision: options.request.benchmark_revision,
+              datasetVerification: options.datasetVerification,
               publicationMode: "replace-invalid",
               runtimeId: options.controllerRuntime.runtime_id,
               env: options.env,
@@ -291,6 +293,7 @@ export async function runInfrastructureRetries(
         resolvedRevision: options.resolvedRevision,
         benchmarkId: options.request.benchmark_id,
         benchmarkRevision: options.request.benchmark_revision,
+        datasetVerification: options.datasetVerification,
         publicationMode: "replace-invalid",
         runtimeId: options.controllerRuntime.runtime_id,
         env: options.env,

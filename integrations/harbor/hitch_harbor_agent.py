@@ -249,7 +249,10 @@ class HitchHarborAgent(BaseAgent):
         # Upload the cached bundle's payload (package.json + dist/) as the
         # package root under /opt/hitch; the local cache path is host-side
         # bookkeeping and is not identity (spec §4.2).
-        await environment.upload_dir(payload_dir, "/opt/hitch")
+        shared = getattr(environment, "hitch_verify_shared_runtime", None)
+        shared_ready = await shared(payload_dir, self._artifact_host_directory) if shared else False
+        if not shared_ready:
+            await environment.upload_dir(payload_dir, "/opt/hitch")
         await self._ensure_node(environment)
         platform, node_version = await self._container_node_identity(environment)
         if self._artifact_manifest is None or not self._artifact_compatible(
@@ -259,8 +262,12 @@ class HitchHarborAgent(BaseAgent):
                 "hitch-artifact-platform: dedicated-builder artifact is incompatible with "
                 f"trial runtime {platform}/{node_version}"
             )
-        await self._upload_harness_artifact(environment, self._artifact_host_directory)
-        self._artifact_transport_status = "dedicated_builder_upload"
+        if shared_ready:
+            self._artifact_uploaded = True
+            self._artifact_transport_status = "shared_readonly_bind"
+        else:
+            await self._upload_harness_artifact(environment, self._artifact_host_directory)
+            self._artifact_transport_status = "dedicated_builder_upload"
         entry = self._remote_entry(entrypoint)
         version = await self._exec(environment, f"{self._node_prefix()} node {entry} --version")
         self._hitch_version = (version.stdout or "").strip() or None

@@ -102,6 +102,7 @@ export async function runPlannedInfrastructureRetriesFromSource(
     initialRefs: source.refs,
     progress,
     request: options.request,
+    datasetVerification: options.datasetVerification,
     root: options.root,
     resolvedRevision: options.resolvedRevision,
     controllerRuntime: options.controllerRuntime,

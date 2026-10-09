@@ -41,9 +41,12 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
   const rerunId = f.physical.rerun_id, rerunDirectory = path.join(f.evalDirectory, "reruns", rerunId);
   const before = sha256JSON(await verifyResultBundleIndex(f.runDirectory));
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error("scoring test timeout")), 15_000); t.after(() => clearTimeout(timeout));
+  // Runtime transfer, verification and result import share the test runner's
+  // deadline. A separate wall-clock budget makes release assertions depend on
+  // host throughput; interrupted-release cases keep their explicit 200 ms bound.
+  const requestSignal = AbortSignal.any([controller.signal, t.signal]);
   let dispatches = 0;
-  const options = { root: f.root, evalId: f.evalId, rerunId, signal: controller.signal, rerunType: "verifier-only" as const, selector: { mode: "invalid" as const },
+  const options = { root: f.root, evalId: f.evalId, rerunId, signal: requestSignal, rerunType: "verifier-only" as const, selector: { mode: "invalid" as const },
     executionWorker: { provider: f.plan.provider, workerId: "controller", collisionDomainId: "controller" },
     remoteWorkExecutor: async (input: Parameters<typeof coordinator.execute>[0]) => {
       dispatches++; assert.equal(input.modelTarget, undefined); assert.equal(input.modelCapturePlan, undefined);
@@ -67,7 +70,7 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
       const processFixture = await writeRemoteVerifierProcess(f.root);
       const outcome = await remoteHarborWorker({ root: path.join(f.root, "worker-state"), env: processFixture.env,
         harborExecutable: processFixture.harbor, dockerExecutable: processFixture.docker })({ offer: accepted, inputs: new Map(inputs),
-        credentials: new Map(), signal: controller.signal, emit: async () => {}, readExecutionLease: signal => client.executionLease(accepted, signal) });
+        credentials: new Map(), signal: requestSignal, emit: async () => {}, readExecutionLease: signal => client.executionLease(accepted, signal) });
       assert.equal(outcome.status, "succeeded", outcome.artifacts?.filter(a => a.kind === "diagnostic").map(a => a.body.toString()).join("\n"));
       assert.equal(outcome.artifacts?.length, 1); body = outcome.artifacts![0]!.body; release = outcome.release;
     } else {
@@ -124,7 +127,10 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
   // Recreate an interrupted outer journal; physical work and immutable selection remain authoritative.
   const state = await readJSON<Record<string, unknown>>(path.join(rerunDirectory, "state.json"));
   await atomicWriteJSON(path.join(rerunDirectory, "state.json"), { ...state, status: "running" });
-  const replay = await rerunEval({ ...options, resumeRemoteRerun: true });
+  // Recovery is a new request, with the same test deadline but independent of
+  // the original request's cancellation.
+  controller.abort(new Error("original request ended before recovery"));
+  const replay = await rerunEval({ ...options, signal: t.signal, resumeRemoteRerun: true });
   assert.equal(replay.eval_status, mode === "invalid" ? "failed" : "succeeded"); assert.equal(dispatches, 1);
   assert.equal((await readEvalProgress(f.evalDirectory))?.generation, generation);
   assert.equal(sha256JSON(await verifyResultBundleIndex(f.runDirectory)), before);

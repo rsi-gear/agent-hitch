@@ -53,6 +53,10 @@
     "docs/local-model-inference-spec.zh-CN.md",
     "integrations/harbor/hitch_harbor_agent.py",
     "integrations/harbor/hitch_harbor_environment.py",
+    "integrations/harbor/hitch_shared_runtime.py",
+    "integrations/harbor/hitch_build_inputs.py",
+    "integrations/harbor/hitch_image_cache.py",
+    "integrations/harbor/hitch_compose_preparation.py",
     "integrations/harbor/hitch_host_credentials.py",
     "integrations/harbor/hitch_private_exec.py",
     "integrations/harbor/hitch_candidate_recycle.py",
@@ -64,6 +68,8 @@
     "integrations/model-call/cli.js",
     "integrations/training-tool/cli.js",
     "docs/resource-storage.zh-CN.md",
+    "docs/evidence/eval-preparation-2026-10-09.md",
+    "docs/evidence/eval-preparation-2026-10-09.json",
     "benchmark-packages/shared-tree/",
     "benchmark-packages/automationbench/resources.mjs",
     "benchmark-packages/automationbench/RESOURCES.md",
@@ -101,5 +107,6 @@
   "license": "Apache-2.0",
   "dependencies": {
     "smol-toml": "1.8.0"
-  }
+  },
+  "bundleDependencies": true
 }

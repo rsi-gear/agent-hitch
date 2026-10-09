@@ -8,9 +8,12 @@ private task data from examples and logs.
 
 ## Development setup
 
-Use Git, npm, Node.js 22 or 24, and Python 3 for the Harbor bridge tests.
+Use Git, npm, Node.js 22 or 24, and Python 3.11 or newer for the Harbor bridge tests.
 `package.json` defines the supported Node range; the
 [CI workflow](.github/workflows/ci.yml) defines the tested versions and platforms.
+The full Unix test suite uses PyYAML to exercise Compose parsing. Install the
+pinned [test dependencies](test-support/requirements.txt) in a virtual environment
+instead of relying on packages preinstalled by the host or CI runner.
 Docker, Harbor, model credentials, and GPUs are needed only for the checks that
 exercise those integrations.
 
@@ -18,6 +21,9 @@ exercise those integrations.
 git clone https://github.com/rsi-gear/agent-hitch.git
 cd agent-hitch
 git switch dev
+python3 -m venv .venv-test
+. .venv-test/bin/activate
+python -m pip install -r test-support/requirements.txt
 npm ci
 npm run check
 ```

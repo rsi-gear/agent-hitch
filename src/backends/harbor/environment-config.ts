@@ -1,9 +1,28 @@
 import type { DockerResourceOwnershipV1, ResourceVectorV1 } from "../../domain/index.js";
+import path from "node:path";
 import { HitchError, invalidInput } from "../../foundation/index.js";
 
 const HITCH_DOCKER_ENVIRONMENT = "hitch_harbor_environment:HitchHarborDockerEnvironment";
 
 export type HarborDockerServiceLimitsV1 = Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
+
+export interface HarborPreparationOptions {
+  cacheDirectory?: string;
+  buildSlots?: number;
+  managedKeepalive?: boolean;
+}
+
+export function harborPreparationOptions(env: NodeJS.ProcessEnv): HarborPreparationOptions {
+  const keepalive = env.HITCH_HARBOR_MANAGED_KEEPALIVE;
+  if (keepalive !== undefined && keepalive !== "0" && keepalive !== "1") throw invalidInput("HITCH_HARBOR_MANAGED_KEEPALIVE must be 0 or 1");
+  const slots = env.HITCH_HARBOR_IMAGE_BUILD_SLOTS;
+  if (slots !== undefined && !/^[1-9][0-9]*$/.test(slots)) throw invalidInput("HITCH_HARBOR_IMAGE_BUILD_SLOTS must be a positive integer");
+  return {
+    ...(env.HITCH_HARBOR_IMAGE_CACHE_DIR === undefined ? {} : { cacheDirectory: env.HITCH_HARBOR_IMAGE_CACHE_DIR }),
+    ...(slots === undefined ? {} : { buildSlots: Number(slots) }),
+    ...(keepalive === "1" ? { managedKeepalive: true } : {}),
+  };
+}
 
 export function harborEnvironmentConfig(
   resources?: ResourceVectorV1,
@@ -13,6 +32,8 @@ export function harborEnvironmentConfig(
   prebuiltTaskImage?: string,
   modelProxyHostGateway = false,
   privateExecEnvironment = false,
+  sharedRuntime?: { runtime_directory: string; artifact_directory: string },
+  preparation: HarborPreparationOptions = {},
 ): Record<string, unknown> {
   const environment: Record<string, unknown> = { type: "docker", delete: true };
   let gpuCount = 0;
@@ -31,9 +52,15 @@ export function harborEnvironmentConfig(
   if (serviceLimits && !ownership) throw invalidInput("Harbor sidecar limits require Docker ownership");
   const images = resolvedImages ? parseResolvedImages(resolvedImages) : {};
   if (prebuiltTaskImage !== undefined && !/^sha256:[a-f0-9]{64}$/.test(prebuiltTaskImage)) throw invalidInput("Harbor prebuilt task image is invalid");
-  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage || modelProxyHostGateway || gpuCount > 0 || privateExecEnvironment) Object.assign(environment, {
+  if (preparation.cacheDirectory !== undefined && (!path.isAbsolute(preparation.cacheDirectory) || /[\0\r\n]/.test(preparation.cacheDirectory))) throw invalidInput("Hitch image cache directory must be absolute");
+  if (preparation.buildSlots !== undefined && (!Number.isSafeInteger(preparation.buildSlots) || preparation.buildSlots < 1 || preparation.buildSlots > 64 || !preparation.cacheDirectory)) throw invalidInput("Hitch image build slots require a cache directory and a value between 1 and 64");
+  if (preparation.managedKeepalive !== undefined && typeof preparation.managedKeepalive !== "boolean") throw invalidInput("Hitch managed keepalive flag is invalid");
+  if (ownership || Object.keys(images).length > 0 || prebuiltTaskImage || modelProxyHostGateway || gpuCount > 0 || privateExecEnvironment || sharedRuntime || preparation.cacheDirectory || preparation.managedKeepalive) Object.assign(environment, {
     import_path: HITCH_DOCKER_ENVIRONMENT,
     kwargs: {
+      ...(preparation.cacheDirectory ? { hitch_image_cache_dir: preparation.cacheDirectory, hitch_image_build_slots: preparation.buildSlots ?? 2 } : {}),
+      ...(preparation.managedKeepalive ? { hitch_managed_keepalive: true } : {}),
+      ...(sharedRuntime ? { hitch_shared_runtime: sharedRuntime } : {}),
       ...(ownership ? { hitch_ownership_labels: harborOwnershipLabels(ownership) } : {}),
       ...(serviceLimits && Object.keys(serviceLimits).length > 0 ? { hitch_service_resource_limits: parseServiceLimits(serviceLimits) } : {}),
       ...(Object.keys(images).length > 0 ? { hitch_resolved_images: images } : {}),

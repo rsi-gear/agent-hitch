@@ -63,10 +63,22 @@ export async function buildBenchmarkAdapterManifest(input: {
   return { ...body, dataset_digest: sha256(canonicalJson(body)) };
 }
 
-/** Load and integrity-check the optional Gear standardized-dataset manifest. */
-export async function loadBenchmarkAdapterManifest(dataset: string): Promise<BenchmarkAdapterManifest | null> {
+/**
+ * Full verification is the default, including at eval admission and finalization.
+ * During collection, a pinned revision permits checking only the current task's
+ * payload. The manifest contract and task membership are still checked each time.
+ * No successful file checks are cached: retries must observe subsequent edits.
+ */
+export async function loadBenchmarkAdapterManifest(dataset: string, verification?: {
+  expectedRevision: string;
+  taskId?: string;
+}): Promise<BenchmarkAdapterManifest | null> {
   const resource = await readResourceInput(dataset);
-  if (resource) return "schema_version" in resource ? resource : { ...resource.manifest, tasks: resource.tasks, dataset_digest: resource.digest };
+  if (resource) {
+    const manifest = "schema_version" in resource ? resource : { ...resource.manifest, tasks: resource.tasks, dataset_digest: resource.digest };
+    checkedTasks(manifest, verification);
+    return manifest;
+  }
   const root = path.resolve(dataset);
   let raw: unknown;
   try {
@@ -79,8 +91,9 @@ export async function loadBenchmarkAdapterManifest(dataset: string): Promise<Ben
     throw error;
   }
   const manifest = parseManifest(raw);
-  const actualTasks: Array<{ task_id: string; task_digest: Sha256 }> = [];
-  for (const task of manifest.tasks) {
+  const { dataset_digest, ...body } = manifest;
+  if (dataset_digest !== sha256(canonicalJson(body))) throw invalidInput("benchmark adapter dataset digest mismatch");
+  for (const task of checkedTasks(manifest, verification)) {
     const directory = path.join(root, task.task_id);
     const info = await lstat(directory).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") throw invalidInput(`manifest task is missing: ${task.task_id}`);
@@ -89,7 +102,6 @@ export async function loadBenchmarkAdapterManifest(dataset: string): Promise<Ben
     if (!info.isDirectory() || info.isSymbolicLink()) throw invalidInput(`manifest task is not a directory: ${task.task_id}`);
     const digest = await taskTreeDigest(directory);
     if (digest !== task.task_digest) throw invalidInput(`manifest task digest mismatch: ${task.task_id}`);
-    actualTasks.push({ task_id: task.task_id, task_digest: digest });
   }
   const taskDirectories: string[] = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -101,21 +113,21 @@ export async function loadBenchmarkAdapterManifest(dataset: string): Promise<Ben
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  if (JSON.stringify(taskDirectories.sort()) !== JSON.stringify(actualTasks.map((task) => task.task_id))) {
+  if (JSON.stringify(taskDirectories.sort()) !== JSON.stringify(manifest.tasks.map((task) => task.task_id))) {
     throw invalidInput("benchmark adapter manifest task set does not match the dataset");
   }
-  const body = {
-    schema_version: manifest.schema_version,
-    kind: manifest.kind,
-    benchmark: manifest.benchmark,
-    adapter: manifest.adapter,
-    scoring: manifest.scoring,
-    ...(manifest.raw_metrics === undefined ? {} : { raw_metrics: manifest.raw_metrics }),
-    tasks: actualTasks,
-  };
-  const expected = sha256(canonicalJson(body));
-  if (manifest.dataset_digest !== expected) throw invalidInput("benchmark adapter dataset digest mismatch");
   return manifest;
+}
+
+function checkedTasks(manifest: BenchmarkAdapterManifest, verification?: { expectedRevision: string; taskId?: string }) {
+  if (verification && manifest.dataset_digest !== verification.expectedRevision) {
+    throw invalidInput("benchmark adapter manifest changed after eval admission");
+  }
+  if (verification?.taskId === undefined) return manifest.tasks;
+  const id = taskId(verification.taskId);
+  const selected = manifest.tasks.find(task => task.task_id === id);
+  if (!selected) throw invalidInput(`task is not in the benchmark adapter manifest: ${id}`);
+  return [selected];
 }
 
 export function scoreWithinRange(score: number, definition: BenchmarkScoreDefinitionV1): boolean {

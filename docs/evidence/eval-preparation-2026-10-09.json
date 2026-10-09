@@ -1,0 +1,393 @@
+{
+  "recorded_at": "2026-10-09",
+  "scope": "Historical measurements preceding the PR cancellation-cleanup hardening and transplant to dev; no claim that the final PR runtime was used in these measurements.",
+  "environment": {
+    "host": "Linux x86_64; Intel Xeon Platinum KVM guest; 16 logical CPUs; 65,923,194,880 bytes RAM",
+    "node": "22.22.1",
+    "docker": "29.1.3",
+    "harbor": "0.21.0",
+    "model": "GPT-6 Luna via subscription (provider snapshot unresolved)"
+  },
+  "provenance": [
+    {
+      "archive": "profiling-20/dataset-fix-replay.json",
+      "sha256": "208c288701c3ad2aad541fa08caf7a234436263ed50e02b75db8380e47180e06"
+    },
+    {
+      "archive": "profiling-runtime-sharing/setup-comparison.json",
+      "sha256": "076bee8f9a5c49d1fcad24103a4be1ba437f32b51b71aed8fbfca36e650d3bd9"
+    },
+    {
+      "archive": "image-preparation-optimization/results.json",
+      "sha256": "cde8c293e6caba11c385cec78ac53d58bd4731f46b1912e811493aff08246a64"
+    },
+    {
+      "archive": "image-preparation-optimization/verifier-replay/result.json",
+      "sha256": "fa0cfcc9ce93605c24781705c5ad3060b4a4750836e86ebfb34693f576486431"
+    },
+    {
+      "archive": "gear-one-round-optimized/repeat-baseline-100/three-way-comparison.json",
+      "sha256": "5303f428331d32c920fdc8fc809f3a7957eccc749a643a99f72d9eb64feff5a0"
+    }
+  ],
+  "dataset_replay": {
+    "measured_at": "2026-10-08T15:35:35.503Z",
+    "model_calls": 0,
+    "note": "Sequential dataset-check replay, not end-to-end evaluation; bytes are logical reads, not physical disk I/O.",
+    "logical_byte_reduction": 0.9047557673677712,
+    "results": [
+      {
+        "mode": "optimized",
+        "tasks": 20,
+        "dataset_digest": "sha256:d66a830075362fc03124543c2f1ee4649e19b693a582d38feffc1a0a3f3ffd21",
+        "wall_ms": 31458.281092,
+        "collection_ms": 8200.212244000002,
+        "successful_dataset_reads": 93486,
+        "logical_dataset_bytes": 2786968032
+      },
+      {
+        "mode": "baseline",
+        "tasks": 20,
+        "dataset_digest": "sha256:d66a830075362fc03124543c2f1ee4649e19b693a582d38feffc1a0a3f3ffd21",
+        "wall_ms": 403823.85438100004,
+        "collection_ms": 389990.11956300004,
+        "successful_dataset_reads": 981204,
+        "logical_dataset_bytes": 29261278662
+      },
+      {
+        "mode": "optimized",
+        "tasks": 20,
+        "dataset_digest": "sha256:d66a830075362fc03124543c2f1ee4649e19b693a582d38feffc1a0a3f3ffd21",
+        "wall_ms": 48336.64004099998,
+        "collection_ms": 11848.485729999957,
+        "successful_dataset_reads": 93486,
+        "logical_dataset_bytes": 2786968032
+      }
+    ]
+  },
+  "runtime_setup": {
+    "tasks_per_batch": 20,
+    "concurrency": 16,
+    "order": [
+      "upload",
+      "shared",
+      "shared",
+      "upload"
+    ],
+    "successful_setups": 80,
+    "model_calls": 0,
+    "upload": {
+      "setup_seconds_per_task": 30.16,
+      "harness_upload_seconds_per_task": 18.31,
+      "controller_upload_seconds_per_task": 0.51,
+      "host_process_cpu_core_seconds_per_batch": 194.25,
+      "batch_wall_seconds": 111.76
+    },
+    "shared": {
+      "setup_seconds_per_task": 10.85,
+      "harness_upload_seconds_per_task": 0,
+      "controller_upload_seconds_per_task": 0,
+      "host_process_cpu_core_seconds_per_batch": 109.59,
+      "batch_wall_seconds": 40.84
+    },
+    "excluded_snapshot_seconds": [
+      10.259019555,
+      12.346748256
+    ]
+  },
+  "image_and_lifecycle": {
+    "scope": "Same frozen 20 tasks, C16, Luna subscription; harness prepared in advance. Baseline has warm dependency/build-layer caches; optimized full runs also reuse the prepared-image cache. Cold image preparation and harness warmup are measured separately. Whole-host and daemon resource counters include other host activity. Container and process totals can miss sub-second lifetimes.",
+    "baseline": {
+      "evalId": "eval_64cbf7280dfe4f598745928a5d2b5744",
+      "runtimeIds": [
+        "sha256:2658a4f4417eac3807a4d0c8d7fc1e5e901fd060f1ad363d7e478827eed1282b"
+      ],
+      "wallSeconds": 514.1380000114441,
+      "phaseMeans": {
+        "slot_seconds": 285.1684499979019,
+        "environment_setup_seconds": 67.6658903837204,
+        "agent_setup_seconds": 17.371835076808928,
+        "agent_execution_seconds": 106.45874143838883,
+        "verifier_seconds": 65.41652805805207,
+        "native_other_seconds": 25.621624088287355,
+        "after_native_seconds": 1.5526309370994569,
+        "after_publish_seconds": 1.0812000155448913,
+        "verifier_body_seconds": 15.2249,
+        "verifier_lifecycle_seconds": 50.19162805805206
+      },
+      "preparationMean": {
+        "candidate": 39.5421057337,
+        "verifier": 20.7157033891
+      },
+      "stops": {
+        "candidate": {
+          "count": 20,
+          "sum": 213.26049423217773,
+          "mean": 10.663024711608887,
+          "median": 10.501216650009155,
+          "max": 11.307181596755981
+        },
+        "simulator": {
+          "count": 20,
+          "sum": 38.22067189216614,
+          "mean": 1.9110335946083068,
+          "median": 1.8672200441360474,
+          "max": 4.260472536087036
+        },
+        "verifier": {
+          "count": 20,
+          "sum": 210.8357436656952,
+          "mean": 10.54178718328476,
+          "median": 10.36497938632965,
+          "max": 11.635977268218994
+        }
+      },
+      "valid": 20,
+      "passes": 2,
+      "dockerDaemonCpuSeconds": 1316.926889,
+      "diskWriteGiB": 19.91425323486328,
+      "agentAverage": 4.5173376614991865,
+      "modelAverage": 3.092310337033131,
+      "probeQuality": {
+        "unclosedPython": 0,
+        "unclosedHost": 0,
+        "missingPatches": [],
+        "containerCoverage": {
+          "dockerListFailures": 1,
+          "containerApiFailures": 0,
+          "supplementalSamples": 515,
+          "supplementedContainerSamples": 29,
+          "eventErrors": [],
+          "observerRestarts": []
+        }
+      }
+    },
+    "warm_first": {
+      "evalId": "eval_9592b7d83bd64d84a0ef7322ac32617f",
+      "runtimeIds": [
+        "sha256:072b2230200ed16e5e27966342725e101e46023cb23f093b2fafa3c8b48849d9"
+      ],
+      "wallSeconds": 399.9470000267029,
+      "phaseMeans": {
+        "slot_seconds": 207.14064998626708,
+        "environment_setup_seconds": 33.20775940418243,
+        "agent_setup_seconds": 17.37574373483658,
+        "agent_execution_seconds": 117.32188109159469,
+        "verifier_seconds": 22.65836421251297,
+        "native_other_seconds": 13.715027666091919,
+        "after_native_seconds": 1.7154239416122437,
+        "after_publish_seconds": 1.1464499354362487,
+        "verifier_body_seconds": 14.51355,
+        "verifier_lifecycle_seconds": 8.14481421251297
+      },
+      "preparationMean": {
+        "candidate": 3.6222376064999997,
+        "verifier": 1.4092942058
+      },
+      "stops": {
+        "candidate": {
+          "count": 20,
+          "sum": 5.032052278518677,
+          "mean": 0.25160261392593386,
+          "median": 0.21620488166809082,
+          "max": 0.6075403690338135
+        },
+        "simulator": {
+          "count": 20,
+          "sum": 29.80813455581665,
+          "mean": 1.4904067277908326,
+          "median": 1.4453762769699097,
+          "max": 2.123774766921997
+        },
+        "verifier": {
+          "count": 20,
+          "sum": 5.935137748718262,
+          "mean": 0.2967568874359131,
+          "median": 0.24156415462493896,
+          "max": 0.7315433025360107
+        }
+      },
+      "valid": 20,
+      "passes": 3,
+      "dockerDaemonCpuSeconds": 342.916441,
+      "diskWriteGiB": 4.655399322509766,
+      "agentAverage": 6.599403245108653,
+      "modelAverage": 4.016821683707523,
+      "probeQuality": {
+        "unclosedPython": 0,
+        "unclosedHost": 0,
+        "missingPatches": [],
+        "containerCoverage": {
+          "dockerListFailures": 0,
+          "containerApiFailures": 0,
+          "supplementalSamples": 401,
+          "supplementedContainerSamples": 0,
+          "eventErrors": [],
+          "observerRestarts": []
+        }
+      }
+    },
+    "warm_final": {
+      "evalId": "eval_23be5bcafce94109aae85d32c7094f88",
+      "runtimeIds": [
+        "sha256:e6ecc646f98c5906aa44d863779941f6bf82f236d2ebfa7bc399c34bd087df2b"
+      ],
+      "wallSeconds": 372.13700008392334,
+      "phaseMeans": {
+        "slot_seconds": 201.82434998750688,
+        "environment_setup_seconds": 29.518565595149994,
+        "agent_setup_seconds": 16.651894664764406,
+        "agent_execution_seconds": 120.01988308429718,
+        "verifier_seconds": 20.959102857112885,
+        "native_other_seconds": 12.259714829921723,
+        "after_native_seconds": 1.205488955974579,
+        "after_publish_seconds": 1.2097000002861023,
+        "verifier_body_seconds": 13.78495,
+        "verifier_lifecycle_seconds": 7.174152857112884
+      },
+      "preparationMean": {
+        "candidate": 3.1690642686,
+        "verifier": 1.23830467335
+      },
+      "stops": {
+        "candidate": {
+          "count": 20,
+          "sum": 4.894258499145508,
+          "mean": 0.2447129249572754,
+          "median": 0.22374379634857178,
+          "max": 0.6866343021392822
+        },
+        "simulator": {
+          "count": 20,
+          "sum": 27.246562242507935,
+          "mean": 1.3623281121253967,
+          "median": 1.336445689201355,
+          "max": 1.9595155715942383
+        },
+        "verifier": {
+          "count": 20,
+          "sum": 6.640327215194702,
+          "mean": 0.3320163607597351,
+          "median": 0.22688746452331543,
+          "max": 1.4987709522247314
+        }
+      },
+      "valid": 20,
+      "passes": 4,
+      "dockerDaemonCpuSeconds": 334.41200299999997,
+      "diskWriteGiB": 4.676868438720703,
+      "agentAverage": 7.2866287076979495,
+      "modelAverage": 4.82437277143521,
+      "probeQuality": {
+        "unclosedPython": 0,
+        "unclosedHost": 0,
+        "missingPatches": [],
+        "containerCoverage": {
+          "dockerListFailures": 0,
+          "containerApiFailures": 0,
+          "supplementalSamples": 373,
+          "supplementedContainerSamples": 0,
+          "eventErrors": [],
+          "observerRestarts": []
+        }
+      }
+    },
+    "preparation": {
+      "prepare-cold-c16": {
+        "label": "prepare-cold-c16",
+        "wallSeconds": 140.38053471798776,
+        "tasks": 20,
+        "roles": 40,
+        "imagePreparations": 60,
+        "cacheHits": 0,
+        "uniqueKeys": 60,
+        "hostCpuSeconds": 18.738639999999997,
+        "childCliCpuSeconds": 189.417582,
+        "roleMeans": {
+          "candidate": 62.5674219975539,
+          "verifier": 27.406673145008973
+        }
+      },
+      "prepare-warm-c16-a": {
+        "label": "prepare-warm-c16-a",
+        "wallSeconds": 17.670493709039874,
+        "tasks": 20,
+        "roles": 40,
+        "imagePreparations": 60,
+        "cacheHits": 60,
+        "uniqueKeys": 60,
+        "hostCpuSeconds": 16.190249,
+        "childCliCpuSeconds": 15.900727,
+        "roleMeans": {
+          "candidate": 7.530257558551966,
+          "verifier": 3.9297443004033994
+        }
+      },
+      "prepare-warm-c16-b": {
+        "label": "prepare-warm-c16-b",
+        "wallSeconds": 17.613185116962995,
+        "tasks": 20,
+        "roles": 40,
+        "imagePreparations": 60,
+        "cacheHits": 60,
+        "uniqueKeys": 60,
+        "hostCpuSeconds": 16.228609000000002,
+        "childCliCpuSeconds": 16.086499,
+        "roleMeans": {
+          "candidate": 7.4858669871580785,
+          "verifier": 4.021057845893665
+        }
+      }
+    }
+  },
+  "fixed_snapshot_verifier_replay": {
+    "tasks": 20,
+    "all_match": true,
+    "artifacts": [
+      "reward.json",
+      "assertions.json",
+      "process.json"
+    ]
+  },
+  "full_100_task_comparison": {
+    "method": "Three matched baseline evaluations, one logical trial per task. Binary pass is reward == total_score == 1. Invalid slots are never scored as zero.",
+    "observedFullRuns": {
+      "old": {
+        "tasks": 100,
+        "passes": 13,
+        "passRate": 0.13,
+        "meanProcessScore": 0.5384416037179195,
+        "invalid": 0
+      },
+      "new1": {
+        "tasks": 100,
+        "passes": 18,
+        "passRate": 0.18,
+        "meanProcessScore": 0.5258498004546767,
+        "invalid": 0
+      },
+      "new2": {
+        "tasks": 100,
+        "passes": 15,
+        "passRate": 0.15,
+        "meanProcessScore": 0.49785881969119955,
+        "invalid": 0
+      }
+    },
+    "firstPassNew2": {
+      "tasks": 99,
+      "passes": 15,
+      "passRate": 0.15151515151515152,
+      "meanProcessScore": 0.4942296879997687,
+      "invalid": 1
+    },
+    "limitations": [
+      "Only one old and two new model runs; repeat variation cannot prove absence of a version effect.",
+      "Old concurrency was 8; both new runs use 16. Source harness and task/verifier identities match, but old packaged runtime differs.",
+      "The configured model is the same; identity_resolved=false, so a precise provider model snapshot is not pinned.",
+      "Same-version variability includes model sampling and execution/service timing; it is not an estimate of pure sampling noise.",
+      "The primary common-valid cohort excludes infrastructure-invalid first-pass tasks and may have survivorship bias; repaired results are separately labeled.",
+      "Pairwise exact McNemar p-values are exploratory, assume independent task pairs, and are not equivalence tests or evidence of causal attribution."
+    ]
+  }
+}
