@@ -242,6 +242,7 @@ export async function writeFakeHarbor(directory: string, {
   candidateStartDelayMs = 0,
   postResultDelayMs = 0,
   activityLog,
+  startBarrierTasks,
   leakEnvName,
   pythonBytecodeLog,
   pythonPathLog,
@@ -251,6 +252,8 @@ export async function writeFakeHarbor(directory: string, {
   candidateStartDelayMs?: number;
   postResultDelayMs?: number;
   activityLog?: string;
+  /** Test-only: wait for these tasks' first start events before running candidates. */
+  startBarrierTasks?: string[];
   /** Test-only: persist the inherited bytecode-write setting. */
   pythonBytecodeLog?: string;
   /** Test-only: persist the inherited PYTHONPATH used to import Harbor plugins. */
@@ -258,6 +261,7 @@ export async function writeFakeHarbor(directory: string, {
   /** Test-only: print one inherited value so callers can verify host log redaction. */
   leakEnvName?: string;
 } = {}): Promise<string> {
+  if (startBarrierTasks?.length && !activityLog) throw new Error("start barrier requires an activity log");
   const file = path.join(directory, "fake-harbor");
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -318,8 +322,18 @@ const runCandidate = () => {
   if (${delayMs} > 0) setTimeout(finish, ${delayMs});
   else finish();
 };
-if (${candidateStartDelayMs} > 0) setTimeout(runCandidate, ${candidateStartDelayMs});
-else runCandidate();
+const startBarrierTasks = ${JSON.stringify(startBarrierTasks ?? [])};
+const waitForStarts = () => {
+  if (logicalAttempt === 1 && startBarrierTasks.length) {
+    const started = new Set(fs.readFileSync(activityLog, "utf8").split("\\n").slice(0, -1)
+      .map(line => JSON.parse(line)).filter(event => event.type === "start" && event.logicalAttempt === 1)
+      .flatMap(event => event.tasks));
+    if (!startBarrierTasks.every(task => started.has(task))) { setTimeout(waitForStarts, 10); return; }
+  }
+  runCandidate();
+};
+if (${candidateStartDelayMs} > 0) setTimeout(waitForStarts, ${candidateStartDelayMs});
+else waitForStarts();
 `;
   await writeFile(file, source, { mode: 0o755 });
   await chmod(file, 0o755);

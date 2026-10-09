@@ -24,7 +24,8 @@ test("planned local execution overlaps different tasks and serializes attempts o
     await writeFile(path.join(directory, "task.toml"), `name = ${JSON.stringify(task)}\n`);
   }
   const activityLog = path.join(root, "harbor-activity.jsonl");
-  const harbor = await writeFakeHarbor(root, { delayMs: 150, activityLog });
+  // Startup skew must not decide whether independently admitted tasks overlap.
+  const harbor = await writeFakeHarbor(root, { delayMs: 150, activityLog, startBarrierTasks: ["one", "two"] });
   const npm = await writeFakeNpm(root);
   const resources = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 4 * 1024 * 1024 * 1024, container_slots: 2, build_slots: 1 });
   const dispatcher = new WorkItemDispatcher({ resources });
@@ -39,6 +40,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
   };
   const result = await runEval({
     root,
+    signal: t.signal,
     harborExecutable: harbor,
     executionStrategy: "local-task-slots-v1",
     executionResources: { cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 },
