@@ -5,8 +5,9 @@ import type { Server } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { LocalInferenceManager, ResourceLedger } from "../src/control-plane/index.js";
-import { delay, sha256JSON } from "../src/foundation/index.js";
+import { sha256JSON } from "../src/foundation/index.js";
 import type { SGLangLauncher } from "../src/inference/index.js";
 import { addLocalModel, buildInferenceLock, runtimeCatalogEntry, SGLangServiceSupervisor } from "../src/inference/index.js";
 import { safetensorsFixture } from "../test-support/helpers.js";
@@ -94,7 +95,9 @@ test("local inference manager coalesces services, isolates run credentials, and 
   assert.equal(JSON.parse(await readFile(path.join(root, "runs", runIds[0]!, "inference", "lock.json"), "utf8")).inference_id, lock.inference_id);
 
   await Promise.all(leases.map((lease) => Promise.all([lease.release(), lease.release()])));
-  await delay(140);
+  while (stops === 0 || ledger.snapshot().allocations.some((entry) => entry.kind === "inference")) {
+    await delay(10, undefined, { signal: t.signal });
+  }
   assert.equal(stops, 1);
   assert.equal(ledger.snapshot().allocations.filter((entry) => entry.kind === "inference").length, 0);
 });
