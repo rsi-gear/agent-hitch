@@ -68,6 +68,18 @@ jobs:
           python3 -c "import json,sys; json.load(open('$PREFIX/doctor.json')); sys.exit(0)"
           [ "$doctor_code" -eq 0 ] || [ "$doctor_code" -eq 3 ] || { echo "eval doctor exited $doctor_code" >&2; exit 1; }
           python3 -c "import pathlib; compile(pathlib.Path('$PREFIX/node_modules/agent-hitch/integrations/harbor/hitch_harbor_agent.py').read_text(), 'x', 'exec'); print('bridge syntax OK')"
+          # A local install may hoist unbundled dependencies outside Hitch.
+          # Verify the installed execution closure, not the source checkout.
+          node --input-type=module - "$PREFIX" <<'NODE'
+          import path from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          const prefix = process.argv[2];
+          const modulePath = path.join(prefix, 'node_modules/agent-hitch/dist/src/controller-runtime/index.js');
+          const { ensureControllerRuntime, useControllerRuntimeDirectory } = await import(pathToFileURL(modulePath));
+          const runtime = await ensureControllerRuntime({ root: path.join(prefix, 'runtime-state') });
+          await useControllerRuntimeDirectory(runtime.directory, runtime.runtime_id);
+          console.log(`installed runtime verified: ${runtime.runtime_id}`);
+          NODE
 
   test-windows:
     strategy:
