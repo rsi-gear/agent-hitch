@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { RemoteWorkerHttpClient, RemoteWorkerRunner } from "../src/control-plane/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { runEval as runEvalProduction, rerunEval, verifyImportedRemoteVerifierSource } from "../src/evals/index.js";
@@ -37,7 +38,10 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
   let acquisitions = 0, releases = 0, generations = 0;
   const controllerRoot = await mkdtemp(path.join(tmpdir(), "hitch-remote-capture-controller-"));
   const workerRoot = await mkdtemp(path.join(tmpdir(), "hitch-remote-capture-worker-"));
-  t.after(() => Promise.all([forceRemove(controllerRoot), forceRemove(workerRoot)]));
+  const workerController = new AbortController();
+  const workerSignal = AbortSignal.any([workerController.signal, t.signal]);
+  const workers: Promise<void>[] = [], closeServers: Array<() => Promise<void>> = [];
+  t.after(() => cleanupRemoteHarbor(workerController, workers, closeServers, [controllerRoot, workerRoot]));
   const dataset = path.join(controllerRoot, "dataset");
   await mkdir(path.join(dataset, "one"), { recursive: true });
   await writeFile(path.join(dataset, "one", "task.toml"), captureSource ? '[verifier]\nenvironment_mode = "separate"\n' : "");
@@ -87,8 +91,8 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
       response.end(JSON.stringify({ model: "remote-effective", output: Buffer.concat(chunks).toString("utf8"), ...(!managed ? { api_key: secret } : {}) }));
     });
   });
+  closeServers.push(() => close(upstream));
   const upstreamUrl = await serverUrl(upstream);
-  t.after(() => close(upstream));
   const workerEnv: NodeJS.ProcessEnv = {
     ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector, HITCH_DOCKER_PATH: docker,
     // This fake Harbor runs on the worker host instead of in Docker. Declare
@@ -122,9 +126,10 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
     }),
   };
   const server = new DaemonServer(serverOptions);
+  // Stop the controller before its model upstream, then remove private state.
+  closeServers.unshift(() => server.close());
   await server.start();
   if (training) await registerTrainingEndpoint(controllerRoot, { schema_version: "1", binding: trainingBinding, base_url: `${upstreamUrl}/v1`, credential: secret });
-  t.after(() => server.close());
   const baseUrl = `http://127.0.0.1:${server.port}`;
   const adminToken = (await readFile(statePaths(controllerRoot).token, "utf8")).trim();
   const registration = {
@@ -170,7 +175,6 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
   });
   const execution = { root: workerRoot, env: workerEnv, harborExecutable: harbor, dockerExecutable: docker, trialBundleGraceMs: 0 };
   const workerErrors: string[] = [];
-  const workerController = new AbortController();
   const runner = new RemoteWorkerRunner({
     client, capacity: TRIAL, execute: async input => {
       const spec = JSON.parse(input.inputs.get("work-spec")!.toString());
@@ -190,15 +194,16 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
     releaseUnknown: (offer) => releaseRemoteHarborOffer(execution, offer),
     pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
     onError: (error) => workerErrors.push((error as Error).stack ?? String(error)),
-    signal: workerController.signal,
+    signal: workerSignal,
   });
   const worker = runner.run();
+  workers.push(worker);
   let status: Record<string, unknown>;
   try {
     status = await waitFor(async () => {
       const current = await admin.request(`/v1/evals/${evalId}`);
       return current.result ? current : undefined;
-    }, 20_000);
+    }, t.signal);
   } catch (error) {
     const current = await admin.request(`/v1/evals/${evalId}`);
     const offers = await client.listOffers();
@@ -273,12 +278,13 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
     await admin.request(`/v1/evals/${evalId}/reruns`, { method: "POST", body: JSON.stringify({ rerun_id: rerunId, selector: { mode: "invalid" } }) });
     const repairAbort = new AbortController(); t.after(() => repairAbort.abort());
     const repairWorker = new RemoteWorkerRunner({ client, capacity: TRIAL, execute: remoteHarborWorker(execution), once: true,
-      releaseUnknown: offer => releaseRemoteHarborOffer(execution, offer), signal: repairAbort.signal,
+      releaseUnknown: offer => releaseRemoteHarborOffer(execution, offer), signal: AbortSignal.any([repairAbort.signal, workerSignal]),
       pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50 }).run();
+    workers.push(repairWorker);
     const completed = await waitFor(async () => {
       const current = await admin.request(`/v1/evals/${evalId}/reruns/${rerunId}`);
       return ["completed", "failed", "cancelled"].includes(String((current.state as { status?: string }).status)) ? current : undefined;
-    }, 20_000);
+    }, t.signal);
     if ((completed.state as { status: string }).status !== "completed") repairAbort.abort();
     await repairWorker;
     assert.equal((completed.state as { status: string }).status, "completed", JSON.stringify(completed));
@@ -317,6 +323,18 @@ export async function regularFiles(directory: string): Promise<string[]> {
   return files;
 }
 
+export async function cleanupRemoteHarbor(controller: AbortController, workers: Promise<void>[],
+  closeServers: Array<() => Promise<void>>, directories: string[]): Promise<void> {
+  controller.abort();
+  const outcomes = await Promise.allSettled(workers);
+  for (const closeServer of closeServers) {
+    outcomes.push(...await Promise.allSettled([closeServer()]));
+  }
+  outcomes.push(...await Promise.allSettled(directories.map(forceRemove)));
+  const failed = outcomes.find(outcome => outcome.status === "rejected");
+  if (failed?.status === "rejected") throw failed.reason;
+}
+
 async function trainingHarnessRef(root: string): Promise<string> {
   const source = path.join(root, "training-source");
   await mkdir(path.join(source, "integrations/training-tool"), { recursive: true });
@@ -343,12 +361,14 @@ function close(server: Server): Promise<void> {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-export async function waitFor<T>(operation: () => Promise<T | undefined>, timeoutMs: number): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
+// Fixture setup, execution and import share the runner's existing deadline.
+// An extra short watchdog makes success depend on host throughput. Cancellation
+// also stops the worker before teardown removes its private state.
+export async function waitFor<T>(operation: () => Promise<T | undefined>, signal: AbortSignal): Promise<T> {
   for (;;) {
+    signal.throwIfAborted();
     const value = await operation();
     if (value !== undefined) return value;
-    if (Date.now() >= deadline) throw new Error("timed out waiting for remote Harbor eval");
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await delay(25, undefined, { signal });
   }
 }

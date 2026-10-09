@@ -9,9 +9,9 @@ import { runEval as runEvalProduction } from "../src/evals/index.js";
 import type { RunEvalOptions } from "../src/evals/index.js";
 import { statePaths } from "../src/foundation/index.js";
 import { releaseRemoteHarborOffer, remoteHarborWorker } from "../src/workers/index.js";
-import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
 import { writeResourceInspector, writeEmptyDocker } from "../test-support/remote-harbor-model.js";
-import { regularFiles, waitFor } from "../test-support/remote-worker-harbor.js";
+import { cleanupRemoteHarbor, regularFiles, waitFor } from "../test-support/remote-worker-harbor.js";
 import { fixtureImage, fixtureImageManifest, fixtureReference, resourceFixture } from "../test-support/resource-fixture.js";
 import { configuredResourceStore, hash, resourceRequest, type ResourceRoot } from "../src/resources/index.js";
 
@@ -24,7 +24,9 @@ for (const resourceAware of [false, true]) test(`packaged worker executes a stag
   const fixture = resourceAware ? await resourceFixture(directory, 1, ["one"]) : undefined;
   const controllerRoot = fixture?.store.root ?? directory;
   const workerRoot = await mkdtemp(path.join(tmpdir(), "hitch-remote-host-"));
-  t.after(() => Promise.all([forceRemove(directory), forceRemove(workerRoot)]));
+  const workerController = new AbortController();
+  const workers: Promise<void>[] = [], closeServers: Array<() => Promise<void>> = [];
+  t.after(() => cleanupRemoteHarbor(workerController, workers, closeServers, [directory, workerRoot]));
   const dataset = fixture?.source ?? path.join(controllerRoot, "dataset");
   if (!fixture) { await mkdir(path.join(dataset, "one"), { recursive: true }); await writeFile(path.join(dataset, "one", "task.toml"), ""); }
   const secret = "controller-only-short-ttl-secret";
@@ -58,8 +60,8 @@ fs.writeFileSync(${JSON.stringify(path.join(workerRoot, "materialization-observe
     credentialEnv: { CUSTOM_REMOTE_SECRET: secret },
     evalExecutor: (options) => runEval({ ...options, harborExecutable: harbor, env: controllerEnv }),
   });
+  closeServers.push(() => server.close());
   await server.start();
-  t.after(() => server.close());
   const baseUrl = `http://127.0.0.1:${server.port}`;
   const adminToken = (await readFile(statePaths(controllerRoot).token, "utf8")).trim();
   const registration = {
@@ -76,8 +78,10 @@ fs.writeFileSync(${JSON.stringify(path.join(workerRoot, "materialization-observe
     client, capacity: TRIAL, execute: remoteHarborWorker(execution), once: true,
     releaseUnknown: (offer) => releaseRemoteHarborOffer(execution, offer),
     pollIntervalMs: 50, heartbeatIntervalMs: 50, retryIntervalMs: 50,
+    signal: AbortSignal.any([workerController.signal, t.signal]),
   });
   const worker = runner.run();
+  workers.push(worker);
   const admin = await daemonClient(controllerRoot);
   const submitted = await admin.request("/v1/evals", {
     method: "POST",
@@ -96,7 +100,7 @@ fs.writeFileSync(${JSON.stringify(path.join(workerRoot, "materialization-observe
   const status = await waitFor(async () => {
     const current = await admin.request(`/v1/evals/${evalId}`);
     return current.result ? current : undefined;
-  }, 20_000);
+  }, t.signal);
   await worker;
   assert.equal((status.result as { status: string }).status, "failed", JSON.stringify(status.result));
   assert.equal(((status.result as { error?: { code?: string } }).error?.code), "eval_has_infrastructure_failures");
