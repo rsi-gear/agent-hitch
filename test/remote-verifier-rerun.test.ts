@@ -89,6 +89,7 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
   })().catch(error => { controller.abort(error); throw error; });
   // Observe both branches so setup failures do not leave an unhandled worker rejection.
   const [controllerResult, workerResult] = await Promise.allSettled([rerunEval(options), worker]);
+  clearTimeout(timeout);
   if (controllerResult.status === "rejected") t.diagnostic(String(controllerResult.reason));
   assert.equal(workerResult.status, "fulfilled", workerResult.status === "rejected" ? String(workerResult.reason) : "");
   if (workerResult.status !== "fulfilled") return;
@@ -124,7 +125,10 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
   // Recreate an interrupted outer journal; physical work and immutable selection remain authoritative.
   const state = await readJSON<Record<string, unknown>>(path.join(rerunDirectory, "state.json"));
   await atomicWriteJSON(path.join(rerunDirectory, "state.json"), { ...state, status: "running" });
-  const replay = await rerunEval({ ...options, resumeRemoteRerun: true });
+  // Recovery is a new request: the first request's deadline must not cancel it
+  // while this test verifies release receipts and reconstructs the journal.
+  controller.abort(new Error("original request ended before recovery"));
+  const replay = await rerunEval({ ...options, signal: AbortSignal.timeout(15_000), resumeRemoteRerun: true });
   assert.equal(replay.eval_status, mode === "invalid" ? "failed" : "succeeded"); assert.equal(dispatches, 1);
   assert.equal((await readEvalProgress(f.evalDirectory))?.generation, generation);
   assert.equal(sha256JSON(await verifyResultBundleIndex(f.runDirectory)), before);

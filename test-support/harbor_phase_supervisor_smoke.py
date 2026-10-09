@@ -66,11 +66,25 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 1920, 1080, 
 digest = "sha256:" + "a" * 64
 
 
-async def command(*argv, input=None, env=None, timeout=20):
+async def command(*argv, input=None, env=None, timeout=20, candidate_ready=None):
     process = await asyncio.create_subprocess_exec(*map(str, argv), stdin=asyncio.subprocess.PIPE,
                   stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+    async def collect_stdout():
+        output, notified = bytearray(), False
+        while chunk := await process.stdout.read(65536):
+            output.extend(chunk)
+            if not notified and b"candidate-ready" in output:
+                notified = True
+                candidate_ready()
+        return bytes(output)
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(input), timeout)
+        if candidate_ready is None:
+            stdout, stderr = await asyncio.wait_for(process.communicate(input), timeout)
+        else:
+            assert input is None
+            process.stdin.close()
+            stdout, stderr, _ = await asyncio.wait_for(
+                asyncio.gather(collect_stdout(), process.stderr.read(), process.wait()), timeout)
     except BaseException:
         if process.returncode is None:
             process.kill()
@@ -224,7 +238,8 @@ class SyntheticAgent(bridge.HitchHarborAgent):
                                "--cwd", env.candidate / "workspace", "--workspace-mode", "shared", "--prompt", instruction,
                                "--context-file", env.candidate / "context.json", "--parent-file", env.candidate / "parent.json",
                                "--internal-run-id", prepared.run_id, "--internal-phase-control", env.mapped(control_path),
-                               "--timeout", str(max(1, (prepared.deadline_ns - __import__('time').monotonic_ns()) // 1000000)), env=variables, timeout=30)
+                               "--timeout", str(max(1, (prepared.deadline_ns - __import__('time').monotonic_ns()) // 1000000)), env=variables, timeout=30,
+                               candidate_ready=(lambda: env.clock.advance_ms(20_000)) if env.case == "finalize-failed" else None)
         assert self._phase_control_tokens[prepared.run_id] not in result.stdout + result.stderr
         source = root / "runs" / prepared.run_id
         evidence = json.loads((source / "result.json").read_text())
@@ -243,7 +258,11 @@ class SyntheticAgent(bridge.HitchHarborAgent):
 
 async def run_case(root, case, executable, revision, controller_runtime):
     finalizing = case.startswith("finalize")
-    timeout_ms = 100 if case == "budget" else 1000 if finalizing and case != "finalize-between" else 20_000
+    # The grader-failure case expires the supervisor's test clock only after
+    # the real CLI has accepted the native session and emitted its ready event.
+    # Starting a one-second clock before CLI startup tests a different failure
+    # under coverage: no native session exists to export when it times out.
+    timeout_ms = 100 if case == "budget" else 1000 if case == "finalize-budget" else 20_000
     root.mkdir()
     (root / "lock.json").write_text(json.dumps({"schema_version": 2, "task": {"name": "synthetic-native-phases"}}))
     private = root / "private"; private.mkdir(mode=0o700)
@@ -317,7 +336,10 @@ async def run_case(root, case, executable, revision, controller_runtime):
                 try: channel.observe(binding); raise AssertionError("retired binding accepted")
                 except PermissionError: pass
         else:
-            try: await supervisor.run(); raise AssertionError("expected supervision failure")
+            try:
+                with patch("hitch_phase_supervisor.time", env.clock):
+                    await supervisor.run()
+                raise AssertionError("expected supervision failure")
             except PhaseSupervisionError:
                 result = json.loads((root / "hitch-native-phases/supervision.json").read_text())
                 expected = {"early-exit": "native_candidate_exited_before_boundary", "bad-binding": "native_binding_differs_from_locked_definition",
@@ -359,6 +381,7 @@ async function tool(name, args) {
   if(!r.ok) throw Error('synthetic tool failure'); return r.json();
 }
 (async()=>{
+  if(mode === 'finalize-failed') console.log(JSON.stringify({type:'item.completed',item:{id:'ready',type:'agent_message',text:'candidate-ready'}}));
   if(mode === 'finalize-budget' || mode === 'finalize-failed') { setInterval(()=>{},1000); return; }
   const observation=await tool('desktop.observe', {}), data=JSON.parse(observation.content[0].text);
   await tool('desktop.submit', {sequence:data.sequence,request_id:'synthetic_submit',response:'done',actions:['DONE']});
