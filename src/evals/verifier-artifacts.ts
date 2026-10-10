@@ -5,6 +5,7 @@ import type { JsonValue, Sha256, VerifierArtifactExcerptV1 } from "../domain/ind
 import { PROVIDER_ENVIRONMENT_NAMES, atomicWriteJSON, credentialValuesFromEnv, openContainedRegularFile, redactCredentialText, writePrivateFile } from "../foundation/index.js";
 import type { ContainedRegularFile } from "../foundation/index.js";
 import { sanitizeVerifierJson, sanitizeVerifierText } from "../runs/index.js";
+import type { TrialBenchmarkBinding, VerifiedTrialBenchmark } from "./benchmark-verification.js";
 import { captureVerifierScoreEvidence } from "./verifier-score-artifacts.js";
 import type { CapturedVerifierScoreEvidenceV1 } from "./verifier-score-artifacts.js";
 
@@ -68,6 +69,8 @@ export async function persistTrialVerifierDiagnostics(input: {
   verifierResult?: Record<string, unknown> | null;
   dataset?: string | undefined;
   benchmarkRevision?: string | undefined;
+  verifiedTrialBenchmark?: VerifiedTrialBenchmark | undefined;
+  verifiedTrialBinding?: TrialBenchmarkBinding | undefined;
   signal?: AbortSignal | undefined;
 }): Promise<CapturedVerifierScoreEvidenceV1> {
   const env = input.env ?? process.env;
@@ -82,6 +85,7 @@ export async function persistTrialVerifierDiagnostics(input: {
     trialDirectory: input.trialDirectory,
     runDirectory: input.runDirectory,
     verifierResult: input.verifierResult ?? null,
+    ...(input.verifiedTrialBenchmark ? { verifiedTrialBenchmark: input.verifiedTrialBenchmark, verifiedTrialBinding: input.verifiedTrialBinding } : {}),
     credentialValues,
     ...(input.dataset === undefined ? {} : { dataset: input.dataset }),
     ...(input.benchmarkRevision === undefined ? {} : { benchmarkRevision: input.benchmarkRevision }),

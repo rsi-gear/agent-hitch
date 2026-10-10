@@ -176,7 +176,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
         ...(scores === undefined ? {} : { scores }) };
       await validateEvalTrialReferences(input.root, input.evalId, [ref], { benchmarkId: benchmark.id, benchmarkRevision: benchmark.revision });
       progress = replaceInvalidEvalProgressTrial(progress, ref);
-      await writeEvalProgress(input.evalDirectory, progress);
+      await writeEvalProgress(input.evalDirectory, progress, { terminalRepair: true });
       repaired.push(slot);
     }
   }

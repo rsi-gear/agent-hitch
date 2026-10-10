@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { EvalId, EvalRequest } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, readJSON } from "../foundation/index.js";
@@ -19,6 +19,14 @@ export async function prepareEvalDirectory(input: {
     }
     if (!input.replaceTerminal && await readJSON(path.join(directory, "result.json"), null)) {
       throw new HitchError(`eval is already terminal: ${input.evalId}`, { code: "eval_id_conflict", exitCode: 2 });
+    }
+    if (input.replaceTerminal) {
+      const previous = await readJSON<Record<string, unknown> | null>(path.join(directory, "result.json"), null);
+      if (previous && (previous.status !== "failed" || !Array.isArray(previous.trials) || previous.trials.length !== 0)) {
+        throw new HitchError("only failed pre-execution evals can restart preparation", { code: "eval_id_conflict", exitCode: 2 });
+      }
+      // preparation-rerun archived the prior result before this explicit restart.
+      await rm(path.join(directory, "result.json"), { force: true });
     }
     return directory;
   }

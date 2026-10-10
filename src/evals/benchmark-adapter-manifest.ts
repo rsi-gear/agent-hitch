@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { channel } from "node:diagnostics_channel";
 import path from "node:path";
 import type { Sha256 } from "../domain/index.js";
-import { invalidInput } from "../foundation/index.js";
+import { invalidInput, openContainedRegularFile } from "../foundation/index.js";
 import { readResourceInput, type ResourceDataset } from "../resources/index.js";
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
@@ -67,29 +69,46 @@ export async function buildBenchmarkAdapterManifest(input: {
 export async function loadBenchmarkAdapterManifest(dataset: string): Promise<BenchmarkAdapterManifest | null> {
   const resource = await readResourceInput(dataset);
   if (resource) return "schema_version" in resource ? resource : { ...resource.manifest, tasks: resource.tasks, dataset_digest: resource.digest };
-  const root = path.resolve(dataset);
+  const root = await realpath(dataset).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return path.resolve(dataset);
+    throw error;
+  });
+  const manifest = await readStandardBenchmarkManifest(root);
+  if (!manifest) return null;
+  await verifyBenchmarkTaskMembership(root, manifest);
+  for (const task of manifest.tasks) {
+    if (await taskTreeDigest(path.join(root, task.task_id)) !== task.task_digest) throw invalidInput(`manifest task digest mismatch: ${task.task_id}`);
+  }
+  return manifest;
+}
+
+/** Internal metadata view. Content verification remains mandatory at admission. */
+export async function readStandardBenchmarkManifest(root: string): Promise<BenchmarkAdapterManifestV1 | null> {
   let raw: unknown;
   try {
-    const info = await lstat(path.join(root, "benchmark.adapter.json"));
-    if (!info.isFile() || info.isSymbolicLink()) throw invalidInput("benchmark.adapter.json must be a regular file");
-    raw = JSON.parse(await readFile(path.join(root, "benchmark.adapter.json"), "utf8"));
+    const safe = await openContainedRegularFile(root, "benchmark.adapter.json", 16 * 1024 * 1024);
+    try {
+      raw = JSON.parse((await safe.handle.readFile()).toString("utf8"));
+      await safe.assertUnchanged();
+    } finally { await safe.handle.close(); }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if (error instanceof SyntaxError) throw invalidInput("benchmark.adapter.json is invalid JSON");
     throw error;
   }
   const manifest = parseManifest(raw);
-  const actualTasks: Array<{ task_id: string; task_digest: Sha256 }> = [];
+  const { dataset_digest: _digest, ...body } = manifest;
+  if (manifest.dataset_digest !== sha256(canonicalJson(body))) throw invalidInput("benchmark adapter dataset digest mismatch");
+  return manifest;
+}
+
+export async function verifyBenchmarkTaskMembership(root: string, manifest: BenchmarkAdapterManifestV1): Promise<void> {
   for (const task of manifest.tasks) {
-    const directory = path.join(root, task.task_id);
-    const info = await lstat(directory).catch((error: NodeJS.ErrnoException) => {
+    const info = await lstat(path.join(root, task.task_id)).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") throw invalidInput(`manifest task is missing: ${task.task_id}`);
       throw error;
     });
     if (!info.isDirectory() || info.isSymbolicLink()) throw invalidInput(`manifest task is not a directory: ${task.task_id}`);
-    const digest = await taskTreeDigest(directory);
-    if (digest !== task.task_digest) throw invalidInput(`manifest task digest mismatch: ${task.task_id}`);
-    actualTasks.push({ task_id: task.task_id, task_digest: digest });
   }
   const taskDirectories: string[] = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -97,25 +116,18 @@ export async function loadBenchmarkAdapterManifest(dataset: string): Promise<Ben
     try {
       const taskInfo = await lstat(path.join(root, entry.name, "task.toml"));
       if (taskInfo.isFile() && !taskInfo.isSymbolicLink()) taskDirectories.push(entry.name);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
-  if (JSON.stringify(taskDirectories.sort()) !== JSON.stringify(actualTasks.map((task) => task.task_id))) {
+  if (JSON.stringify(taskDirectories.sort()) !== JSON.stringify(manifest.tasks.map(task => task.task_id))) {
     throw invalidInput("benchmark adapter manifest task set does not match the dataset");
   }
-  const body = {
-    schema_version: manifest.schema_version,
-    kind: manifest.kind,
-    benchmark: manifest.benchmark,
-    adapter: manifest.adapter,
-    scoring: manifest.scoring,
-    ...(manifest.raw_metrics === undefined ? {} : { raw_metrics: manifest.raw_metrics }),
-    tasks: actualTasks,
-  };
-  const expected = sha256(canonicalJson(body));
-  if (manifest.dataset_digest !== expected) throw invalidInput("benchmark adapter dataset digest mismatch");
-  return manifest;
+}
+
+/** Snapshot one admitted task, including descriptor bytes from the same verified read. */
+export async function verifyBenchmarkTaskSnapshot(root: string, task: BenchmarkAdapterManifestV1["tasks"][number]): Promise<{ descriptor: unknown | null }> {
+  const snapshot = await scanTaskTree(path.join(root, task.task_id));
+  if (snapshot.digest !== task.task_digest) throw invalidInput(`manifest task digest mismatch: ${task.task_id}`);
+  return { descriptor: snapshot.descriptor === undefined ? null : JSON.parse(snapshot.descriptor.toString("utf8")) };
 }
 
 export function scoreWithinRange(score: number, definition: BenchmarkScoreDefinitionV1): boolean {
@@ -195,21 +207,60 @@ function scoreDefinition(value: unknown, label: string): BenchmarkScoreDefinitio
   return { source_metric: identifier(record.source_metric, `${label} source metric`), direction: record.direction, range, reducer: "task-macro-mean" };
 }
 
-async function taskTreeDigest(root: string): Promise<Sha256> {
+const contentReads = channel("hitch.benchmark.task-content-read");
+
+async function taskTreeDigest(root: string): Promise<Sha256> { return (await scanTaskTree(root)).digest; }
+
+async function scanTaskTree(inputRoot: string): Promise<{ digest: Sha256; descriptor?: Buffer }> {
+  const original = await lstat(inputRoot);
+  if (!original.isDirectory() || original.isSymbolicLink()) throw invalidInput("benchmark task directory is unsafe");
+  const root = await realpath(inputRoot);
+  const resolved = await lstat(root);
+  if (resolved.dev !== original.dev || resolved.ino !== original.ino) throw invalidInput("benchmark task root identity changed");
   const rows: Array<{ path: string; mode: "file" | "executable"; sha256: string }> = [];
+  const fingerprints: Array<{ path: string; info: Awaited<ReturnType<typeof lstat>> }> = [];
+  let descriptor: Buffer | undefined;
   const visit = async (directory: string): Promise<void> => {
+    const before = await lstat(directory);
+    if (!before.isDirectory() || before.isSymbolicLink()) throw invalidInput("benchmark task directory is unsafe");
+    fingerprints.push({ path: directory, info: before });
     for (const entry of (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
       const absolute = path.join(directory, entry.name);
       const relative = path.relative(root, absolute).split(path.sep).join("/");
       const info = await lstat(absolute);
       if (info.isSymbolicLink()) throw invalidInput(`benchmark task contains a symlink: ${relative}`);
       if (info.isDirectory()) await visit(absolute);
-      else if (info.isFile()) rows.push({ path: relative, mode: info.mode & 0o111 ? "executable" : "file", sha256: createHash("sha256").update(await readFile(absolute)).digest("hex") });
-      else throw invalidInput(`benchmark task contains a special file: ${relative}`);
+      else if (info.isFile()) {
+        // Dataset hardlinks remain supported. Open without following links and
+        // verify pathname/handle identity and content metadata before closing.
+        const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+        let bytes: Buffer;
+        try {
+          const opened = await handle.stat();
+          if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) throw invalidInput("benchmark file identity changed while opening");
+          bytes = await handle.readFile();
+          const after = await handle.stat(), pathname = await lstat(absolute);
+          if (pathname.isSymbolicLink() || pathname.dev !== info.dev || pathname.ino !== info.ino
+            || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs
+            || await realpath(absolute) !== absolute) throw invalidInput("benchmark file changed while being read");
+        } finally { await handle.close(); }
+        fingerprints.push({ path: absolute, info });
+        if (contentReads.hasSubscribers) contentReads.publish({ root, path: relative, bytes: bytes.length });
+        if (relative === ".hitch-benchmark.json") descriptor = bytes;
+        rows.push({ path: relative, mode: info.mode & 0o111 ? "executable" : "file", sha256: createHash("sha256").update(bytes).digest("hex") });
+      } else throw invalidInput(`benchmark task contains a special file: ${relative}`);
     }
   };
   await visit(root);
-  return sha256(JSON.stringify(rows));
+  for (const saved of fingerprints) {
+    const current = await lstat(saved.path);
+    if (current.isSymbolicLink() || current.dev !== saved.info.dev || current.ino !== saved.info.ino
+      || current.mode !== saved.info.mode || current.size !== saved.info.size
+      || current.mtimeMs !== saved.info.mtimeMs || current.ctimeMs !== saved.info.ctimeMs) {
+      throw invalidInput("benchmark task changed while being verified");
+    }
+  }
+  return { digest: sha256(JSON.stringify(rows)), ...(descriptor === undefined ? {} : { descriptor }) };
 }
 
 function canonicalJson(value: unknown): string {

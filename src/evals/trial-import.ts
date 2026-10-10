@@ -31,7 +31,10 @@ import { writeEvalTrialPublication } from "./trial-publication.js";
 import type { EvalTrialPublicationMode } from "./trial-publication.js";
 import { importNativePhaseTrial, nativePhaseDescriptor, NativePhaseBundlePendingError } from "./native-phase-evidence.js";
 import { readCandidateIneligibleDiagnostic } from "./verifier-eligibility.js";
+import { verifyTrialBenchmark } from "./benchmark-verification.js";
+import type { VerifiedBenchmarkExecution, VerifiedTrialBenchmark, TrialBenchmarkBinding } from "./benchmark-verification.js";
 export interface ImportEvalRunsOptions {
+  verifiedBenchmark?: VerifiedBenchmarkExecution;
   root: string;
   evalId: string;
   evalDirectory: string;
@@ -56,6 +59,8 @@ export interface ImportEvalRunsOptions {
 export interface ImportEvalRunOptions extends Omit<ImportEvalRunsOptions, "rawResult"> {
   requireCompleteMarker?: boolean;
   allowMissingBundleDiagnostic?: boolean;
+  verifiedTrialBenchmark?: VerifiedTrialBenchmark;
+  verifiedTrialBinding?: TrialBenchmarkBinding;
 }
 export async function importEvalTrialRuns(
   options: ImportEvalRunsOptions,
@@ -96,6 +101,9 @@ export async function importEvalTrialRun(
   let bundle: string | null = null;
   let published = false;
   try {
+    const verifiedTrialBinding = { ...options, revisionIdentity: options.resolvedRevision.identity, taskId, trialDirectory };
+    const verifiedTrialBenchmark = await verifyTrialBenchmark(verifiedTrialBinding, taskId, options.verifiedBenchmark);
+    options = { ...options, verifiedTrialBenchmark, verifiedTrialBinding };
     const descriptor = await nativePhaseDescriptor(options, taskId);
     if (descriptor) return await importNativePhaseTrial({ ...options, trial, taskId, trialId, attempt, trialDirectory }, descriptor);
     bundle = await findRunBundle(trialDirectory, 0, options.requireCompleteMarker === true);
@@ -109,6 +117,9 @@ export async function importEvalTrialRun(
     if (options.signal?.aborted || (error as Error)?.name === "AbortError") throw error;
     if (error instanceof NativePhaseBundlePendingError) throw new TrialBundlePendingError(trialId);
     if (error instanceof TrialBundlePendingError || error instanceof TrialIdentityConflictError) throw error;
+    // Verification may fail before bundle discovery. Retain any staged bundle
+    // and attach the original error beside it without importing or trusting it.
+    if (bundle === null) bundle = await findRunBundle(trialDirectory, 0, options.requireCompleteMarker === true).catch(() => null);
     const safeMessage = safeDiagnosticMessage(error, credentialValuesFromEnv(options.request.pass_env ?? [], options.env ?? process.env));
     {
       await atomicWriteJSON(path.join(bundle ? path.dirname(bundle) : trialDirectory, "hitch-run-import-error.json"), {
@@ -223,7 +234,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     );
     const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(staging, verifierInfrastructure);
-    const structured = await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
+    const structured = await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory: staging, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, verifiedTrialBenchmark: input.verifiedTrialBenchmark, verifiedTrialBinding: input.verifiedTrialBinding, signal: input.signal });
     const beforeObservation = await loadRunRecord(staging, { verifyTrajectory: true });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(input.trialDirectory, credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env))
@@ -302,7 +313,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     );
     const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, signal: input.signal });
+    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, verifiedTrialBenchmark: input.verifiedTrialBenchmark, verifiedTrialBinding: input.verifiedTrialBinding, signal: input.signal });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(
         input.trialDirectory,

@@ -65,6 +65,7 @@ export type BeginInfrastructureRetry = (input: {
 }) => Promise<InfrastructureRetryLifecycle>;
 
 export interface RunInfrastructureRetriesOptions {
+  verifiedBenchmark?: import("./benchmark-verification.js").VerifiedBenchmarkExecution;
   evalId: string;
   evalDirectory: string;
   backendBaseDirectory?: string;
@@ -252,6 +253,7 @@ export async function runInfrastructureRetries(
               harborJobDirectory,
               expectedAttempt: options.logicalAttempt,
               request: options.request,
+              ...(options.verifiedBenchmark ? { verifiedBenchmark: options.verifiedBenchmark } : {}),
               resolvedRevision: options.resolvedRevision,
               benchmarkId: options.request.benchmark_id,
               benchmarkRevision: options.request.benchmark_revision,
@@ -288,6 +290,7 @@ export async function runInfrastructureRetries(
         harborJobDirectory,
         expectedAttempt: options.logicalAttempt,
         request: options.request,
+        ...(options.verifiedBenchmark ? { verifiedBenchmark: options.verifiedBenchmark } : {}),
         resolvedRevision: options.resolvedRevision,
         benchmarkId: options.request.benchmark_id,
         benchmarkRevision: options.request.benchmark_revision,

@@ -70,7 +70,7 @@ export async function remoteVerifierOnlyEvalRerun(input: Parameters<typeof verif
       if (ref.observation_status === "valid") {
         await validateEvalTrialReferences(input.root, input.evalId, [ref], { benchmarkId: benchmark.id, benchmarkRevision: benchmark.revision });
         progress = replaceInvalidEvalProgressTrial(progress, ref);
-        await writeEvalProgress(input.evalDirectory, progress);
+        await writeEvalProgress(input.evalDirectory, progress, { terminalRepair: true });
       }
       published.push(ref);
     };

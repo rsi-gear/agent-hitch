@@ -1,3 +1,4 @@
+import { persistTerminalEvalResult } from "./eval-state.js";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { ResolvedRevision } from "../artifacts/index.js";
@@ -58,7 +59,7 @@ export async function collectOnlyEvalRerun(input: CollectOnlyRerunInput): Promis
     sources.push(collected.source);
   }
   for (const ref of collectedRefs) progress = replaceInvalidEvalProgressTrial(progress, ref);
-  if (progress.generation !== input.progress.generation) await writeEvalProgress(input.evalDirectory, progress);
+  if (progress.generation !== input.progress.generation) await writeEvalProgress(input.evalDirectory, progress, { terminalRepair: true });
   const remainingTrials = invalidTrialSlots(input.plan.tasks, input.plan.attempts, progress);
   const remainingTasks = uniqueTasks(remainingTrials);
   const repairedTrials = sortSlots(collectedRefs.map((ref) => ({ task_id: ref.task_id, attempt: ref.attempt })));
@@ -206,7 +207,7 @@ async function writeEvalResult(
     completed_at: completedAt,
   };
   if (succeeded) delete result.error;
-  await atomicWriteJSON(path.join(input.evalDirectory, "result.json"), result);
+  await persistTerminalEvalResult(input.evalDirectory, result);
 }
 
 function requiredString(value: unknown, label: string): string {

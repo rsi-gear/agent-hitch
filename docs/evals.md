@@ -14,6 +14,8 @@ hitch eval run \
   --setup-timeout 30m
 ```
 
+Progress publication retains completed trial evidence when an eval fails or is cancelled. Terminal results and their progress projection are observed together, and interrupted terminal writes converge during inspection or recovery. See [Support publication recovery](support-publication-recovery.md) for the scoped standard-dataset import verification boundary and regression evidence.
+
 ## Shared daemon control plane
 
 When several evals share one Docker host, start one Hitch daemon and submit the

@@ -23,7 +23,7 @@
     "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
     "benchmark_id": { "type": "string", "minLength": 1 },
     "benchmark_revision": { "type": "string", "minLength": 1 },
-    "status": { "const": "running" },
+    "status": { "enum": ["running", "succeeded", "failed", "cancelled"] },
     "generation": { "type": "integer", "minimum": 0 },
     "planned_tasks": { "type": ["integer", "null"], "minimum": 0 },
     "planned_trials": { "type": ["integer", "null"], "minimum": 0 },

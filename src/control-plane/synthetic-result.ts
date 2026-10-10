@@ -1,3 +1,4 @@
+import { persistTerminalEvalResult } from "../evals/index.js";
 import path from "node:path";
 import type { EvalControlV1, EvalId, EvalRequest } from "../domain/index.js";
 import { SCHEMA_VERSION, atomicWriteJSON, readJSON } from "../foundation/index.js";
@@ -14,7 +15,7 @@ export async function writeSyntheticEvalResult(input: {
 }): Promise<void> {
   if (await readJSON(path.join(input.directory, "result.json"), null)) return;
   const control = parseEvalControl(await readJSON<EvalControlV1>(path.join(input.directory, "control.json")));
-  await atomicWriteJSON(path.join(input.directory, "result.json"), {
+  await persistTerminalEvalResult(input.directory, {
     schema_version: SCHEMA_VERSION,
     eval_id: input.evalId,
     status: input.status,

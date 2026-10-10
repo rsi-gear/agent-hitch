@@ -26,7 +26,9 @@ test("scheduler can cancel a queued run without launching it", async (t) => {
   const scheduler = new Scheduler({ runsRoot: path.join(root, "runs"), maxConcurrent: 1 });
   t.after(() => scheduler.shutdown());
   await scheduler.initialize();
-  const base = request({ cwd: root });
+  // Keep mutable daemon state outside the candidate workspace inventory.
+  const workspace = path.join(root, "work"); await mkdir(workspace);
+  const base = request({ cwd: workspace });
   const first = await scheduler.submit(base);
   const second = await scheduler.submit(base);
   assert.equal(await scheduler.cancel(second), true);
@@ -82,7 +84,8 @@ test("scheduler starts runs in FIFO order at bounded concurrency", async (t) => 
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
-  const base = request({ cwd: root, prompt: "fifo" });
+  const workspace = path.join(root, "work"); await mkdir(workspace);
+  const base = request({ cwd: workspace, prompt: "fifo" });
   const runIds: RunId[] = [];
   for (let index = 0; index < 3; index += 1) runIds.push(await scheduler.submit(base));
   await Promise.all(runIds.map((runId) => waitForResult(scheduler, runId)));

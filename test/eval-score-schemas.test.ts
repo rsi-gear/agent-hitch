@@ -55,6 +55,15 @@ test("published eval schemas reject malformed and inconsistent score channels", 
   }
 });
 
+test("published progress schema accepts terminal status projections", async () => {
+  const ajv = await schemaValidator();
+  const progress = documentsWithTrial(trialFixture).find(([schema]) => schema === "eval-progress.schema.json")![1] as Record<string, unknown>;
+  for (const status of ["running", "succeeded", "failed", "cancelled"]) {
+    assert.equal(ajv.validate(`${schemaBase}eval-progress.schema.json`, { ...progress, status }), true, ajv.errorsText());
+  }
+  assert.equal(ajv.validate(`${schemaBase}eval-progress.schema.json`, { ...progress, status: "unknown" }), false);
+});
+
 const trialFixture = {
   trial_id: "task-one__1", run_id: `run_${"a".repeat(32)}`, task_id: "task-one",
   attempt: 1, observation_status: "valid" as const, reward: 0, verifier_result_ref: "verifier/result.json",

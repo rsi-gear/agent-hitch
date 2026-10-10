@@ -18,6 +18,8 @@ import {
 } from "../domain/index.js";
 import { atomicWriteJSON, openContainedRegularFile, safeDiagnosticMessage, sha256Bytes } from "../foundation/index.js";
 import { sanitizeVerifierJson } from "../runs/index.js";
+import { verifiedTrialManifest } from "./benchmark-verification.js";
+import type { TrialBenchmarkBinding, VerifiedTrialBenchmark } from "./benchmark-verification.js";
 import { loadBenchmarkAdapterManifest, scoreWithinRange } from "./benchmark-adapter-manifest.js";
 
 export interface CapturedVerifierScoreEvidenceV1 {
@@ -42,11 +44,20 @@ export async function captureVerifierScoreEvidence(input: {
   credentialValues?: readonly string[];
   dataset?: string;
   benchmarkRevision?: string;
+  verifiedTrialBenchmark?: VerifiedTrialBenchmark;
+  verifiedTrialBinding?: TrialBenchmarkBinding | undefined;
   signal?: AbortSignal;
 }): Promise<CapturedVerifierScoreEvidenceV1> {
   try {
     throwIfAborted(input.signal);
-    const adapterManifest = input.dataset === undefined ? null : await loadBenchmarkAdapterManifest(input.dataset);
+    if (input.verifiedTrialBenchmark && (!input.verifiedTrialBinding
+      || input.dataset !== input.verifiedTrialBinding.request.dataset
+      || input.benchmarkRevision !== input.verifiedTrialBinding.benchmarkRevision
+      || path.resolve(input.trialDirectory) !== path.resolve(input.verifiedTrialBinding.trialDirectory))) {
+      throw new TypeError("verifier trial receipt consumer identity changed");
+    }
+    const adapterManifest = input.verifiedTrialBenchmark ? await verifiedTrialManifest(input.verifiedTrialBenchmark, input.verifiedTrialBinding!)
+      : input.dataset === undefined ? null : await loadBenchmarkAdapterManifest(input.dataset);
     if (adapterManifest && adapterManifest.dataset_digest !== input.benchmarkRevision) {
       throw new TypeError("benchmark adapter manifest changed after eval admission");
     }

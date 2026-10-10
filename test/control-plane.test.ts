@@ -848,6 +848,7 @@ test("eval recovery reconciles a promoted bundle before progress and does not re
 
   await atomicWriteJSON(path.join(evalDirectory, "progress.json"), {
     ...originalProgress,
+    status: "running",
     generation: 0,
     trials: [],
     summary: { settled_trials: 0, valid_trials: 0, invalid_trials: 0 },
