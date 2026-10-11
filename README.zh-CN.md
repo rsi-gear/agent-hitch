@@ -7,7 +7,7 @@
 [![npm version](https://img.shields.io/npm/v/agent-hitch.svg)](https://www.npmjs.com/package/agent-hitch)
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/agent-hitch)](https://github.com/rsi-gear/agent-hitch/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-加入讨论-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZ4NBbHDk)
+[![Discord](https://img.shields.io/badge/Discord-加入讨论-5865F2?logo=discord&logoColor=white)](https://discord.gg/ZduvAtS2k)
 
 [English](README.md) | 简体中文
 
@@ -259,7 +259,7 @@ Hitch 是 pre-alpha 阶段的模型与 Harness 评测执行层。远端制品同
 
 ## 社区
 
-加入 [Discord](https://discord.gg/cZ4NBbHDk)，提问、分享反馈，并讨论模型与
+加入 [Discord](https://discord.gg/ZduvAtS2k)，提问、分享反馈，并讨论模型与
 智能体评测基础设施。
 
 Hitch 的设计受到 [Multica](https://github.com/multica-ai/multica) 启发，采用

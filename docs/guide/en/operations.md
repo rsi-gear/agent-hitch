@@ -89,7 +89,7 @@ Stopping cancels active work during shutdown; it is not a pause-and-resume mecha
 | Trajectory is absent or rejected | Check whether startup completed and whether the stored trajectory reference has a canonical checksum. Do not edit the stored evidence to bypass validation. |
 | A command cannot find an existing ID | Confirm the ID prefix (`run_` or `eval_`) and the state root. |
 
-Capture the Hitch version, command with secrets removed, exit code, and relevant run/eval IDs when reporting an issue. Inspect logs locally before sharing them. The [issue tracker](https://github.com/rsi-gear/agent-hitch/issues) and [Discord](https://discord.gg/cZ4NBbHDk) are available for questions.
+Capture the Hitch version, command with secrets removed, exit code, and relevant run/eval IDs when reporting an issue. Inspect logs locally before sharing them. The [issue tracker](https://github.com/rsi-gear/agent-hitch/issues) and [Discord](https://discord.gg/ZduvAtS2k) are available for questions.
 
 ## Recovery boundaries
 

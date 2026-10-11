@@ -7,7 +7,7 @@
 [![npm version](https://img.shields.io/npm/v/agent-hitch.svg)](https://www.npmjs.com/package/agent-hitch)
 [![GitHub release](https://img.shields.io/github/v/release/rsi-gear/agent-hitch)](https://github.com/rsi-gear/agent-hitch/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZ4NBbHDk)
+[![Discord](https://img.shields.io/badge/Discord-Join_chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/ZduvAtS2k)
 
 English | [简体中文](README.zh-CN.md)
 
@@ -272,7 +272,7 @@ registry, branches, tags, candidate promotion, or rollback policy.
 
 ## Community
 
-Join [Discord](https://discord.gg/cZ4NBbHDk) to ask questions, share feedback,
+Join [Discord](https://discord.gg/ZduvAtS2k) to ask questions, share feedback,
 and discuss model and agent evaluation infrastructure.
 
 Hitch draws inspiration from [Multica](https://github.com/multica-ai/multica),

@@ -89,7 +89,7 @@ hitch daemon stop
 | 轨迹缺失或读取被拒绝 | 检查启动是否完成、轨迹引用是否有 canonical checksum。不要修改存储证据来绕过校验。 |
 | 查询不到已有 ID | 确认 `run_` 或 `eval_` 前缀，以及所选状态目录。 |
 
-报告问题时，记录 Hitch 版本、移除密钥后的命令、退出码及相关 Run/Eval ID。分享日志前先在本地检查。可以通过 [Issue tracker](https://github.com/rsi-gear/agent-hitch/issues) 或 [Discord](https://discord.gg/cZ4NBbHDk) 提问。
+报告问题时，记录 Hitch 版本、移除密钥后的命令、退出码及相关 Run/Eval ID。分享日志前先在本地检查。可以通过 [Issue tracker](https://github.com/rsi-gear/agent-hitch/issues) 或 [Discord](https://discord.gg/ZduvAtS2k) 提问。
 
 ## 恢复边界
 
