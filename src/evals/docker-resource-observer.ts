@@ -1,5 +1,6 @@
 import type { DockerResourceOwnershipV1, ExecutionEvidenceV1, ObservedContainerResourcesV1, ResourceVectorV1, Sha256 } from "../domain/index.js";
-import { runCommand } from "../foundation/index.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { credentialValuesFromEnv, isSensitiveFieldName, runCommand, safeDiagnosticMessage } from "../foundation/index.js";
 import { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, validateDockerResourceOwnership } from "./docker-ownership.js";
 import { parseExecutionEvidence } from "./execution-evidence.js";
 import { readDockerEngineContainerStats } from "./docker-engine-stats.js";
@@ -42,6 +43,7 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
   const intervalMs = options.intervalMs ?? 250;
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 50 || intervalMs > 60_000) throw new TypeError("Docker resource observer interval is invalid");
   const env = options.env ?? process.env;
+  const credentials = credentialValuesFromEnv(Object.keys(env).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && isSensitiveFieldName(name)), env);
   const command = options.run ?? ((args: string[]) => runCommand(
     env.HITCH_DOCKER_PATH || "docker",
     args,
@@ -63,19 +65,25 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
   let sampleCount = 0;
   let tail = Promise.resolve();
   let pending = false;
-  let unavailable = false;
   let stopped = false;
+  let stopping: Promise<ExecutionEvidenceV1> | undefined;
+  const recordIssue = (error: unknown): void => addIssue(issues, safeDiagnosticMessage(error, credentials, 512));
   const enqueue = (): Promise<void> => {
-    if (pending || unavailable) return tail;
+    if (pending) return tail;
     pending = true;
     tail = tail.then(async () => {
-      if (options.signal?.aborted) return;
-      try {
-        await poll(ownership, command, engineStats, containers, issues);
-        sampleCount += 1;
-      } catch (error) {
-        addIssue(issues, (error as Error)?.message || String(error));
-        unavailable = true;
+      // Each sample is bounded; a transient Docker failure must not disable future samples.
+      for (let attempt = 0; attempt < 3 && !options.signal?.aborted; attempt += 1) {
+        try {
+          await poll(ownership, command, engineStats, containers, recordIssue);
+          sampleCount += 1;
+          break;
+        } catch (error) {
+          recordIssue(error);
+          if (attempt < 2) await delay(100 * (attempt + 1), undefined, {
+            ...(options.signal ? { signal: options.signal } : {}),
+          }).catch(() => {});
+        }
       }
     }).finally(() => { pending = false; });
     return tail;
@@ -98,13 +106,13 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
     observed: observation(startedAt, sampleCount, containers, issues),
   });
   return {
-    capture: async () => { await enqueue(); return evidence(); },
-    stop: async () => {
+    capture: async () => { await (stopped ? tail : enqueue()); return evidence(); },
+    stop: () => stopping ??= (async () => {
       stopped = true;
       clearInterval(timer);
       await enqueue();
       return evidence();
-    },
+    })(),
   };
 }
 
@@ -113,7 +121,7 @@ async function poll(
   command: (args: string[]) => Promise<{ stdout: string; stderr?: string }>,
   engineStats: ((containerId: string) => Promise<{ cpu_time_ns?: number; memory_bytes?: number }>) | undefined,
   containers: Map<string, MutableContainer>,
-  issues: string[],
+  recordIssue: (error: unknown) => void,
 ): Promise<void> {
   const labels = dockerOwnershipLabelMap(ownership);
   const listed = await command([
@@ -127,7 +135,7 @@ async function poll(
   if (ids.length > 256 || ids.some((id) => !/^[a-f0-9]{12,64}$/.test(id))) throw new TypeError("Docker resource observation returned invalid container IDs");
   for (const id of ids) {
     try { await observeContainer(id, ownership, command, engineStats, containers); }
-    catch (error) { addIssue(issues, (error as Error)?.message || String(error)); }
+    catch (error) { recordIssue(error); }
   }
 }
 

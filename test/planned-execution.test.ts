@@ -348,7 +348,7 @@ test("a persisted planned retry resumes without repeating the initial candidate"
   assert.equal(terminal?.decisions[0]?.state, "exhausted");
 });
 
-test("planned task Dockerfiles are built once and injected as immutable prebuilt images", async (t) => {
+for (const imageObservation of ["matching", "missing", "mismatched"] as const) test(`planned images preserve identity and observation evidence before validation: ${imageObservation}`, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-prebuilt-image-"));
   t.after(() => forceRemove(root));
   const dataset = path.join(root, "dataset");
@@ -361,7 +361,7 @@ test("planned task Dockerfiles are built once and injected as immutable prebuilt
   const inspector = await writeBuildInspector(root);
   const manifestDigest = `sha256:${"7".repeat(64)}` as const;
   const configDigest = `sha256:${"8".repeat(64)}` as const;
-  const docker = await writeObservedImageDocker(root, configDigest);
+  const docker = await writeObservedImageDocker(root, imageObservation === "missing" ? null : imageObservation === "mismatched" ? `sha256:${"9".repeat(64)}` : configDigest);
   let builds = 0;
   let buildSlots = 0;
   const built = new Map<string, typeof manifestDigest>();
@@ -391,7 +391,7 @@ test("planned task Dockerfiles are built once and injected as immutable prebuilt
     env: { ...process.env, HITCH_NPM_PATH: npm, HITCH_HARBOR_PYTHON_PATH: inspector, HITCH_DOCKER_PATH: docker },
     request: { dataset, harness_ref: "pi@version:1.2.3", attempts: 1, max_concurrent: 1, infrastructure_retries: 0 },
   });
-  assert.equal(builds, 1);
+  assert.equal(builds, 1, JSON.stringify(result));
   assert.equal(buildSlots, 0);
   const evalDirectory = path.join(root, "evals", result.eval_id as string);
   const plan = parseEvalExecutionPlan(await readJSON<unknown>(path.join(evalDirectory, "execution-plan.json")));
@@ -407,6 +407,27 @@ test("planned task Dockerfiles are built once and injected as immutable prebuilt
   assert.ok(kwargs);
   assert.equal(kwargs.hitch_prebuilt_task_image, configDigest);
   assert.equal(kwargs.hitch_resolved_images, undefined);
+  const workDirectory = path.join(evalDirectory, "harbor", "work-items", plan.work_items[0]!.work_id, "epoch-000001");
+  const snapshot = await readJSON<{ observed: { sample_count: number; containers: unknown[]; issues: string[] } }>(path.join(workDirectory, "execution.json"));
+  assert.ok(Array.isArray(snapshot.observed.issues));
+  assert.ok(await readJSON(path.join(workDirectory, "environment", "image.manifest.json")));
+  const frozen = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "plan.json"));
+  assert.deepEqual(result.candidate, frozen.candidate);
+  assert.equal(result.dataset, dataset);
+  assert.deepEqual(result.prepared_artifact, frozen.prepared_artifact);
+  assert.deepEqual(result.prepared_artifacts, frozen.prepared_artifacts);
+  if (imageObservation === "matching") {
+    // This minimal Harbor double omits a trajectory; image validation must still allow import.
+    assert.equal(result.failure_stage, undefined);
+    assert.equal((result.trials as unknown[]).length, 1);
+    assert.ok(snapshot.observed.sample_count > 0);
+  } else {
+    assert.equal(result.status, "failed");
+    assert.equal(result.error?.code, imageObservation === "missing" ? "environment_image_evidence_unavailable" : "environment_image_mismatch");
+    assert.deepEqual(result.trials, []);
+    assert.equal(snapshot.observed.containers.length, imageObservation === "missing" ? 0 : 1);
+    assert.ok(snapshot.observed.issues.length > 0 || imageObservation === "mismatched");
+  }
 });
 
 test("identical task Dockerfiles share one content-addressed build across task IDs", async (t) => {
@@ -586,12 +607,13 @@ async function writeBuildInspector(directory: string): Promise<string> {
   return executable;
 }
 
-async function writeObservedImageDocker(directory: string, configDigest: string): Promise<string> {
+async function writeObservedImageDocker(directory: string, configDigest: string | null): Promise<string> {
   const executable = path.join(directory, "fake-observed-image-docker");
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
+if (${JSON.stringify(configDigest)} === null) process.exit(2);
 function jobs(dir) {
   let result = [];
   try { for (const entry of fs.readdirSync(dir, {withFileTypes:true})) {

@@ -79,6 +79,8 @@ hitch trajectory project RUN_ID --profile analysis --json
 
 For the example task, valid reward `1` means the expected file was produced; valid reward `0` means it was not. An invalid trial indicates an execution or evidence problem. Hitch's `summary` excludes invalid observations; `backend_summary` retains Harbor's aggregate for diagnosis.
 
+Docker observation retries each sample up to three times, with bounded backoff, and continues sampling after transient failures. Before image validation, planned local work saves the observation in `evals/EVAL_ID/harbor/work-items/WORK_ID/epoch-NNNNNN/execution.json` (physical retries use their own backend directory), alongside `environment/image.manifest.json`. These diagnostic snapshots include sample counts, containers and redacted issues; they do not certify a trial. `environment_image_evidence_unavailable` means the required immutable image observation is missing; `environment_image_mismatch` means observed image identities disagree with the plan. Both prevent accepting that trial. Exceptional failed results retain the dataset, candidate and prepared artifacts available at failure, plus already certified trials and the original error. Historical records are not rewritten.
+
 Records live under `~/.hitch/evals/EVAL_ID/`. During execution, `progress.json` describes published trials. The terminal `result.json` becomes authoritative when the evaluation finishes. Per-trial evidence is published under the ordinary `runs/` directory.
 
 ## Repair an invalid trial

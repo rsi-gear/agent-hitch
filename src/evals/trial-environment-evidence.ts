@@ -2,6 +2,7 @@ import path from "node:path";
 import type { EnvironmentImageManifestV1, EnvironmentImageUseV1, ExecutionEvidenceV1, RunEnvironmentImagesV1 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir } from "../foundation/index.js";
 import type { EvalEnvironmentImageManifestLoader } from "./service-types.js";
+import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 
 export interface TrialEnvironmentImagesV1 {
   uses: EnvironmentImageUseV1[];
@@ -61,12 +62,29 @@ export function verifyTrialEnvironmentImageExecution(
     const manifest = manifests.get(use.image_id);
     if (!manifest) throw imageMismatch();
     const expectedConfig = manifest.output.config_digest;
-    const matched = execution.observed.containers.some((container) => expectedConfig
+    const observed = execution.observed.containers.filter((container) => expectedConfig
+      ? container.image_config_digest !== undefined
+      : container.image_reference !== undefined);
+    if (observed.length === 0) throw new HitchError("immutable trial container image evidence is unavailable", {
+      code: "environment_image_evidence_unavailable", exitCode: 12,
+    });
+    const matched = observed.some((container) => expectedConfig
       ? container.image_config_digest === expectedConfig
       : container.image_reference === use.reference);
     if (!matched) throw imageMismatch();
   }
   return execution;
+}
+
+/** Keep unverified observations in the work directory even when image validation rejects the trial. */
+export async function recordTrialEnvironmentImageExecution(
+  directory: string,
+  execution: ExecutionEvidenceV1,
+  evidence?: TrialEnvironmentImagesV1,
+): Promise<ExecutionEvidenceV1> {
+  await writeTrialExecutionEvidence(directory, execution, { evalId: execution.eval_id, taskId: execution.task_id });
+  await writeTrialEnvironmentImageEvidence(directory, execution.task_id, evidence);
+  return verifyTrialEnvironmentImageExecution(execution, evidence);
 }
 
 export function prebuiltTaskImage(evidence?: TrialEnvironmentImagesV1): string | undefined {

@@ -78,6 +78,8 @@ hitch trajectory project RUN_ID --profile analysis --json
 
 示例中，有效 reward `1` 表示生成了预期文件，有效 reward `0` 表示没有生成。无效 Trial 表示执行或证据有问题。Hitch 的 `summary` 排除无效 observation；`backend_summary` 保留 Harbor 原始汇总用于诊断。
 
+Docker 观测每次采样最多尝试三次，并进行有界退避；瞬时失败不会永久停止后续采样。计划式本地任务在镜像校验前，将观测保存到 `evals/EVAL_ID/harbor/work-items/WORK_ID/epoch-NNNNNN/execution.json`，并保存 `environment/image.manifest.json`；物理重试使用各自的后端目录。诊断快照包含采样数、容器和脱敏问题，不代表试验已通过认证。`environment_image_evidence_unavailable` 表示缺少所需的不可变镜像观测；`environment_image_mismatch` 表示已观测的镜像身份与计划不符，两者均阻止接纳该试验。异常失败结果保留失败时已有的数据集、候选、准备产物、已认证试验及上游错误，不改写历史记录。
+
 记录保存在 `~/.hitch/evals/EVAL_ID/`。执行期间，`progress.json` 描述已发布的 Trial；完成后以终态 `result.json` 为准。每个 Trial 的证据发布在普通 `runs/` 目录中。
 
 ## 修复无效 Trial

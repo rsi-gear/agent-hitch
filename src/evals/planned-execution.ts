@@ -21,7 +21,8 @@ import { executeRemotePlannedWorkItem } from "./planned-remote-execution.js";
 import { runtimeResourcesForTask } from "./execution-plan-resources.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
-import { loadTrialEnvironmentImages, prebuiltTaskImage, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
+import { loadTrialEnvironmentImages, prebuiltTaskImage, recordTrialEnvironmentImageExecution, writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
+import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 import { PrioritySemaphore, assertTaskSlotPlan, workOrder, workSchedulingPriority } from "./planned-execution-support.js";
 import type { PlannedBackendRun } from "./planned-execution-support.js";
@@ -367,10 +368,11 @@ async function executeLeasedWorkItem(
   const environmentImages = await loadTrialEnvironmentImages({ taskId, uses: item.image_refs ?? [], ...(options.environmentImageManifestLoader ? { loader: options.environmentImageManifestLoader } : {}) });
   const runtimeResources = runtimeResourcesForTask(options.plan, taskId, item.reservation);
   const ownership = dockerResourceOwnership(options.root, lease, taskId);
-  const resourceObserver = startDockerResourceObserver({ ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
   const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(lease.epoch).padStart(6, "0")}`);
   const harborJobDirectory = path.join(backendDirectory, "job");
   const prebuiltImage = prebuiltTaskImage(environmentImages);
+  await writeTrialEnvironmentImageEvidence(backendDirectory, taskId, environmentImages);
+  const resourceObserver = startDockerResourceObserver({ ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
   const refs: EvalTrialRefV1[] = [];
   const publish = async (ref: EvalTrialRefV1): Promise<void> => {
     if (ref.attempt !== logicalAttempt || ref.task_id !== taskId) {
@@ -450,7 +452,7 @@ async function executeLeasedWorkItem(
           ...(options.interactionCaptureExporter ? {
             interactionCaptureExporter: options.interactionCaptureExporter,
           } : {}),
-          executionEvidence: verifyTrialEnvironmentImageExecution(await resourceObserver.capture(), environmentImages),
+          executionEvidence: await recordTrialEnvironmentImageExecution(backendDirectory, await resourceObserver.capture(), environmentImages),
           ...(environmentImages ? { environmentImages } : {}),
           requireCompleteMarker: true,
           allowMissingBundleDiagnostic: context.bundleWaitExpired,
@@ -462,7 +464,7 @@ async function executeLeasedWorkItem(
         throw error;
       }
     },
-  }).finally(async () => { await resourceObserver.stop(); });
+  }).finally(async () => { await writeTrialExecutionEvidence(backendDirectory, await resourceObserver.stop(), { evalId: options.evalId, taskId }); });
   const collectionStartedAt = Date.now();
   for (const event of await harborPhaseTimingEvents(harborJobDirectory, run.rawResult)) {
     options.sink.emit(event);
@@ -485,7 +487,7 @@ async function executeLeasedWorkItem(
     ...(options.interactionCaptureExporter ? {
       interactionCaptureExporter: options.interactionCaptureExporter,
     } : {}),
-    executionEvidence: verifyTrialEnvironmentImageExecution(await resourceObserver.capture(), environmentImages),
+    executionEvidence: await recordTrialEnvironmentImageExecution(backendDirectory, await resourceObserver.capture(), environmentImages),
     ...(environmentImages ? { environmentImages } : {}),
     rawResult: run.rawResult,
   }, refs);
