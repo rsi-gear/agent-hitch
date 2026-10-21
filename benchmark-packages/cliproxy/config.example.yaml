@@ -1,0 +1,35 @@
+# CLIProxyAPI v8 configuration reviewed at ce07d189b3de2a39d37fd68ae093b102ce3aabee.
+# Copy outside the repository and replace this client key before starting.
+config-version: 8
+server:
+  # Required for a verifier container to reach a host-run service.
+  # Limit access with your private network/firewall, or enable TLS below.
+  host: "0.0.0.0"
+  port: 8317
+  tls:
+    enable: false
+    cert: ""
+    key: ""
+management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+access:
+  api-keys:
+    - "REPLACE_WITH_A_PRIVATE_RANDOM_PROXY_CLIENT_KEY"
+oauth:
+  # A new dedicated directory containing only your Codex login.
+  auth-dir: "~/.local/share/hitch-cliproxy-codex/auth"
+routing:
+  strategy: "fill-first"
+  retry:
+    request-retry: 0
+    max-retry-credentials: 1
+    max-retry-interval: 0
+multimedia:
+  disable-image-generation: true
+observability:
+  logs:
+    debug: false
+    request-log: false
+    logging-to-file: false

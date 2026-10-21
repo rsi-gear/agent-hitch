@@ -98,6 +98,16 @@ local direct execution; a resident worker must be launched with the required
 dedicated variables in its own environment. Remote credential binding has not
 been added or validated by this producer.
 
+## Optional Codex quota through CLIProxyAPI
+
+Use `--judge-profile cliproxy-codex` with an explicit `--judge-model` and
+`--judge-base-url`. This profile defaults to one worker and uses only
+`HITCH_JOBBENCH_JUDGE_CLIPROXY_API_KEY` in the separate verifier. HTTP additionally
+requires `--judge-allow-http`; ordinary provider URLs keep their HTTPS rule.
+The original judge subprocess and scoring remain intact behind a strict
+Responses transport. See the [service, login, Docker topology and smoke recipe](../cliproxy/README.md)
+for the pinned proxy config and generation-control/comparability limitations.
+
 ## Scores, failures and evidence
 
 The official judge awards a block's full weight only when all its criteria pass.

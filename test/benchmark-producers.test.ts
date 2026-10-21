@@ -185,7 +185,8 @@ test("LAB keeps nested source IDs, shared documents and fallback instructions th
     preparedArtifact: { directory: root, artifact_id: identity, artifact_integrity: identity, entrypoint_integrity: identity, harness_id: "codex", revision_identity: identity,
       adapter_version: "1", recipe_version: "1", platform: "linux/amd64", node_version: process.version, source_type: "version" },
     env: { OPENAI_API_KEY: "candidate-only-sentinel", HITCH_LAB_JUDGE_OPENAI_API_KEY: "private-openai-judge-sentinel",
-      HITCH_LAB_JUDGE_ANTHROPIC_API_KEY: "private-anthropic-judge-sentinel", HITCH_JOBBENCH_JUDGE_API_KEY: "private-jobbench-judge-sentinel" },
+      HITCH_LAB_JUDGE_ANTHROPIC_API_KEY: "private-anthropic-judge-sentinel", HITCH_JOBBENCH_JUDGE_API_KEY: "private-jobbench-judge-sentinel",
+      HITCH_LAB_JUDGE_CLIPROXY_API_KEY: "private-lab-cliproxy-judge-sentinel", HITCH_JOBBENCH_JUDGE_CLIPROXY_API_KEY: "private-jobbench-cliproxy-judge-sentinel" },
   });
   const agent = (job.agents as Array<{ env: Record<string, string>; kwargs: { credential_names: string[] } }>)[0]!;
   assert.deepEqual(agent.env, { OPENAI_API_KEY: "${OPENAI_API_KEY}" });

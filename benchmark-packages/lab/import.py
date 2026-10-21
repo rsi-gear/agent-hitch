@@ -15,6 +15,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from producer_support import PYTHON_IMAGE, checkout, copy_git_tree, definitions, digest, file_records, json_file, select, task_extension, toml_text, write_package
+from cliproxy_runtime import validate_endpoint
 
 UPSTREAM_REVISION = "e9b1f9f4dc25576f9a020d857e3e3a6420834dc3"
 
@@ -25,6 +26,19 @@ def flat_id(name):
 
 
 def produce(args):
+    args.judge_profile = getattr(args, "judge_profile", "upstream")
+    args.judge_base_url = getattr(args, "judge_base_url", None)
+    args.judge_allow_http = getattr(args, "judge_allow_http", False)
+    proxy = args.judge_profile == "cliproxy-codex"
+    if proxy:
+        if not args.judges or len(args.judges) != 1 or not args.judge_base_url:
+            raise ValueError("CLIProxy profile requires one explicit --judges model and --judge-base-url")
+        if args.judge_api != "upstream": raise ValueError("CLIProxy profile selects its own Responses transport")
+        validate_endpoint(args.judge_base_url, args.judge_allow_http)
+        args.judge_api = "openai-responses"
+    elif args.judge_base_url is not None or args.judge_allow_http:
+        raise ValueError("--judge-base-url and --judge-allow-http require CLIProxy profile")
+    args.parallel = args.parallel if args.parallel is not None else (1 if proxy else 6)
     source = checkout(args.source, args.revision)
     listing = subprocess.check_output(["git", "-C", str(source), "ls-tree", "-rz", "--name-only", args.revision, "tasks"])
     names = [name.decode("utf-8") for name in listing.split(b"\0") if name]
@@ -36,8 +50,8 @@ def produce(args):
     judges = args.judges or list(pure["JUDGE_MODELS"])
     if not 1 <= len(judges) <= 2 or len(set(judges)) != len(judges): raise ValueError("choose one or two distinct judge models")
     detect = definitions(source / "lab_core/evaluation/judge.py", functions=["_detect_provider"])["_detect_provider"]
-    if args.judge_api != "upstream" and len(judges) != 1: raise ValueError("Chat Completions transport requires exactly one judge")
-    if args.judge_reasoning_effort is not None and args.judge_api == "upstream": raise ValueError("judge reasoning override requires explicit Chat Completions transport")
+    if args.judge_api != "upstream" and len(judges) != 1: raise ValueError("custom judge transport requires exactly one judge")
+    if args.judge_reasoning_effort is not None and args.judge_api == "upstream": raise ValueError("judge reasoning override requires explicit custom judge transport")
     for model in judges:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", model): raise ValueError("unsupported judge model ID")
         if args.judge_api == "upstream": detect(model)
@@ -96,9 +110,10 @@ def produce(args):
         for filename in ["pyproject.toml", "uv.lock", "README.md", "LICENSE"]: shutil.copy2(source / filename, vendor / filename)
         shutil.copy2(sandbox / "install_pandoc.sh", tests / "install_pandoc.sh")
         for file in Path(__file__).with_name("runtime").glob("*.py"): shutil.copy2(file, tests / file.name)
+        if proxy: shutil.copy2(Path(__file__).resolve().parents[1] / "cliproxy_runtime.py", tests / "hitch_cliproxy.py")
         json_file(tests / "judge.json", {"protocol": "harvey-lab-official@1", "source_task_id": name, "source_revision": args.revision,
-            "models": judges, "api": args.judge_api, "reasoning_effort": args.judge_reasoning_effort, "parallel": args.parallel, "primary": "dual_all_pass_rate" if len(judges) == 2 else "score",
-            "matching_model": "claude-sonnet-4-6 (official fallback matcher)", "network": "public"})
+            "models": judges, "profile": args.judge_profile, "api": args.judge_api, "base_url": args.judge_base_url, "allow_http": args.judge_allow_http, "reasoning_effort": args.judge_reasoning_effort, "parallel": args.parallel, "primary": "dual_all_pass_rate" if len(judges) == 2 else "score",
+            "matching_model": judges[0] + " (CLIProxy transport; official matching logic)" if proxy else "claude-sonnet-4-6 (official fallback matcher)", "network": "public"})
         extra = " --extra mistral" if args.judge_api == "upstream" and any(detect(m) == "mistral" for m in judges) else ""
         (tests / "Dockerfile").write_text(f'''FROM {PYTHON_IMAGE}
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
@@ -117,6 +132,7 @@ CMD ["sleep", "infinity"]
         (tests / "test.sh").write_text("#!/bin/sh\nset -eu\nexec python /tests/hitch_grade.py\n", encoding="utf-8")
         credentials = {f"{provider}_API_KEY": "${HITCH_LAB_JUDGE_" + provider + "_API_KEY:-}" for provider in ["ANTHROPIC", "OPENAI", "GOOGLE", "MISTRAL"]}
         credentials.update({"OPENAI_BASE_URL": "${HITCH_LAB_JUDGE_OPENAI_BASE_URL:-https://api.openai.com/v1}", "ANTHROPIC_BASE_URL": "${HITCH_LAB_JUDGE_ANTHROPIC_BASE_URL:-https://api.anthropic.com}"})
+        if proxy: credentials = {"CLIPROXY_API_KEY": "${HITCH_LAB_JUDGE_CLIPROXY_API_KEY:-}"}
         (task / "task.toml").write_text(toml_text({"schema_version": "1.4", "artifacts": ["/workspace/output"],
             "metadata": {"category": "legal", "source_task_id": name}, "agent": {"timeout_sec": args.agent_timeout},
             "environment": {"cpus": 2, "memory_mb": 4096, "storage_mb": 20480, "build_timeout_sec": 1800, "workdir": "/workspace", "network_mode": "public"},
@@ -130,16 +146,16 @@ CMD ["sleep", "infinity"]
     shutil.copy2(source / "LICENSE", root / "UPSTREAM-LICENSE")
     json_file(root / "source-manifest.json", {"schema_version": "1", "status": "ready", "source": "https://github.com/harveyai/harvey-labs", "source_revision": args.revision,
         "selection": selection, "tasks": tasks, "transformations": transforms, "adapter": {"id": "harvey-lab", "version": "1", "path": "source-adapter.py"},
-        "judge_transport": {"api": args.judge_api, "models": judges, "reasoning_effort": args.judge_reasoning_effort},
+        "judge_transport": {"profile": args.judge_profile, "api": args.judge_api, "base_url": args.judge_base_url, "allow_http": args.judge_allow_http, "models": judges, "reasoning_effort": args.judge_reasoning_effort},
         "scoring": "official single all-pass score / dual_all_pass_rate; criterion pass fraction auxiliary only",
         "execution_profile": "Hitch terminal harness, open candidate network; differs from official LAB reference harness with network=none",
         "dependency_policy": "verifier uv.lock frozen; upstream candidate apt/pip/npm remain as authored, image build receipts identify resolved image",
-        "matching_failure_policy": "official Anthropic matcher retained; swallowed LLM matching failure is promoted to invalid verification"})
+        "matching_failure_policy": "official matching logic retained; CLIProxy profile replaces only its transport; swallowed LLM matching failure is promoted to invalid verification"})
     package_selection = {**selection, "tasks": ids}
     write_package(root, name="harvey-lab-" + ("dual" if len(judges) == 2 else "single"), revision=args.revision,
         uri="https://github.com/harveyai/harvey-labs", license="MIT", selection=package_selection, primary="lab_all_pass",
         metrics={"lab_all_pass": "scalar" if len(judges) == 2 else "binary", "lab_criterion_pass": "scalar"},
-        extensions={"judge_models": judges, "judge_api": args.judge_api, "judge_reasoning_effort": args.judge_reasoning_effort, "source_selection": selection, "network_difference": "open-network Hitch harness; not reference LAB harness parity",
+        extensions={"judge_models": judges, "judge_profile": args.judge_profile, "judge_api": args.judge_api, "judge_reasoning_effort": args.judge_reasoning_effort, "source_selection": selection, "network_difference": "open-network Hitch harness; not reference LAB harness parity",
         "credential_policy": "host HITCH_LAB_JUDGE_* variables resolve only in verifier; never --pass-env", "auxiliary_metrics": ["lab_criterion_pass"]})
     return {"package": str(root), "selection": selection, "task_ids": ids, "judges": judges}
 
@@ -151,7 +167,10 @@ if __name__ == "__main__":
     parser.add_argument("--task", action="append", help="original nested task ID; repeatable")
     parser.add_argument("--judges", nargs="+", help="one or two judge models; default is read from pinned official code")
     parser.add_argument("--judge-api", choices=["upstream", "openai-chat-completions"], default="upstream", help="explicit single-judge transport; upstream keeps official provider detection")
-    parser.add_argument("--judge-reasoning-effort", choices=["none", "low", "medium", "high", "xhigh", "max"], help="optional Chat Completions reasoning_effort")
-    parser.add_argument("--parallel", type=int, default=6); parser.add_argument("--agent-timeout", type=int, default=7200)
+    parser.add_argument("--judge-reasoning-effort", choices=["none", "low", "medium", "high", "xhigh", "max"], help="optional custom-transport reasoning effort")
+    parser.add_argument("--judge-profile", choices=["upstream", "cliproxy-codex"], default="upstream", help="CLIProxy requires one explicit model and base URL")
+    parser.add_argument("--judge-base-url", help="explicit CLIProxy endpoint, including /v1")
+    parser.add_argument("--judge-allow-http", action="store_true", help="explicit HTTP opt-in for CLIProxy only")
+    parser.add_argument("--parallel", type=int, help="default 6; CLIProxy profile defaults to 1"); parser.add_argument("--agent-timeout", type=int, default=7200)
     parser.add_argument("--out", required=True)
     print(json.dumps(produce(parser.parse_args()), indent=2))

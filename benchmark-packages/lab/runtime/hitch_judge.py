@@ -74,3 +74,62 @@ def chat_judge(official_judge, model, reasoning_effort=None):
             raise ValueError(f"Chat judge failed after {_retries} attempts: {last_error}")
 
     return ChatJudge()
+
+
+def cliproxy_judge(official_judge, config):
+    """Only the transport differs; inherit the official prompt loader and parser."""
+    import json
+    import os
+    from hitch_cliproxy import ResponsesClient
+    from lab_core.evaluation.judge import _VERDICT_SCHEMA, _JUDGE_MAX_OUTPUT_TOKENS
+
+    class ResponsesJudge(official_judge):
+        def __init__(self):
+            self.model = config["models"][0]
+            self.provider = "openai-responses"
+            self.client = ResponsesClient(config["base_url"], os.environ.get("CLIPROXY_API_KEY"), self.model,
+                config.get("allow_http", False), config.get("reasoning_effort"))
+            self.transport_provenance = {**self.client.provenance,
+                "official_requested_controls": {"temperature": 0.0, "max_tokens": _JUDGE_MAX_OUTPUT_TOKENS},
+                "prompt_and_parser": "official Judge.evaluate_from_file and Judge._parse_json",
+                "schema": "official _VERDICT_SCHEMA, including reasoning before verdict"}
+
+        def evaluate(self, prompt_template, variables, temperature=0.0, _retries=2):
+            prompt = prompt_template.format(**variables)
+            last_error = None
+            for attempt in range(_retries):
+                try:
+                    result = self.client.evaluate([{"role": "user", "content": prompt}], _VERDICT_SCHEMA, "lab_verdict")
+                    return validate_verdict(self._parse_json(json.dumps(result)))
+                except Exception as error:
+                    last_error = error
+            raise ValueError(f"CLIProxy judge failed after {_retries} attempts: {last_error}")
+
+    return ResponsesJudge()
+
+
+@contextmanager
+def cliproxy_matcher(scoring, client):
+    """Adapt the original matcher's Anthropic surface without rewriting its logic."""
+    import json
+    from types import SimpleNamespace
+    original_provider, original_matcher = scoring.anthropic, scoring._llm_match_deliverables
+
+    def create(*, model, messages, max_tokens, temperature, output_config):
+        schema = output_config["format"]["schema"]
+        result = client.evaluate(messages, schema, "lab_deliverable_match")
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(result))])
+
+    def checked_matcher(unresolved, available_files, output_dir):
+        result = original_matcher(unresolved, available_files, output_dir)
+        if (not isinstance(result, dict) or set(result) != set(unresolved)
+                or any(value is not None and (not isinstance(value, str) or value not in available_files) for value in result.values())):
+            raise ValueError("LAB deliverable matcher returned invalid keys or filenames")
+        return result
+
+    scoring.anthropic = SimpleNamespace(Anthropic=lambda: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    scoring._llm_match_deliverables = checked_matcher
+    try:
+        yield
+    finally:
+        scoring.anthropic, scoring._llm_match_deliverables = original_provider, original_matcher

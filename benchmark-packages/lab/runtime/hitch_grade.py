@@ -96,7 +96,7 @@ def run(tests, output, destination):
                 sys.path.insert(0, str(tests / "vendor"))
                 with (logs / "judge-output.log").open("w", encoding="utf-8") as stream, redirect_stdout(stream), redirect_stderr(stream):
                     from lab_core.evaluation import run_eval as evaluation
-                    from hitch_judge import chat_judge, validated_judges
+                    from hitch_judge import chat_judge, cliproxy_judge, cliproxy_matcher, validated_judges
                     try:
                         with validated_judges(evaluation) as Judge:
                             api = config.get("api", "upstream")
@@ -106,6 +106,18 @@ def run(tests, output, destination):
                                 config["transport"] = judge.transport_provenance
                                 (logs / "judge-provenance.json").write_text(json.dumps(config, indent=2) + "\n")
                                 scores = evaluation.evaluate_run("hitch", source_id, judge, parallel=config["parallel"])
+                            elif api == "openai-responses":
+                                if config.get("profile") != "cliproxy-codex" or len(models) != 1:
+                                    raise ValueError("CLIProxy Responses transport requires its explicit single-judge profile")
+                                from lab_core.evaluation import scoring
+                                judge = cliproxy_judge(Judge, config)
+                                config["transport"] = judge.transport_provenance
+                                config["matching_transport"] = {**judge.client.provenance,
+                                    "prompt_schema_preview_and_matching": "official _llm_match_deliverables and _match_deliverables",
+                                    "official_requested_controls": {"temperature": 0.0, "max_tokens": 1024}}
+                                (logs / "judge-provenance.json").write_text(json.dumps(config, indent=2) + "\n")
+                                with cliproxy_matcher(scoring, judge.client):
+                                    scores = evaluation.evaluate_run("hitch", source_id, judge, parallel=config["parallel"])
                             elif api != "upstream":
                                 raise ValueError("unsupported LAB judge API")
                             elif len(models) == 2:

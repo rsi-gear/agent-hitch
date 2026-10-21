@@ -23,7 +23,7 @@ def publish_logs(logs, destination, secrets):
 
 def run(tests, output, destination):
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / "reward.json").unlink(missing_ok=True)
+    for stale in ["reward.json", "judge-provenance.json"]: (destination / stale).unlink(missing_ok=True)
     secrets = [v for k, v in os.environ.items() if v and any(s in k.upper() for s in ("API_KEY", "TOKEN", "SECRET", "PASSWORD"))]
     with tempfile.TemporaryDirectory(prefix="jobbench-private-diagnostics-") as private_logs:
         logs = Path(private_logs)
@@ -31,8 +31,17 @@ def run(tests, output, destination):
         try:
             sys.path.insert(0, str(tests))
             import verify
+            judge_path = tests / "judge.py"
+            if (tests / "judge.json").exists():
+                config = json.loads((tests / "judge.json").read_text())
+                if config.get("profile") != "cliproxy-codex": raise ValueError("unsupported JobBench judge profile")
+                from hitch_cliproxy import ResponsesClient
+                client = ResponsesClient(config["base_url"], os.environ.get("JUDGE_API_KEY"), config["model"], config.get("allow_http", False))
+                transport = {**client.provenance, "official_requested_controls": {"temperature": 0.0, "max_completion_tokens": 200000}}
+                (logs / "judge-provenance.json").write_text(json.dumps({**config, "transport": transport}, indent=2) + "\n")
+                judge_path = tests / "hitch_judge.py"
             with (logs / "verifier-output.log").open("w", encoding="utf-8") as stream, redirect_stdout(stream), redirect_stderr(stream):
-                reward = verify.verify(output_dir=output, rubrics_file=tests / "RUBRICS.json", judge_path=tests / "judge.py", logs_dir=logs)
+                reward = verify.verify(output_dir=output, rubrics_file=tests / "RUBRICS.json", judge_path=judge_path, logs_dir=logs)
             (logs / "verification.json").write_text(json.dumps({"status": "ok", **reward}) + "\n")
             status = 0
         except Exception as error:

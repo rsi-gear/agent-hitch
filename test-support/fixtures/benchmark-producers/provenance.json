@@ -10,6 +10,7 @@
   "lab_judge_extracted_members": [
     "_detect_provider",
     "_JUDGE_MAX_OUTPUT_TOKENS",
+    "_VERDICT_SCHEMA",
     "Judge.evaluate_from_file",
     "Judge._parse_json"
   ]

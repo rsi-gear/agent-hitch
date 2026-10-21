@@ -4,6 +4,17 @@ from pathlib import Path
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 _JUDGE_MAX_OUTPUT_TOKENS = 64000
+_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        # reasoning precedes verdict so structured output writes the analysis
+        # before committing to a verdict token.
+        "reasoning": {"type": "string"},
+        "verdict": {"type": "string", "enum": ["pass", "fail"]},
+    },
+    "required": ["reasoning", "verdict"],
+    "additionalProperties": False,
+}
 
 def _detect_provider(model: str) -> str:
     """Return 'anthropic', 'google', 'openai', or 'mistral' from the model name."""

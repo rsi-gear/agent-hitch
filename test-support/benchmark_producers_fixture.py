@@ -41,13 +41,29 @@ if os.environ.get("JOB_TEST_ERROR"): raise RuntimeError(os.environ["JUDGE_API_KE
 output=Path(a.output_dir)
 has_files=output.exists() and any(f.is_file() for f in output.rglob("*"))
 rubrics=json.loads(Path(a.rubrics_file).read_text())["rubrics"]
-rubric_results=[{"index":i,"weight":r["weight"],"result":{"score":r["weight"] if has_files and i==0 else 0,"passed":has_files and i==0}} for i,r in enumerate(rubrics)]
+responses=[]
+if has_files and Path(__file__).with_name("judge.json").exists():
+    from openai import OpenAI
+    client=OpenAI(base_url=os.environ["JUDGE_API_BASE"],api_key=os.environ["JUDGE_API_KEY"])
+    for r in rubrics:
+        prompt=r["rubric"]+"\\n"+"\\n".join(r["criterion"])
+        raw=client.chat.completions.create(model=os.environ["JUDGE_MODEL"],messages=[
+            {"role":"system","content":"Return the original JobBench rubric schema"},
+            {"role":"developer","content":"Preserve ordered messages"},
+            {"role":"user","content":[{"type":"text","text":prompt},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=","detail":"high"}},
+                {"type":"text","text":"Text after inline image"},
+                {"type":"image_url","image_url":{"url":"https://example.invalid/fixture.png"}}]}],
+            max_completion_tokens=200000,temperature=0.0,timeout=5)
+        responses.append(json.loads(raw.choices[0].message.content))
+rubric_results=[{"index":i,"weight":r["weight"],"result":{"score":r["weight"] if has_files and (responses[i]["rubric_passed"] if responses else i==0) else 0,
+    "passed":has_files and (responses[i]["rubric_passed"] if responses else i==0)}} for i,r in enumerate(rubrics)]
 reward=build_reward(build_scorecard(rubric_results))
 if os.environ.get("JOB_TEST_BAD_REWARD"): reward={"reward":float("nan")}
 Path(a.result_file).write_text(json.dumps(reward))
 Path(a.details_file).write_text(json.dumps({"rubrics":[{} for r in rubrics]}))
 for i,r in enumerate(rubrics):
-    response={"criteria_results":[{"passed":True} for c in r["criterion"]],"rubric_passed":True,"overall_reasoning":"fixture"}
+    response=responses[i] if responses else {"criteria_results":[{"passed":True} for c in r["criterion"]],"rubric_passed":True,"overall_reasoning":"fixture"}
     Path(a.detail_log_dir,f"jobbench_rubric_{i}.log").write_text(("Parse Status: invalid" if os.environ.get("JOB_TEST_BAD_PARSE") else "Parse Status: direct_json")+"\\nAPI Exit Code: 0\\nCriteria Count: "+str(len(r["criterion"]))+"\\nRAW API RESPONSE\\n================\\n"+json.dumps(response)+"\\n\\n================\\nFINAL RESULT\\n")
 '''
 

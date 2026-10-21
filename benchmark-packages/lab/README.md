@@ -23,8 +23,8 @@ The importer requires Python >=3.9, Git and no external Python packages.
 Execution needs Docker, Linux/amd64, image/build downloads, model API access and
 public verifier network. The verifier uses Python 3.12 and the original locked
 `lab_core` dependencies. Candidate model calls and judge calls have independent
-costs. Filename matching may add a paid Anthropic call even with a single OpenAI,
-Google or Mistral judge.
+costs. For the upstream and Chat profiles, filename matching may add a paid Anthropic
+call even with a single OpenAI, Google or Mistral judge.
 
 ## One task: import, validate and compile
 
@@ -78,8 +78,8 @@ the wrapper removes their exact values from diagnostic logs and score reasoning.
 The upstream default pair is read from the pinned `run_eval.py`:
 `claude-sonnet-4-6` and `gpt-5.5`. It requires dedicated Anthropic and OpenAI keys.
 Use `--judges gpt-5.5` at import for a separately identified single-judge package,
-or `--judges MODEL_A MODEL_B` for a custom pair. The official fallback filename
-matcher always uses `claude-sonnet-4-6`; provide the dedicated Anthropic key if
+or `--judges MODEL_A MODEL_B` for a custom pair. For the upstream and Chat profiles, the official fallback filename
+matcher uses `claude-sonnet-4-6`; provide the dedicated Anthropic key if
 that fallback can be needed. A missing or failed matcher is an invalid
 verification, while a genuinely missing deliverable is evaluated under the
 original rubric's missing-file behavior. The default OpenAI/Anthropic endpoints
@@ -139,6 +139,18 @@ variables in their own launching environment; remote verifier credential binding
 has not been implemented or validated here. A verifier-only regrade uses retained
 output and the frozen task/evaluator, makes no candidate call, and may make paid
 judge/matching calls. Missing retained evidence causes an error.
+
+## Optional Codex quota through CLIProxyAPI
+
+Use `--judge-profile cliproxy-codex` with one explicit `--judges MODEL` and
+`--judge-base-url`. This profile defaults to one parallel request and uses only
+`HITCH_LAB_JUDGE_CLIPROXY_API_KEY` in the separate verifier. HTTP additionally
+requires `--judge-allow-http`. Its Responses adapter uses the official verdict
+schema, and the official fallback filename matcher uses the same Codex model
+through a scoped transport adapter, requiring no Anthropic key. It cannot be
+combined with the Chat adapter or two judges. See the
+[service, login, Docker topology and smoke recipe](../cliproxy/README.md)
+for the pinned proxy config and generation-control/comparability limitations.
 
 ## Score and evidence contract
 

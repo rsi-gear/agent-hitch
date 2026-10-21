@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from producer_support import checkout, file_records, git_commit_tree, json_file, select, task_extension, write_package
+from cliproxy_runtime import validate_endpoint
 
 UPSTREAM_REVISION = "660b33a86ed032559df0b2fdc1ad38cf7ceb83f3"
 
@@ -42,8 +43,20 @@ def renderer_source(source, revision):
 
 
 def produce(args):
+    args.judge_profile = getattr(args, "judge_profile", "upstream")
+    args.judge_allow_http = getattr(args, "judge_allow_http", False)
+    proxy = args.judge_profile == "cliproxy-codex"
+    if proxy and (not args.judge_model or not args.judge_base_url):
+        raise ValueError("CLIProxy profile requires explicit --judge-model and --judge-base-url")
+    if args.judge_allow_http and not proxy: raise ValueError("--judge-allow-http requires CLIProxy profile")
+    if args.judge_model is None: args.judge_model = "grok-4.3"
+    if args.judge_base_url is None: args.judge_base_url = "https://api.x.ai/v1"
+    args.judge_workers = args.judge_workers if args.judge_workers is not None else (1 if proxy else 10)
+    if args.judge_workers < 1: raise ValueError("--judge-workers must be positive")
     endpoint = urlsplit(args.judge_base_url)
-    if endpoint.scheme != "https" or not endpoint.netloc or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+    if proxy:
+        validate_endpoint(args.judge_base_url, args.judge_allow_http)
+    elif endpoint.scheme != "https" or not endpoint.netloc or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
         raise ValueError("judge base URL must be credential-free HTTPS without query or fragment")
     if not args.judge_model.strip() or any(ord(c) < 32 for c in args.judge_model): raise ValueError("invalid judge model")
     source = checkout(args.source, args.source_revision)
@@ -83,7 +96,7 @@ def render_package(args, source, _source_hashes, render_task):
         before = root / "source-files" / name / "task.toml"
         before.parent.mkdir(parents=True); shutil.copy2(task / "task.toml", before)
         config = (task / "task.toml").read_text(encoding="utf-8")
-        env = {"JUDGE_API_BASE": args.judge_base_url, "JUDGE_API_KEY": "${HITCH_JOBBENCH_JUDGE_API_KEY:-}", "JUDGE_MODEL": args.judge_model,
+        env = {"JUDGE_API_BASE": args.judge_base_url, "JUDGE_API_KEY": "${HITCH_JOBBENCH_JUDGE_CLIPROXY_API_KEY:-}" if args.judge_profile == "cliproxy-codex" else "${HITCH_JOBBENCH_JUDGE_API_KEY:-}", "JUDGE_MODEL": args.judge_model,
                "JUDGE_MAX_WORKERS": str(args.judge_workers), "JUDGE_MAX_RETRIES": "3", "JUDGE_TIMEOUT_PER_RUBRIC": "300"}
         config, changed = re.subn(r"^env = \{.*\}$", "env = { " + ", ".join(json.dumps(k) + " = " + json.dumps(v) for k, v in env.items()) + " }", config, flags=re.M)
         if changed != 1: raise ValueError("unsupported upstream verifier configuration")
@@ -93,7 +106,14 @@ def render_package(args, source, _source_hashes, render_task):
         if renamed != 1: raise ValueError("unsupported upstream task identity table")
         (task / "task.toml").write_text(config, encoding="utf-8")
         transforms.append({"kind": "normalize-task-name-and-lock-verifier-only-judge-config", "before_path": before.relative_to(root).as_posix(), "after_path": (task / "task.toml").relative_to(root).as_posix()})
-        for file in Path(__file__).with_name("runtime").glob("*.py"): shutil.copy2(file, task / "tests" / file.name)
+        for file in Path(__file__).with_name("runtime").glob("*.py"):
+            if file.name != "hitch_judge.py" or args.judge_profile == "cliproxy-codex": shutil.copy2(file, task / "tests" / file.name)
+        if args.judge_profile == "cliproxy-codex":
+            shutil.copy2(Path(__file__).resolve().parents[1] / "cliproxy_runtime.py", task / "tests/hitch_cliproxy.py")
+            json_file(task / "tests/judge.json", {"profile": args.judge_profile, "api": "openai-responses", "model": args.judge_model,
+                "base_url": args.judge_base_url, "allow_http": args.judge_allow_http, "workers": args.judge_workers})
+            transforms.append({"kind": "opt-in-cliproxy-codex-responses-transport", "before_path": (task / "tests/judge.py").relative_to(root).as_posix(),
+                "after_path": (task / "tests/hitch_judge.py").relative_to(root).as_posix()})
         shutil.copy2(task / "tests/test.sh", task / "tests/upstream-test.sh")
         (task / "tests/test.sh").write_text("#!/bin/sh\nset -eu\nexec python /tests/hitch_grade.py\n", encoding="utf-8")
         transforms.append({"kind": "official-verifier-redaction-wrapper", "before_path": (task / "tests/upstream-test.sh").relative_to(root).as_posix(), "after_path": (task / "tests/test.sh").relative_to(root).as_posix()})
@@ -111,7 +131,7 @@ def render_package(args, source, _source_hashes, render_task):
         "compatibility": {"upstream_harbor": "0.22.0", "target_harbor": "0.21.0", "task_schema": "1.4", "execution": "requires separate Docker verification"}})
     write_package(root, name="jobbench-" + args.split, revision=args.source_revision, uri="https://github.com/Job-Bench/job-bench-eval", license="Apache-2.0; dataset terms separately apply",
         selection=selection, primary="reward", metrics={"reward": "scalar"}, extensions={"judge_model": args.judge_model, "judge_base_url": args.judge_base_url,
-        "judge_credential": "HITCH_JOBBENCH_JUDGE_API_KEY (verifier only, never --pass-env)", "scoring": "official round(weighted block score / maximum, 4); task macro mean; x100 for percent"})
+        "judge_profile": args.judge_profile, "judge_credential": ("HITCH_JOBBENCH_JUDGE_CLIPROXY_API_KEY" if args.judge_profile == "cliproxy-codex" else "HITCH_JOBBENCH_JUDGE_API_KEY") + " (verifier only, never --pass-env)", "scoring": "official round(weighted block score / maximum, 4); task macro mean; x100 for percent"})
     return {"package": str(root), "selection": selection}
 
 
@@ -122,8 +142,10 @@ if __name__ == "__main__":
     parser.add_argument("--split", choices=["main", "easy"], default="main")
     parser.add_argument("--seed", type=int, default=0); parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--task", action="append", help="explicit official task ID; repeatable")
-    parser.add_argument("--judge-model", default="grok-4.3"); parser.add_argument("--judge-base-url", default="https://api.x.ai/v1")
-    parser.add_argument("--judge-workers", type=int, default=10); parser.add_argument("--out", required=True)
+    parser.add_argument("--judge-profile", choices=["upstream", "cliproxy-codex"], default="upstream")
+    parser.add_argument("--judge-model", help="default grok-4.3; required explicitly for CLIProxy")
+    parser.add_argument("--judge-base-url", help="default https://api.x.ai/v1; required explicitly for CLIProxy")
+    parser.add_argument("--judge-allow-http", action="store_true", help="explicit HTTP opt-in for CLIProxy only")
+    parser.add_argument("--judge-workers", type=int, help="default 10; CLIProxy profile defaults to 1"); parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    if args.judge_workers < 1: parser.error("--judge-workers must be positive")
     print(json.dumps(produce(args), indent=2))
