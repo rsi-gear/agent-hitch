@@ -56,5 +56,10 @@ snapshot. There are no host ports, shared evidence volumes, Hitch lifecycle
 hooks, or real SaaS credentials. Snapshots contain the final world and ordered
 tool audit.
 
+New exports explicitly assign the simulator 1 CPU and 1024 MiB across every
+supported domain. These declarations retain Hitch's previous default limits;
+the changed Compose bytes receive new task and dataset identities. Existing
+datasets remain unchanged and must be re-exported to adopt the declarations.
+
 See [the implementation guide](../../docs/benchmark-packages.md) for the generic
 contract and credential handoff.

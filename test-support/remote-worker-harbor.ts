@@ -137,7 +137,7 @@ export async function verifyRemoteModelCapture(t: TestContext, mode: ModelCaptur
     schema_version: "1" as const, worker_id: "worker_harbor_capture", provider: "remote-docker",
     collision_domain_id: "docker-engine:remote-capture", platforms: [`${process.platform}-${process.arch}`],
     backends: [{ id: "harbor", version: "0.21.0" }],
-    features: { docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false,
+    features: { resource_profiling: "1" as const, docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false,
       ...(repair ? { physical_work: "2" as const } : {}),
       ...(captureSource ? { verifier_source: "2" as const } : {}),
       ...(managed ? { external_endpoint_binding: "1" as const } : {}),

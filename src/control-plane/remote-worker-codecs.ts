@@ -1,6 +1,6 @@
 import type { RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, RemoteWorkerEventV1, Sha256 } from "../domain/index.js";
-import { HitchError } from "../foundation/index.js";
-import { parseExecutionLease } from "../evals/index.js";
+import { HitchError, sha256JSON } from "../foundation/index.js";
+import { parseExecutionLease, parseWorkResourceContract } from "../evals/index.js";
 import { canonicalRemoteCredentialNames } from "./remote-worker-credentials.js";
 import { parseRemoteWorkItem } from "./remote-work-item.js";
 
@@ -39,9 +39,10 @@ export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
     "schema_version", "offer_id", "nonce", "generation", "worker_id", "lease", "work", "inputs", "credential_names",
     "state", "issued_at", "expires_at", "accepted_at", "completed_at", "released_at", "rejection_code", "terminal",
     "accept_receipt_digest", "terminal_receipt_digest", "release_receipt_digest",
+    "resource_contract_version", "resource_contract_digest", "required_capabilities",
   ], "remote work offer");
   const states = new Set(["offered", "accepted", "rejected", "cancel-requested", "completed", "release-requested", "released", "expired"]);
-  if (record.schema_version !== "1" || typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
+  if (typeof record.offer_id !== "string" || !OFFER_ID.test(record.offer_id)
     || typeof record.nonce !== "string" || !/^[a-f0-9]{64}$/.test(record.nonce)
     || !Number.isSafeInteger(record.generation) || (record.generation as number) < 1
     || typeof record.worker_id !== "string" || !/^worker_[a-z0-9][a-z0-9_-]{0,62}$/.test(record.worker_id)
@@ -60,6 +61,11 @@ export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   }
   const lease = parseExecutionLease(record.lease);
   const work = parseRemoteWorkItem(record.work);
+  try {
+    if (sha256JSON(parseWorkResourceContract(record)) !== sha256JSON(parseWorkResourceContract(work))) {
+      throw new TypeError("offer and work resource bindings differ");
+    }
+  } catch { throw protocolError("remote offer resource contract differs from its work item"); }
   let inputs: RemoteWorkInputRefV1[] | undefined;
   if (record.inputs !== undefined) {
     if (!Array.isArray(record.inputs)) throw protocolError("remote work inputs are invalid");
@@ -73,6 +79,7 @@ export function parseRemoteWorkOffer(value: unknown): RemoteWorkOfferV1 {
   const terminal = record.terminal === undefined ? undefined : parseTerminal(record.terminal);
   const requiresTerminal = record.state === "completed" || record.state === "release-requested" || record.state === "released";
   if (lease.worker_id !== record.worker_id || lease.work_id !== work.work_id || lease.eval_id !== work.eval_id
+    || sha256JSON(lease.reservation) !== sha256JSON(work.reservation)
     || requiresTerminal !== (terminal !== undefined)) {
     throw protocolError("remote work offer evidence is inconsistent");
   }

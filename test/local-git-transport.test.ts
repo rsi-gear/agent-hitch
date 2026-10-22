@@ -10,6 +10,7 @@ import { resolveHarness } from "../src/artifacts/index.js";
 import { newEvalId, runEval as runEvalProduction } from "../src/evals/index.js";
 import type { RunEvalOptions } from "../src/evals/index.js";
 import { readJSON } from "../src/foundation/index.js";
+import { loadResumedEvalSource } from "../src/evals/resume-state.js";
 import {
   buildLocalGitTransport,
   validateLocalGitTransportManifest,
@@ -189,6 +190,23 @@ test("Harbor eval records a local exact commit transport without handing source 
   });
   assert.equal((rejected.error as { code: string }).code, "dirty_source");
   assert.equal(rejected.exit_code, 11);
+});
+
+test("resume verifies the frozen local source transport after the original repository is unavailable", async (t) => {
+  const fixture = await localRepository("hitch-local-resume-");
+  t.after(() => forceRemove(fixture.root));
+  const transport = await buildLocalGitTransport({ evalDirectory: fixture.evalDirectory,
+    resolvedRevision: fixture.resolution, sourceDirectory: fixture.source });
+  await writeFile(path.join(fixture.evalDirectory, "resolution.json"), JSON.stringify(fixture.resolution));
+  const payload = await readFile(transport.payloadPath);
+  await rm(fixture.source, { recursive: true });
+  const resumed = await loadResumedEvalSource(fixture.evalDirectory, { plan: {
+    candidate: { revision_identity: fixture.resolution.identity, harness_id: fixture.resolution.harness_id },
+    local_source_transport: { payload_sha256: transport.manifest.payload_sha256 },
+  } }, process.env);
+  assert.equal(resumed.resolvedRevision.identity, fixture.resolution.identity);
+  assert.deepEqual(resumed.localTransport?.manifest, transport.manifest);
+  assert.deepEqual(await readFile(transport.payloadPath), payload);
 });
 
 test("Git commands without input do not receive a writable stdin pipe", async (t) => {

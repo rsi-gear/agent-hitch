@@ -41,6 +41,7 @@ import { writeRerunState } from "./rerun-state.js";
 import { assertRemoteRerunQuiescent, executeRemoteRerunGroup } from "./remote-rerun-execution.js";
 import { remoteRerunNeedsExecution, restoreRemoteRerunSelection } from "./rerun-resume.js";
 import { stageRemoteRerunCompletion } from "./rerun-completion.js";
+import { beginLocalCandidateRestart } from "./local-candidate-rerun.js";
 export { selectRerunTasks, selectRerunTrialSlots } from "./rerun-slots.js";
 export type { EvalTrialSlot, RerunSelector } from "./rerun-slots.js";
 
@@ -176,8 +177,8 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
         const attemptDirectory = plan.attempts === 1
           ? path.join(rerunDirectory, "harbor")
           : path.join(rerunDirectory, "harbor", attemptDirectoryName(logicalAttempt));
-        const backendDirectory = splitAttempt ? path.join(attemptDirectory, `artifact-${artifactId.slice("sha256:".length, "sha256:".length + 16)}`) : attemptDirectory;
-        const harborJobDirectory = path.join(backendDirectory, "job");
+        let backendDirectory = splitAttempt ? path.join(attemptDirectory, `artifact-${artifactId.slice("sha256:".length, "sha256:".length + 16)}`) : attemptDirectory;
+        let harborJobDirectory = path.join(backendDirectory, "job");
         const rerunRefs: EvalTrialRefV1[] = [];
         const publish = async (ref: EvalTrialRefV1): Promise<void> => {
           const slot = { task_id: ref.task_id, attempt: ref.attempt };
@@ -221,76 +222,93 @@ async function rerunEvalLocked(options: RerunEvalOptions & { rerunId: string; re
           }));
           continue;
         }
-        const backendRun = await runHarborBackend({
-          evalId: options.evalId,
-          evalDirectory: options.evalDirectory,
-          backendDirectory,
-          logicalAttempt,
-          taskNames,
-          request: { ...request, attempts: 1, max_concurrent: options.maxConcurrentOverride ?? request.max_concurrent },
-          root: options.root,
-          resolvedRevision,
-          runtimeDirectory: runtime.directory,
-          runtimeId: runtime.runtime_id,
-          preparedArtifact: preparedArtifacts.get(artifactId) ?? (() => { throw unavailable(`rerun artifact is unavailable: ${artifactId}`); })(),
-          ...(options.executionResources ? { executionResources: options.executionResources } : {}),
-          ...(activeCaptureRuntime.route ? { modelProxy: activeCaptureRuntime.route } : {}),
-          env: options.env ?? process.env,
-          ...(options.harborExecutable === undefined ? {} : { harborExecutable: options.harborExecutable }),
-          ...(options.signal ? { signal: options.signal } : {}),
-          ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
-          onTrialSettled: async (trial, context): Promise<boolean> => {
-            try {
-              const ref = await importEvalTrialRun({
-                root: options.root,
-                evalId: options.evalId,
-                evalDirectory: options.evalDirectory,
-                harborJobDirectory,
-                expectedAttempt: logicalAttempt,
-                request,
-                resolvedRevision,
-                benchmarkId: request.benchmark_id,
-                benchmarkRevision: request.benchmark_revision,
-                publicationMode: "replace-invalid",
-                runtimeId: runtime.runtime_id,
-                env: options.env ?? process.env,
-                ...(options.signal ? { signal: options.signal } : {}),
-                modelCapturePlan: activeCaptureRuntime.plan,
-                ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
-                requireCompleteMarker: true,
-                allowMissingBundleDiagnostic: context.bundleWaitExpired,
-              }, trial, rerunRefs.length, rerunRefs);
-              await publish(ref);
-              return true;
-            } catch (error) {
-              if (error instanceof TrialBundlePendingError) return false;
-              throw error;
-            }
-          },
-        });
-        backendRuns.push({ attempt: logicalAttempt, run: backendRun });
-        const terminalRefs = await importEvalTrialRuns({
-          root: options.root,
-          evalId: options.evalId,
-          evalDirectory: options.evalDirectory,
-          harborJobDirectory,
-          expectedAttempt: logicalAttempt,
-          request,
-          resolvedRevision,
-          benchmarkId: request.benchmark_id,
-          benchmarkRevision: request.benchmark_revision,
-          publicationMode: "replace-invalid",
-          runtimeId: runtime.runtime_id,
-          env: options.env ?? process.env,
-          ...(options.signal ? { signal: options.signal } : {}),
-          modelCapturePlan: activeCaptureRuntime.plan,
-          ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
-          rawResult: backendRun.rawResult,
-        }, rerunRefs);
-        for (const ref of terminalRefs) await publish(ref);
-        if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) {
-          throw new HitchError("Harbor rerun failed before producing a complete result", { code: "eval_rerun_harbor_failed", exitCode: 13 });
+        const managed = (executionPlan.resource_contract_version === "2" || executionPlan.resource_profiling && executionPlan.work_items.every(item => item.slots.length === 1)) ? await beginLocalCandidateRestart({
+          options, plan: executionPlan, slot: slots[0]!, evalDirectory: options.evalDirectory, rerunDirectory, rerunId,
+        }) : undefined;
+        if (managed) {
+          backendDirectory = managed.backendDirectory;
+          harborJobDirectory = path.join(backendDirectory, "job");
         }
+        const profiling = executionPlan.work_items.find(work => work.resource_profiling?.unknown && work.task_ids.some(task => taskNames.includes(task)))?.resource_profiling;
+        const parallelism = managed ? 1 : Math.min(options.maxConcurrentOverride ?? request.max_concurrent, profiling?.unknown_max_parallelism ?? Infinity);
+        const releaseProfiling = await acquireProcessResourceProfiling(!managed && !options.executionWorker && profiling ? { ...profiling, unknown_slots: Math.min(profiling.unknown_slots, parallelism) } : undefined, options.signal);
+        try {
+          const backendRun = await runHarborBackend({
+            evalId: options.evalId,
+            evalDirectory: options.evalDirectory,
+            backendDirectory,
+            logicalAttempt,
+            taskNames,
+            request: { ...request, attempts: 1, max_concurrent: parallelism },
+            root: options.root,
+            resolvedRevision,
+            runtimeDirectory: runtime.directory,
+            runtimeId: runtime.runtime_id,
+            preparedArtifact: preparedArtifacts.get(artifactId) ?? (() => { throw unavailable(`rerun artifact is unavailable: ${artifactId}`); })(),
+            ...(options.executionResources ? { executionResources: options.executionResources } : {}),
+            ...(activeCaptureRuntime.route ? { modelProxy: activeCaptureRuntime.route } : {}),
+            env: options.env ?? process.env,
+            ...(options.harborExecutable === undefined ? {} : { harborExecutable: options.harborExecutable }),
+            ...(options.signal ? { signal: options.signal } : {}),
+            ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
+            ...managed?.backend,
+            onTrialSettled: async (trial, context): Promise<boolean> => {
+              try {
+                const ref = await importEvalTrialRun({
+                  root: options.root,
+                  evalId: options.evalId,
+                  evalDirectory: options.evalDirectory,
+                  harborJobDirectory,
+                  expectedAttempt: logicalAttempt,
+                  request,
+                  resolvedRevision,
+                  benchmarkId: request.benchmark_id,
+                  benchmarkRevision: request.benchmark_revision,
+                  publicationMode: "replace-invalid",
+                  runtimeId: runtime.runtime_id,
+                  env: options.env ?? process.env,
+                  ...(options.signal ? { signal: options.signal } : {}),
+                  modelCapturePlan: activeCaptureRuntime.plan,
+                  ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
+                  ...(managed ? { executionEvidence: await managed.captureExecutionEvidence() } : {}),
+                  ...(managed?.images ? { environmentImages: managed.images } : {}),
+                  requireCompleteMarker: true,
+                  allowMissingBundleDiagnostic: context.bundleWaitExpired,
+                }, trial, rerunRefs.length, rerunRefs);
+                await publish(ref);
+                return true;
+              } catch (error) {
+                if (error instanceof TrialBundlePendingError) return false;
+                throw error;
+              }
+            },
+          });
+          backendRuns.push({ attempt: logicalAttempt, run: backendRun });
+          const terminalRefs = await importEvalTrialRuns({
+            root: options.root,
+            evalId: options.evalId,
+            evalDirectory: options.evalDirectory,
+            harborJobDirectory,
+            expectedAttempt: logicalAttempt,
+            request,
+            resolvedRevision,
+            benchmarkId: request.benchmark_id,
+            benchmarkRevision: request.benchmark_revision,
+            publicationMode: "replace-invalid",
+            runtimeId: runtime.runtime_id,
+            env: options.env ?? process.env,
+            ...(options.signal ? { signal: options.signal } : {}),
+            modelCapturePlan: activeCaptureRuntime.plan,
+            ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
+            ...(managed ? { executionEvidence: await managed.captureExecutionEvidence() } : {}),
+            ...(managed?.images ? { environmentImages: managed.images } : {}),
+            rawResult: backendRun.rawResult,
+          }, rerunRefs);
+          for (const ref of terminalRefs) await publish(ref);
+          if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) {
+            throw new HitchError("Harbor rerun failed before producing a complete result", { code: "eval_rerun_harbor_failed", exitCode: 13 });
+          }
+        } finally { try { await managed?.close(); } finally { releaseProfiling(); } }
       }
     }
 
@@ -378,7 +396,7 @@ export function groupRerunSlotsByArtifact(
     const work = plannedSlot ? plan.work_items.find((entry) => entry.slots.includes(plannedSlot.slot_id)) : undefined;
     const artifactId = work?.artifact_id ?? (fallbackIds.length === 1 ? fallbackIds[0] : undefined);
     if (!artifactId) throw unavailable(`rerun slot has no artifact assignment: ${slot.task_id}#${slot.attempt}`);
-    const key = `${slot.attempt}\0${artifactId}`;
+    const key = `${slot.attempt}\0${artifactId}${plan.provider === "local-docker" && (plan.resource_contract_version === "2" || plan.resource_profiling && plan.work_items.every(item => item.slots.length === 1)) ? `\0${slot.task_id}` : ""}`;
     const group = groups.get(key) ?? { logicalAttempt: slot.attempt, slots: [], artifactId };
     group.slots.push(slot);
     groups.set(key, group);
@@ -451,3 +469,4 @@ function requiredString(value: unknown, label: string): string {
 function unavailable(message: string): HitchError {
   return new HitchError(message, { code: "eval_rerun_unavailable", exitCode: 2 });
 }
+import { acquireProcessResourceProfiling } from "./process-resource-profiling.js";

@@ -72,6 +72,8 @@ try {
         },
         simulator: {
           platform: "linux/amd64",
+          cpus: 1,
+          mem_limit: "1024m",
           build: { context: ".", dockerfile: "Dockerfile.simulator" },
           healthcheck: {
             test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2)"],

@@ -145,7 +145,7 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
   await waitFor(() => scheduler.status(first).then((status) => status?.control.state === "planning"));
   const firstStatus = await scheduler.status(first);
   assert.equal(firstStatus?.control.requested_parallelism, 8);
-  assert.equal(firstStatus?.control.admitted_parallelism, 2);
+  assert.equal(firstStatus?.control.admitted_parallelism, 1);
   assert.equal(firstStatus?.execution?.build.mode, "prebuild-preferred");
   assert.equal((await scheduler.status(second))?.control.state, "queued");
   assert.equal((await readJSON<EvalRequest>(path.join(root, "evals", first, "request.json"))).max_concurrent, 8);
@@ -154,7 +154,7 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
   await waitFor(() => scheduler.status(first).then((status) => status?.result !== null));
   await waitFor(() => scheduler.status(second).then((status) => status?.control.state === "planning"));
   await waitFor(() => Promise.resolve(observed.length >= 2));
-  assert.deepEqual(observed.slice(0, 2), [2, 2]);
+  assert.deepEqual(observed.slice(0, 2), [1, 1]);
   await waitFor(() => scheduler.status(second).then((status) => status?.result !== null));
   assert.equal((await scheduler.status(first))?.result?.status, "cancelled");
   assert.equal((await scheduler.status(second))?.result?.status, "succeeded");
@@ -199,7 +199,7 @@ test("eval cancellation preserves a terminal record while executor cleanup is pe
 
 test("eval submission execution policy is pinned and drives admission", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-execution-policy-"));
-  const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 4, build_slots: 1 });
+  const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 4, build_slots: 1 }, { unknown_max_parallelism: 3 });
   let observed: RunEvalOptions | undefined;
   const scheduler = new EvalScheduler({
     root,

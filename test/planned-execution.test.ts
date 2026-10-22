@@ -67,7 +67,7 @@ test("planned local execution overlaps different tasks and serializes attempts o
     request,
   });
 
-  assert.equal((result.trials as unknown[]).length, 4);
+  assert.equal((result.trials as unknown[]).length, 4, JSON.stringify(result.error));
   const evalDirectory = path.join(root, "evals", result.eval_id);
   const compatibilityPlan = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "plan.json"));
   assert.equal(compatibilityPlan.attempt_execution, "harbor-task-slots-v1");
@@ -133,8 +133,9 @@ test("planned local execution overlaps different tasks and serializes attempts o
   assert.deepEqual(resources.snapshot().allocated, { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 });
 
   const activityBeforeResume = activity.length;
+  const executionPlanBeforeResume = await readFile(path.join(evalDirectory, "execution-plan.json"), "utf8");
   await rm(path.join(evalDirectory, "result.json"));
-  const resumed = await runEval({
+  const resumed = await runEvalProduction({
     root,
     evalId: result.eval_id,
     request,
@@ -142,14 +143,16 @@ test("planned local execution overlaps different tasks and serializes attempts o
     resumeExisting: true,
     harborExecutable: harbor,
     executionStrategy: "local-task-slots-v1",
-    executionResources: { cpu_millis: 2_000, memory_bytes: 2 * 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 },
+    executionResources: { cpu_millis: 8_000, memory_bytes: 8 * 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 },
     executionResourceSource: "submission-default",
+    harborArtifactBuilder: async () => { throw new Error("resume must not rebuild a frozen artifact"); },
     trialBundleGraceMs: 0,
     env: { ...process.env, HITCH_NPM_PATH: npm },
   });
   assert.equal(resumed.status, result.status, JSON.stringify(resumed.error));
   assert.equal((await readFile(activityLog, "utf8")).trim().split("\n").length, activityBeforeResume);
   assert.equal((await readExecutionLeases(evalDirectory)).length, 4);
+  assert.equal(await readFile(path.join(evalDirectory, "execution-plan.json"), "utf8"), executionPlanBeforeResume);
 });
 
 test("planned infrastructure retries reacquire admission and use a new owned lease", async (t) => {
@@ -285,6 +288,7 @@ test("planned infrastructure retry starts before unrelated initial work finishes
   const harbor = await writeImmediateRetryHarbor(root, activityLog);
   const npm = await writeFakeNpm(root);
   const result = await runEval({
+    resourceProfilingPolicy: { unknown_max_parallelism: 2 },
     root,
     harborExecutable: harbor,
     executionStrategy: "local-task-slots-v1",
@@ -646,6 +650,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
 const containers = ${JSON.stringify(containers)};
+if (args[0] === "context" && args[1] === "show") { process.stdout.write("hitch-image-fixture\\n"); process.exit(0); }
+if (args[0] === "info" && args[1] === "--format" && args[2] === "{{.ID}}") { process.stdout.write("hitch-image-fixture-engine\\n"); process.exit(0); }
 if (containers.length === 0) process.exit(2);
 function jobs(dir) {
   let result = [];

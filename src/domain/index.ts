@@ -9,10 +9,12 @@ export * from "./revisions.js";
 export * from "./artifacts.js";
 export * from "./workspaces.js";
 export * from "./resources.js";
+export * from "./resource-profiling.js";
 export * from "./control-plane.js";
 export * from "./bundles.js";
 export * from "./execution-plan.js";
 export * from "./execution-evidence.js";
+export * from "./memory-observation.js";
 export * from "./workers.js";
 export * from "./providers.js";
 export * from "./images.js";
@@ -37,3 +39,4 @@ export type { EvaluationBindingV1 } from "./evaluation-binding.js";
 export { DEFAULT_EVALUATION_BINDING_TIMEOUT_MS, MAX_EVALUATION_BINDING_TIMEOUT_MS } from "./evaluation-binding.js";
 
 export * from "./endpoints.js";
+export type { ResourceProfileIdentityV1, ApprovedResourceConfigurationV1 } from "./resource-profiles.js";

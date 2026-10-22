@@ -26,6 +26,19 @@ test("artifact regrade preserves candidate, budgets and verifier and refuses a r
   assert.equal((config.environment as Record<string, unknown>).override_cpus, 4);
   assert.throws(() => buildHarborRegradeConfig({ ...input, sourceConfig: { ...original, agent: { name: "nop" } } }), /original managed Hitch/);
   assert.throws(() => buildHarborRegradeConfig({ ...input, sourceConfig: { ...original, source_trial: { action: "regrade" } } }), /original managed Hitch/);
+  assert.throws(() => buildHarborRegradeConfig({ ...input, sourceConfig: { ...original,
+    environment: { ...original.environment, kwargs: { ...original.environment.kwargs, hitch_phase_resource_contract: {} } } } }),
+  { code: "eval_verifier_only_unavailable" });
+  const phaseVerifierSource = { schema_version: "1" as const, source_directory: "/source", receipt_digest: `sha256:${"d".repeat(64)}` as const };
+  const phaseConfig = { ...original, environment: { ...original.environment,
+    kwargs: { ...original.environment.kwargs, hitch_phase_resource_contract: { capability: "phase-exclusive-teardown-v1" } } } };
+  const regrade = buildHarborRegradeConfig({ ...input, sourceConfig: phaseConfig, phaseVerifierSource });
+  assert.deepEqual((regrade.environment as { kwargs: Record<string, unknown> }).kwargs.hitch_phase_verifier_source, phaseVerifierSource);
+  assert.deepEqual((regrade.environment as { kwargs: Record<string, unknown> }).kwargs.hitch_phase_resource_contract,
+    phaseConfig.environment.kwargs.hitch_phase_resource_contract);
+  assert.throws(() => buildHarborRegradeConfig({ ...input, phaseVerifierSource }), { code: "eval_verifier_only_unavailable" });
+  assert.throws(() => buildHarborRegradeConfig({ ...input, sourceConfig: phaseConfig,
+    phaseVerifierSource: { ...phaseVerifierSource, source_directory: "/different" } }), { code: "eval_verifier_only_unavailable" });
 });
 
 test("regrade inventories capture empty directories and reject linked or changed inputs", async t => {

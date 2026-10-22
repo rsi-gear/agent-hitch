@@ -5,6 +5,12 @@ import { locateHarbor } from "./tools.js";
 import { invokeHarbor } from "./process.js";
 import { withBridgePythonPath } from "./bridge-environment.js";
 
+export interface HarborPhaseVerifierSource {
+  schema_version: "1";
+  source_directory: string;
+  receipt_digest: `sha256:${string}`;
+}
+
 /** Harbor 0.21 dispatches source_trial.action=regrade to RegradeTrial, which
  * never initializes or runs the candidate. Keep the source agent config as
  * provenance, and preserve every timeout/resource/verifier setting. */
@@ -15,11 +21,21 @@ export function buildHarborRegradeConfig(input: {
   outputDirectory: string;
   trialName: string;
   ownershipLabels: Record<string, string>;
+  phaseVerifierSource?: HarborPhaseVerifierSource;
 }): Record<string, unknown> {
   const source = structuredClone(input.sourceConfig);
   const environment = source.environment as Record<string, unknown> | undefined;
   const agent = source.agent as Record<string, unknown> | undefined;
   const verifier = source.verifier as Record<string, unknown> | undefined;
+  const phase = environment?.kwargs && typeof environment.kwargs === "object"
+    && Object.hasOwn(environment.kwargs, "hitch_phase_resource_contract");
+  const proof = input.phaseVerifierSource;
+  if (phase ? !proof || proof.schema_version !== "1" || proof.source_directory !== input.sourceDirectory
+    || !path.isAbsolute(proof.source_directory) || !/^sha256:[a-f0-9]{64}$/.test(proof.receipt_digest) : proof !== undefined) {
+    throw new HitchError("phase resource regrade requires a verified standalone artifact handoff; the agent barrier cannot be replayed", {
+      code: "eval_verifier_only_unavailable", exitCode: 2,
+    });
+  }
   if (!environment || environment.import_path !== "hitch_harbor_environment:HitchHarborDockerEnvironment"
     || agent?.import_path !== "hitch_harbor_agent:HitchHarborAgent" || !verifier || verifier.disable
     || source.source_trial || source.install_only || typeof input.sourceResult.id !== "string") {
@@ -35,7 +51,8 @@ export function buildHarborRegradeConfig(input: {
       ...environment,
       // The Hitch reaper releases exactly this lease, including on failure.
       delete: false,
-      kwargs: { ...(environment.kwargs as Record<string, unknown> ?? {}), hitch_ownership_labels: input.ownershipLabels },
+      kwargs: { ...(environment.kwargs as Record<string, unknown> ?? {}), hitch_ownership_labels: input.ownershipLabels,
+        ...(proof ? { hitch_phase_verifier_source: proof } : {}) },
     },
   };
 }
@@ -75,7 +92,7 @@ export async function runHarborRegrade(input: {
   trustedResult?: Record<string, unknown>;
   harborExecutable?: string;
   signal?: AbortSignal;
-  processHooks?: Pick<import("./backend.js").RunHarborBackendOptions, "onProcessStarted" | "recoverableProcess">;
+  processHooks?: Pick<import("./backend.js").RunHarborBackendOptions, "onProcessStarting" | "onProcessStarted" | "recoverableProcess">;
 }): Promise<{ trial: Record<string, unknown>; backend: Record<string, unknown> }> {
   const located = await locateHarbor({ root: input.root, explicit: input.harborExecutable, env: input.env });
   // Pin the SDK contract; upgrading this gate requires a regrade parity test.
@@ -84,9 +101,10 @@ export async function runHarborRegrade(input: {
   const configPath = path.join(input.directory, "regrade.json");
   await atomicWriteJSON(configPath, input.config);
   await seedHarborRegradeTrial(String((input.config.source_trial as Record<string, unknown>).path), path.join(String(input.config.trials_dir), String(input.config.trial_name)), input.trustedResult);
+  const executionEnv = input.processHooks?.onProcessStarting ? await input.processHooks.onProcessStarting(input.env) : input.env;
   const outcome = await invokeHarbor(located.executable, ["trials", "start", "--config", configPath], {
     cwd: input.directory,
-    env: withBridgePythonPath(input.env, input.runtimeDirectory),
+    env: withBridgePythonPath(executionEnv, input.runtimeDirectory),
     stdoutPath: path.join(input.directory, "stdout.log"), stderrPath: path.join(input.directory, "stderr.log"),
     ...(input.signal ? { signal: input.signal } : {}), emit: () => {},
     ...(input.processHooks?.onProcessStarted ? { onStarted: input.processHooks.onProcessStarted } : {}),

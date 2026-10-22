@@ -6,19 +6,21 @@ import path from "node:path";
 import { CollisionLockManager, EvalRerunScheduler, RemoteWorkCoordinator, RemoteWorkerProtocol, RemoteWorkerRegistry, ResourceLedger } from "../src/control-plane/index.js";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ResourceVectorV1 } from "../src/domain/index.js";
 import type { EvalRerunResult, RerunEvalOptions } from "../src/evals/index.js";
-import { buildEvalExecutionPlan, createExecutionLease, evalRerunSemantics, markExecutionLeaseLost, readExecutionLeases, stageRemoteRerunCompletion, validateEvalRequest } from "../src/evals/index.js";
+import { buildEvalExecutionPlan, createExecutionLease, deriveTaskResourceRequirement, evalRerunSemantics, markExecutionLeaseLost, readExecutionLeases, stageRemoteRerunCompletion, validateEvalRequest, verifierOnlyWorkItem, assertPhysicalWork } from "../src/evals/index.js";
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, readJSON, sha256JSON } from "../src/foundation/index.js";
 
 const TRIAL: ResourceVectorV1 = { cpu_millis: 1_000, memory_bytes: 1024, container_slots: 1, build_slots: 0 };
 const EVAL_ID = "eval_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as EvalId;
 
-test("rerun scheduler persists a typed operation and waits for shared capacity", async (t) => {
+for (const constraint of ["resources", "unknown slots"] as const) test(`rerun scheduler persists a typed operation and waits for shared ${constraint}`, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-rerun-scheduler-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await persistTerminalEval(root, EVAL_ID);
-  const ledger = new ResourceLedger(TRIAL);
-  const blocker = ledger.tryAcquire("blocking_eval", "eval", TRIAL);
+  const ledger = new ResourceLedger(constraint === "resources" ? TRIAL : { cpu_millis: 2_000, memory_bytes: 2_048, container_slots: 2, build_slots: 0 });
+  const blocker = ledger.tryAcquire("blocking_eval", "eval", TRIAL, constraint === "unknown slots" ? {
+    schema_version: "1", unknown: true, unknown_max_parallelism: 1, unknown_slots: 1, reason: "unknown-task-membership", approval_digests: [],
+  } : undefined);
   assert.ok(blocker);
   const observed: RerunEvalOptions[] = [];
   const scheduler = new EvalRerunScheduler({
@@ -103,7 +105,8 @@ test("candidate rerun inherits the source execution policy", async (t) => {
   t.after(() => scheduler.shutdown());
   const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "candidate-restart", selector: { mode: "invalid" } });
   await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
-  assert.equal(observed?.maxConcurrentOverride, 2);
+  assert.equal(observed?.maxConcurrentOverride, 1);
+  assert.deepEqual(observed?.resourceProfilingPolicy, { unknown_max_parallelism: 1 });
   assert.deepEqual(observed?.executionResources, sourceTrial);
   assert.equal(observed?.executionResourceSource, "submission-default");
   assert.equal(observed?.executionStrategy, "local-task-slots-v1");
@@ -179,6 +182,68 @@ test("verifier-only admission reserves the original work limits and runs seriall
   assert.deepEqual(observed[0]?.executionResources, heavy);
   assert.equal(observed[0]?.maxConcurrentOverride, 1);
   assert.equal(observed[0]?.verifierRuntimeId, verifierRuntime);
+});
+
+test("phase verifier work is independently admitted at verifier demand and stays charged until explicit cleanup release", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-phase-verifier-admission-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await persistTerminalEval(root, EVAL_ID);
+  const GIB = 1024 ** 3, defaults = { ...TRIAL, memory_bytes: GIB };
+  const requirement = deriveTaskResourceRequirement({ taskId: "task-a", defaultResources: defaults, defaultSource: "operator-default", phaseEnvelope: true,
+    declaration: { schema_version: "1", task: { cpu_millis: 1000, memory_bytes: 2 * GIB },
+      verifier: { separate: true, environment: { cpu_millis: 1000, memory_bytes: 2 * GIB } },
+      compose_services: [{ name: "main", replicas: 1 }, { name: "simulator", replicas: 1 }], verifier_compose_services: [{ name: "main", replicas: 1 }],
+      provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [],
+      lifecycle: { contract: "harbor-native-docker-single-step-v1", capability: "phase-exclusive-teardown-v1", verifier_mode: "separate",
+        verifier_dependencies: { inputs: "artifacts-only", live_services: [], artifacts: [{ service: "simulator", path: "/evidence/snapshot.json" }] } } } });
+  const request = await validateEvalRequest({ dataset: "demo@1.0", harness_ref: "pi@version:1.2.3", max_concurrent: 4 });
+  const plan = buildEvalExecutionPlan({ evalId: EVAL_ID, request,
+    candidate: { revisionIdentity: `sha256:${"a".repeat(64)}`, artifactId: `sha256:${"b".repeat(64)}` },
+    tasks: ["task-a"], taskResources: [requirement], maxParallelism: 1, workItemMode: "task-slots" });
+  assert.equal(plan.work_items[0]!.reservation.memory_bytes, 3 * GIB);
+  await atomicWriteJSON(path.join(root, "evals", EVAL_ID, "execution-plan.json"), plan);
+  const verifierDemand = { ...TRIAL, memory_bytes: 2 * GIB };
+  const ledger = new ResourceLedger(verifierDemand), blocker = ledger.tryAcquire("other", "eval", defaults)!;
+  let entered = false, admitted = false, failCleanup = false, finish!: () => void;
+  let heldPermit: { release(): void } | undefined;
+  const cleanup = new Promise<void>(resolve => { finish = resolve; });
+  const scheduler = new EvalRerunScheduler({ root, resources: ledger, trialResources: defaults, executor: async options => {
+    entered = true;
+    assert.deepEqual(options.executionResources, verifierDemand);
+    const work = verifierOnlyWorkItem(plan.work_items[0]!, options.rerunId!, `assessment_${"2".repeat(32)}`, plan);
+    assert.deepEqual(work.reservation, verifierDemand);
+    assert.notEqual(work.resource_contract_digest, plan.work_items[0]!.resource_contract_digest);
+    const proof = { schema_version: "2" as const, kind: "verifier-only" as const, source_work_id: plan.work_items[0]!.work_id,
+      rerun_id: options.rerunId!, assessment_id: `assessment_${"2".repeat(32)}` };
+    assert.doesNotThrow(() => assertPhysicalWork(plan, work, proof));
+    assert.throws(() => assertPhysicalWork(plan, { ...work, reservation: defaults }, proof), /frozen execution contract/);
+    const permit = await options.workItemAdmission!.acquire({ evalId: EVAL_ID, workItem: work, maxParallelism: 1, signal: options.signal! });
+    heldPermit = permit;
+    admitted = true;
+    await cleanup;
+    if (failCleanup) throw new Error("phase verifier cleanup is unconfirmed");
+    permit.release();
+    return completedResult(options);
+  } });
+  await scheduler.initialize();
+  t.after(async () => { blocker.release(); finish(); heldPermit?.release(); await scheduler.shutdown(); });
+  const accepted = await scheduler.submit(EVAL_ID, { rerun_type: "verifier-only", selector: { mode: "invalid" } });
+  await waitFor(async () => entered);
+  assert.equal(admitted, false);
+  assert.deepEqual(ledger.snapshot().allocated, defaults);
+  blocker.release();
+  await waitFor(async () => admitted || (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "failed");
+  assert.equal(admitted, true, JSON.stringify((await scheduler.status(EVAL_ID, accepted.rerunId))?.state));
+  assert.deepEqual(ledger.snapshot().allocated, verifierDemand);
+  assert.equal(ledger.tryAcquire("competing", "eval", defaults), null);
+  finish();
+  await waitFor(async () => (await scheduler.status(EVAL_ID, accepted.rerunId))?.state.status === "completed");
+  assert.equal(ledger.snapshot().allocated.memory_bytes, 0);
+  failCleanup = true;
+  const failed = await scheduler.submit(EVAL_ID, { rerun_type: "verifier-only", selector: { mode: "invalid" } });
+  await waitFor(async () => (await scheduler.status(EVAL_ID, failed.rerunId))?.state.status === "failed");
+  assert.deepEqual(ledger.snapshot().allocated, verifierDemand);
+  assert.equal(ledger.tryAcquire("after-failed-cleanup", "eval", defaults), null);
 });
 
 test("daemon rerun API preserves requested semantics and rejects unavailable resume", async (t) => {

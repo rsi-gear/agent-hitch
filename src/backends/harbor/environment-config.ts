@@ -1,10 +1,23 @@
-import type { DockerResourceOwnershipV1, ResourceVectorV1 } from "../../domain/index.js";
+import type { DockerResourceOwnershipV1, HarborPhaseResourceContractV1, ModelProxyRouteV1, ResourceVectorV1 } from "../../domain/index.js";
 import path from "node:path";
 import { HitchError, invalidInput } from "../../foundation/index.js";
 
 const HITCH_DOCKER_ENVIRONMENT = "hitch_harbor_environment:HitchHarborDockerEnvironment";
 
 export type HarborDockerServiceLimitsV1 = Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
+
+export interface HarborEnvironmentExecutionOptions {
+  executionResources?: ResourceVectorV1;
+  dockerOwnership?: DockerResourceOwnershipV1;
+  dockerServiceLimits?: HarborDockerServiceLimitsV1;
+  phaseResourceContract?: HarborPhaseResourceContractV1;
+  agentEnvironmentRole?: "agent" | "shared";
+  resolvedImages?: Record<string, string>;
+  prebuiltTaskImage?: string;
+  prebuiltServiceImages?: Record<string, string>;
+  verifierImages?: HarborVerifierImagesV1;
+  modelProxy?: ModelProxyRouteV1;
+}
 
 export interface HarborVerifierImagesV1 {
   prebuiltImage?: string | undefined;
@@ -41,6 +54,8 @@ export function harborEnvironmentConfig(
   preparation: HarborPreparationOptions = {},
   prebuiltServiceImages: Record<string, string> = {},
   verifierImages?: HarborVerifierImagesV1,
+  phaseResourceContract?: HarborPhaseResourceContractV1,
+  agentEnvironmentRole?: "agent" | "shared",
 ): Record<string, unknown> {
   const environment: Record<string, unknown> = { type: "docker", delete: true };
   let gpuCount = 0;
@@ -57,6 +72,8 @@ export function harborEnvironmentConfig(
     if (memoryMb > 0) Object.assign(environment, { memory_enforcement_policy: "limit", override_memory_mb: memoryMb });
   }
   if (serviceLimits && !ownership) throw invalidInput("Harbor sidecar limits require Docker ownership");
+  if (phaseResourceContract && (!ownership || ownership.task_id !== phaseResourceContract.task_id || !resources)) throw invalidInput("phase resource contract requires matching managed task ownership and limits");
+  if (agentEnvironmentRole && (!ownership || !["agent", "shared"].includes(agentEnvironmentRole))) throw invalidInput("observation environment role requires managed ownership");
   const images = resolvedImages ? parseResolvedImages(resolvedImages) : {};
   const verifierResolved = verifierImages ? parseResolvedImages(verifierImages.resolvedImages) : undefined;
   if (verifierImages?.prebuiltImage !== undefined && !/^sha256:[a-f0-9]{64}$/.test(verifierImages.prebuiltImage)) throw invalidInput("Harbor prebuilt verifier image is invalid");
@@ -81,6 +98,8 @@ export function harborEnvironmentConfig(
       ...(verifierImages ? { hitch_verifier_resolved_images: verifierResolved, ...(verifierImages.prebuiltImage ? { hitch_prebuilt_verifier_image: verifierImages.prebuiltImage } : {}) } : {}),
       ...(modelProxyHostGateway ? { hitch_model_proxy_host_gateway: true } : {}),
       ...(gpuCount > 0 ? { hitch_main_gpu_count: gpuCount } : {}),
+      ...(phaseResourceContract ? { hitch_phase_resource_contract: phaseResourceContract } : {}),
+      ...(agentEnvironmentRole ? { hitch_agent_environment_role: agentEnvironmentRole } : {}),
     },
   });
   if (ownership) environment.delete = false;

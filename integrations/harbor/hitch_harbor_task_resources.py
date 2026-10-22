@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import tomllib
+from importlib.metadata import PackageNotFoundError, version
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -14,17 +15,24 @@ import yaml
 from harbor.models.task.config import TaskConfig, VerifierEnvironmentMode
 from harbor.models.task.verifier_mode import (
     resolve_effective_verifier_env_config,
-    resolve_step_verifier_mode,
     resolve_task_verifier_mode,
 )
 
 
 def inspect_task(task_dir: Path) -> dict[str, Any]:
+    try:
+        backend_version = version("harbor")
+    except PackageNotFoundError:
+        backend_version = None
     task_file = task_dir / "task.toml"
     if not task_file.is_file():
         raise ValueError(f"task.toml is missing: {task_file}")
     with task_file.open("rb") as handle:
-        config = TaskConfig.model_validate(tomllib.load(handle))
+        raw_config = tomllib.load(handle)
+    config = TaskConfig.model_validate(raw_config)
+    if getattr(config, "steps", None):
+        raise ValueError("multi_step_resource_topology_unsupported: step environments cannot be bounded by the single-step resource contract")
+    _validate_native_topology(raw_config)
     services = _compose_services(task_dir / "environment" / "docker-compose.yaml")
     runtime_platform = _compose_runtime_platform(
         task_dir / "environment" / "docker-compose.yaml"
@@ -33,35 +41,30 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
         services.append({"name": "main", "replicas": 1})
     services.sort(key=lambda service: service["name"].encode("utf-8"))
 
-    steps = getattr(config, "steps", None) or []
-    separate_steps = [step for step in steps if resolve_step_verifier_mode(config, step) == VerifierEnvironmentMode.SEPARATE]
-    separate = resolve_task_verifier_mode(config) == VerifierEnvironmentMode.SEPARATE
+    verifier_mode = resolve_task_verifier_mode(config)
+    separate = verifier_mode == VerifierEnvironmentMode.SEPARATE
     verifier_environment = resolve_effective_verifier_env_config(config, None)
-    main_egress = config.environment.os.value == "linux" and any(
-        mode is not None and mode.value != "public"
-        for mode in (
-            config.environment.network_mode,
-            config.agent.network_mode,
-            None if separate else config.verifier.network_mode,
-        )
+    # A separate verifier uses tests/ as its own Docker build context. The
+    # current resource overlay can enforce its main container, but cannot yet
+    # enforce independent limits on verifier-owned Compose sidecars. Never
+    # silently model that topology as a single verifier container.
+    if separate and (task_dir / "tests" / "docker-compose.yaml").exists():
+        raise ValueError("verifier_compose_topology_unsupported: separate verifier Compose environments require a resource overlay capability")
+    dependencies = _verifier_dependencies(task_dir, config, services, separate)
+    main_egress = _requires_egress(
+        config.environment,
+        [config.agent.network_mode] if separate else [config.agent.network_mode, config.verifier.network_mode],
+        task_dir / "environment" / "docker-compose.yaml",
     )
     verifier_egress = bool(
         separate
         and verifier_environment is not None
-        and verifier_environment.os.value == "linux"
-        and any(
-            mode is not None and mode.value != "public"
-            for mode in (verifier_environment.network_mode, config.verifier.network_mode)
-        )
+        and _requires_egress(verifier_environment, [config.verifier.network_mode], task_dir / "tests" / "docker-compose.yaml")
     )
     images, fallbacks, builds = _environment_images(
         config.environment, "task", task_dir / "environment", "environment"
     )
-    if steps and separate_steps:
-        # A step can choose another tests directory or environment. Preserve
-        # the existing resource declaration and leave those builds native.
-        fallbacks.append({"source": "verifier", "service": "main", "code": "backend-build"})
-    elif separate and verifier_environment is not None and not steps:
+    if separate and verifier_environment is not None:
         verifier_images, verifier_fallbacks, verifier_builds = _environment_images(
             verifier_environment, "verifier", task_dir / "tests", "tests"
         )
@@ -80,6 +83,7 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
     builds.extend(compose_builds)
     return {
         "schema_version": "1",
+        **({"backend_version": backend_version} if backend_version else {}),
         **({"runtime_platform": runtime_platform} if runtime_platform is not None else {}),
         "task": _environment_resources(config.environment),
         "verifier": {
@@ -87,6 +91,15 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
             **({"environment": _environment_resources(verifier_environment)} if verifier_environment is not None else {}),
         },
         "compose_services": services,
+        "verifier_compose_services": [{"name": "main", "replicas": 1}] if separate else [],
+        **({"lifecycle": {
+            "contract": "harbor-native-docker-single-step-v1",
+            "capability": "phase-exclusive-teardown-v1",
+            "verifier_mode": "separate" if separate else "shared",
+            "verifier_dependencies": dependencies,
+        }} if config.environment.os.value == "linux" and (
+            verifier_environment is None or verifier_environment.os.value == "linux"
+        ) else {}),
         "provider_sidecars": {
             "main_egress": main_egress,
             "verifier_egress": verifier_egress,
@@ -101,6 +114,110 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
             builds, key=lambda entry: (entry["source"], entry["service"])
         ),
     }
+
+
+def _requires_egress(environment: Any, phase_modes: list[Any], compose_file: Path) -> bool:
+    if environment.os.value != "linux":
+        return False
+    baseline = environment.network_mode
+    # Match HitchHarborDockerEnvironment._static_no_network. A no-network
+    # policy cannot have allowed_hosts, so equal modes imply equal policies.
+    # Hitch's supported job config supplies no extra host/Compose overrides.
+    if (baseline.value == "no-network" and not compose_file.exists()
+            and all(mode is None or mode.value == "no-network" for mode in phase_modes)):
+        return False
+    return any(mode is not None and mode.value != "public" for mode in [baseline, *phase_modes])
+
+
+def _validate_native_topology(raw_config: dict[str, Any]) -> None:
+    """TaskConfig permits unknown keys; topology-changing extras must not vanish."""
+    environments = [raw_config.get("environment", {})]
+    verifier = raw_config.get("verifier", {})
+    if isinstance(verifier, dict):
+        environments.append(verifier.get("environment", {}))
+    for environment in environments:
+        if isinstance(environment, dict) and any(key in environment for key in (
+            "type", "class_path", "import_path", "kwargs", "extra_docker_compose",
+            "extra_docker_compose_paths", "environment_dir",
+        )):
+            raise ValueError("custom_environment_topology_unsupported: task environment contains provider-specific topology")
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"hitch.resources.json contains a duplicate field: {key}")
+        result[key] = value
+    return result
+
+
+def _artifact_dependency(service: Any, source: Any) -> dict[str, str]:
+    if not isinstance(service, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", service):
+        raise ValueError("verifier_artifact_dependency_invalid: service must be a fixed Compose service name")
+    if (not isinstance(source, str) or not source.startswith("/") or any(char in source for char in "\x00\r\n")
+            or any(char in source for char in "*$?[]{}")
+            or ".." in source.replace("\\", "/").split("/")):
+        raise ValueError("verifier_artifact_dependency_invalid: artifact source must be a fixed path (absolute, without control characters)")
+    return {"service": service, "path": source}
+
+
+def _verifier_dependencies(
+    task_dir: Path, config: Any, services: list[dict[str, Any]], separate: bool,
+) -> dict[str, Any]:
+    service_names = {entry["name"] for entry in services}
+    artifacts = []
+    for artifact in getattr(config, "artifacts", []):
+        source = artifact if isinstance(artifact, str) else artifact.source
+        service = "main" if isinstance(artifact, str) else (artifact.service or "main")
+        entry = _artifact_dependency(service, source)
+        if service not in service_names:
+            raise ValueError(f"verifier_artifact_service_missing: {service}")
+        artifacts.append(entry)
+    for hook in getattr(config.verifier, "collect", []):
+        if hook.service not in service_names:
+            raise ValueError(f"verifier_collect_service_missing: {hook.service}")
+    key = lambda entry: (entry["service"], entry["path"])
+    artifacts.sort(key=key)
+    if len({key(entry) for entry in artifacts}) != len(artifacts):
+        raise ValueError("verifier_artifact_dependency_invalid: duplicate native artifact")
+    result = {
+        "inputs": "artifacts-only" if separate else "backend-defined",
+        "live_services": [],
+        "artifacts": artifacts,
+    }
+    extension = task_dir / "hitch.resources.json"
+    if not extension.exists() and not extension.is_symlink():
+        return result
+    if extension.is_symlink() or not extension.is_file() or extension.stat().st_size > 1024 * 1024:
+        raise ValueError("hitch.resources.json must be a regular file of at most 1 MiB")
+    declaration = json.loads(extension.read_text(encoding="utf-8"), object_pairs_hook=_strict_json_object)
+    if (not isinstance(declaration, dict) or set(declaration) != {"schema_version", "verifier_dependencies"}
+            or declaration["schema_version"] != "1"):
+        raise ValueError("hitch.resources.json fields or schema_version are invalid")
+    dependency = declaration["verifier_dependencies"]
+    if not isinstance(dependency, dict) or set(dependency) != {"inputs", "live_services", "artifacts"}:
+        raise ValueError("hitch.resources.json verifier_dependencies fields are invalid")
+    inputs, live, declared = dependency["inputs"], dependency["live_services"], dependency["artifacts"]
+    if inputs not in {"artifacts-only", "live-services", "backend-defined"} or not isinstance(live, list) or not isinstance(declared, list):
+        raise ValueError("hitch.resources.json verifier_dependencies values are invalid")
+    if any(not isinstance(name, str) or name not in service_names for name in live) or len(set(live)) != len(live):
+        raise ValueError("verifier_live_dependency_invalid: services must name unique existing agent services")
+    if (inputs == "artifacts-only" and live) or (inputs == "live-services" and not live):
+        raise ValueError("verifier_dependency_conflict: inputs and live_services disagree")
+    if live or inputs == "live-services":
+        raise ValueError("verifier_live_dependency_unsupported: this native resource contract cannot retain live agent services for a separate verifier")
+    if not separate and inputs == "artifacts-only":
+        raise ValueError("verifier_dependency_conflict: shared verification uses the live agent environment")
+    normalized = []
+    for entry in declared:
+        if not isinstance(entry, dict) or set(entry) != {"service", "path"}:
+            raise ValueError("hitch.resources.json artifact fields are invalid")
+        normalized.append(_artifact_dependency(entry["service"], entry["path"]))
+    if sorted(normalized, key=key) != artifacts:
+        raise ValueError("verifier_artifact_dependency_mismatch: extension artifacts must match native task artifacts")
+    # backend-defined delegates to the resolved native single-step semantics.
+    return result
 
 
 def _compose_runtime_platform(compose_file: Path) -> str | None:
@@ -126,9 +243,15 @@ def _compose_runtime_platform(compose_file: Path) -> str | None:
 
 
 def _environment_resources(environment: Any) -> dict[str, Any]:
+    gpus = getattr(environment, "gpus", None)
+    if gpus is not None and (isinstance(gpus, bool) or not isinstance(gpus, int) or gpus < 0):
+        raise ValueError("Environment GPU request must use a fixed nonnegative count")
+    if gpus:
+        raise ValueError("native_gpu_resource_topology_unsupported: native environment GPU declarations require a device-aware execution contract")
     return {
         **({"cpu_millis": environment.cpus * 1000} if environment.cpus is not None else {}),
         **({"memory_bytes": environment.memory_mb * 1024 * 1024} if environment.memory_mb is not None else {}),
+        **({"gpu_count": gpus} if gpus else {}),
     }
 
 
@@ -254,12 +377,27 @@ def _compose_services(compose_file: Path) -> list[dict[str, Any]]:
         raise ValueError("Compose services must be a mapping")
     result: list[dict[str, Any]] = []
     for name, raw in raw_services.items():
-        if not isinstance(name, str) or not name or not isinstance(raw, dict):
+        if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name) or not isinstance(raw, dict):
             raise ValueError("Compose service declaration is invalid")
-        if raw.get("profiles") or raw.get("extends"):
-            raise ValueError(f"Compose resource discovery does not support profiles/extends: {name}")
+        if any(key in raw for key in ("profiles", "extends", "provider")):
+            raise ValueError(f"Compose resource discovery does not support profiles/extends/provider: {name}")
+        if "deploy" in raw and not isinstance(raw["deploy"], dict):
+            raise ValueError(f"Compose deploy must be a fixed mapping: {name}")
         deploy = raw.get("deploy") if isinstance(raw.get("deploy"), dict) else {}
+        restart_policy = deploy.get("restart_policy")
+        if raw.get("restart", "no") not in ("no", False) or (restart_policy is not None and (
+            not isinstance(restart_policy, dict) or restart_policy.get("condition", "any") != "none"
+        )):
+            raise ValueError(f"Compose automatic restart is unsupported by the phase lifecycle: {name}")
+        if deploy.get("mode", "replicated") != "replicated":
+            raise ValueError(f"Compose deployment mode must use bounded replicas: {name}")
+        if "scale" in raw and "replicas" in deploy and raw["scale"] != deploy["replicas"]:
+            raise ValueError(f"Compose replicas declarations conflict: {name}")
+        if "resources" in deploy and not isinstance(deploy["resources"], dict):
+            raise ValueError(f"Compose resources must be a fixed mapping: {name}")
         deploy_resources = deploy.get("resources") if isinstance(deploy.get("resources"), dict) else {}
+        if any(key in deploy_resources and not isinstance(deploy_resources[key], dict) for key in ("limits", "reservations")):
+            raise ValueError(f"Compose resource limits/reservations must be fixed mappings: {name}")
         limits = deploy_resources.get("limits") if isinstance(deploy_resources.get("limits"), dict) else {}
         reservations = deploy_resources.get("reservations") if isinstance(deploy_resources.get("reservations"), dict) else {}
         cpu_values = [_cpu_millis(value, name) for value in (raw.get("cpus"), limits.get("cpus")) if value is not None]
@@ -268,6 +406,8 @@ def _compose_services(compose_file: Path) -> list[dict[str, Any]]:
         replicas = raw.get("scale", deploy.get("replicas", 1))
         if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
             raise ValueError(f"Compose service replicas must be a positive integer: {name}")
+        if name == "main" and replicas != 1:
+            raise ValueError("Compose main requires exactly one replica for native execution")
         result.append({
             "name": name,
             "replicas": replicas,
@@ -314,7 +454,7 @@ def _cpu_millis(value: Any, service: str) -> int:
         decimal = Decimal(str(value).strip()) * 1000
     except InvalidOperation as error:
         raise ValueError(f"Compose CPU limit is not numeric: {service}") from error
-    if decimal != decimal.to_integral_value() or decimal <= 0:
+    if not decimal.is_finite() or decimal != decimal.to_integral_value() or decimal <= 0:
         raise ValueError(f"Compose CPU limit must be positive whole millicores: {service}")
     return int(decimal)
 

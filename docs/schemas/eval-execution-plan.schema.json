@@ -178,7 +178,10 @@
         ],
         "properties": {
           "schema_version": {
-            "const": "1"
+            "enum": [
+              "1",
+              "2"
+            ]
           },
           "work_id": {
             "type": "string",
@@ -232,8 +235,64 @@
             "items": {
               "$ref": "#/$defs/imageUse"
             }
+          },
+          "resource_contract_version": {
+            "const": "2"
+          },
+          "resource_contract_digest": {
+            "$ref": "#/$defs/sha256"
+          },
+          "required_capabilities": {
+            "type": "array",
+            "maxItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "const": "phase-exclusive-teardown-v1"
+            }
+          },
+          "resource_profiling": {
+            "$ref": "#/$defs/workResourceProfiling"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "schema_version": {
+                  "const": "2"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "resource_contract_version",
+                "resource_contract_digest",
+                "required_capabilities"
+              ]
+            },
+            "else": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "resource_contract_version"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "resource_contract_digest"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "required_capabilities"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
       }
     },
     "retry_policy": {
@@ -268,6 +327,12 @@
     },
     "endpoint_binding": {
       "$ref": "external-endpoint-binding.schema.json"
+    },
+    "resource_contract_version": {
+      "const": "2"
+    },
+    "resource_profiling": {
+      "$ref": "#/$defs/evalResourceProfiling"
     }
   },
   "$defs": {
@@ -598,8 +663,349 @@
             "minLength": 1
           },
           "uniqueItems": true
+        },
+        "resource_model": {
+          "const": "phase-envelope-v1"
+        },
+        "declared_limits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "component",
+              "fields"
+            ],
+            "properties": {
+              "component": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "cpu_millis",
+                  "memory_bytes"
+                ],
+                "properties": {
+                  "cpu_millis": {
+                    "$ref": "#/$defs/resourceField"
+                  },
+                  "memory_bytes": {
+                    "$ref": "#/$defs/resourceField"
+                  },
+                  "gpu_count": {
+                    "$ref": "#/$defs/resourceField"
+                  },
+                  "ephemeral_disk_bytes": {
+                    "$ref": "#/$defs/resourceField"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "capability_identity",
+            "backend_contract",
+            "verifier_inputs",
+            "retained_services",
+            "artifacts",
+            "phases",
+            "transitions"
+          ],
+          "properties": {
+            "capability_identity": {
+              "const": "phase-exclusive-teardown-v1"
+            },
+            "backend_contract": {
+              "const": "harbor-native-docker-single-step-v1"
+            },
+            "verifier_inputs": {
+              "enum": [
+                "shared",
+                "artifacts-only"
+              ]
+            },
+            "retained_services": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "service",
+                  "path"
+                ],
+                "properties": {
+                  "service": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/"
+                  }
+                }
+              }
+            },
+            "phases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "live_components",
+                  "demand"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "live_components": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true
+                  },
+                  "demand": {
+                    "$ref": "#/$defs/resources"
+                  }
+                }
+              }
+            },
+            "transitions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "from",
+                  "to",
+                  "requires_stop"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "to": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "requires_stop": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "resource_model"
+            ]
+          },
+          "then": {
+            "required": [
+              "declared_limits",
+              "lifecycle"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "declared_limits"
+                  ]
+                },
+                {
+                  "required": [
+                    "lifecycle"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "workResourceProfiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "unknown",
+        "unknown_max_parallelism",
+        "unknown_slots",
+        "reason",
+        "approval_digests"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1"
+        },
+        "unknown": {
+          "type": "boolean"
+        },
+        "unknown_max_parallelism": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "unknown_slots": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "reason": {
+          "enum": [
+            "missing-resource-size",
+            "explicit-resource-limits",
+            "approved-resource-config",
+            "unknown-task-membership"
+          ]
+        },
+        "approval_digests": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "evalResourceProfiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "unknown_max_parallelism",
+        "requested_parallelism",
+        "scope",
+        "approvals"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1"
+        },
+        "unknown_max_parallelism": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "requested_parallelism": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "scope": {
+          "enum": [
+            "worker",
+            "process"
+          ]
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "task_id",
+              "approval_digest",
+              "identity_digest"
+            ],
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "approval_digest": {
+                "$ref": "#/$defs/sha256"
+              },
+              "identity_digest": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        },
+        "identity_manifest_digest": {
+          "$ref": "#/$defs/sha256"
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "resource_contract_version"
+        ]
+      },
+      "then": {
+        "required": [
+          "task_resources"
+        ],
+        "properties": {
+          "membership": {
+            "const": "known"
+          },
+          "provider": {
+            "const": "local-docker"
+          },
+          "work_items": {
+            "items": {
+              "properties": {
+                "schema_version": {
+                  "const": "2"
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "task_resources": {
+            "items": {
+              "not": {
+                "required": [
+                  "resource_model"
+                ]
+              }
+            }
+          },
+          "work_items": {
+            "items": {
+              "properties": {
+                "schema_version": {
+                  "const": "1"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

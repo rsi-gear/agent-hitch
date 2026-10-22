@@ -1,5 +1,6 @@
 import type { ResourceVectorV1 } from "./resources.js";
 import type { Sha256 } from "./ids.js";
+import type { ContainerMemoryObservationV1, MemoryObservationV1 } from "./memory-observation.js";
 
 export interface ObservedContainerResourcesV1 {
   container_id: string;
@@ -11,6 +12,7 @@ export interface ObservedContainerResourcesV1 {
   first_observed_at: string;
   last_observed_at: string;
   peak_memory_bytes?: number;
+  memory?: ContainerMemoryObservationV1;
   cpu_time_ns?: number;
   oom_killed?: boolean;
   exit_code?: number;
@@ -40,5 +42,6 @@ export interface ExecutionEvidenceV1 {
     containers: ObservedContainerResourcesV1[];
     unavailable_fields: Array<"cpu_time_ns" | "peak_memory_bytes" | "exit_status" | "image_identity">;
     issues: string[];
+    memory?: MemoryObservationV1;
   };
 }

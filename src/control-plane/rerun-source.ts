@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { EvalId, EvalRequest, EvalExecutionPolicyV1, ExecutionProviderStatusV1, ModelCapturePlanV1, ResourceVectorV1 } from "../domain/index.js";
-import { assertRemoteRerunQuiescent, parseEvalExecutionPlan, readEndpointEvaluationAttempts } from "../evals/index.js";
+import { assertRemoteRerunQuiescent, parseEvalExecutionPlan, readEndpointEvaluationAttempts, verifierOnlyReservation } from "../evals/index.js";
 import type { EvalRerunType } from "../evals/index.js";
 import { HitchError, readJSON, statePaths } from "../foundation/index.js";
 import { defaultEvalExecutionPolicy, isTerminalControl, parseEvalControl, parseEvalSubmission } from "./eval-records.js";
@@ -41,11 +41,19 @@ export async function loadRerunSource(input: {
   if (remote && input.rerunType === "verifier-only" && !(await input.remoteWork!.providerStatuses(execution.provider)).some(worker => worker.features.verifier_only === "2" && worker.features.physical_work === "2")) {
     throw new HitchError("remote scoring requires a verifier_only v2 worker", { code: "remote_rerun_unavailable", exitCode: 12 });
   }
-  if (input.rerunType === "verifier-only") {
-    const plan = parseEvalExecutionPlan(await readJSON(path.join(directory, "execution-plan.json")));
-    const upper = { ...execution.resources.default_trial };
-    for (const item of plan.work_items) for (const key of Object.keys(item.reservation) as Array<keyof ResourceVectorV1>) upper[key] = Math.max(upper[key] ?? 0, item.reservation[key] ?? 0);
-    execution = { ...execution, max_parallelism: 1, resources: { ...execution.resources, default_trial: upper } };
+  if (input.rerunType === "verifier-only" || !remote && input.rerunType === "candidate-restart") {
+    const saved = await readJSON(path.join(directory, "execution-plan.json"), null);
+    const plan = saved === null && input.rerunType === "candidate-restart" ? undefined : parseEvalExecutionPlan(saved);
+    if (plan && (input.rerunType === "verifier-only" || plan.resource_contract_version === "2")) {
+      const upper = !remote && plan.resource_contract_version === "2"
+        ? { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 } as ResourceVectorV1
+        : { ...execution.resources.default_trial };
+      for (const item of plan.work_items) {
+        const reservation = !remote && input.rerunType === "verifier-only" ? verifierOnlyReservation(item, plan) : item.reservation;
+        for (const key of Object.keys(reservation) as Array<keyof ResourceVectorV1>) upper[key] = Math.max(upper[key] ?? 0, reservation[key] ?? 0);
+      }
+      execution = { ...execution, ...(input.rerunType === "verifier-only" ? { max_parallelism: 1 } : {}), resources: { ...execution.resources, default_trial: upper } };
+    }
   }
   const modelCapturePlan = input.rerunType === "verifier-only" || remote && input.rerunType === "collect-only" ? undefined : await schedulerCapturePlan({
     request: submission.request, execution, localProvider: input.localProvider, localStatus: input.localStatus,

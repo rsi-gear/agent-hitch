@@ -65,6 +65,8 @@ export function parseEvalRequest(args: string[], benchmark = false): Record<stri
     try { return JSON.parse(value) as unknown; } catch { throw invalidInput("--artifact-pin must be a JSON artifact pin"); }
   });
   const environmentBinding = takeOption(args, "--environment-binding");
+  const resourceConfigFile = takeOption(args, "--resource-config");
+  const resourceConfig = resourceConfigFile ? JSON.parse(readFileSync(path.resolve(resourceConfigFile), "utf8")) : undefined;
   const trainingBindingFile = takeOption(args, "--training-binding-file");
   const trainingBinding = trainingBindingFile ? JSON.parse(readFileSync(path.resolve(trainingBindingFile), "utf8")) : undefined;
   const backend = takeOption(args, "--backend") || "harbor";
@@ -91,6 +93,7 @@ export function parseEvalRequest(args: string[], benchmark = false): Record<stri
     ...(trainingBinding ? { training_binding: trainingBinding } : {}),
     ...(environmentBinding ? { environment_binding: environmentBinding } : {}),
     ...(artifactPins.length ? { artifact_pins: artifactPins } : {}),
+    ...(resourceConfig === undefined ? {} : { resource_config: resourceConfig }),
     dataset,
     harness_ref: harness,
     model,

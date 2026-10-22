@@ -11,6 +11,7 @@ import type {
 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { configuredResourceStore, preflightResourceInput, readResourceInput, resourceDescriptorDirectory } from "../resources/index.js";
+import { componentId, EGRESS_SERVICE, phaseLifecycle, phaseReservation, VERIFIER_EGRESS_COMPONENT } from "./phase-resources.js";
 
 const MIB = 1024 * 1024;
 export const HARBOR_EGRESS_SIDECAR_RESOURCES: ResourceVectorV1 = {
@@ -23,6 +24,8 @@ export const HARBOR_EGRESS_SIDECAR_RESOURCES: ResourceVectorV1 = {
 export interface LocalTaskPlanningInputV1 {
   task_id: string;
   runtime_platform?: string;
+  backend_version?: string;
+  profile_environment_images?: HarborTaskResourceDeclarationV1["environment_images"];
   resources: TaskResourceRequirementV1;
   environment_images: HarborTaskResourceDeclarationV1["environment_images"];
   environment_image_fallbacks: HarborTaskResourceDeclarationV1["environment_image_fallbacks"];
@@ -35,6 +38,7 @@ export async function resolveLocalTaskResourceRequirements(input: {
   taskIds: readonly string[];
   defaultResources: ResourceVectorV1;
   defaultSource: "submission-default" | "operator-default";
+  phaseEnvelope?: boolean;
   harborExecutable?: string;
   inspectorPath?: string;
   env?: NodeJS.ProcessEnv;
@@ -49,6 +53,7 @@ export async function resolveLocalTaskPlanningInputs(input: {
   taskIds: readonly string[];
   defaultResources: ResourceVectorV1;
   defaultSource: "submission-default" | "operator-default";
+  phaseEnvelope?: boolean;
   harborExecutable?: string;
   inspectorPath?: string;
   env?: NodeJS.ProcessEnv;
@@ -82,10 +87,13 @@ export async function resolveLocalTaskPlanningInputs(input: {
       declaration,
       defaultResources: input.defaultResources,
       defaultSource: input.defaultSource,
+      ...(input.phaseEnvelope === undefined ? {} : { phaseEnvelope: input.phaseEnvelope }),
     });
     return {
       task_id: taskId,
       ...(declaration.runtime_platform ? { runtime_platform: declaration.runtime_platform } : {}),
+      ...(declaration.backend_version ? { backend_version: declaration.backend_version } : {}),
+      profile_environment_images: declaration.environment_images,
       resources,
       environment_images: resource ? [] : declaration.environment_images,
       environment_image_fallbacks: resource ? [] : declaration.environment_image_fallbacks,
@@ -99,8 +107,14 @@ export function deriveTaskResourceRequirement(input: {
   declaration: HarborTaskResourceDeclarationV1;
   defaultResources: ResourceVectorV1;
   defaultSource: "submission-default" | "operator-default";
+  phaseEnvelope?: boolean;
 }): TaskResourceRequirementV1 {
   const diagnostics: string[] = [];
+  const lifecycleDeclaration = input.phaseEnvelope === false || (input.defaultResources.gpu_count ?? 0) > 0
+    || input.declaration.compose_services.some(service => (service.gpu_count ?? 0) > 0) ? undefined : input.declaration.lifecycle;
+  const phaseEnabled = lifecycleDeclaration !== undefined;
+  if (input.phaseEnvelope !== false && !phaseEnabled) diagnostics.push(input.declaration.lifecycle
+    ? "phase_envelope_unavailable:gpu-execution" : "phase_envelope_unavailable:lifecycle-unconfirmed");
   const mainCompose = input.declaration.compose_services.find((service) => service.name === "main");
   if (mainCompose && mainCompose.replicas !== 1) throw resourceError("Harbor main service must have exactly one replica");
   const mainCpu = chooseDeclared("cpu_millis", input.declaration.task.cpu_millis, mainCompose?.cpu_millis, input.defaultResources.cpu_millis, input.defaultSource, diagnostics);
@@ -142,15 +156,20 @@ export function deriveTaskResourceRequirement(input: {
     }));
   }
   const providerSidecars = Number(input.declaration.provider_sidecars.main_egress) + Number(input.declaration.provider_sidecars.verifier_egress);
-  if (providerSidecars > 0) {
-    components.push(component("harbor-docker-egress-control-sidecar", "provider-sidecar", providerSidecars, {
+  const overheads = phaseEnabled ? [
+    ...(input.declaration.provider_sidecars.main_egress ? [{ name: EGRESS_SERVICE, replicas: 1 }] : []),
+    ...(input.declaration.provider_sidecars.verifier_egress ? [{ name: VERIFIER_EGRESS_COMPONENT, replicas: 1 }] : []),
+  ] : providerSidecars > 0 ? [{ name: EGRESS_SERVICE, replicas: providerSidecars }] : [];
+  for (const overhead of overheads) {
+    components.push(component(overhead.name, "provider-sidecar", overhead.replicas, {
       cpu_millis: field(HARBOR_EGRESS_SIDECAR_RESOURCES.cpu_millis, "provider-policy", false),
       memory_bytes: field(HARBOR_EGRESS_SIDECAR_RESOURCES.memory_bytes, "provider-policy", false),
       ...(gpuAware ? { gpu_count: field(0, "provider-policy", false) } : {}),
       ...(diskAware ? { ephemeral_disk_bytes: field(0, "provider-policy", false) } : {}),
     }));
   }
-  const reservation = sumComponents(components);
+  const lifecycle = lifecycleDeclaration ? phaseLifecycle(components, input.declaration.verifier.separate, lifecycleDeclaration.verifier_dependencies.artifacts) : undefined;
+  const reservation = lifecycle ? phaseReservation(components, lifecycle) : sumComponents(components);
   const estimated = components.some((entry) => entry.fields.cpu_millis.estimated || entry.fields.memory_bytes.estimated || entry.fields.gpu_count?.estimated || entry.fields.ephemeral_disk_bytes?.estimated);
   return {
     task_id: input.taskId,
@@ -165,6 +184,15 @@ export function deriveTaskResourceRequirement(input: {
       ...(diskAware ? { ephemeral_disk_bytes: field(reservation.ephemeral_disk_bytes ?? 0, "derived-components", estimated) } : {}),
     },
     components,
+    ...(lifecycle ? {
+      resource_model: "phase-envelope-v1" as const,
+      declared_limits: components.map(entry => ({ component: componentId(entry), fields: {
+        ...entry.fields,
+        ...(entry.role === "main" ? { cpu_millis: mainCpu, memory_bytes: mainMemory } : {}),
+        ...(entry.role === "verifier" ? { cpu_millis: verifierCpu!, memory_bytes: verifierMemory! } : {}),
+      } })),
+      lifecycle,
+    } : {}),
     diagnostics: [...new Set(diagnostics)].sort(),
   };
 }

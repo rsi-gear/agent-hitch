@@ -104,6 +104,7 @@ Shared by `eval run` and `eval submit` unless a row limits the scope. Start with
 | `--environment-binding ID` | Require the binding returned by `eval bind` at admission and before each Harbor execution; supports local Docker, external models, and capture `off`/`native`. |
 | `--artifact-pin JSON` | Repeat once per used platform to pin `platform`, `artifact_id`, `artifact_integrity`, and `entrypoint_integrity` before task execution. See the [artifact pin protocol](../../evaluation-artifact-pins.zh-CN.md). |
 | `--training-binding-file JSON` | Bind a supported training episode to an external training gateway. See [training integration](../../slime-training-binding.zh-CN.md). |
+| `--resource-config FILE` | Attach an explicit resource approval created by `resources approve`. An exact match to the frozen task and current effective limits can remove its unknown-resource classification; this file does not override limits. |
 | `--daemon` | `eval run` only: submit to and follow the daemon. Managed dataset models automatically select this path. |
 | `--output json\|jsonl` | `eval run` only; default `json`. `eval submit` always returns acceptance JSON. |
 | `--idempotency-key KEY` | Daemon submissions only; reuse a key for the same immutable request. |
@@ -154,6 +155,11 @@ Each command requires `--package`. Only lock accepts optional `--out`; compile r
 | --- | --- |
 | `hitch resources request OPERATION [--input JSON_FILE]` | Invoke the resource API in the selected `--root`; always returns JSON. The input file supplies the operation-specific object; omitting it supplies `{}`. |
 | `hitch resources legacy-export --ref DATASET_OR_SELECTION --output NEW_DIRECTORY` | Materialize an explicit legacy dataset with a new identity. The destination must not already exist. |
+| `hitch resources profile --eval EVAL_ID --task TASK_ID [--output FILE]` | Collect memory observations and the frozen resource identity for one task from a stored evaluation. |
+| `hitch resources recommend --eval EVAL_ID --task TASK_ID [--identity FILE] [--min-complete-trials N] [--output FILE]` | Report current role limits, observations, and eligibility for a lower-memory proposal. The minimum complete-trial count defaults to 3; `--identity` additionally checks the profile against a current identity file. |
+| `hitch resources approve --config FILE --actor NAME --reason TEXT --output FILE` | Write an explicit approval for an identity and its role limits. All four options are required; the approval does not change container limits. |
+
+For `resources profile` and `resources recommend`, choose exactly one source: `--eval EVAL_ID --task TASK_ID`, `--input FILE` for an execution-evidence list, or `--profile FILE` for a saved profile. Imported files do not provide provider lifecycle attestation. `--identity` and `--min-complete-trials` belong only to `recommend`. These commands emit JSON; `--output FILE` saves the result and prints its file metadata instead. Current real observations remain `partial`, so recommendations report why lowering is blocked and omit a lower-memory value. See the [resource profiling and approval contract (Chinese)](../../hitch-phase-resource-reservation-spec.zh-CN.md#13-p1-实际接口与使用边界2026-10-21).
 
 Operations are `capabilities`, `configure`, `inspect`, `import`, `seal-task`, `seal-dataset`, `selection`, `preflight`, `pin`, `release`, `materialize`, `workspace-end`, `lease-end`, `audit`, `bundle-export`, and `bundle-import`. Resource datasets are opt-in v2 inputs; ordinary v1 datasets retain their existing behavior. Inspection and audit can be requested without an input file; audit is dry-run unless the request explicitly sets `apply: true`.
 
@@ -196,6 +202,7 @@ Accepted by daemon start and serve. CPU values use millicores (`1000` = one core
 | `--capacity-ephemeral-disk-mib N`, `--eval-ephemeral-disk-mib N` | Total and per-trial ephemeral disk admission budgets; defaults 0, admission accounting only. |
 | `--run-cpu-millis N`, `--run-memory-mib N` | Ordinary run reservation defaults: 1000 millicores and 512 MiB. |
 | `--eval-cpu-millis N`, `--eval-memory-mib N` | Default trial reservation: 1000 millicores and 1024 MiB; task declarations may require more. |
+| `--unknown-max-parallelism N` | Shared admission cap for tasks missing CPU or memory declarations; default 1, range 1–10000. Also accepted by `worker run`. Overrides `HITCH_RESOURCE_PROFILING_UNKNOWN_MAX_PARALLELISM`; normal resource capacity still applies. |
 
 ## Remote workers
 
@@ -203,7 +210,7 @@ Accepted by daemon start and serve. CPU values use millicores (`1000` = one core
 hitch worker list [--json]
 hitch worker observe PROVIDER [--nonce HEX] [--json]
 hitch worker register --server URL --registration JSON --admin-token-file FILE --credential-file FILE
-hitch worker run --server URL --registration JSON --credential-file FILE [--harbor PATH] [--docker PATH] [--once] [--poll-interval DURATION] [--heartbeat-interval DURATION]
+hitch worker run --server URL --registration JSON --credential-file FILE [--harbor PATH] [--docker PATH] [--unknown-max-parallelism N] [--once] [--poll-interval DURATION] [--heartbeat-interval DURATION]
 ```
 
 `list` reads worker status from the daemon. `observe` returns a fresh execution observation; optional nonce is 32 lowercase hexadecimal characters. `register` rotates the worker credential and writes it to the requested file. `run` downloads and verifies inputs, executes accepted offers, reports results, and handles authorized cleanup. Use a dedicated state root on each worker host.
