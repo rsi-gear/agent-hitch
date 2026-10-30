@@ -859,6 +859,8 @@ Planner 输出 immutable `execution-plan.json`，至少包含：
 
 ### 10.5 资源需求推导
 
+2026-10-21 已实现的 P0 增补见[按执行阶段预留资源修改规范](hitch-phase-resource-reservation-spec.zh-CN.md)。新建的已认证 local Docker 单任务计划采用 V2 阶段最大值及实际停止屏障；覆盖本仓库 AutomationBench adapter 的全部受支持 domain。下述 V1 相加规则仍适用于旧计划、未认证生命周期和目前不具备该能力的 remote provider。恢复不会迁移旧计划；P1 的未知场景试跑及观测修正另行实现。
+
 每个 Trial Slot 的资源需求按以下优先级确定：
 
 1. benchmark/task 中可验证的显式 CPU、memory、GPU 和 sidecar 声明；

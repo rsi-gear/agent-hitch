@@ -9,9 +9,21 @@ const INSPECTOR = path.join(packageRoot(), "integrations", "harbor", "hitch_harb
 export interface HarborTaskResourceDeclarationV1 {
   schema_version: "1";
   runtime_platform?: string;
+  backend_version?: string;
   task: { cpu_millis?: number; memory_bytes?: number; gpu_count?: number };
   verifier: { separate: boolean; environment?: { cpu_millis?: number; memory_bytes?: number; gpu_count?: number } };
   compose_services: Array<{ name: string; replicas: number; cpu_millis?: number; memory_bytes?: number; gpu_count?: number }>;
+  verifier_compose_services?: HarborTaskResourceDeclarationV1["compose_services"];
+  lifecycle?: {
+    contract: "harbor-native-docker-single-step-v1";
+    capability: "phase-exclusive-teardown-v1";
+    verifier_mode: "shared" | "separate";
+    verifier_dependencies: {
+      inputs: "artifacts-only" | "backend-defined";
+      live_services: string[];
+      artifacts: Array<{ service: string; path: string }>;
+    };
+  };
   provider_sidecars: { main_egress: boolean; verifier_egress: boolean };
   environment_images: HarborEnvironmentImageDeclarationV1[];
   environment_image_fallbacks: HarborEnvironmentImageFallbackV1[];
@@ -80,9 +92,10 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
     "schema_version", "task", "verifier", "compose_services", "provider_sidecars",
     "environment_images", "environment_image_fallbacks",
     "environment_builds",
-  ], "task resource declaration", ["runtime_platform"]);
+  ], "task resource declaration", ["runtime_platform", "backend_version", "verifier_compose_services", "lifecycle"]);
   if (root.schema_version !== "1") throw new TypeError("task resource declaration schema is invalid");
   const runtimePlatform = root.runtime_platform === undefined ? undefined : normalizeRuntimePlatform(root.runtime_platform);
+  if (root.backend_version !== undefined && (typeof root.backend_version !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[.+-][A-Za-z0-9.-]+)?$/.test(root.backend_version))) throw new TypeError("task backend version is invalid");
   const task = resourcePair(root.task, "task resources");
   const verifierRecord = exactRecord(root.verifier, ["separate"], "verifier resources", ["environment"]);
   if (typeof verifierRecord.separate !== "boolean") throw new TypeError("verifier resource mode is invalid");
@@ -90,15 +103,9 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
     separate: verifierRecord.separate,
     ...(verifierRecord.environment === undefined ? {} : { environment: resourcePair(verifierRecord.environment, "verifier environment resources") }),
   };
-  if (!Array.isArray(root.compose_services)) throw new TypeError("Compose resource services are invalid");
-  const composeServices = root.compose_services.map((entry, index) => {
-    const service = exactRecord(entry, ["name", "replicas"], `Compose service ${index}`, ["cpu_millis", "memory_bytes", "gpu_count"]);
-    if (typeof service.name !== "string" || !service.name || !Number.isSafeInteger(service.replicas) || (service.replicas as number) < 1) {
-      throw new TypeError(`Compose service ${index} identity is invalid`);
-    }
-    return { name: service.name, replicas: service.replicas as number, ...resourcePair(service, `Compose service ${index} resources`) };
-  });
-  if (new Set(composeServices.map((service) => service.name)).size !== composeServices.length) throw new TypeError("Compose service names are duplicated");
+  const composeServices = composeResourceServices(root.compose_services);
+  const verifierComposeServices = root.verifier_compose_services === undefined ? undefined : composeResourceServices(root.verifier_compose_services);
+  const lifecycle = root.lifecycle === undefined ? undefined : lifecycleDeclaration(root.lifecycle, verifier.separate, composeServices, verifierComposeServices);
   const sidecars = exactRecord(root.provider_sidecars, ["main_egress", "verifier_egress"], "provider sidecars");
   if (typeof sidecars.main_egress !== "boolean" || typeof sidecars.verifier_egress !== "boolean") throw new TypeError("provider sidecar declaration is invalid");
   const environmentImages = imageDeclarations(root.environment_images);
@@ -107,13 +114,60 @@ export function parseHarborTaskResourceDeclaration(value: unknown): HarborTaskRe
   return {
     schema_version: "1",
     ...(runtimePlatform ? { runtime_platform: runtimePlatform } : {}),
+    ...(root.backend_version === undefined ? {} : { backend_version: root.backend_version as string }),
     task,
     verifier,
     compose_services: composeServices,
+    ...(verifierComposeServices === undefined ? {} : { verifier_compose_services: verifierComposeServices }),
+    ...(lifecycle === undefined ? {} : { lifecycle }),
     provider_sidecars: { main_egress: sidecars.main_egress, verifier_egress: sidecars.verifier_egress },
     environment_images: environmentImages,
     environment_image_fallbacks: environmentImageFallbacks,
     environment_builds: environmentBuilds,
+  };
+}
+
+function composeResourceServices(value: unknown): HarborTaskResourceDeclarationV1["compose_services"] {
+  if (!Array.isArray(value)) throw new TypeError("Compose resource services are invalid");
+  const services = value.map((entry, index) => {
+    const service = exactRecord(entry, ["name", "replicas"], `Compose service ${index}`, ["cpu_millis", "memory_bytes", "gpu_count"]);
+    if (typeof service.name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(service.name) || !Number.isSafeInteger(service.replicas) || (service.replicas as number) < 1) {
+      throw new TypeError(`Compose service ${index} identity is invalid`);
+    }
+    return { name: service.name, replicas: service.replicas as number, ...resourcePair(service, `Compose service ${index} resources`) };
+  });
+  if (new Set(services.map((service) => service.name)).size !== services.length) throw new TypeError("Compose service names are duplicated");
+  return services;
+}
+
+function lifecycleDeclaration(
+  value: unknown, separate: boolean, agentServices: HarborTaskResourceDeclarationV1["compose_services"],
+  verifierServices: HarborTaskResourceDeclarationV1["compose_services"] | undefined,
+): NonNullable<HarborTaskResourceDeclarationV1["lifecycle"]> {
+  const record = exactRecord(value, ["contract", "capability", "verifier_mode", "verifier_dependencies"], "task lifecycle");
+  if (record.contract !== "harbor-native-docker-single-step-v1" || record.capability !== "phase-exclusive-teardown-v1"
+    || record.verifier_mode !== (separate ? "separate" : "shared")) throw new TypeError("task lifecycle contract is invalid");
+  if (!agentServices.some(s => s.name === "main" && s.replicas === 1)
+    || verifierServices === undefined
+    || (separate ? verifierServices.length !== 1 || verifierServices[0]?.name !== "main" || verifierServices[0]?.replicas !== 1 : verifierServices.length !== 0)) {
+    throw new TypeError("task lifecycle requires complete native single-step container topology");
+  }
+  const dependency = exactRecord(record.verifier_dependencies, ["inputs", "live_services", "artifacts"], "verifier dependencies");
+  if (dependency.inputs !== (separate ? "artifacts-only" : "backend-defined")
+    || !Array.isArray(dependency.live_services) || dependency.live_services.length !== 0
+    || !Array.isArray(dependency.artifacts)) throw new TypeError("verifier dependencies conflict with native lifecycle");
+  const artifacts = dependency.artifacts.map((entry, index) => {
+    const artifact = exactRecord(entry, ["service", "path"], `verifier artifact ${index}`);
+    if (typeof artifact.service !== "string" || !agentServices.some(s => s.name === artifact.service)
+      || typeof artifact.path !== "string" || !artifact.path.startsWith("/") || /[\0\r\n*$?\[\]{}]/.test(artifact.path)
+      || artifact.path.replaceAll("\\", "/").split("/").includes("..")) throw new TypeError(`verifier artifact ${index} is invalid`);
+    return { service: artifact.service, path: artifact.path };
+  });
+  if (new Set(artifacts.map(a => `${a.service}\0${a.path}`)).size !== artifacts.length) throw new TypeError("verifier artifact dependencies are duplicated");
+  return {
+    contract: "harbor-native-docker-single-step-v1", capability: "phase-exclusive-teardown-v1",
+    verifier_mode: separate ? "separate" : "shared",
+    verifier_dependencies: { inputs: separate ? "artifacts-only" : "backend-defined", live_services: [], artifacts },
   };
 }
 

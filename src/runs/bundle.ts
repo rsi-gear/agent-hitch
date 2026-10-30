@@ -58,8 +58,19 @@ export async function verifyResultBundleIndex(runDirectory: string): Promise<Res
   });
   if (contextIdentity !== index.context_identity) throw new TypeError("result bundle context identity does not match");
   const summaries = await bundleSummaries(runDirectory);
+  // Historical indexes used peak_memory_bytes for the maximum individual
+  // sampled container peak. Preserve their sealed bytes and interpretation.
+  if (index.resources && summaries.resources) {
+    if (index.resources.observed?.peak_memory_bytes !== undefined && summaries.resources.observed) {
+      const observed = summaries.resources.observed;
+      observed.peak_memory_bytes = observed.max_container_sampled_peak_bytes!;
+      delete observed.max_container_sampled_peak_bytes;
+      delete observed.sum_container_sampled_peaks_bytes;
+    }
+    if (index.resources.effective === undefined) delete summaries.resources.effective;
+  }
   if (index.environment !== undefined && JSON.stringify(index.environment) !== JSON.stringify(summaries.environment)
-    || index.resources !== undefined && JSON.stringify(index.resources) !== JSON.stringify(summaries.resources)
+    || index.resources !== undefined && sha256JSON(index.resources) !== sha256JSON(summaries.resources)
     || index.interaction_ref !== undefined && index.interaction_ref !== summaries.interaction_ref
     || index.capture !== undefined && JSON.stringify(index.capture) !== JSON.stringify(summaries.capture)) {
     throw new TypeError("result bundle execution summary does not match");
@@ -261,11 +272,23 @@ function resourcesFromExecution(execution: Record<string, unknown>): ResultBundl
   const observed = {
     ...(Number.isSafeInteger(observedValue.sample_count) && (observedValue.sample_count as number) >= 0 ? { sample_count: observedValue.sample_count as number } : {}),
     container_count: containers.length,
-    ...(peaks.length > 0 ? { peak_memory_bytes: Math.max(...peaks) } : {}),
+    ...(peaks.length > 0 ? { max_container_sampled_peak_bytes: Math.max(...peaks), sum_container_sampled_peaks_bytes: peaks.reduce((a, b) => a + b, 0) } : {}),
     ...(cpuTimes.length > 0 && Number.isSafeInteger(cpuTime) ? { cpu_time_ns: cpuTime } : {}),
     oom_killed_containers: containers.filter((container) => container.oom_killed === true).length,
   };
-  return { requested, observed };
+  const memory = asRecord(observedValue.memory);
+  const groups = Array.isArray(memory.group_peaks) ? memory.group_peaks.map(asRecord).filter(group => group.group_id === "task") : [];
+  const groupPeaks = groups.map(group => group.memory_bytes).filter((value): value is number => Number.isSafeInteger(value) && (value as number) >= 0);
+  const spans = groups.map(group => group.max_span_ms).filter((value): value is number => Number.isSafeInteger(value) && (value as number) >= 0);
+  const sourceSpans = groups.map(group => group.max_source_span_ms).filter((value): value is number => Number.isSafeInteger(value) && (value as number) >= 0);
+  const count = (predicate: (g: Record<string, unknown>) => boolean): number => groups.filter(predicate).reduce((sum, g) => sum + (Number.isSafeInteger(g.sample_count) ? g.sample_count as number : 0), 0);
+  return { requested, observed: { ...observed,
+    ...(groupPeaks.length ? { sampled_task_group_peak_bytes: Math.max(...groupPeaks),
+      task_group_sample_count: count(() => true), task_group_approximate_sample_count: count(group => group.approximate === true),
+      task_group_complete_sample_count: count(group => group.complete === true),
+      ...(sourceSpans.length ? { task_group_max_source_span_ms: Math.max(...sourceSpans) } : {}),
+      ...(spans.length ? { task_group_max_span_ms: Math.max(...spans) } : {}) } : {}) },
+    ...(execution.enforced === undefined ? {} : { effective: bundleEffectiveLimits(execution.enforced) }) };
 }
 
 function parseBundleEnvironment(value: unknown): NonNullable<ResultBundleIndexV1["environment"]> {
@@ -285,7 +308,22 @@ function parseBundleResources(value: unknown): NonNullable<ResultBundleIndexV1["
   const record = asRecord(value);
   const observed = record.observed === undefined ? undefined : asRecord(record.observed);
   if (observed && Object.values(observed).some((entry) => !Number.isSafeInteger(entry) || (entry as number) < 0)) throw new TypeError("result bundle observed resources are invalid");
-  return { requested: resourceVector(record.requested), ...(observed ? { observed: observed as Record<string, number> } : {}) };
+  return { requested: resourceVector(record.requested), ...(observed ? { observed: observed as Record<string, number> } : {}),
+    ...(record.effective === undefined ? {} : { effective: bundleEffectiveLimits(record.effective) }) };
+}
+
+function bundleEffectiveLimits(value: unknown): NonNullable<NonNullable<ResultBundleIndexV1["resources"]>["effective"]> {
+  const record = asRecord(value), sidecars = asRecord(record.sidecar_limits);
+  const limits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }> = {};
+  for (const [name, value] of Object.entries(sidecars)) {
+    const entry = asRecord(value);
+    if (Object.keys(entry).some(k => !["cpu_millis", "memory_bytes", "gpu_count"].includes(k))
+      || [entry.cpu_millis, entry.memory_bytes, ...(entry.gpu_count === undefined ? [] : [entry.gpu_count])].some(v => !Number.isSafeInteger(v) || (v as number) < 1)) {
+      throw new TypeError("result bundle effective limits are invalid");
+    }
+    limits[name] = entry as { cpu_millis: number; memory_bytes: number; gpu_count?: number };
+  }
+  return { main_limits: resourceVector(record.main_limits), sidecar_limits: limits };
 }
 
 function resourceVector(value: unknown): NonNullable<ResultBundleIndexV1["resources"]>["requested"] {

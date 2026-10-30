@@ -3,8 +3,10 @@ import type { EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPl
 import { DEFAULT_ENVIRONMENT_IMAGE_PLATFORM, planEnvironmentImages } from "./environment-image-planning.js";
 import type { EvalEnvironmentImageBuilder, EvalEnvironmentImageResolver } from "./service-types.js";
 import { resolveLocalTaskPlanningInputs } from "./task-resources.js";
+import type { LocalTaskPlanningInputV1 } from "./task-resources.js";
 
 export interface LocalEvalPlanningResultV1 {
+  taskProfileInputs?: LocalTaskPlanningInputV1[];
   taskResources?: TaskResourceRequirementV1[];
   environmentImages: EnvironmentImageUseV1[];
   environmentImageFallbacks: EnvironmentImageFallbackV1[];
@@ -31,6 +33,26 @@ export async function planLocalEvalInputs(input: {
   platform?: string;
 }): Promise<LocalEvalPlanningResultV1> {
   const trialDockerPlatform = input.platform ?? DEFAULT_ENVIRONMENT_IMAGE_PLATFORM;
+  if (input.resumePlan) {
+    const frozen = input.resumePlan;
+    const taskIds = [...new Set(frozen.slots.map(slot => slot.task_id))].sort(compare);
+    if ((input.taskIds === null) !== (frozen.membership === "opaque")
+      || input.taskIds !== null && JSON.stringify([...input.taskIds].sort(compare)) !== JSON.stringify(taskIds)
+      || input.benchmarkId !== frozen.benchmark.id || input.benchmarkRevision !== frozen.benchmark.revision) throw new TypeError("resume task membership or benchmark identity changed");
+    const groups = new Map<string, TrialRuntimeContractV1 & { task_ids: string[] }>();
+    for (const work of frozen.work_items) {
+      const contract = work.runtime_contract ?? runtimeAssignment([], trialDockerPlatform);
+      const key = `${contract.docker_platform}\0${contract.artifact_platform}\0${contract.node_version}`;
+      const group = groups.get(key) ?? { ...contract, task_ids: [] };
+      group.task_ids = [...new Set([...group.task_ids, ...work.task_ids])].sort(compare);
+      groups.set(key, group);
+    }
+    return {
+      ...(frozen.task_resources ? { taskResources: structuredClone(frozen.task_resources) } : {}),
+      environmentImages: resumedImages(frozen), environmentImageFallbacks: frozen.image_fallbacks ?? [],
+      taskRuntimeContracts: [...groups.values()].sort((a, b) => compare(a.task_ids[0] ?? "", b.task_ids[0] ?? "")),
+    };
+  }
   if (input.taskIds === null) return {
     environmentImages: [],
     environmentImageFallbacks: [],
@@ -52,12 +74,6 @@ export async function planLocalEvalInputs(input: {
     task_id: task.task_id,
     platform: task.runtime_platform ?? trialDockerPlatform,
   })));
-  if (input.resumePlan) return {
-    taskResources,
-    environmentImages: resumedImages(input.resumePlan),
-    environmentImageFallbacks: input.resumePlan.image_fallbacks ?? [],
-    taskRuntimeContracts,
-  };
   const planned = await planEnvironmentImages({
     tasks,
     mode: input.buildMode,
@@ -68,7 +84,7 @@ export async function planLocalEvalInputs(input: {
     ...(input.builder ? { builder: input.builder } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   });
-  return { taskResources, environmentImages: planned.uses, environmentImageFallbacks: planned.fallbacks, taskRuntimeContracts };
+  return { taskResources, taskProfileInputs: tasks, environmentImages: planned.uses, environmentImageFallbacks: planned.fallbacks, taskRuntimeContracts };
 }
 
 function groupTaskRuntimeContracts(tasks: Array<{ task_id: string; platform: string }>): Array<TrialRuntimeContractV1 & { task_ids: string[] }> {

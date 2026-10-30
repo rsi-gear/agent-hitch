@@ -120,19 +120,26 @@ async function recoverLease(
   try {
     if (input.cancelRequested && probe.state === "running") await provider.cancel(lease.lease_id, reissued.epoch);
     const terminal = await waitForLocalDockerProcessTerminal({ root: input.root, leaseId: lease.lease_id, epoch: reissued.epoch });
-    await heartbeatTail;
-    if (heartbeatFailure !== undefined) throw heartbeatFailure;
-    try { await collectRecoveredWork(input, reissued, terminal.backend_directory, emit, captureRuntime); } catch (error) {
-      if (!input.cancelRequested || (error as { code?: string }).code !== "recovery_collection_missing") throw error;
+    clearInterval(timer);
+    try {
+      await heartbeatTail;
+      if (heartbeatFailure !== undefined) throw heartbeatFailure;
+      try { await collectRecoveredWork(input, reissued, terminal.backend_directory, emit, captureRuntime); } catch (error) {
+        if (!input.cancelRequested || (error as { code?: string }).code !== "recovery_collection_missing") throw error;
+      }
+      if (!input.cancelRequested && terminal.process_exit_code !== null && terminal.process_exit_code !== 0) {
+        throw new HitchError(`recovered Harbor process exited with code ${terminal.process_exit_code}`, { code: "harbor_failed", exitCode: 13 });
+      }
+    } finally {
+      // A failed result still belongs to a confirmed terminal host process.
+      // Authorize Docker cleanup without converting that execution to lost.
+      // Failure to establish terminal state above never reaches this release.
+      await provider.release(lease.lease_id, reissued.epoch);
+      await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: reissued.epoch });
+      emit({ type: "lease.released", work_id: lease.work_id, lease_id: lease.lease_id, lease_epoch: reissued.epoch, worker_id: lease.worker_id });
+      emit({ type: "eval.lease.recovered", lease_id: lease.lease_id, lease_epoch: reissued.epoch, state: "released" });
+      emit({ type: "lease.recovered", lease_id: lease.lease_id, lease_epoch: reissued.epoch, state: "released" });
     }
-    if (!input.cancelRequested && terminal.process_exit_code !== null && terminal.process_exit_code !== 0) {
-      throw new HitchError(`recovered Harbor process exited with code ${terminal.process_exit_code}`, { code: "harbor_failed", exitCode: 13 });
-    }
-    await provider.release(lease.lease_id, reissued.epoch);
-    await releaseExecutionLease({ evalDirectory: input.evalDirectory, leaseId: lease.lease_id, expectedEpoch: reissued.epoch });
-    emit({ type: "lease.released", work_id: lease.work_id, lease_id: lease.lease_id, lease_epoch: reissued.epoch, worker_id: lease.worker_id });
-    emit({ type: "eval.lease.recovered", lease_id: lease.lease_id, lease_epoch: reissued.epoch, state: "released" });
-    emit({ type: "lease.recovered", lease_id: lease.lease_id, lease_epoch: reissued.epoch, state: "released" });
   } finally {
     clearInterval(timer);
     await heartbeatTail;

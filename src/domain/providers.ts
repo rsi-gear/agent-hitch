@@ -31,6 +31,7 @@ export interface ExecutionProviderStatusV1 {
     verifier_source?: "2";
     verifier_only?: "2";
     benchmark_resources?: "1";
+    resource_profiling?: "1";
     isolated_same_task_attempts: boolean;
   };
   capacity: {

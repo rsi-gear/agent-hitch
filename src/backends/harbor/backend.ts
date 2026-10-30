@@ -4,14 +4,14 @@ import { readdir } from "node:fs/promises";
 import { withResourceAdmission } from "./resource-admission.js";
 import path from "node:path";
 import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, readJSON, sha256JSON } from "../../foundation/index.js";
-import type { DockerResourceOwnershipV1, EvalRequest, ModelProxyRouteV1, ResolvedRevision, ResourceVectorV1 } from "../../domain/index.js";
+import type { EvalRequest, ResolvedRevision } from "../../domain/index.js";
 import { harborDatasetConfig } from "./dataset-config.js";
 import { harborAgentTimeoutOverride } from "./agent-budget.js";
 import { DEFAULT_HARBOR_VERSION, HARBOR_CREDENTIAL_ENV, discoverHarbor } from "./tools.js";
 import { harborVerifierConfig } from "./verifier-config.js";
 import { invokeHarbor } from "./process.js";
 import { harborEnvironmentConfig, harborPreparationOptions } from "./environment-config.js";
-import type { HarborDockerServiceLimitsV1, HarborVerifierImagesV1 } from "./environment-config.js";
+import type { HarborEnvironmentExecutionOptions } from "./environment-config.js";
 import { parseHarborModelProxyRoute } from "./model-proxy-config.js";
 import { HARBOR_NODE_VERSION_WITH_PREFIX } from "./runtime-toolchain.js";
 import { withBridgePythonPath } from "./bridge-environment.js";
@@ -22,7 +22,7 @@ export interface HarborSettledTrialContext {
   bundleWaitExpired: boolean;
 }
 
-export interface RunHarborBackendOptions {
+export interface RunHarborBackendOptions extends HarborEnvironmentExecutionOptions {
   evalId: string;
   evalDirectory: string;
   backendDirectory?: string;
@@ -40,17 +40,10 @@ export interface RunHarborBackendOptions {
   emit?: (event: Record<string, unknown>) => void;
   onTrialSettled?: (trial: Record<string, unknown>, context: HarborSettledTrialContext) => Promise<boolean>;
   trialBundleGraceMs?: number;
+  onProcessStarting?: (env: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv>;
   onProcessStarted?: (pid: number) => void | Promise<void>;
   onProcessExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
   recoverableProcess?: boolean;
-  executionResources?: ResourceVectorV1;
-  dockerOwnership?: DockerResourceOwnershipV1;
-  dockerServiceLimits?: HarborDockerServiceLimitsV1;
-  resolvedImages?: Record<string, string>;
-  prebuiltTaskImage?: string;
-  prebuiltServiceImages?: Record<string, string>;
-  verifierImages?: HarborVerifierImagesV1;
-  modelProxy?: ModelProxyRouteV1;
 }
 
 export interface HarborPreparedArtifactUse {
@@ -108,12 +101,15 @@ async function executeHarborBackend({
   emit = () => {},
   onTrialSettled,
   trialBundleGraceMs = DEFAULT_HARBOR_TRIAL_BUNDLE_GRACE_MS,
+  onProcessStarting,
   onProcessStarted,
   onProcessExited,
   recoverableProcess = false,
   executionResources,
   dockerOwnership,
   dockerServiceLimits,
+  phaseResourceContract,
+  agentEnvironmentRole,
   resolvedImages,
   prebuiltTaskImage,
   prebuiltServiceImages,
@@ -141,6 +137,7 @@ async function executeHarborBackend({
       exitCode: 3,
     });
   }
+  if (phaseResourceContract && harborRelease !== DEFAULT_HARBOR_VERSION) throw new HitchError(`phase resource execution requires Harbor ${DEFAULT_HARBOR_VERSION}`, { code: "phase_resource_backend_unsupported", exitCode: 10 });
   if (hostCredentialHelper !== null) await assertHostCredentialRuntimeSupport(executionRuntimeDirectory);
   const identity = await fingerprintExecutable(executable);
   const jobName = "job";
@@ -162,6 +159,8 @@ async function executeHarborBackend({
     ...(executionResources ? { executionResources } : {}),
     ...(dockerOwnership ? { dockerOwnership } : {}),
     ...(dockerServiceLimits ? { dockerServiceLimits } : {}),
+    ...(phaseResourceContract ? { phaseResourceContract } : {}),
+    ...(agentEnvironmentRole ? { agentEnvironmentRole } : {}),
     ...(resolvedImages ? { resolvedImages } : {}),
     ...(prebuiltTaskImage ? { prebuiltTaskImage } : {}),
     ...(prebuiltServiceImages ? { prebuiltServiceImages } : {}),
@@ -184,9 +183,10 @@ async function executeHarborBackend({
     : monitorHarborTrials(jobDirectory, onTrialSettled, trialBundleGraceMs, signal);
   let invocation: { code: number | null; signal: NodeJS.Signals | null };
   try {
+    const executionEnv = onProcessStarting ? await onProcessStarting(env) : env;
     invocation = await invokeHarbor(executable, ["run", "--config", configPath, "--yes"], {
       cwd: evalDirectory,
-      env: withBridgePythonPath(withHostCredentialPlaceholders(env, hostCredentialNames), executionRuntimeDirectory),
+      env: withBridgePythonPath(withHostCredentialPlaceholders(executionEnv, hostCredentialNames), executionRuntimeDirectory),
       stdoutPath: path.join(backendDirectory, "stdout.log"),
       stderrPath: path.join(backendDirectory, "stderr.log"),
       ...(signal ? { signal } : {}),
@@ -303,7 +303,7 @@ async function attachTrialResults(jobDirectory: string, jobResult: Record<string
   return { ...jobResult, trial_results: trialResults };
 }
 
-export interface BuildHarborJobConfigOptions {
+export interface BuildHarborJobConfigOptions extends HarborEnvironmentExecutionOptions {
   evalId?: string;
   request: EvalRequest;
   resolvedRevision: ResolvedRevision;
@@ -315,14 +315,6 @@ export interface BuildHarborJobConfigOptions {
   logicalAttempt?: number;
   jobName?: string;
   env?: NodeJS.ProcessEnv;
-  executionResources?: ResourceVectorV1;
-  dockerOwnership?: DockerResourceOwnershipV1;
-  dockerServiceLimits?: HarborDockerServiceLimitsV1;
-  resolvedImages?: Record<string, string>;
-  prebuiltTaskImage?: string;
-  prebuiltServiceImages?: Record<string, string>;
-  verifierImages?: HarborVerifierImagesV1;
-  modelProxy?: ModelProxyRouteV1;
 }
 
 export async function buildHarborJobConfig({
@@ -340,6 +332,8 @@ export async function buildHarborJobConfig({
   executionResources,
   dockerOwnership,
   dockerServiceLimits,
+  phaseResourceContract,
+  agentEnvironmentRole,
   resolvedImages,
   prebuiltTaskImage,
   prebuiltServiceImages,
@@ -421,6 +415,8 @@ export async function buildHarborJobConfig({
       harborPreparationOptions(env),
       prebuiltServiceImages,
       verifierImages,
+      phaseResourceContract,
+      agentEnvironmentRole,
     ),
     verifier: harborVerifierConfig(request),
     agents: [agent],

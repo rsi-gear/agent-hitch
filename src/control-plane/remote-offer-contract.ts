@@ -5,11 +5,15 @@ import { HitchError, readJSON, sha256JSON } from "../foundation/index.js";
 import { remoteModelBinding } from "./remote-model-routes.js";
 import type { RemoteModelTargetV2 } from "./remote-model-routes.js";
 import type { RemoteWorkInputStore } from "./remote-work-inputs.js";
+import { assertLegacyRemoteResourceWork } from "./remote-resource-contract.js";
 
 export async function validateRemoteOfferContract(offer: RemoteWorkOfferV1, features: ExecutionProviderStatusV1["features"], inputs: RemoteWorkInputStore, target?: RemoteModelTargetV2): Promise<void> {
+  assertLegacyRemoteResourceWork(offer.work);
+  if (offer.work.resource_profiling && features.resource_profiling !== "1") throw rejected("remote worker lacks resource_profiling v1");
   const ref = offer.inputs?.find(input => input.kind === "work-spec");
-  if (!ref) { if (target) throw rejected("remote model needs a sealed work spec"); return; }
+  if (!ref) { if (offer.work.resource_profiling) throw rejected("resource profiling needs a sealed work spec"); if (target) throw rejected("remote model needs a sealed work spec"); return; }
   const spec = await readJSON<Record<string, unknown>>((await inputs.verify(ref)).path);
+  assertLegacyRemoteResourceWork(offer.work, spec.plan);
   const resourceRef = offer.inputs?.find(i => i.kind === "task-input" && i.format === "hitch-resource-delivery-v1");
   if (resourceRef || spec.schema_version === "3" || spec.resource_delivery !== undefined) {
     if (!resourceRef || spec.schema_version !== "3" || features.benchmark_resources !== "1" || !features.docker || !features.buildkit) throw rejected("remote worker lacks benchmark_resources v1");
@@ -17,6 +21,10 @@ export async function validateRemoteOfferContract(offer: RemoteWorkOfferV1, feat
     if (delivery.digest !== spec.resource_delivery || delivery.selection.tasks.length !== 1 || delivery.selection.tasks[0]?.task_id !== offer.work.task_ids[0]) throw rejected("remote resource delivery differs from work spec");
   }
   const physical = spec.physical_execution === undefined ? undefined : parsePhysicalExecution(spec.physical_execution);
+  if (offer.work.resource_profiling) {
+    assertPhysicalWork(parseEvalExecutionPlan(spec.plan), offer.work, physical);
+    if (sha256JSON(spec.work) !== sha256JSON(offer.work)) throw rejected("remote profiled work differs from the sealed spec");
+  }
   if (spec.physical_execution !== undefined) {
     if (!["2", "3"].includes(String(spec.schema_version)) || features.physical_work !== "2") throw rejected("remote worker lacks physical_work v2");
     assertPhysicalWork(parseEvalExecutionPlan(spec.plan), offer.work, physical);

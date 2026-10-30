@@ -6,6 +6,8 @@ import { loadFrozenEndpoint, parseEndpointBinding, requireEndpointVerification }
 import { readEvalProgress } from "./progress.js";
 import { selectRerunTrialSlots } from "./rerun-slots.js";
 import { parseRerunPlan } from "./rerun-inputs.js";
+import { parseEvalExecutionPlan } from "./execution-plan.js";
+import { assertRerunResourceApproval } from "./resource-profile-rerun.js";
 
 export interface EndpointEvaluationAttemptV1 {
   schema_version: "1";
@@ -94,6 +96,9 @@ export async function admitEndpointEvaluationAttempt(root: string, directory: st
     if (!progress) fail("endpoint repair requires durable task-level progress");
     const selected = selectRerunTrialSlots(plan.tasks, plan.attempts, progress, { mode: "invalid" }, { allowVerifierFailures: true });
     if (!selected.length) fail("endpoint repair has no missing or invalid slots");
+    const execution = await readJSON<unknown | null>(path.join(directory, "execution-plan.json"), null);
+    if (execution) assertRerunResourceApproval({ plan: parseEvalExecutionPlan(execution), request,
+      controllerRuntimeId: String(plan.controllerRuntime.runtime_id), trials: selected, endpointBinding: input.endpoint_binding });
     const admitted = { ...input, rerun_id: rerunId, selected_trials: selected };
     await atomicWriteJSON(path.join(directory, "endpoint-attempts.json"), [...attempts, admitted]);
     return admitted;

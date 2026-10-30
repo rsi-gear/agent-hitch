@@ -1,9 +1,11 @@
 import path from "node:path";
 import type { EvalExecutionPlanV1, EvalProgressV1 } from "../domain/index.js";
 import type { EvalWorkStateSnapshot } from "./service-types.js";
-import { readJSON, sha256JSON } from "../foundation/index.js";
+import { readJSON, sha256JSON, statePaths } from "../foundation/index.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { readEvalProgress } from "./progress.js";
+import { useControllerRuntimeById } from "../controller-runtime/index.js";
+import { loadRerunLocalTransport, loadRerunResolvedRevision } from "./rerun-inputs.js";
 
 export interface EvalResumeState {
   plan: Record<string, unknown>;
@@ -19,6 +21,25 @@ export async function loadEvalResumeState(evalDirectory: string): Promise<EvalRe
   const resolution = await readJSON<Record<string, unknown>>(path.join(evalDirectory, "resolution.json"));
   if (!progress || typeof resolution.identity !== "string") throw new TypeError("resumable eval state is incomplete");
   return { plan, executionPlan, progress, resolutionIdentity: resolution.identity };
+}
+
+export async function loadResumedControllerRuntime(root: string, state: EvalResumeState) {
+  const pin = state.plan.controller_runtime as { runtime_id?: unknown; manifest_digest?: unknown } | undefined;
+  if (typeof pin?.runtime_id !== "string" || !/^sha256:[a-f0-9]{64}$/.test(pin.runtime_id)
+    || typeof pin.manifest_digest !== "string") throw new TypeError("resumable eval runtime identity is incomplete");
+  const runtime = await useControllerRuntimeById(statePaths(root), pin.runtime_id.slice(7));
+  if (runtime.runtime_id !== pin.runtime_id || runtime.manifest_digest !== pin.manifest_digest) throw new TypeError("resumable eval runtime identity changed");
+  return runtime;
+}
+
+export async function loadResumedEvalSource(evalDirectory: string, state: Pick<EvalResumeState, "plan">, env: NodeJS.ProcessEnv, signal?: AbortSignal) {
+  if (!state.plan.candidate || typeof state.plan.candidate !== "object" || Array.isArray(state.plan.candidate)) throw new TypeError("resumable eval candidate is missing");
+  const plan = { candidate: state.plan.candidate as Record<string, unknown>, preparedArtifacts: [],
+    ...(state.plan.local_source_transport ? { localSourceTransport: state.plan.local_source_transport as Record<string, unknown> } : {}) };
+  const resolvedRevision = await loadRerunResolvedRevision(evalDirectory, plan);
+  const localTransport = await loadRerunLocalTransport(evalDirectory, plan, resolvedRevision, env, signal);
+  if (resolvedRevision.source.type === "git" && resolvedRevision.source.registered !== true && !localTransport) throw new TypeError("resumable local Git transport is missing");
+  return { resolvedRevision, localTransport };
 }
 
 export function assertEvalResumeState(input: {

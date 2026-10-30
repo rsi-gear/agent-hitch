@@ -74,7 +74,7 @@ test("daemon authenticates mutations, executes a queued run, and reports health"
   assert.match(health.instance_id, /^[a-f0-9]{32}$/);
   assert.match(health.root_id, /^[a-f0-9]{24}$/);
   assert.ok(health.agents.includes("codex"));
-  assert.deepEqual(health.resource_policy, { capacity: resourceCapacity, run: runResources, eval_trial: evalTrialResources });
+  assert.deepEqual(health.resource_policy, { capacity: resourceCapacity, run: runResources, eval_trial: evalTrialResources, resource_profiling: { unknown_max_parallelism: 1 } });
   assert.deepEqual({ queued_runs: health.scheduler.queued_runs, queued_evals: health.scheduler.queued_evals, active_work_items: health.scheduler.active_work_items }, { queued_runs: 0, queued_evals: 0, active_work_items: 0 });
   assert.deepEqual(health.scheduler.resources.cpu_millis, { allocated: 0, allocatable: 2_500, available: 2_500, utilization: 0 });
   assert.deepEqual(health.workers, { total: 1, healthy: 1, degraded: 0, lost: 0, unavailable: 0, active_leases: 0, oldest_heartbeat_age_seconds: 0 });

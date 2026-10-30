@@ -1,9 +1,11 @@
 import { resourceFileRequest, resourceRequest } from "../../resources/index.js";
 import { assertNoArgs, takeOption } from "../arguments.js";
 import { exportResourceLegacy } from "../../evals/index.js";
+import { resourceProfileCommand } from "./resource-profile.js";
 
 export async function resourcesCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();
+  if (action && ["profile", "recommend", "approve"].includes(action)) return resourceProfileCommand(action, args, root);
   if (action === "legacy-export") {
     const ref = takeOption(args, "--ref"), output = takeOption(args, "--output"); assertNoArgs(args);
     if (!ref || !output) throw new TypeError("legacy-export requires --ref and --output");

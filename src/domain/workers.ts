@@ -91,6 +91,7 @@ export interface RemoteWorkerRegistrationV1 {
     verifier_source?: "2";
     verifier_only?: "2";
     benchmark_resources?: "1";
+    resource_profiling?: "1";
     isolated_same_task_attempts: boolean;
   };
   task_membership: Array<"known" | "opaque">;
@@ -137,7 +138,11 @@ export interface RemoteWorkTerminalV1 {
 }
 
 export interface RemoteWorkOfferV1 {
-  schema_version: "1";
+  /** V2 cannot be interpreted by a legacy worker that only accepts V1 offers. */
+  schema_version: "1" | "2";
+  resource_contract_version?: "2";
+  resource_contract_digest?: Sha256;
+  required_capabilities?: string[];
   offer_id: string;
   nonce: string;
   generation: number;

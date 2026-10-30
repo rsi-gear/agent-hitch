@@ -1,6 +1,6 @@
 # Opt-in resource adapter
 
-The existing `import.mjs` and v4 datasets remain unchanged. `resources.mjs`
+Existing imported v4 datasets remain unchanged. `resources.mjs`
 accepts an existing, verified v4 public-source dataset and explicit task IDs.
 
 ```sh
@@ -22,6 +22,12 @@ recipe and the source bytes inside the actual runtime image. It preserves task
 instructions, simulator state, verifier, raw metric and scoring contracts.
 Candidate, simulator and verifier have disjoint contexts. The new dataset has a
 new identity. Existing v4 experiments must continue using their original refs.
+
+Every new v4 export declares simulator limits of 1 CPU and 1024 MiB. A v5
+import fills missing simulator limits with the same values, preserving explicit
+limits from its v4 input. This applies to all supported domains and changes the
+new task/dataset identity; it does not rewrite the source dataset or lower an
+existing declared limit.
 
 See `docs/resource-storage.zh-CN.md` for supported backend limits, cache-only
 offline requirements, explicit legacy export, pins, budgets and GC.

@@ -9,7 +9,7 @@ import {
   writeRemoteWorkerCredential,
 } from "../../control-plane/index.js";
 import { LocalExecutionObserver, releaseRemoteHarborOffer, remoteHarborWorker, cleanPreviousRemoteHarborGeneration } from "../../workers/index.js";
-import { invalidInput, parseDuration } from "../../foundation/index.js";
+import { invalidInput, parseDuration, resourceProfilingPolicy } from "../../foundation/index.js";
 import { assertNoArgs, takeFlag, takeOption } from "../arguments.js";
 import { daemonClient } from "../../daemon/index.js";
 
@@ -58,6 +58,8 @@ async function runWorker(args: string[], root: string): Promise<void> {
   const credentialFile = path.resolve(requiredOption(args, "--credential-file"));
   const harborExecutable = takeOption(args, "--harbor");
   const dockerExecutable = takeOption(args, "--docker");
+  const unknownMax = takeOption(args, "--unknown-max-parallelism");
+  const profiling = resourceProfilingPolicy(unknownMax === undefined ? undefined : { unknown_max_parallelism: unknownMax });
   const once = takeFlag(args, "--once");
   const pollIntervalMs = durationOption(args, "--poll-interval", 1_000);
   const heartbeatIntervalMs = durationOption(args, "--heartbeat-interval", 10_000);
@@ -77,7 +79,7 @@ async function runWorker(args: string[], root: string): Promise<void> {
   };
   const executionObserver = registration.features.execution_observation === "2" ? new LocalExecutionObserver(execution) : undefined;
   const runner = new RemoteWorkerRunner({
-    client, capacity: registration.capacity.allocatable, execute: remoteHarborWorker(execution),
+    client, capacity: registration.capacity.allocatable, resourceProfilingPolicy: profiling, execute: remoteHarborWorker(execution),
     releaseUnknown: (offer) => releaseRemoteHarborOffer(execution, offer),
     releasePreviousGeneration: (offer, admission) => cleanPreviousRemoteHarborGeneration(execution, offer, admission),
     signal: controller.signal, once, pollIntervalMs, heartbeatIntervalMs,

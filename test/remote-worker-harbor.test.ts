@@ -81,7 +81,7 @@ fs.writeFileSync(${JSON.stringify(path.join(workerRoot, "materialization-observe
     schema_version: "1" as const, worker_id: "worker_harbor_e2e", provider: "remote-docker",
     collision_domain_id: "docker-engine:remote-e2e", platforms: [`${process.platform}-${process.arch}`],
     backends: [{ id: "harbor", version: "0.1.0" }],
-    features: { docker: true, buildkit: true, model_proxy: false, isolated_same_task_attempts: false, ...(resourceAware ? { benchmark_resources: "1" as const } : {}) },
+    features: { resource_profiling: "1" as const, docker: true, buildkit: true, model_proxy: false, isolated_same_task_attempts: false, ...(resourceAware ? { benchmark_resources: "1" as const } : {}) },
     task_membership: ["known" as const], capacity: { total: TRIAL, reserved_for_system: ZERO, allocatable: TRIAL },
   };
   const credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken, registration });

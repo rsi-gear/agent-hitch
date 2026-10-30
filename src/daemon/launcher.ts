@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { ensureDir, statePaths } from "../foundation/index.js";
-import type { ResourceVectorV1 } from "../domain/index.js";
+import type { ResourceVectorV1, ResourceProfilingPolicyV1 } from "../domain/index.js";
 
 export interface DaemonResourcePolicy {
   capacity: ResourceVectorV1;
   run: ResourceVectorV1;
   eval_trial: ResourceVectorV1;
+  resource_profiling?: ResourceProfilingPolicyV1;
 }
 
 export interface DetachedDaemonOptions {
@@ -32,6 +33,7 @@ export async function startDetachedDaemon(options: DetachedDaemonOptions): Promi
     "daemon", "serve",
     "--port", String(port),
     "--max-concurrent", String(maxConcurrent),
+    ...(resourcePolicy.resource_profiling ? ["--unknown-max-parallelism", String(resourcePolicy.resource_profiling.unknown_max_parallelism)] : []),
     "--capacity-cpu-millis", String(resourcePolicy.capacity.cpu_millis),
     "--capacity-memory-mib", String(capacityMemoryMib),
     "--container-slots", String(resourcePolicy.capacity.container_slots),

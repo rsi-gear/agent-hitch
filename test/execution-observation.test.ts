@@ -17,6 +17,7 @@ async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-execution-observation-"));
   const harbor = path.join(root, "harbor"), docker = path.join(root, "docker");
   const observed = path.join(root, "docker-info.json"), calls = path.join(root, "calls.jsonl");
+  await writeFile(calls, "");
   await writeFile(observed, JSON.stringify({ ID: "fixture-engine-1", ServerVersion: "28.1.0", OSType: "linux", Architecture: "x86_64" }));
   await writeFile(harbor, `#!${process.execPath}\nconsole.log('harbor 0.21.0');\n`, { mode: 0o755 });
   await writeFile(docker, `#!${process.execPath}
@@ -68,13 +69,16 @@ test("daemon observation requires admin authentication and returns fresh nonce-b
     executionObserver: new LocalExecutionObserver({ root: f.root, env: f.env }) });
   t.after(async () => { await server.close(); await forceRemove(f.root); });
   await server.start();
+  // Startup recovery may inspect Docker; denied observation requests must not.
+  const startupCalls = await readFile(f.calls, "utf8");
   const body = JSON.stringify({ schema_version: "2", provider: "local-docker", nonce });
   const denied = await fetch(`http://127.0.0.1:${server.port}/v2/execution-observation`, { method: "POST", body });
   assert.equal(denied.status, 401);
-  await assert.rejects(readFile(f.calls), { code: "ENOENT" });
+  assert.equal(await readFile(f.calls, "utf8"), startupCalls);
   const client = await daemonClient(f.root);
   await assert.rejects(client.request("/v2/execution-observation", { method: "POST", body: JSON.stringify({ schema_version: "2", provider: "local-docker", nonce, command: "anything" }) }), { code: "invalid_input" });
   await assert.rejects(client.request("/v2/execution-observation", { method: "POST", body: JSON.stringify({ schema_version: "2", provider: "remote", nonce }) }), { code: "execution_observation_unsupported" });
+  assert.equal(await readFile(f.calls, "utf8"), startupCalls);
   const invoke = async (requestNonce: string) => JSON.parse((await runCommand(process.execPath,
     [cli, "--root", f.root, "worker", "observe", "local-docker", "--nonce", requestNonce, "--json"], { timeoutMs: 30_000 })).stdout);
   const first = await invoke(nonce);

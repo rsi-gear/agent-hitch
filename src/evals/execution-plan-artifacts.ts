@@ -1,5 +1,6 @@
 import type { EnvironmentImageUseV1, Sha256, TrialRuntimeContractV1 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
+import type { WorkResourceBindingV2 } from "./work-resource-contract.js";
 
 export interface EvalArtifactAssignmentInputV1 {
   taskIds: readonly string[];
@@ -67,9 +68,10 @@ export function workItemId(
   slots: string[],
   imageRefs: readonly EnvironmentImageUseV1[] = [],
   artifactPin: WorkItemArtifactPin = {},
+  resourceBinding: Partial<WorkResourceBindingV2> = {},
 ): string {
   const imageIdentity = imageRefs.map(({ cache_hit: _cacheHit, ...entry }) => entry);
-  const identity = { eval_id: evalId, backend: "harbor", logical_attempt: logicalAttempt, slots, ...(imageIdentity.length > 0 ? { image_refs: imageIdentity } : {}), ...artifactPin };
+  const identity = { eval_id: evalId, backend: "harbor", logical_attempt: logicalAttempt, slots, ...(imageIdentity.length > 0 ? { image_refs: imageIdentity } : {}), ...artifactPin, ...resourceBinding };
   return `work_${sha256JSON(identity).slice("sha256:".length, "sha256:".length + 32)}`;
 }
 

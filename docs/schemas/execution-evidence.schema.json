@@ -5,26 +5,36 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "provider", "worker_id", "collision_domain_id", "eval_id", "work_id",
-    "lease_id", "lease_epoch", "task_id", "reservation", "enforced", "observed"
+    "schema_version",
+    "provider",
+    "worker_id",
+    "collision_domain_id",
+    "eval_id",
+    "work_id",
+    "lease_id",
+    "lease_epoch",
+    "task_id",
+    "reservation",
+    "enforced",
+    "observed"
   ],
   "properties": {
-    "schema_version": { "const": "1" },
-    "provider": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "worker_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "collision_domain_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "eval_id": { "type": "string", "pattern": "^eval_[a-f0-9]{32}$" },
-    "work_id": { "type": "string", "pattern": "^work_[a-f0-9]{32}$" },
-    "lease_id": { "type": "string", "pattern": "^lease_[a-f0-9]{32}$" },
-    "lease_epoch": { "type": "integer", "minimum": 1 },
-    "task_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "reservation": { "$ref": "#/$defs/resources" },
+    "schema_version": {"const": "1"},
+    "provider": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "worker_id": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "collision_domain_id": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "eval_id": {"type": "string", "pattern": "^eval_[a-f0-9]{32}$"},
+    "work_id": {"type": "string", "pattern": "^work_[a-f0-9]{32}$"},
+    "lease_id": {"type": "string", "pattern": "^lease_[a-f0-9]{32}$"},
+    "lease_epoch": {"type": "integer", "minimum": 1},
+    "task_id": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "reservation": {"$ref": "#/$defs/resources"},
     "enforced": {
       "type": "object",
       "additionalProperties": false,
       "required": ["main_limits", "sidecar_limits"],
       "properties": {
-        "main_limits": { "$ref": "#/$defs/resources" },
+        "main_limits": {"$ref": "#/$defs/resources"},
         "sidecar_limits": {
           "type": "object",
           "additionalProperties": {
@@ -32,9 +42,9 @@
             "additionalProperties": false,
             "required": ["cpu_millis", "memory_bytes"],
             "properties": {
-              "cpu_millis": { "type": "integer", "minimum": 1 },
-              "memory_bytes": { "type": "integer", "minimum": 1 },
-              "gpu_count": { "type": "integer", "minimum": 1 }
+              "cpu_millis": {"type": "integer", "minimum": 1},
+              "memory_bytes": {"type": "integer", "minimum": 1},
+              "gpu_count": {"type": "integer", "minimum": 1}
             }
           }
         }
@@ -45,17 +55,14 @@
       "additionalProperties": false,
       "required": ["status", "started_at", "collected_at", "sample_count", "containers", "unavailable_fields", "issues"],
       "properties": {
-        "status": { "enum": ["partial", "unavailable"] },
-        "started_at": { "type": "string", "format": "date-time" },
-        "collected_at": { "type": "string", "format": "date-time" },
-        "sample_count": { "type": "integer", "minimum": 0 },
-        "containers": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/container" } },
-        "unavailable_fields": {
-          "type": "array",
-          "items": { "enum": ["cpu_time_ns", "peak_memory_bytes", "exit_status", "image_identity"] },
-          "uniqueItems": true
-        },
-        "issues": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 512 } }
+        "status": {"enum": ["partial", "unavailable"]},
+        "started_at": {"type": "string", "format": "date-time"},
+        "collected_at": {"type": "string", "format": "date-time"},
+        "sample_count": {"type": "integer", "minimum": 0},
+        "containers": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/container"}},
+        "unavailable_fields": {"type": "array", "items": {"enum": ["cpu_time_ns", "peak_memory_bytes", "exit_status", "image_identity"]}, "uniqueItems": true},
+        "issues": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+        "memory": {"$ref": "#/$defs/memoryObservation"}
       }
     }
   },
@@ -65,12 +72,12 @@
       "additionalProperties": false,
       "required": ["cpu_millis", "memory_bytes", "container_slots", "build_slots"],
       "properties": {
-        "cpu_millis": { "type": "integer", "minimum": 0 },
-        "memory_bytes": { "type": "integer", "minimum": 0 },
-        "container_slots": { "type": "integer", "minimum": 0 },
-        "build_slots": { "type": "integer", "minimum": 0 },
-        "gpu_count": { "type": "integer", "minimum": 0 },
-        "ephemeral_disk_bytes": { "type": "integer", "minimum": 0 }
+        "cpu_millis": {"type": "integer", "minimum": 0},
+        "memory_bytes": {"type": "integer", "minimum": 0},
+        "container_slots": {"type": "integer", "minimum": 0},
+        "build_slots": {"type": "integer", "minimum": 0},
+        "gpu_count": {"type": "integer", "minimum": 0},
+        "ephemeral_disk_bytes": {"type": "integer", "minimum": 0}
       }
     },
     "container": {
@@ -78,21 +85,189 @@
       "additionalProperties": false,
       "required": ["container_id", "first_observed_at", "last_observed_at"],
       "properties": {
-        "container_id": { "type": "string", "pattern": "^[a-f0-9]{12,64}$" },
-        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "role": { "enum": ["candidate", "verifier"] },
-        "service": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$" },
-        "image_reference": { "type": "string", "minLength": 1, "maxLength": 1024 },
-        "image_config_digest": { "$ref": "#/$defs/sha256" },
-        "first_observed_at": { "type": "string", "format": "date-time" },
-        "last_observed_at": { "type": "string", "format": "date-time" },
-        "peak_memory_bytes": { "type": "integer", "minimum": 0 },
-        "cpu_time_ns": { "type": "integer", "minimum": 0 },
-        "oom_killed": { "type": "boolean" },
-        "exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
-        "exit_reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+        "container_id": {"type": "string", "pattern": "^[a-f0-9]{12,64}$"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "role": {"enum": ["candidate", "verifier"]},
+        "service": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$"},
+        "image_reference": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "image_config_digest": {"$ref": "#/$defs/sha256"},
+        "first_observed_at": {"type": "string", "format": "date-time"},
+        "last_observed_at": {"type": "string", "format": "date-time"},
+        "peak_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Legacy alias of this container sampled usage maximum; not the task peak or cgroup kernel high-water mark."
+        },
+        "cpu_time_ns": {"type": "integer", "minimum": 0},
+        "oom_killed": {"type": "boolean"},
+        "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
+        "exit_reason": {"type": "string", "minLength": 1, "maxLength": 512},
+        "memory": {"$ref": "#/$defs/containerMemory"}
       }
     },
-    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "memoryGap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "ended_at", "reason"],
+      "properties": {
+        "started_at": {"type": "string", "format": "date-time"},
+        "ended_at": {"type": "string", "format": "date-time"},
+        "reason": {"enum": ["poll-failed", "inspect-failed", "stats-unavailable", "interval-overrun", "container-disappeared"]}
+      }
+    },
+    "memoryAttribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "component_id", "role", "group_id", "phase_ids"],
+      "properties": {
+        "source": {"const": "frozen-topology"},
+        "component_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "role": {"enum": ["main", "verifier", "task-sidecar", "provider-sidecar"]},
+        "group_id": {"enum": ["agent", "verifier", "shared"]},
+        "phase_ids": {"type": "array", "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 256}, "uniqueItems": true}
+      }
+    },
+    "memorySample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cycle", "started_at", "collected_at", "source", "semantics", "reset_boundary"],
+      "properties": {
+        "cycle": {"type": "integer", "minimum": 1},
+        "started_at": {"type": "string", "format": "date-time"},
+        "collected_at": {"type": "string", "format": "date-time"},
+        "source": {"enum": ["docker-engine", "docker-cli", "cgroup"]},
+        "semantics": {"enum": ["cgroup-usage", "cli-working-set"]},
+        "memory_bytes": {"type": "integer", "minimum": 0},
+        "source_read_at": {"type": "string", "format": "date-time"},
+        "kernel_peak_bytes": {"type": "integer", "minimum": 0},
+        "kernel_peak_source": {"enum": ["cgroup-v2-memory.peak", "docker-engine-max-usage"]},
+        "lifecycle_started_at": {"type": "string", "format": "date-time"},
+        "reset_boundary": {"enum": ["container-start", "restart", "counter-decrease", "unknown"]},
+        "phase_id": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "containerMemory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sampling_version", "status", "lifecycle_coverage", "sample_count", "samples", "dropped_samples", "gap_count", "gaps"],
+      "properties": {
+        "sampling_version": {"const": "1"},
+        "status": {"enum": ["partial", "unavailable"]},
+        "lifecycle_coverage": {"const": "partial"},
+        "attribution": {"$ref": "#/$defs/memoryAttribution"},
+        "sample_count": {"type": "integer", "minimum": 0},
+        "sampled_peak_bytes": {"type": "integer", "minimum": 0},
+        "max_interval_ms": {"type": "integer", "minimum": 0},
+        "samples": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/memorySample"}},
+        "dropped_samples": {"type": "integer", "minimum": 0},
+        "gap_count": {"type": "integer", "minimum": 0},
+        "gaps": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/memoryGap"}},
+        "sampled_peak_source": {"enum": ["docker-engine", "docker-cli", "cgroup"]},
+        "sampled_peak_semantics": {"enum": ["cgroup-usage", "cli-working-set"]},
+        "sampled_peak_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "memoryGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cycle",
+        "group_id",
+        "started_at",
+        "collected_at",
+        "span_ms",
+        "approximate",
+        "complete",
+        "running_container_count",
+        "sampled_container_count",
+        "semantics"
+      ],
+      "properties": {
+        "cycle": {"type": "integer", "minimum": 1},
+        "group_id": {"enum": ["task", "agent", "verifier", "shared"]},
+        "phase_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "started_at": {"type": "string", "format": "date-time"},
+        "collected_at": {"type": "string", "format": "date-time"},
+        "span_ms": {"type": "integer", "minimum": 0},
+        "approximate": {"type": "boolean"},
+        "complete": {"type": "boolean"},
+        "running_container_count": {"type": "integer", "minimum": 0},
+        "sampled_container_count": {"type": "integer", "minimum": 0},
+        "memory_bytes": {"type": "integer", "minimum": 0},
+        "semantics": {"enum": ["cgroup-usage", "cli-working-set", "mixed", "unavailable"]},
+        "source_span_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "memoryObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampling_version",
+        "lifecycle_coverage",
+        "interval_ms",
+        "approximation_threshold_ms",
+        "attempted_cycles",
+        "groups",
+        "dropped_group_samples",
+        "gap_count",
+        "gaps",
+        "group_peaks"
+      ],
+      "properties": {
+        "sampling_version": {"const": "1"},
+        "lifecycle_coverage": {"const": "partial"},
+        "interval_ms": {"type": "integer", "minimum": 1},
+        "approximation_threshold_ms": {"type": "integer", "minimum": 0},
+        "attempted_cycles": {"type": "integer", "minimum": 0},
+        "max_container_sampled_peak_bytes": {"type": "integer", "minimum": 0},
+        "sum_container_sampled_peaks_bytes": {"type": "integer", "minimum": 0},
+        "groups": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/memoryGroup"}},
+        "dropped_group_samples": {"type": "integer", "minimum": 0},
+        "gap_count": {"type": "integer", "minimum": 0},
+        "gaps": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/memoryGap"}},
+        "group_peaks": {"type": "array", "maxItems": 2048, "items": {"$ref": "#/$defs/memoryGroupPeak"}}
+      }
+    },
+    "memoryGroupPeak": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cycle",
+        "group_id",
+        "started_at",
+        "collected_at",
+        "span_ms",
+        "approximate",
+        "complete",
+        "running_container_count",
+        "sampled_container_count",
+        "semantics",
+        "sample_count",
+        "first_sample_at",
+        "last_sample_at",
+        "max_span_ms"
+      ],
+      "properties": {
+        "cycle": {"type": "integer", "minimum": 1},
+        "group_id": {"enum": ["task", "agent", "verifier", "shared"]},
+        "phase_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "started_at": {"type": "string", "format": "date-time"},
+        "collected_at": {"type": "string", "format": "date-time"},
+        "span_ms": {"type": "integer", "minimum": 0},
+        "approximate": {"type": "boolean"},
+        "complete": {"type": "boolean"},
+        "running_container_count": {"type": "integer", "minimum": 0},
+        "sampled_container_count": {"type": "integer", "minimum": 0},
+        "memory_bytes": {"type": "integer", "minimum": 0},
+        "semantics": {"enum": ["cgroup-usage", "cli-working-set", "mixed", "unavailable"]},
+        "source_span_ms": {"type": "integer", "minimum": 0},
+        "sample_count": {"type": "integer", "minimum": 1},
+        "first_sample_at": {"type": "string", "format": "date-time"},
+        "last_sample_at": {"type": "string", "format": "date-time"},
+        "max_span_ms": {"type": "integer", "minimum": 0},
+        "max_source_span_ms": {"type": "integer", "minimum": 0}
+      }
+    }
   }
 }

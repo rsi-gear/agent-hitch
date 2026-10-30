@@ -72,9 +72,23 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         hitch_image_cache_dir: str | None = None,
         hitch_image_build_slots: int = 2,
         hitch_managed_keepalive: bool = False,
+        hitch_phase_resource_contract: Mapping[str, Any] | None = None,
+        hitch_phase_verifier_source: Mapping[str, str] | None = None,
+        hitch_agent_environment_role: str | None = None,
         **kwargs: Any,
     ) -> None:
+        self._hitch_phase_resources = None
+        phase_contract = None
+        if hitch_phase_resource_contract is not None:
+            from hitch_phase_resources import validate_phase_contract
+            phase_contract = validate_phase_contract(hitch_phase_resource_contract)
+        elif hitch_phase_verifier_source is not None:
+            raise ValueError("Hitch verifier source requires a phase resource contract")
         self._hitch_ownership_labels = _validate_labels(hitch_ownership_labels)
+        if hitch_agent_environment_role not in (None, "agent", "shared") or (hitch_agent_environment_role and not self._hitch_ownership_labels):
+            raise ValueError("Hitch observation environment role is invalid")
+        if phase_contract is not None and hitch_agent_environment_role == "shared":
+            raise ValueError("Separate phase contract cannot use a shared observation role")
         self._hitch_service_resource_limits = _validate_resource_limits(
             hitch_service_resource_limits
         )
@@ -148,6 +162,20 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 else:
                     positional[task_env_position] = updated
         super().__init__(*positional, **kwargs)
+        self._hitch_observation_role = None
+        self._hitch_observation_requested = phase_contract is not None or hitch_agent_environment_role is not None
+        trial_paths = getattr(self, "trial_paths", None)
+        session = getattr(self, "session_id", None)
+        if self._hitch_observation_requested and trial_paths is not None and isinstance(session, str) and self._hitch_ownership_labels:
+            from hitch_phase_resources import _verifier_session
+            trial_name = Path(trial_paths.trial_dir).name
+            if session == _verifier_session(trial_name):
+                self._hitch_observation_role = "verifier"
+            elif session == trial_name + "__env":
+                self._hitch_observation_role = "agent" if phase_contract else hitch_agent_environment_role
+        if phase_contract is not None:
+            from hitch_phase_resources import PhaseResourceBarrier
+            self._hitch_phase_resources = PhaseResourceBarrier(self, phase_contract, hitch_phase_verifier_source)
         self._hitch_benchmark = None
         self._hitch_benchmark_platform = None
         directory = getattr(self, "environment_dir", None)
@@ -189,7 +217,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         preparation = getattr(self, "_hitch_preparation", None)
         return preparation.images.get(MAIN_SERVICE_NAME, super()._main_image_name) if preparation else super()._main_image_name
 
-    async def _run_docker_compose_command(self, command, *args, **kwargs):
+    async def _hitch_prepared_compose_command(self, command, *args, **kwargs):
         run = super()._run_docker_compose_command
         if command[:1] == ["up"] and self._hitch_shared_runtime:
             import hitch_shared_runtime as shared_runtime
@@ -223,6 +251,12 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 # Compose's original image/pull-policy choices, including any
                 # sidecars. An implicit up is not an explicit build request.
                 await preparation.runtime(run)
+        phase = getattr(self, "_hitch_phase_resources", None)
+        if phase is not None and command[:1] == ["up"]:
+            # Validate the final topology, including preparation and shared-runtime
+            # overlays, immediately before Docker can create any container.
+            configured = await run(["config", "--format", "json"], timeout_sec=30)
+            phase.validate_compose(json.loads(configured.stdout))
         return await run(command, *args, **kwargs)
 
     def _requires_egress_control(self, *, startup_network_policy, phase_network_policies):
@@ -304,7 +338,10 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         try:
             if self._hitch_preparation:
                 self._hitch_preparation.reset(force_build)
+            await self._hitch_phase_guard("before_start")
             await super().start(force_build)
+            await self._hitch_phase_guard("after_start")
+            self._hitch_observation_event(getattr(self, "_hitch_observation_role", None))
             if self._hitch_static_no_network:
                 await self._verify_static_network()
             if self._hitch_benchmark:
@@ -319,24 +356,107 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
 
     async def stop_service(self, service: str) -> None:
         try:
+            if service == MAIN_SERVICE_NAME:
+                await self._hitch_phase_guard("before_main_stop")
             await super().stop_service(service)
+            if service == MAIN_SERVICE_NAME:
+                await self._hitch_phase_guard("after_main_stop")
+                if getattr(self, "_hitch_phase_resources", None) is not None:
+                    self._hitch_observation_event("artifact-collection")
             if service == MAIN_SERVICE_NAME and self._hitch_benchmark:
                 await self._hitch_benchmark.snapshot()
         except BaseException as error:
+            self._hitch_phase_failure(error)
             if self._hitch_benchmark:
                 self._hitch_benchmark.failure = {"phase": "quiesce", "error": type(error).__name__}
                 self._hitch_benchmark.write_journal()
             raise
 
     async def stop(self, delete: bool):
+        self._hitch_observation_event(None)
+        failure = None
         try:
+            try:
+                await self._hitch_phase_guard("before_stop")
+            except BaseException as error:
+                # Cleanup still runs after a failed barrier; it cannot clear it.
+                failure = error
             if self._hitch_benchmark and self._hitch_benchmark.started:
                 try:
                     await super().stop_service(MAIN_SERVICE_NAME)
                 finally:
                     await self._hitch_benchmark.cleanup()
         finally:
-            await super().stop(delete)
+            try:
+                await super().stop(delete)
+                await self._hitch_phase_guard("after_stop")
+            except BaseException as error:
+                self._hitch_phase_failure(error)
+                raise
+        if failure is not None:
+            raise failure
+
+    def _hitch_observation_event(self, phase: str | None) -> None:
+        role = getattr(self, "_hitch_observation_role", None)
+        if role is None:
+            return
+        try:
+            from hitch_phase_resources import _atomic_json, _now
+            _atomic_json(Path(self.trial_paths.trial_dir) / f"hitch-environment-observation-{role}.json", {
+                "schema_version": "1", "ownership": self._hitch_ownership_labels,
+                "environment_role": role, "phase": phase, "session_id": self.session_id, "at": _now(),
+            })
+        except Exception:
+            # Observation availability must never prevent environment cleanup.
+            pass
+
+    async def _hitch_phase_guard(self, operation: str, *args: Any) -> None:
+        if getattr(self, "_hitch_phase_resources", None) is None:
+            return
+        try:
+            await getattr(self._hitch_phase_resources, operation)(*args)
+        except BaseException as error:
+            self._hitch_phase_failure(error)
+            raise
+
+    def _hitch_phase_failure(self, error: BaseException) -> None:
+        if getattr(self, "_hitch_phase_resources", None) is not None:
+            # Docker's exception can contain command output; keep it out of receipts.
+            from hitch_phase_resources import PhaseResourceError
+            reason = str(error) if isinstance(error, PhaseResourceError) else type(error).__name__
+            self._hitch_phase_resources.fail(reason)
+
+    async def _run_docker_compose_command(self, command, *args, **kwargs):
+        phase = getattr(self, "_hitch_phase_resources", None)
+        try:
+            if phase is not None and command and command[0] in ("up", "create", "run", "start", "restart"):
+                if command[0] != "up":
+                    from hitch_phase_resources import PhaseResourceError
+                    raise PhaseResourceError("phase_transition_unconfirmed: unplanned container start")
+                await self._hitch_phase_guard("before_start")
+            if phase is not None and command and command[0] in ("stop", "down") and not args:
+                kwargs.setdefault("timeout_sec", 30)
+            result = await self._hitch_prepared_compose_command(command, *args, **kwargs)
+            if phase is not None and command and command[0] in ("stop", "down") and result.return_code != 0:
+                from hitch_phase_resources import PhaseResourceError
+                raise PhaseResourceError("phase_transition_unconfirmed: Docker stop command failed")
+            return result
+        except BaseException as error:
+            if phase is not None and command and command[0] in ("up", "create", "run", "start", "restart", "stop", "down"):
+                self._hitch_phase_failure(error)
+            raise
+
+    async def service_exec(self, command, *, service=None, **kwargs):
+        await self._hitch_phase_guard("before_sidecar_operation", service)
+        return await super().service_exec(command, service=service, **kwargs)
+
+    async def service_download_file(self, source_path, target_path, *, service=None):
+        await self._hitch_phase_guard("before_sidecar_operation", service, True)
+        return await super().service_download_file(source_path, target_path, service=service)
+
+    async def service_download_dir(self, source_dir, target_dir, *, service=None):
+        await self._hitch_phase_guard("before_sidecar_operation", service, True)
+        return await super().service_download_dir(source_dir, target_dir, service=service)
 
     def _write_ownership_overlay(self, *, include_shared_runtime=False) -> Path:
         if include_shared_runtime and self._hitch_shared_runtime:
@@ -380,6 +500,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             _collect_resources(document.get("volumes"), volumes, external_volumes, "volumes", source)
 
         labels = dict(self._hitch_ownership_labels)
+        if getattr(self, "_hitch_observation_role", None):
+            labels["io.hitch.environment-role"] = self._hitch_observation_role
         service_overlays: dict[str, dict[str, Any]] = {}
         if not set(self._hitch_prebuilt_service_images).issubset(services):
             raise ValueError("Hitch prebuilt image names an unknown Compose service")
@@ -391,7 +513,9 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             # architecture, e.g. an ARM QEMU sidecar beside an AMD64 candidate.
             if getattr(self, "_hitch_benchmark_platform", None) and name not in declared_platforms:
                 config["platform"] = self._hitch_benchmark_platform
-            config["labels"] = {**labels, _LABEL_ROLE: self._hitch_environment_role}
+            config["labels"] = dict(labels)
+            if not self._hitch_observation_requested:
+                config["labels"][_LABEL_ROLE] = self._hitch_environment_role
             if name == MAIN_SERVICE_NAME and self._hitch_static_no_network:
                 config["network_mode"] = "none"
             resolved_image = image_overlays.get(name)

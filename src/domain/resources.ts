@@ -1,3 +1,5 @@
+import type { WorkResourceProfilingV1 } from "./resource-profiling.js";
+
 export interface ResourceVectorV1 {
   cpu_millis: number;
   memory_bytes: number;
@@ -15,4 +17,5 @@ export interface ResourceAllocationV1 {
   kind: "run" | "eval" | "build" | "inference";
   resources: ResourceVectorV1;
   acquired_at: string;
+  resource_profiling?: WorkResourceProfilingV1;
 }

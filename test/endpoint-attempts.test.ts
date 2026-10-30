@@ -189,6 +189,28 @@ test("endpoint recovery rejects a changed model, public condition or training bi
   await assert.rejects(admitEndpointEvaluationAttempt(f.root, f.directory, { ...f.request, training_binding: {} } as EvalRequest, f.attempt(f.b), `rerun_${"5".repeat(32)}`), /training or non-endpoint/);
 });
 
+test("changed endpoints cannot persist attempt lineage before rejecting an old selected resource approval", async t => {
+  const f = await attemptFixture(t);
+  const { buildEvalExecutionPlan, deriveTaskResourceRequirement, validateEvalId } = await import("../src/evals/index.js");
+  const resources = { cpu_millis: 1000, memory_bytes: 1024 ** 3, container_slots: 1, build_slots: 0 };
+  const execution = buildEvalExecutionPlan({ evalId: validateEvalId(path.basename(f.directory)), request: f.request,
+    candidate: { revisionIdentity: sha256JSON("revision"), artifactId: sha256JSON("artifact") }, tasks: ["zero", "repair"],
+    maxParallelism: 1, workItemMode: "task-slots", taskResources: ["repair", "zero"].map(taskId => deriveTaskResourceRequirement({
+      taskId, defaultResources: resources, defaultSource: "operator-default", declaration: {
+        schema_version: "1", task: {}, verifier: { separate: false }, compose_services: [{ name: "main", replicas: 1 }],
+        provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [] } })),
+    resourceProfiling: { schema_version: "1", unknown_max_parallelism: 1, requested_parallelism: 4, scope: "process",
+      approvals: [{ task_id: "repair", identity_digest: sha256JSON("identity"), approval_digest: sha256JSON("approval") }] } });
+  await atomicWriteJSON(path.join(f.directory, "execution-plan.json"), execution);
+  for (const [index, binding] of [f.b, f.c].entries()) {
+    const rerunId = `rerun_${String(index + 4).repeat(32)}`;
+    await assert.rejects(admitEndpointEvaluationAttempt(f.root, f.directory, f.request, f.attempt(binding), rerunId), { code: "eval_rerun_resource_approval_changed" });
+    assert.equal(await readJSON(path.join(f.directory, "endpoint-attempts.json"), null), null);
+    assert.equal(await readJSON(path.join(f.directory, "reruns", rerunId, "state.json"), null), null);
+    assert.equal((await readEndpointEvaluationAttempts(f.directory, f.request)).length, 1);
+  }
+});
+
 
 test("host credentials are immutable per revision, private, and usable after the importing environment disappears", async t => {
   const { connectEndpoint, resolveEndpoint, loadFrozenEndpoint, endpointCredential, persistEndpointCredential } = await import("../src/model-access/index.js");

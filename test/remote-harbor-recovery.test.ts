@@ -62,7 +62,7 @@ test("worker SIGKILL recovery stops the original Harbor process and releases the
   const capacity = { cpu_millis: 1_000, memory_bytes: 1024 ** 3, container_slots: 1, build_slots: 0 };
   const registration = { schema_version: "1" as const, worker_id: "worker_live_candidate", provider: "remote-docker",
     collision_domain_id: "docker-engine:live-fixture", platforms: [`${process.platform}-${process.arch}`], backends: [{ id: "harbor", version: "0.21.0" }],
-    features: { docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false, external_endpoint_binding: "1" as const }, task_membership: ["known" as const],
+    features: { resource_profiling: "1" as const, docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false, external_endpoint_binding: "1" as const }, task_membership: ["known" as const],
     capacity: { total: capacity, allocatable: capacity, reserved_for_system: { cpu_millis: 0, memory_bytes: 0, container_slots: 0, build_slots: 0 } } };
   const credential = await RemoteWorkerHttpClient.register({ baseUrl, adminToken: (await readFile(statePaths(root).token, "utf8")).trim(), registration });
   const registrationFile = path.join(temporary, "worker-registration.json"), credentialFile = path.join(temporary, "worker-credential.json");

@@ -1,10 +1,13 @@
 import { request } from "node:http";
+import { runCommand } from "../foundation/index.js";
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 export interface DockerEngineContainerStatsV1 {
   cpu_time_ns?: number;
   memory_bytes?: number;
+  kernel_peak_bytes?: number;
+  read_at?: string;
 }
 
 export async function readDockerEngineContainerStats(
@@ -12,10 +15,11 @@ export async function readDockerEngineContainerStats(
   options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<DockerEngineContainerStatsV1> {
   if (!/^[a-f0-9]{12,64}$/.test(containerId)) throw new TypeError("Docker Engine stats container ID is invalid");
-  const endpoint = dockerEndpoint(options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const endpoint = await dockerEndpoint(env);
   const timeoutMs = options.timeoutMs ?? 2_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new TypeError("Docker Engine stats timeout is invalid");
-  const payload = await requestJson(endpoint, `/containers/${containerId}/stats?stream=false`, timeoutMs, options.signal);
+  const payload = await requestJson(endpoint, `/containers/${containerId}/stats?stream=false&one-shot=true`, timeoutMs, options.signal);
   return parseDockerEngineContainerStats(payload);
 }
 
@@ -26,16 +30,31 @@ export function parseDockerEngineContainerStats(value: unknown): DockerEngineCon
   const cpuUsage = record(cpuStats?.cpu_usage);
   const totalUsage = cpuUsage?.total_usage;
   const memoryUsage = record(stats.memory_stats)?.usage;
+  const memoryPeak = record(stats.memory_stats)?.max_usage;
   if (totalUsage !== undefined && (!Number.isSafeInteger(totalUsage) || (totalUsage as number) < 0)) throw new TypeError("Docker Engine cumulative CPU time is invalid");
   if (memoryUsage !== undefined && (!Number.isSafeInteger(memoryUsage) || (memoryUsage as number) < 0)) throw new TypeError("Docker Engine memory usage is invalid");
+  if (memoryPeak !== undefined && (!Number.isSafeInteger(memoryPeak) || (memoryPeak as number) < 0)) throw new TypeError("Docker Engine memory peak is invalid");
   return {
     ...(totalUsage === undefined ? {} : { cpu_time_ns: totalUsage as number }),
     ...(memoryUsage === undefined ? {} : { memory_bytes: memoryUsage as number }),
+    // Some backends expose a zero placeholder for unsupported max_usage. A
+    // counter below current usage cannot be a valid kernel peak.
+    ...(memoryPeak === undefined || memoryUsage !== undefined && (memoryPeak as number) < (memoryUsage as number) ? {} : { kernel_peak_bytes: memoryPeak as number }),
+    ...(typeof stats.read === "string" && Number.isFinite(Date.parse(stats.read)) && !stats.read.startsWith("0001-") ? { read_at: stats.read } : {}),
   };
 }
 
-function dockerEndpoint(env: NodeJS.ProcessEnv): { socketPath?: string; protocol?: string; hostname?: string; port?: number } {
-  const raw = env.HITCH_DOCKER_SOCKET || env.DOCKER_HOST;
+interface DockerEndpoint { socketPath?: string; protocol?: string; hostname?: string; port?: number }
+async function dockerEndpoint(env: NodeJS.ProcessEnv): Promise<DockerEndpoint> {
+  let raw = env.HITCH_DOCKER_SOCKET || (!env.DOCKER_CONTEXT ? env.DOCKER_HOST : undefined);
+  if (!raw) {
+    // Docker contexts take precedence over DOCKER_HOST. Never accidentally
+    // sample /var/run/docker.sock while the CLI operates on another daemon.
+    const context = env.DOCKER_CONTEXT || (await runCommand(env.HITCH_DOCKER_PATH || "docker", ["context", "show"], { env, timeoutMs: 2_000 })).stdout.trim();
+    if (!context || /[\0\r\n]/.test(context)) throw new TypeError("Docker stats context is unavailable");
+    raw = (await runCommand(env.HITCH_DOCKER_PATH || "docker", ["context", "inspect", "--format", '{{(index .Endpoints "docker").Host}}', context],
+      { env, timeoutMs: 2_000 })).stdout.trim();
+  }
   if (!raw) return { socketPath: process.platform === "win32" ? "//./pipe/docker_engine" : "/var/run/docker.sock" };
   if (raw.startsWith("unix://")) return { socketPath: decodeURIComponent(new URL(raw).pathname) };
   if (raw.startsWith("npipe://")) return { socketPath: raw.slice("npipe://".length).replace(/^\/+/, "//") };
@@ -47,7 +66,7 @@ function dockerEndpoint(env: NodeJS.ProcessEnv): { socketPath?: string; protocol
 }
 
 function requestJson(
-  endpoint: ReturnType<typeof dockerEndpoint>,
+  endpoint: DockerEndpoint,
   pathname: string,
   timeoutMs: number,
   signal?: AbortSignal,

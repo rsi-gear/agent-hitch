@@ -1,6 +1,7 @@
 import type { BackendWorkItemV1, ResourceVectorV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { validateResourceVector } from "./resources.js";
+import { parseWorkResourceContract, parseWorkResourceProfiling } from "../evals/index.js";
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 
@@ -8,8 +9,9 @@ export function parseRemoteWorkItem(value: unknown): BackendWorkItemV1 {
   const record = exact(value, [
     "schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots", "opaque_membership",
     "requested_parallelism", "reservation", "provider", "image_refs", "artifact_id", "runtime_contract", "scheduling",
+    "resource_contract_version", "resource_contract_digest", "required_capabilities", "resource_profiling",
   ], "remote work item");
-  if (record.schema_version !== "1" || typeof record.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(record.work_id)
+  if (typeof record.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(record.work_id)
     || typeof record.eval_id !== "string" || !/^eval_[a-f0-9]{32}$/.test(record.eval_id) || record.backend !== "harbor"
     || record.logical_attempt !== null && (!Number.isSafeInteger(record.logical_attempt) || (record.logical_attempt as number) < 1)
     || !stringArray(record.task_ids) || !stringArray(record.slots) || typeof record.opaque_membership !== "boolean"
@@ -18,11 +20,19 @@ export function parseRemoteWorkItem(value: unknown): BackendWorkItemV1 {
     || record.artifact_id !== undefined && (typeof record.artifact_id !== "string" || !SHA256.test(record.artifact_id))
     || (record.artifact_id === undefined) !== (record.runtime_contract === undefined)) protocolError("remote work item is invalid");
   if (record.runtime_contract !== undefined) parseRuntimeContract(record.runtime_contract);
+  let contract: ReturnType<typeof parseWorkResourceContract>;
+  try { contract = parseWorkResourceContract(record); }
+  catch { protocolError("remote work resource contract is invalid"); }
+  let profiling: ReturnType<typeof parseWorkResourceProfiling>;
+  try { profiling = parseWorkResourceProfiling(record.resource_profiling); }
+  catch { protocolError("remote work resource profiling is invalid"); }
   const scheduling = record.scheduling === undefined ? undefined : parseSchedulingHint(record.scheduling);
   return {
     ...record,
+    ...contract,
     reservation: validateResourceVector(record.reservation as ResourceVectorV1, "remote work reservation"),
     ...(scheduling ? { scheduling } : {}),
+    ...(profiling ? { resource_profiling: profiling } : {}),
   } as unknown as BackendWorkItemV1;
 }
 

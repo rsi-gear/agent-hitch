@@ -33,7 +33,7 @@ test("task resources include Compose sidecars, separate verifier, and provider o
     container_slots: 6,
     build_slots: 0,
   });
-  assert.deepEqual(requirement.diagnostics, ["resource_declaration_conflict:cpu_millis", "resource_declaration_conflict:memory_bytes"]);
+  assert.deepEqual(requirement.diagnostics, ["phase_envelope_unavailable:lifecycle-unconfirmed", "resource_declaration_conflict:cpu_millis", "resource_declaration_conflict:memory_bytes"]);
   assert.equal(requirement.fields.cpu_millis.estimated, false);
   assert.deepEqual(requirement.components.map((entry) => [entry.name, entry.role, entry.replicas]), [
     ["main", "main", 1],

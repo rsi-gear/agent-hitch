@@ -10,9 +10,9 @@ import path from "node:path";
 import { Scheduler } from "./scheduler.js";
 import { CollisionLockManager, EvalRerunScheduler, EvalScheduler, RemoteWorkerProtocol, RemoteWorkerRegistry, RemoteExecutionObservationCoordinator, ResourceLedger, inspectBuild, validateResourceVector } from "../control-plane/index.js";
 import type { EvalRerunExecutor, EvalSchedulerOptions } from "../control-plane/index.js";
-import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, invalidInput, readJSON, removeIfExists, statePaths } from "../foundation/index.js";
+import { HitchError, SCHEMA_VERSION, atomicWriteJSON, ensureDir, hitchRootId, invalidInput, readJSON, removeIfExists, resourceProfilingPolicy, statePaths } from "../foundation/index.js";
 import type { StatePaths } from "../foundation/index.js";
-import type { EvalId, ResourceVectorV1, RunId, ExecutionObservationSourceV2 } from "../domain/index.js";
+import type { EvalId, ResourceVectorV1, ResourceProfilingPolicyV1, RunId, ExecutionObservationSourceV2 } from "../domain/index.js";
 import { acquireInstanceLock, authorized, ensureToken, releaseInstanceLock } from "./auth.js";
 import { handleRemoteWorkRoute, handleWorkerProtocolRoute } from "./worker-routes.js";
 import { handleWorkerOwnershipRoute } from "./worker-ownership.js";
@@ -32,6 +32,7 @@ export interface DaemonServerOptions {
   resourceCapacity?: ResourceVectorV1;
   runResources?: ResourceVectorV1;
   evalTrialResources?: ResourceVectorV1;
+  resourceProfilingPolicy?: ResourceProfilingPolicyV1;
   evalExecutor?: EvalSchedulerOptions["executor"];
   evalRerunExecutor?: EvalRerunExecutor;
   /** Test/deployment injection point; credential values stay private; explicit environment bindings persist helper snapshots. */
@@ -66,6 +67,7 @@ export class DaemonServer {
   private readonly resourceCapacity: ResourceVectorV1;
   private readonly runResources: ResourceVectorV1;
   private readonly evalTrialResources: ResourceVectorV1;
+  private readonly resourceProfilingPolicy: ResourceProfilingPolicyV1;
   private readonly evalExecutor: EvalSchedulerOptions["executor"] | undefined;
   private readonly evalRerunExecutor: EvalRerunExecutor | undefined;
   private readonly credentialEnv: NodeJS.ProcessEnv;
@@ -73,7 +75,7 @@ export class DaemonServer {
   private readonly executionObserver: ExecutionObservationSourceV2 | undefined;
   private readonly remoteObservations: RemoteExecutionObservationCoordinator;
 
-  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, evalExecutor, evalRerunExecutor, credentialEnv, executionObserver }: DaemonServerOptions) {
+  constructor({ root, port, maxConcurrent, logger = defaultLogger, discoverHarnesses = async () => [], resourceCapacity, runResources, evalTrialResources, resourceProfilingPolicy: profilingPolicy, evalExecutor, evalRerunExecutor, credentialEnv, executionObserver }: DaemonServerOptions) {
     this.paths = statePaths(root);
     this.rootId = hitchRootId(this.paths.root);
     this.instanceId = randomBytes(16).toString("hex");
@@ -84,6 +86,7 @@ export class DaemonServer {
     this.resourceCapacity = validateResourceVector(resourceCapacity || defaultResourceCapacity(maxConcurrent), "daemon resource capacity");
     this.runResources = validateResourceVector(runResources || { cpu_millis: 1_000, memory_bytes: 512 * 1024 * 1024, container_slots: 0, build_slots: 0 }, "daemon run reservation");
     this.evalTrialResources = validateResourceVector(evalTrialResources || { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 }, "daemon eval trial reservation");
+    this.resourceProfilingPolicy = resourceProfilingPolicy(profilingPolicy);
     this.evalExecutor = evalExecutor;
     this.evalRerunExecutor = evalRerunExecutor;
     this.credentialEnv = credentialEnv ?? process.env;
@@ -111,7 +114,7 @@ export class DaemonServer {
       // Recovery needs worker heartbeats, terminal receipts and release acknowledgments.
       await this.listen();
       this.agents = await this.discoverHarnesses();
-      this.resources = new ResourceLedger(this.resourceCapacity);
+      this.resources = new ResourceLedger(this.resourceCapacity, this.resourceProfilingPolicy);
       this.scheduler = new Scheduler({
         runsRoot: this.paths.runs,
         root: this.paths.root,
@@ -121,7 +124,6 @@ export class DaemonServer {
         credentialEnv: this.credentialEnv,
         onEvent: (event) => this.observeRunEvent(event),
       });
-      await this.scheduler.initialize();
       const collisions = new CollisionLockManager();
       this.evalScheduler = new EvalScheduler({
         root: this.paths.root,
@@ -135,6 +137,9 @@ export class DaemonServer {
         onEvent: (event) => this.observeControlEvent(event),
       });
       await this.evalScheduler.initialize();
+      // Recovered run queues must not acquire the newly empty ledger until
+      // previous phase executions have confirmed Docker cleanup.
+      await this.scheduler.initialize();
       this.evalRerunScheduler = new EvalRerunScheduler({
         root: this.paths.root,
         resources: this.resources,
@@ -415,11 +420,12 @@ export class DaemonServer {
     this.logger("event", boundedControlEvent(event));
   }
 
-  private resourcePolicy(): Record<string, ResourceVectorV1> {
+  private resourcePolicy(): Record<string, ResourceVectorV1 | ResourceProfilingPolicyV1> {
     return {
       capacity: { ...this.resourceCapacity },
       run: { ...this.runResources },
       eval_trial: { ...this.evalTrialResources },
+      resource_profiling: { ...this.resourceProfilingPolicy },
     };
   }
 

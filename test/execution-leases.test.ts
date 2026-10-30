@@ -126,3 +126,17 @@ test("execution lease parser rejects terminal state without terminal timestamp",
     expires_at: now,
   }), /terminal state is inconsistent/);
 });
+
+test("only a released local lease may retain one non-resource fencing epoch", () => {
+  const now = new Date().toISOString();
+  const base = { schema_version: "1", lease_id: `lease_${"f".repeat(32)}`, work_id: identity.workId, eval_id: identity.evalId,
+    worker_id: identity.worker.workerId, provider: "local-docker", collision_domain_id: identity.worker.collisionDomainId,
+    reservation, state: "released", epoch: 3, resource_epochs: [1, 2], issued_at: now, expires_at: now, terminal_at: now };
+  assert.deepEqual(parseExecutionLease(base).resource_epochs, [1, 2]);
+  for (const override of [{ provider: "remote-docker" }, { epoch: 4 }, { resource_epochs: [2, 1] },
+    { resource_epochs: [1, 2, 2] }, { resource_epochs: [0, 2] }, { resource_epochs: [1, 4] }]) {
+    assert.throws(() => parseExecutionLease({ ...base, ...override }), /execution lease (current epoch|resource epochs)/);
+  }
+  const { terminal_at: _terminal, ...active } = base;
+  assert.throws(() => parseExecutionLease({ ...active, state: "running" }), /current epoch is not authorized/);
+});
