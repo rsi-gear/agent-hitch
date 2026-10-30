@@ -42,7 +42,7 @@ def main():
         model_audit = install_model_audit(config['sdk_root'], evidence / 'model-calls.json')
         # A package opts in through its frozen controller environment. Register
         # the named transport without changing the SDK's default providers.
-        if any(os.environ.get(name) == 'hitch_deepseek_chat_v1' for name in ('OSWORLD_EVAL_MODEL_PROVIDER', 'OSWORLD_USER_SIM_PROVIDER')):
+        if any(os.environ.get(name) in ('hitch_deepseek_chat_v1', 'hitch_deepseek_chat_v2') for name in ('OSWORLD_EVAL_MODEL_PROVIDER', 'OSWORLD_USER_SIM_PROVIDER')):
             importlib.import_module('deepseek_backend')
         policy = load_graphical_policy()
         channel = AgentChannel(evidence / 'channel', (1920, 1080), policy,
