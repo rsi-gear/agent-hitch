@@ -1,4 +1,4 @@
-import type { ExecutionObservationSourceV2 } from "../domain/index.js";
+import type { ExecutionObservationProbeV1, ExecutionObservationSourceV2 } from "../domain/index.js";
 import { observeHarborEnvironment } from "../backends/index.js";
 import type { HarborObservationOptions } from "../backends/index.js";
 import { ResidentRuntimeObserver } from "../controller-runtime/index.js";
@@ -17,11 +17,13 @@ export class LocalExecutionObserver implements ExecutionObservationSourceV2 {
     try {
       signal?.throwIfAborted();
       const before = await this.runtime.observe();
-      const environment = await observeHarborEnvironment({ ...this.options, ...(signal ? { signal } : {}) });
+      const probes: ExecutionObservationProbeV1[] = [];
+      const environment = await observeHarborEnvironment({ ...this.options, ...(signal ? { signal } : {}),
+        onDiagnostic: probe => { probes.push(probe); this.options.onDiagnostic?.(probe); } });
       const runtime = await this.runtime.observe();
       signal?.throwIfAborted();
       runtime.unchanged &&= before.unchanged;
-      return { runtime, environment };
+      return { runtime, environment, diagnostics: { schema_version: "1", probes } };
     } finally { this.observing = false; }
   }
 }

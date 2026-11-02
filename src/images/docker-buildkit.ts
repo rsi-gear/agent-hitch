@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Sha256 } from "../domain/index.js";
-import { HitchError, credentialValuesFromEnv, ensureDir, hitchRootId, redactCredentialText, runCommand, statePaths } from "../foundation/index.js";
+import { HitchError, credentialValuesFromEnv, ensureDir, hitchRootId, isSensitiveFieldName, safeDiagnosticMessage, runCommand, statePaths } from "../foundation/index.js";
 import type { EnvironmentImageBuilder, EnvironmentImageBuilderOutput } from "./service.js";
 import { ENVIRONMENT_IMAGE_LABELS } from "./ownership.js";
 
@@ -47,6 +47,7 @@ export class DockerBuildKitBuilder implements EnvironmentImageBuilder {
     outputReference: string;
     cacheKey: Sha256;
     cacheReference: string;
+    signal?: AbortSignal;
   }): Promise<EnvironmentImageBuilderOutput> {
     for (const name of input.secretNames) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new TypeError("BuildKit secret name is invalid");
@@ -68,11 +69,10 @@ export class DockerBuildKitBuilder implements EnvironmentImageBuilder {
       if (cacheReference) args.push("--cache-from", `type=registry,ref=${cacheReference}`, "--cache-to", `type=registry,ref=${cacheReference},mode=max`);
       args.push(input.contextDirectory);
       try {
-        await runCommand(this.docker, args, { env: this.env, failureCode: "image_build_failed", failureExitCode: 12 });
+        await runCommand(this.docker, args, { env: this.env, failureCode: "image_build_failed", failureExitCode: 12, signal: input.signal });
       } catch (error) {
-        const detail = redactCredentialText(
-          ((error as Error)?.message || String(error)).slice(0, 64 * 1024), credentialValuesFromEnv(input.secretNames, this.env),
-        ).text;
+        const credentialNames = [...new Set([...input.secretNames, ...Object.keys(this.env).filter((name) => isSensitiveFieldName(name) || /_PROXY$/i.test(name))])];
+        const detail = safeDiagnosticMessage(error, credentialValuesFromEnv(credentialNames, this.env), 16 * 1024);
         throw new HitchError(`BuildKit invocation failed: ${detail}`, {
           code: (error as { code?: string }).code || "image_build_failed", exitCode: 12,
         });

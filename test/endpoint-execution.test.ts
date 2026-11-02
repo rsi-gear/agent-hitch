@@ -92,10 +92,18 @@ test("actual training-tool ordinary endpoint executes shell tool and returns com
 });
 
 test("two independent daemon eval submissions freeze aliases before execution and cancel one consumer", async t => {
-  const root = await state(t), http = await endpointHttp(t);
-  await connectEndpoint(root, "eval", http.config);
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-endpoint-execution-"));
   let release!: () => void; const gate = new Promise<void>(r => { release = r; });
-  const server = new DaemonServer({ root, port: 0, maxConcurrent: 2, logger: () => {},
+  let server: DaemonServer | undefined;
+  // After hooks run in registration order: drain the daemon while its state and upstream still exist.
+  t.after(async () => {
+    release();
+    try { await server?.close(); }
+    finally { await forceRemove(root); }
+  });
+  const http = await endpointHttp(t);
+  await connectEndpoint(root, "eval", http.config);
+  server = new DaemonServer({ root, port: 0, maxConcurrent: 2, logger: () => {},
     resourceCapacity: { cpu_millis: 2000, memory_bytes: 2 * 1024 ** 3, container_slots: 2, build_slots: 1 },
     evalExecutor: async options => {
       await Promise.race([gate, new Promise<void>(resolve => options.signal?.addEventListener("abort", () => resolve(), { once: true }))]);
@@ -108,7 +116,7 @@ test("two independent daemon eval submissions freeze aliases before execution an
       return { schema_version: "1", eval_id: options.evalId!, status: options.signal?.aborted ? "cancelled" : "succeeded", exit_code: options.signal?.aborted ? 9 : 0,
         endpoint_binding: binding, task_completed: true, trials: [], started_at: new Date().toISOString(), completed_at: new Date().toISOString() };
     } });
-  await server.start(); t.after(() => server.close());
+  await server.start();
   const client = await daemonClient(root), submit = (dataset: string) => client.request("/v1/evals", { method: "POST", body: JSON.stringify({ dataset, harness_ref: "model-call@commit:" + "a".repeat(40), model: "endpoint/eval", max_concurrent: 1, generation: { max_output_tokens: 1024 } }) });
   const first = await submit("first@1.0"), second = await submit("second@1.0");
   const before = await readJSON<{ endpoint_binding: ExternalEndpointBindingV1 }>(path.join(root, "evals", String(first.eval_id), "request.json"));

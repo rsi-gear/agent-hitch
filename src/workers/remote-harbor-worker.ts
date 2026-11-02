@@ -108,6 +108,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         executionResources: runtimeResources.mainLimits,
         ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
         dockerOwnership: ownership, resolvedImages: resolvedImageMapping(offer.work.image_refs ?? []),
+        verifierImages: { resolvedImages: resolvedImageMapping(offer.work.image_refs ?? [], "verifier") },
         ...(captureRuntime.exporter ? { modelProxy: captureRuntime.exporter.route } : {}),
         env: executionEnv, ...(options.harborExecutable ? { harborExecutable: options.harborExecutable } : {}), signal,
         ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),

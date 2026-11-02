@@ -1,0 +1,239 @@
+{
+  "schema_version": "1",
+  "checked_on": "2026-10-19",
+  "base": {
+    "pull_request": 54,
+    "commit": "cb2e66352e8e845a62e369f827697b4212cde16e",
+    "branch": "codex/jobbench-lab"
+  },
+  "implementation": "independent terminal Package v1 producers; standard compiler and dataset execution boundary; no Hitch benchmark dispatch changes",
+  "upstream": {
+    "jobbench_code": {
+      "uri": "https://github.com/Job-Bench/job-bench-eval",
+      "revision": "660b33a86ed032559df0b2fdc1ad38cf7ceb83f3"
+    },
+    "jobbench_dataset": {
+      "uri": "https://huggingface.co/datasets/JobBench/job-bench",
+      "revision": "d43a66575635da0d3f6cb9a20976dc1a60f3ffc9",
+      "acquisition": [
+        {
+          "path": "dataset/biostatisticians/task1/RUBRICS.json",
+          "sha256": "fcf069f216f8ba61661ac81276f93a799387bc71e3f2c7e1890c35b97524a1da",
+          "verified_remote_blob": "6e23649bf6b6308fa556a43a1abff4b87e6f2e0e"
+        },
+        {
+          "path": "dataset/biostatisticians/task1/task_card.md",
+          "sha256": "50fbfcbf4f81095a90ef7a4ea4a110cf8d5b42e884fb01afeb179da7c19ae4d7",
+          "verified_remote_blob": "8cf112f084d0ed9cd935aa62dd857bad5564ba88"
+        },
+        {
+          "path": "dataset/biostatisticians/task1/task_folder/Clinical_Study_Proposal_CVD_Prevention.csv",
+          "sha256": "3e307e6203c96ce11296ff6ece31739927060e7588fd8956c92d04ae16203f74",
+          "verified_remote_blob": "f76259b0fac458d814492b89fddee7176b38d195"
+        },
+        {
+          "path": "dataset/biostatisticians/task1/task_folder/TASK_INSTRUCTIONS.txt",
+          "sha256": "b6bf5f40476e1868fb7f001fae7bd8ae2adacb38ebd5366e7612272dacbaddd3",
+          "verified_remote_blob": "dd67d8b68884bce8483a7291f16cd4367c50c66b"
+        },
+        {
+          "path": "dataset/biostatisticians/task1/task_folder/framingham.csv",
+          "sha256": "63618ce2dcbef80363ca7fbe4fba3214b5d5976d7fbd96e53b783e5b32a83e06",
+          "verified_remote_blob": "89d13f45d66f253f9176ce4c7cb26d8f23119417"
+        }
+      ],
+      "sample_population_scope": "provided single-task snapshot; not a complete main split"
+    },
+    "lab": {
+      "uri": "https://github.com/harveyai/harvey-labs",
+      "revision": "e9b1f9f4dc25576f9a020d857e3e3a6420834dc3",
+      "population": 2010,
+      "population_scope": "complete Git-tree task.json membership; one task materialized"
+    }
+  },
+  "validation": {
+    "offline_producer_tests": {
+      "status": "passed",
+      "tests": 5,
+      "command": "node --test dist/test/benchmark-producers.test.js",
+      "model_transport": "deterministic fakes; original rendering, verification and scoring functions",
+      "compatible_existing_tests": 3,
+      "combined_passed": 8,
+      "coverage": [
+        "original weighted-score normalization",
+        "single and dual all-pass versus criterion diagnostics",
+        "missing and unsafe output",
+        "API, bad verdict, nonfinite reward and parsing failures",
+        "swallowed Anthropic filename-matcher failure",
+        "shared corpus and fallback instructions",
+        "Unicode Git paths",
+        "ignored source credentials excluded from builds",
+        "dedicated judge variables excluded by the actual candidate job builder",
+        "dirty/mismatched checkout and missing/unsafe source files"
+      ]
+    },
+    "real_upstream_imports": {
+      "jobbench": {
+        "task_ids": [
+          "main--biostatisticians--task1"
+        ],
+        "source_task_ids": [
+          "main--biostatisticians--task1"
+        ],
+        "package_digest": "sha256:c95d0581078182da0a19a722559bec78e0728a3ecc86c347fa172bebcd880ad2",
+        "dataset_digest": "sha256:09582e9c7725994f5f57d3cb31f6abfe8256b4d70758d95fd57e2d986d32e57e",
+        "selection": {
+          "algorithm": "explicit-task-ids-v1",
+          "seed": 0,
+          "population_size": 1,
+          "population_digest": "sha256:497bb1e8373ec24eede7f8cf4e5388e27fe942b763fcd556d8865543f04012fa",
+          "tasks": [
+            "main--biostatisticians--task1"
+          ],
+          "population_scope": "provided-snapshot-split"
+        },
+        "validation": true,
+        "standard_compilation": true,
+        "scoring": {
+          "total_score": {
+            "source_metric": "reward",
+            "direction": "maximize",
+            "range": [
+              0,
+              1
+            ],
+            "reducer": "task-macro-mean"
+          }
+        }
+      },
+      "lab": {
+        "task_ids": [
+          "lab-antitrust-competition--analyze-antitrust-hsr-str-70a53b013c595d9c"
+        ],
+        "source_task_ids": [
+          "antitrust-competition/analyze-antitrust-hsr-strategy"
+        ],
+        "package_digest": "sha256:16da0362244bae7f747e96e94dc8fb7fac8afe08422f77bfa510559361e438b6",
+        "dataset_digest": "sha256:d960cd81e8c69e181854e7f0e5dc7bd93f827bdad73c1e1b3951c48af5b5a379",
+        "selection": {
+          "algorithm": "explicit-task-ids-v1",
+          "seed": 0,
+          "population_size": 2010,
+          "population_digest": "sha256:e57a5fb4b2b5d5b14720f375eac74a274de8b28f488bef6d2b1a8e320062ee1c",
+          "tasks": [
+            "antitrust-competition/analyze-antitrust-hsr-strategy"
+          ],
+          "population_scope": "complete-git-tree-task-json-membership"
+        },
+        "validation": true,
+        "standard_compilation": true,
+        "scoring": {
+          "total_score": {
+            "source_metric": "lab_all_pass",
+            "direction": "maximize",
+            "range": [
+              0,
+              1
+            ],
+            "reducer": "task-macro-mean"
+          }
+        }
+      }
+    },
+    "harbor_021_sdk": [
+      {
+        "benchmark": "jobbench",
+        "task_id": "main--biostatisticians--task1",
+        "task_name": "main--biostatisticians--task1",
+        "task_short_name": "main--biostatisticians--task1",
+        "schema": "1.4",
+        "harbor": "0.21.0",
+        "identity_matches_manifest": true,
+        "separate_verifier": true,
+        "artifact_sources": [
+          "/workspace/output"
+        ],
+        "verifier_template_keys": [
+          "JUDGE_API_BASE",
+          "JUDGE_API_KEY",
+          "JUDGE_MODEL",
+          "JUDGE_MAX_WORKERS",
+          "JUDGE_MAX_RETRIES",
+          "JUDGE_TIMEOUT_PER_RUBRIC"
+        ],
+        "unresolved_secrets_are_empty": true
+      },
+      {
+        "benchmark": "lab",
+        "task_id": "lab-antitrust-competition--analyze-antitrust-hsr-str-70a53b013c595d9c",
+        "task_name": "lab-antitrust-competition--analyze-antitrust-hsr-str-70a53b013c595d9c",
+        "task_short_name": "lab-antitrust-competition--analyze-antitrust-hsr-str-70a53b013c595d9c",
+        "schema": "1.4",
+        "harbor": "0.21.0",
+        "identity_matches_manifest": true,
+        "separate_verifier": true,
+        "artifact_sources": [
+          "/workspace/output"
+        ],
+        "verifier_template_keys": [
+          "ANTHROPIC_API_KEY",
+          "OPENAI_API_KEY",
+          "GOOGLE_API_KEY",
+          "MISTRAL_API_KEY",
+          "OPENAI_BASE_URL",
+          "ANTHROPIC_BASE_URL"
+        ],
+        "unresolved_secrets_are_empty": true
+      }
+    ],
+    "full_repository_check": {
+      "status": "initial_environment_failures_resolved_by_targeted_recheck",
+      "command": "npm run check",
+      "initial": {
+        "tests": 966,
+        "passed": 942,
+        "failed": 7,
+        "skipped": 17
+      },
+      "failures": {
+        "inherited_anthropic_environment": 2,
+        "python_39_missing_yaml_tomllib_asyncio_timeout": 5
+      },
+      "targeted_recheck": {
+        "passed": 7,
+        "failed": 0,
+        "environment": "existing Harbor 0.21 Python 3.12 venv/bin prepended to PATH; ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL unset only in subprocess",
+        "local_log": "/tmp/hitch-jobbench-lab-failure-recheck.log"
+      },
+      "typecheck": "passed",
+      "build": "passed",
+      "architecture": "passed",
+      "compiled_syntax": "passed",
+      "docs_check": "passed",
+      "full_suite_repeated": false,
+      "local_log": "/tmp/hitch-jobbench-lab-check.log"
+    }
+  },
+  "local_artifacts": {
+    "directory": "/tmp/hitch-jobbench-lab-acceptance/final-v4",
+    "note": "temporary local diagnostic outputs, not committed dataset assets"
+  },
+  "execution": {
+    "container_builds": 0,
+    "candidate_model_calls": 0,
+    "judge_model_calls": 0,
+    "real_verifier_only_regrades": 0,
+    "valid_scored_observations": 0
+  },
+  "boundaries": [
+    "Docker daemon was unavailable; no image/build/runtime or real regrade validation.",
+    "JobBench upstream uses Harbor 0.22.0; current checks cover import, standard compilation, SDK schema and task identity with Harbor 0.21.0.",
+    "LAB uses Hitch terminal candidate with public network, differing from the official reference harness network=none.",
+    "Verifier keys use dedicated host environment templates and do not enter candidate env or build contexts; local direct recipe only, remote credential binding unverified.",
+    "LAB canonical total is all-pass (single score / dual_all_pass_rate); criterion pass is auxiliary and no process_score is emitted.",
+    "LAB fallback matching may make an additional paid Anthropic call; swallowed matcher failure is promoted to invalid verification.",
+    "JobBench snapshot revision is caller attestation in the generic producer; this selected sample was separately checked against immutable HF Git/LFS file identities.",
+    "Upstream candidate package managers remain as authored; LAB verifier uses frozen upstream uv.lock, pinned Python base and checked Pandoc installer.",
+    "LAB copies commit-tracked source/documents only, including Unicode paths; ignored local credential files do not enter build contexts."
+  ]
+}

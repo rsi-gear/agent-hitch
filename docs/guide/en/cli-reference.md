@@ -208,6 +208,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 
 `list` reads worker status from the daemon. `observe` returns a fresh execution observation; optional nonce is 32 lowercase hexadecimal characters. `register` rotates the worker credential and writes it to the requested file. `run` downloads and verifies inputs, executes accepted offers, reports results, and handles authorized cleanup. Use a dedicated state root on each worker host.
 
+`observe` retries a failed Docker info probe at most once, using a new command each time. It stops after the first valid observation; changed identities remain visible. Each Docker info command has a 10s deadline, and the environment probe has a 25s cancellation deadline. Returning from cancellation can take longer while subprocesses and file operations finish. Persistent failures still return an unavailable environment. Optional [probe diagnostics](../../schemas/execution-observation-diagnostics.schema.json) describe safe failure categories and attempt timing beside the environment; they contain no command output or paths and do not enter its identity digest. Older observations without diagnostics remain readable.
+
 `--once` exits after handling work and finishing pending jobs and cleanup; it may wait for an offer. Polling defaults to 1s and heartbeat to 10s; each interval must be from 50ms to 5m. Registration uses the [worker registration schema](../../schemas/remote-worker-registration.schema.json). See [execution-provider contracts](../../hitch-harbor-control-plane-implementation-status.md).
 
 ## Results and comparisons

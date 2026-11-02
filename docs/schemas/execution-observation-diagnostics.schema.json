@@ -1,0 +1,506 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/execution-observation-diagnostics.schema.json",
+  "title": "Execution observation diagnostics V1",
+  "description": "Optional observation envelope sibling. Never included in environment_digest, runtime identity or frozen execution identity. Each probe attempt has exactly one terminal record; no output, paths, commands or environment values are allowed.",
+  "$defs": {
+    "dockerFirst": { "type": "object", "required": ["probe", "attempt"], "properties": { "probe": { "const": "docker_info" }, "attempt": { "const": 1 } } },
+    "dockerSecond": { "type": "object", "required": ["probe", "attempt"], "properties": { "probe": { "const": "docker_info" }, "attempt": { "const": 2 } } }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "probes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "probe",
+          "attempt",
+          "stage",
+          "outcome",
+          "elapsed_ms",
+          "exit_code",
+          "signal"
+        ],
+        "properties": {
+          "probe": {
+            "enum": [
+              "harbor_version",
+              "docker_info",
+              "buildx_version"
+            ]
+          },
+          "attempt": {
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "stage": {
+            "enum": [
+              "resolve",
+              "fingerprint",
+              "command",
+              "parse",
+              "validate",
+              "identity",
+              "complete"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "ok",
+              "not_found",
+              "io_error",
+              "spawn_error",
+              "nonzero_exit",
+              "signal_exit",
+              "timed_out",
+              "output_limit",
+              "invalid_encoding",
+              "invalid_json",
+              "invalid_fields",
+              "executable_changed"
+            ]
+          },
+          "elapsed_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30000
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": -2147483648,
+            "maximum": 4294967295
+          },
+          "signal": {
+            "enum": [
+              null,
+              "SIGTERM",
+              "SIGKILL",
+              "other"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "attempt": {
+                  "const": 2
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "probe": {
+                  "const": "docker_info"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "ok"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "complete"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "not_found"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "resolve"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "io_error"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "resolve",
+                    "fingerprint",
+                    "identity"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "spawn_error"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "command"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "nonzero_exit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "command"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "signal_exit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "command"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "timed_out"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "command"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "output_limit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "command"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "invalid_encoding"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "parse"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "invalid_json"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "parse"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "invalid_fields"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "validate"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "executable_changed"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "stage": {
+                  "enum": [
+                    "identity"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "ok"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "exit_code": {
+                  "const": 0
+                },
+                "signal": {
+                  "const": null
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "nonzero_exit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "exit_code": {
+                  "type": "integer",
+                  "not": {
+                    "const": 0
+                  }
+                },
+                "signal": {
+                  "const": null
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "outcome": {
+                  "const": "signal_exit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "exit_code": {
+                  "const": null
+                },
+                "signal": {
+                  "enum": [
+                    "SIGTERM",
+                    "SIGKILL",
+                    "other"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": [
+              "probe",
+              "attempt"
+            ],
+            "properties": {
+              "probe": {
+                "const": "harbor_version"
+              },
+              "attempt": {
+                "const": 1
+              }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": [
+              "probe",
+              "attempt"
+            ],
+            "properties": {
+              "probe": {
+                "const": "docker_info"
+              },
+              "attempt": {
+                "const": 1
+              }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": [
+              "probe",
+              "attempt"
+            ],
+            "properties": {
+              "probe": {
+                "const": "docker_info"
+              },
+              "attempt": {
+                "const": 2
+              }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": [
+              "probe",
+              "attempt"
+            ],
+            "properties": {
+              "probe": {
+                "const": "buildx_version"
+              },
+              "attempt": {
+                "const": 1
+              }
+            }
+          },
+          "minContains": 0,
+          "maxContains": 1
+        },
+        {
+          "if": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "probe",
+                "attempt"
+              ],
+              "properties": {
+                "probe": {
+                  "const": "docker_info"
+                },
+                "attempt": {
+                  "const": 2
+                }
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              { "minItems": 2, "prefixItems": [{ "$ref": "#/$defs/dockerFirst" }] },
+              { "minItems": 3, "prefixItems": [{ "not": { "$ref": "#/$defs/dockerSecond" } }, { "$ref": "#/$defs/dockerFirst" }] },
+              { "minItems": 4, "prefixItems": [{ "not": { "$ref": "#/$defs/dockerSecond" } }, { "not": { "$ref": "#/$defs/dockerSecond" } }, { "$ref": "#/$defs/dockerFirst" }] }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -6,7 +6,7 @@ import { buildHarborRegradeConfig, runHarborRegrade } from "../backends/index.js
 import { benchmarkTreeDigest } from "../benchmarks/index.js";
 import { useControllerRuntimeById } from "../controller-runtime/index.js";
 import { parseVerifierScores } from "../domain/index.js";
-import type { BenchmarkLockV1, EvalProgressV1, EvalRequest, EvalTrialRefV1 } from "../domain/index.js";
+import type { BenchmarkLockV1, EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1 } from "../domain/index.js";
 import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths } from "../foundation/index.js";
 import { loadRunRecord, verifyResultBundleIndex } from "../runs/index.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
@@ -25,6 +25,7 @@ import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObs
 import { verifierRuntimeRepair } from "./verifier-runtime.js";
 import { loadBenchmarkAdapterManifest, scoreWithinRange } from "./benchmark-adapter-manifest.js";
 import type { BenchmarkScoreContractV1 } from "./benchmark-adapter-manifest.js";
+import { loadVerifierEnvironmentImages, verifyTrialEnvironmentImageExecution, writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 
 interface Input extends RerunEvalOptions {
   evalDirectory: string; rerunId: string; rerunDirectory: string; startedAt: string;
@@ -96,6 +97,8 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     }
     if (!sourceDirectory) throw unavailable("original Harbor trial outputs are missing");
     const sourceConfig = await readJSON<Record<string, unknown>>(path.join(sourceDirectory, "config.json"));
+    const verifierImages = await loadVerifierEnvironmentImages({ taskId: slot.task_id, uses: work.image_refs ?? [], sourceConfig,
+      manifestFile: path.join(runDirectory, "environment/image.manifest.json") });
     const sourceResult = await readJSON<Record<string, unknown>>(path.join(sourceDirectory, "result.json"));
     const agentResult = sourceResult.agent_result as { metadata?: { hitch_run_id?: string; controller_runtime_id?: string } } | undefined;
     if (agentResult?.metadata?.hitch_run_id !== original.run_id) throw unavailable("Harbor source candidate identity mismatch");
@@ -114,6 +117,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     const directory = path.join(await ensureDir(path.join(input.evalDirectory, "assessments")), assessmentId);
     await mkdir(directory);
     const evidence = await ensureDir(path.join(directory, "evidence"));
+    await writeTrialEnvironmentImageEvidence(evidence, slot.task_id, verifierImages);
     const artifactSnapshot = path.join(evidence, "source-artifacts");
     await cp(path.join(sourceDirectory, "artifacts"), artifactSnapshot, { recursive: true, force: false, errorOnExist: true });
     if (await regradeTreeDigest(artifactSnapshot) !== artifactsDigest) throw unavailable("source artifacts changed during capture");
@@ -157,6 +161,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     if (outcome.trial.trial_name !== trialName || outcome.trial.task_name !== taskName
       || sha256JSON(outcome.trial.agent_result) !== sha256JSON(sourceResult.agent_result)) throw unavailable("regrade result candidate identity changed");
     const result = verifierResult(outcome.trial);
+    verifyTrialEnvironmentImageExecution(await readJSON<ExecutionEvidenceV1>(path.join(evidence, "execution.json")), verifierImages, outcome.trial);
     if (result) await atomicWriteJSON(path.join(evidence, "verifier-result.json"), result);
     const observation = verifierObservation({ trial: outcome.backend.process_exit_code === 0 ? outcome.trial : { ...outcome.trial, exception_info: "harbor-process-failed" },
       runStatus: candidate.record.status, trajectoryStatus: candidate.trajectory_status, recordStatus: candidate.record_status,

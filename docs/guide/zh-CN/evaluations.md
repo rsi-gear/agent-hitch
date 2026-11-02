@@ -59,6 +59,10 @@ hitch eval run \
 
 这个例子用于验证安装，不是衡量智能体质量的 Benchmark。Ubuntu 基础镜像使用版本标签；要将任务用于可复现性声明，还应固定镜像 digest。冷缓存时，准备时间可能明显长于任务执行时间。
 
+计划式本地评测会在 Trial 启动前准备支持的主镜像和简单 Compose sidecar 镜像，并把 sidecar 的服务名与不可变镜像绑定；依赖关系和健康检查继续由原 Compose 定义控制。构建准备使用现有的 30 分钟命令期限和评测取消信号。`--setup-timeout` 控制 Agent setup；Harbor 任务的 `environment.build_timeout_sec` 独立控制环境启动。支持范围、构建记录和回退规则见[环境镜像服务](../../environment-images.md)。
+
+单步独立 Verifier 会准备自己的 `tests/Dockerfile` 上下文，或优先使用有效配置中的 `docker_image`，并以独立角色绑定镜像；共享 Verifier 沿用候选环境。多步上下文、自定义 Verifier Compose 及链接路径保留明确回退。`prebuild-preferred` 在实际构建失败时仍可回退，`prebuild-required` 会在 Target 启动前失败。独立评分环境的启动超时保留原始 cause，并标明配置的环境构建预算；评分脚本继续使用自己的超时。显式本地 verifier-only 重评分只校验本次 Verifier 角色，保留原始候选 bundle，不重跑 Target。
+
 ## 理解结果
 
 复制返回的 `eval_id`，替换下面的 `EVAL_ID`：
@@ -77,6 +81,10 @@ hitch trajectory project RUN_ID --profile analysis --json
 ```
 
 示例中，有效 reward `1` 表示生成了预期文件，有效 reward `0` 表示没有生成。无效 Trial 表示执行或证据有问题。Hitch 的 `summary` 排除无效 observation；`backend_summary` 保留 Harbor 原始汇总用于诊断。
+
+Docker 观测每次采样最多尝试三次，并进行有界退避；瞬时失败不会永久停止后续采样。计划式本地任务在镜像校验前，将观测保存到 `evals/EVAL_ID/harbor/work-items/WORK_ID/epoch-NNNNNN/execution.json`，并保存 `environment/image.manifest.json`；物理重试使用各自的后端目录。诊断快照包含采样数、容器和脱敏问题，不代表试验已通过认证。`environment_image_evidence_unavailable` 表示缺少所需的不可变镜像观测；`environment_image_mismatch` 表示已观测的镜像身份与计划不符，两者均阻止接纳该试验。异常失败结果保留失败时已有的数据集、候选、准备产物、已认证试验及上游错误，不改写历史记录。
+
+Harbor 明确报告启动异常，且 Target 和 Verifier 都未执行时，缺少容器不会掩盖原始启动错误；已观测的镜像冲突仍会失败。带 Hitch 所有权的试验清理会保留镜像，继续清理容器、网络和卷。已登记镜像交给 `hitch images gc` 管理；原生回退构建产生的未登记镜像可能需要操作员明确清理。
 
 记录保存在 `~/.hitch/evals/EVAL_ID/`。执行期间，`progress.json` 描述已发布的 Trial；完成后以终态 `result.json` 为准。每个 Trial 的证据发布在普通 `runs/` 目录中。
 

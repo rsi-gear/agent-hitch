@@ -50,6 +50,78 @@ class RuntimeInventoryTests(unittest.TestCase):
             py_compile.compile(str(self.source), doraise=True, optimize=optimize)
             self.assertEqual(first, self.observe())
 
+    def test_verified_content_skips_compilation_but_rechecks_all_bytes(self):
+        cache = Path(py_compile.compile(str(self.source), doraise=True))
+        first = runtime.inventory(self.launcher, receipt=True)
+        with patch.object(runtime, "compiled_constants_equal", side_effect=AssertionError("compiled again")):
+            second = runtime.inventory(self.launcher, [first["proof"]], receipt=True)
+        self.assertEqual(first, second)
+        previous = self.source.stat()
+        self.source.write_text("VALUE = 2\n")
+        os.utime(self.source, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            runtime.inventory(self.launcher, [first["proof"]])
+        self.source.write_text("VALUE = 1\n")
+        data = cache.read_bytes()
+        cache.write_bytes(data[:16] + marshal.dumps(compile("VALUE = 3\n", str(self.source), "exec")))
+        with self.assertRaisesRegex(ValueError, "disagrees"):
+            runtime.inventory(self.launcher, [first["proof"]])
+
+    def test_memo_covers_interpreter_dependencies_and_cache_additions(self):
+        py_compile.compile(str(self.source), doraise=True)
+        first = runtime.inventory(self.launcher, receipt=True)
+        original = runtime.compiled_constants_equal
+        for change in (
+            lambda: self.launcher.write_text("#!/python\n# another launcher\n"),
+            lambda: (self.root / "new-dependency.py").write_text("VALUE = 1\n"),
+            lambda: py_compile.compile(str(self.source), doraise=True, optimize=1),
+        ):
+            change()
+            with patch.object(runtime, "compiled_constants_equal", wraps=original) as compare:
+                second = runtime.inventory(self.launcher, [first["proof"]], receipt=True)
+            self.assertTrue(compare.called)
+            self.assertNotEqual(first["proof"], second["proof"])
+            first = second
+
+    def test_memo_hit_preserves_bounds_and_detects_mid_inventory_changes(self):
+        py_compile.compile(str(self.source), doraise=True)
+        first = runtime.inventory(self.launcher, receipt=True)
+        with patch.dict(os.environ, {runtime.LIMIT_ENV_PREFIX + "MAX_BYTES": "1"}):
+            with self.assertRaisesRegex(ValueError, "byte limit"):
+                runtime.inventory(self.launcher, [first["proof"]])
+        original = runtime.json.dumps
+        def mutate(*args, **kwargs):
+            self.source.write_text("VALUE = 2\n")
+            return original(*args, **kwargs)
+        with patch.object(runtime.json, "dumps", mutate):
+            with self.assertRaisesRegex(ValueError, "changed"):
+                runtime.inventory(self.launcher, [first["proof"]])
+
+    def test_cold_bytecode_verification_charges_rereads_to_the_byte_budget(self):
+        py_compile.compile(str(self.source), doraise=True)
+        total = 0
+        original = Path.read_bytes
+        def counted(file):
+            nonlocal total
+            data = original(file)
+            total += len(data)
+            return data
+        with patch.object(Path, "read_bytes", counted):
+            self.observe()
+        with patch.dict(os.environ, {runtime.LIMIT_ENV_PREFIX + "MAX_BYTES": str(total - 1)}):
+            with self.assertRaisesRegex(ValueError, "byte limit"):
+                self.observe()
+
+    def test_bytecode_rereads_do_not_hide_permission_drift(self):
+        py_compile.compile(str(self.source), doraise=True)
+        original = runtime.json.dumps
+        def mutate(*args, **kwargs):
+            self.source.chmod(0o755)
+            return original(*args, **kwargs)
+        with patch.object(runtime.json, "dumps", mutate):
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.observe()
+
     def test_nan_constants_in_valid_generated_caches_preserve_identity(self):
         self.source.write_text(
             "VALUE = 1e1000 - 1e1000\n"

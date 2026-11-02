@@ -151,7 +151,7 @@ def compiled_constants_equal(left, right):
     return False
 
 
-def inventory(launcher):
+def inventory(launcher, verified=(), *, receipt=False):
     max_files = inventory_limit("MAX_FILES", MAX_FILES)
     max_bytes = inventory_limit("MAX_BYTES", MAX_BYTES)
     launcher = Path(launcher).absolute()
@@ -170,6 +170,7 @@ def inventory(launcher):
     active = set()
     visited = set()
     byte_count = 0
+    caches = []
 
     def read(file):
         nonlocal byte_count
@@ -184,6 +185,8 @@ def inventory(launcher):
         signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode)
         if signature(before) != signature(after):
             raise ValueError("Python runtime changed while reading")
+        if str(file) in snapshots and snapshots[str(file)] != signature(after):
+            raise ValueError("Python runtime changed between reads")
         snapshots[str(file)] = signature(after)
         return data
 
@@ -202,12 +205,12 @@ def inventory(launcher):
         data = read(file)
         if len(data) < 16 or data[:4] != importlib.util.MAGIC_NUMBER:
             raise ValueError("unverifiable Python bytecode cache")
-        code = marshal.loads(data[16:])
-        if not isinstance(code, types.CodeType):
-            raise ValueError("invalid Python bytecode cache")
-        expected = compile(read(source), code.co_filename, "exec", dont_inherit=True, optimize=int(match[2] or 0))
-        if not compiled_constants_equal(code, expected):
-            raise ValueError("Python bytecode cache disagrees with source")
+        # The resident executor remembers only successful content proofs. All
+        # files are still read and hashed on every observation; metadata never
+        # authorizes skipping compilation. Keep hashes, not entire environments,
+        # in memory while discovering the complete interpreter/dependency key.
+        caches.append((str(file), str(source), int(match[2] or 0),
+                       hashlib.sha256(data).hexdigest(), hashlib.sha256(read(source)).hexdigest()))
         return True
 
     def visit(file):
@@ -269,13 +272,6 @@ def inventory(launcher):
             visit(file)
     library = Path(sysconfig.get_config_var("LIBDIR") or sys.base_prefix) / (sysconfig.get_config_var("LDLIBRARY") or "libpython")
     visit(library)
-    for name, expected in snapshots.items():
-        s = Path(name).stat()
-        if (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode) != expected:
-            raise ValueError("Python runtime changed during inventory")
-    for name, expected in directories.items():
-        if sorted(os.listdir(name)) != expected:
-            raise ValueError("Python runtime directory changed during inventory")
     identity = {
         "schema_version": "1",
         "implementation": sys.implementation.name,
@@ -286,17 +282,45 @@ def inventory(launcher):
         "files": sorted(records.items()),
     }
     encoded = json.dumps(identity, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
-    return {
+    # Unlike the public runtime identity, this proof includes derived bytecode.
+    # Any changed source, cache, interpreter, probe or startup dependency misses.
+    proof = hashlib.sha256(encoded + b"\0" + json.dumps(
+        ["bytecode-proof-v1", str(sys.flags), sorted(caches)], separators=(",", ":"),
+    ).encode()).hexdigest()
+    if proof not in verified:
+        for name, source, optimize, cache_hash, source_hash in caches:
+            data, source_data = read(Path(name)), read(Path(source))
+            if hashlib.sha256(data).hexdigest() != cache_hash or hashlib.sha256(source_data).hexdigest() != source_hash:
+                raise ValueError("Python runtime changed before bytecode verification")
+            code = marshal.loads(data[16:])
+            if not isinstance(code, types.CodeType):
+                raise ValueError("invalid Python bytecode cache")
+            expected = compile(source_data, code.co_filename, "exec", dont_inherit=True, optimize=optimize)
+            if not compiled_constants_equal(code, expected):
+                raise ValueError("Python bytecode cache disagrees with source")
+    for name, expected in snapshots.items():
+        s = Path(name).stat()
+        if (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode) != expected:
+            raise ValueError("Python runtime changed during inventory")
+    for name, expected in directories.items():
+        if sorted(os.listdir(name)) != expected:
+            raise ValueError("Python runtime directory changed during inventory")
+    result = {
         "schema_version": "1",
         "integrity": "sha256:" + hashlib.sha256(encoded).hexdigest(),
         "python_version": ".".join(map(str, sys.version_info[:3])),
         "file_count": sum(value[0] == "file" for value in records.values()),
     }
+    return {"runtime": result, "proof": proof} if receipt else result
 
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(inventory(sys.argv[1]), separators=(",", ":")))
+        memo = len(sys.argv) > 2 and sys.argv[2] == "--memo"
+        verified = sys.argv[3:] if memo else ()
+        if len(verified) > 8 or any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in verified):
+            raise ValueError("invalid bytecode verification memo")
+        print(json.dumps(inventory(sys.argv[1], verified, receipt=memo), separators=(",", ":")))
     except Exception:
         # Paths or package import errors can contain credentials or private data.
         print("Harbor Python runtime cannot be verified", file=sys.stderr)

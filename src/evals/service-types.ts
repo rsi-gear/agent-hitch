@@ -71,6 +71,7 @@ export type EvalEnvironmentImageBuilder = (input: {
   contextDirectory: string;
   dockerfile: string;
   platform: string;
+  sourceKind?: "compose-build";
   signal?: AbortSignal;
 }) => Promise<{
   image_id: Sha256;

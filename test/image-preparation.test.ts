@@ -28,3 +28,18 @@ test("Harbor preparation is opt-in and validates host configuration", () => {
     assert.throws(() => harborEnvironmentConfig(undefined, undefined, undefined, undefined, undefined, false, false, undefined, harborPreparationOptions(env)));
   }
 });
+
+test("Harbor config keeps verifier image kwargs independent and preserves the legacy absent contract", () => {
+  const candidate = { "candidate:v1": `candidate@sha256:${"a".repeat(64)}` };
+  const verifier = { "grader:v1": `grader@sha256:${"b".repeat(64)}` };
+  const legacy = harborEnvironmentConfig(undefined, undefined, undefined, candidate);
+  assert.deepEqual(legacy.kwargs, { hitch_resolved_images: candidate });
+  const config = harborEnvironmentConfig(undefined, undefined, undefined, candidate, undefined, false, false, undefined, {}, {},
+    { prebuiltImage: `sha256:${"c".repeat(64)}`, resolvedImages: verifier });
+  assert.deepEqual(config.kwargs, { hitch_resolved_images: candidate, hitch_prebuilt_verifier_image: `sha256:${"c".repeat(64)}`, hitch_verifier_resolved_images: verifier });
+  const isolated = harborEnvironmentConfig(undefined, undefined, undefined, candidate, undefined, false, false, undefined, {}, {}, { resolvedImages: {} });
+  assert.deepEqual(isolated.kwargs, { hitch_resolved_images: candidate, hitch_verifier_resolved_images: {} });
+  for (const binding of [{ prebuiltImage: "mutable:tag", resolvedImages: {} }, { resolvedImages: { "grader:v1": "mutable:tag" } }]) {
+    assert.throws(() => harborEnvironmentConfig(undefined, undefined, undefined, candidate, undefined, false, false, undefined, {}, {}, binding), { code: "invalid_input" });
+  }
+});

@@ -80,6 +80,8 @@
       "properties": {
         "container_id": { "type": "string", "pattern": "^[a-f0-9]{12,64}$" },
         "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "role": { "enum": ["candidate", "verifier"] },
+        "service": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$" },
         "image_reference": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "image_config_digest": { "$ref": "#/$defs/sha256" },
         "first_observed_at": { "type": "string", "format": "date-time" },

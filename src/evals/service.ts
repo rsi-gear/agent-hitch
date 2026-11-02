@@ -58,6 +58,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
   let captureRuntime: Awaited<ReturnType<typeof startEvalModelCaptureRuntime>> | undefined;
   const externalEndpoint = persistedRequest.endpoint_binding ? await loadFrozenEndpoint(root, persistedRequest.endpoint_binding) : undefined;
   let failureStage: EvalExecutionPhase = "planning";
+  const failureIdentity: { candidate?: unknown; preparedAssignments?: import("./eval-artifact-planning.js").PreparedEvalArtifactAssignment[] } = {};
   try {
     const planningStartedAt = Date.now();
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
@@ -153,6 +154,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       ...(localTransport ? { local_source_transport: transportSummary(localTransport) } : {}),
       created_at: typeof resume?.plan.created_at === "string" ? resume.plan.created_at : new Date().toISOString(),
     };
+    failureIdentity.candidate = logicalPlan.candidate;
     progress = resume?.progress ?? createEvalProgress({
       evalId,
       benchmarkId: normalized.benchmark_id,
@@ -168,6 +170,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     const selectedArtifactBuilder = harborArtifactBuilder ?? (env.NODE_ENV === "test" && env.HITCH_TEST_HOST_ARTIFACT_BUILDER === "1" ? prepareHostHarborArtifactForTest : prepareHarborArtifact);
     const prepared = await prepareEvalArtifactAssignments({ builder: selectedArtifactBuilder, root, resolvedRevision, requestedReference, controllerRuntime, ...(!remoteWorkExecutor ? { sharedRuntimeDirectory: path.join(evalDirectory, "shared-runtime") } : {}), ...(localTransport ? { localTransport } : {}), taskRuntimeContracts: localPlanning.taskRuntimeContracts, sink, env, ...(signal ? { signal } : {}) });
     const preparedAssignments = prepared.assignments;
+    failureIdentity.preparedAssignments = preparedAssignments;
     assertHarborArtifactPins(normalized.artifact_pins, preparedAssignments.map(entry => entry.artifact));
     const preparedArtifact = prepared.primary;
     const preparedArtifacts = prepared.artifactsById;
@@ -320,6 +323,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ? path.join(evalDirectory, "harbor")
         : path.join(evalDirectory, "harbor", attemptDirectoryName(logicalAttempt));
       const harborJobDirectory = path.join(backendDirectory, "job");
+      const imageRefs = executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? [];
       const shardRefs: EvalTrialRefV1[] = [];
       const publish = async (ref: EvalTrialRefV1): Promise<void> => {
         if (ref.attempt !== logicalAttempt) {
@@ -361,7 +365,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         runtimeId: controllerRuntime.runtime_id,
         preparedArtifact,
         ...(activeCaptureRuntime.exporter ? { modelProxy: activeCaptureRuntime.exporter.route } : {}),
-        resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
+        resolvedImages: resolvedImageMapping(imageRefs),
+        ...(imageRefs.length ? { verifierImages: { resolvedImages: resolvedImageMapping(imageRefs, "verifier") } } : {}),
         ...(executionResources ? { executionResources } : {}),
         env,
         ...(harborExecutable !== undefined ? { harborExecutable } : {}),
@@ -434,7 +439,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         resolvedRevision,
         controllerRuntime,
         preparedArtifact,
-        resolvedImages: resolvedImageMapping(executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? []),
+        resolvedImages: resolvedImageMapping(imageRefs),
+        ...(imageRefs.length ? { verifierImages: { resolvedImages: resolvedImageMapping(imageRefs, "verifier") } } : {}),
         ...(executionResources ? { executionResources } : {}),
         modelCapturePlan: activeCaptureRuntime.plan,
         ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
@@ -471,7 +477,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     try { progress = await readEvalProgress(evalDirectory) ?? progress; }
     catch (stateError) { progressRecoveryError = stateError; }
     trialRefs = progress?.trials ?? trialRefs;
-    result = buildFailedEvalResult({ error, evalId, request: normalized, env, failureStage, startedAt, trials: trialRefs, progress, cancelled: signal?.aborted === true });
+    result = buildFailedEvalResult({ error, evalId, request: normalized, env, failureStage, startedAt, trials: trialRefs, progress, cancelled: signal?.aborted === true, ...failureIdentity });
   }
   if (captureRuntime) await captureRuntime.close().catch((error) => sink.emit({ type: "interaction.capture.close-failed", code: (error as { code?: string }).code || "model_capture_close_failed" }));
   if (normalized.endpoint_binding) result.usage = await cumulativeEndpointUsage(root, evalId, trialRefs.flatMap(ref => ref.run_id ? [ref.run_id] : []));

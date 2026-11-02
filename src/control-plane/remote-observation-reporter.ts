@@ -25,8 +25,9 @@ export class RemoteObservationReporter {
     const remaining = Date.parse(challenge.expires_at) - Date.now();
     if (remaining <= 0) return;
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(Math.min(remaining, 35_000))]);
-    const { runtime, environment } = await this.source.observe(deadline);
+    const { runtime, environment, diagnostics } = await this.source.observe(deadline);
     deadline.throwIfAborted();
-    await this.client.submitExecutionObservation({ schema_version: "2", challenge, runtime, environment, environment_digest: sha256JSON(environment) }, deadline);
+    await this.client.submitExecutionObservation({ schema_version: "2", challenge, runtime, environment, environment_digest: sha256JSON(environment),
+      ...(diagnostics ? { diagnostics } : {}) }, deadline);
   }
 }

@@ -2281,6 +2281,34 @@
         "methodology_url": "https://cursor.com/blog/cursorbench",
         "task_or_grader_download_link_found": false
       }
+    },
+    {
+      "id": "jobbench-main",
+      "status": "producer_implemented_real_import_compile_schema_only",
+      "source_revision": "660b33a86ed032559df0b2fdc1ad38cf7ceb83f3",
+      "tasks": [
+        "main--biostatisticians--task1"
+      ],
+      "valid_scored_tasks": 0,
+      "candidate_calls": 0,
+      "judge_calls": 0,
+      "container_execution": "not_tested_docker_unavailable",
+      "verifier_only_regrade": "documented_not_executed",
+      "evidence": "docs/evidence/jobbench-lab-producers-2026-10-19.json"
+    },
+    {
+      "id": "harvey-lab-dual",
+      "status": "producer_implemented_real_import_compile_schema_only",
+      "source_revision": "e9b1f9f4dc25576f9a020d857e3e3a6420834dc3",
+      "tasks": [
+        "antitrust-competition/analyze-antitrust-hsr-strategy"
+      ],
+      "valid_scored_tasks": 0,
+      "candidate_calls": 0,
+      "judge_calls": 0,
+      "container_execution": "not_tested_docker_unavailable",
+      "verifier_only_regrade": "documented_not_executed",
+      "evidence": "docs/evidence/jobbench-lab-producers-2026-10-19.json"
     }
   ],
   "hardware": {

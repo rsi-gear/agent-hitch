@@ -84,6 +84,9 @@ test("daemon observation requires admin authentication and returns fresh nonce-b
   assert.equal(first.daemon_runtime.unchanged, true);
   assert.equal(first.environment_digest, sha256JSON(first.environment));
   assert.equal(first.environment.docker.engine_id, "fixture-engine-1");
+  assert.equal(first.diagnostics.schema_version, "1");
+  assert.equal(first.diagnostics.probes.find((p: { probe: string }) => p.probe === "docker_info")?.outcome, "ok");
+  assert.equal(Object.hasOwn(first.environment, "diagnostics"), false);
   await writeFile(f.observed, JSON.stringify({ ID: "fixture-engine-2", ServerVersion: "28.1.0", OSType: "linux", Architecture: "x86_64" }));
   const second = await invoke("b".repeat(32));
   assert.equal(second.nonce, "b".repeat(32)); assert.equal(second.environment.docker.engine_id, "fixture-engine-2");

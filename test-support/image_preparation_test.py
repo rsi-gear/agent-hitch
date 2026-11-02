@@ -299,6 +299,9 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(list((self.root / "cache").glob(".context-*")), [])
 
     async def test_unreadable_ignored_context_entries_fall_back_without_publishing(self):
+        # COPY . needs the full context. Literal-source builds can now omit
+        # unrelated unreadable files without depending on ignore semantics.
+        (self.source / "Dockerfile").write_text(f"FROM {BASE}\nCOPY . /all\n")
         ignored = self.source / "ignored"
         (self.source / ".dockerignore").write_text("ignored\n")
         async def compose_call(args, **kwargs):
@@ -353,10 +356,78 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(UnsupportedBuild, "inherited-onbuild"):
             await self.cache.prepare(self.service)
         self.onbuild = []
+        (self.source / "Dockerfile").write_text(f"FROM {BASE}\nCOPY . /all\n")
         (self.source / "link").symlink_to(self.root)
         with self.assertRaisesRegex(UnsupportedBuild, "special-context-entry"):
             await self.cache.prepare(self.service)
         self.assertEqual(len(self.builds), 0)
+
+    async def test_literal_copy_ignores_unrelated_task_data_and_subtrees(self):
+        unused = self.source / "unused-source"
+        unused.mkdir()
+        (unused / "large-file").write_bytes(b"x" * 1024 * 1024)
+        original = Path.iterdir
+        def no_unused_walk(path):
+            if path == unused:
+                raise AssertionError("walked unrelated source tree")
+            return original(path)
+        with patch.object(Path, "iterdir", no_unused_walk):
+            first = await self.cache.prepare(self.service)
+            (unused / "large-file").write_text("another task")
+            second = await self.cache.prepare(self.service)
+        self.assertTrue(second["cache_hit"])
+        self.assertEqual(first["cache_key"], second["cache_key"])
+        self.assertEqual(len(self.builds), 1)
+
+    async def test_copied_directory_and_ignore_file_changes_still_invalidate(self):
+        folder = self.source / "inputs"
+        folder.mkdir()
+        (folder / "data").write_text("one")
+        (self.source / "Dockerfile").write_text(f'FROM {BASE}\nCOPY ["inputs/", "value", "/data/"]\n')
+        first = await self.cache.prepare(self.service)
+        (folder / "data").write_text("two")
+        second = await self.cache.prepare(self.service)
+        self.assertNotEqual(first["cache_key"], second["cache_key"])
+        (self.source / "Dockerfile.dockerignore").write_text("inputs/data\n")
+        third = await self.cache.prepare(self.service)
+        self.assertNotEqual(second["cache_key"], third["cache_key"])
+
+    async def test_dynamic_and_wildcard_copy_keep_the_full_context(self):
+        (self.source / "payCOPY").write_text("joined continuation operand")
+        for instruction in ("COPY . /data", "COPY v* /data/", "COPY ${FILE} /data/",
+                            "COPY --parents value /data/", "COPY ./value /data",
+                            "COPY va\\\nlue /data", "COPY value pay\\ \nCOPY value /data/",
+                            "COPY value pay\\\t\nCOPY value /data/",
+                            "COPY foo\u00a0bar /data"):
+            with self.subTest(instruction=instruction):
+                (self.source / "Dockerfile").write_text(f"FROM {BASE}\n{instruction}\n")
+                unused = self.source / "unselected"
+                unused.write_text("first")
+                first = await self.cache.prepare(self.service)
+                unused.write_text("other")
+                second = await self.cache.prepare(self.service)
+                self.assertNotEqual(first["cache_key"], second["cache_key"])
+
+    async def test_nonstandard_line_separators_preserve_native_build_fallback(self):
+        (self.source / "Dockerfile").write_text(f"FROM {BASE}\nCOPY foo\u2028bar /data\n")
+        with self.assertRaisesRegex(UnsupportedBuild, "dockerfile-instruction"):
+            await self.cache.prepare(self.service)
+        self.assertEqual(self.builds, [])
+
+    async def test_changed_dockerfile_cannot_publish_a_pruned_snapshot(self):
+        original = Path.read_bytes
+        count = 0
+        def changing(path):
+            nonlocal count
+            value = original(path)
+            if path == self.source / "Dockerfile":
+                count += 1
+                if count == 1:
+                    path.write_text(f"FROM {BASE}\nCOPY . /data\n")
+            return value
+        with patch.object(Path, "read_bytes", changing), self.assertRaisesRegex(UnsupportedBuild, "context-changed"):
+            await self.cache.prepare(self.service)
+        self.assertEqual(self.builds, [])
 
     async def test_snapshot_destination_failure_remains_an_error(self):
         original = Path.open

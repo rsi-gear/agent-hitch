@@ -109,7 +109,7 @@ export function buildCompletedEvalResult(input: {
   };
 }
 
-export function buildFailedEvalResult(input: { error: unknown; evalId: EvalId; request: EvalRequest; env: NodeJS.ProcessEnv; failureStage: EvalExecutionPhase; startedAt: Date; trials: EvalTrialRefV1[]; progress: EvalProgressV1 | null; cancelled: boolean }): EvalResult {
+export function buildFailedEvalResult(input: { error: unknown; evalId: EvalId; request: EvalRequest; env: NodeJS.ProcessEnv; failureStage: EvalExecutionPhase; startedAt: Date; trials: EvalTrialRefV1[]; progress: EvalProgressV1 | null; cancelled: boolean; candidate?: unknown; preparedAssignments?: readonly PreparedEvalArtifactAssignment[] }): EvalResult {
   const { error, evalId, request: normalized, env, failureStage, startedAt, trials: trialRefs, progress, cancelled } = input;
   const typed = error instanceof HitchError;
   return {
@@ -124,10 +124,14 @@ export function buildFailedEvalResult(input: { error: unknown; evalId: EvalId; r
       failure_stage: failureStage,
       ...(normalized.endpoint_binding ? { endpoint_binding: normalized.endpoint_binding } : {}),
       task_completed: true,
+      dataset: normalized.dataset,
+      ...(input.candidate === undefined ? {} : { candidate: input.candidate }),
+      ...(input.preparedAssignments ? preparedArtifactPlanFields(input.preparedAssignments) : {}),
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
       ...(progress === null ? {} : { generation: progress.generation }),
       trials: trialRefs,
+      summary: summarizeTrialRefs(trialRefs),
       started_at: startedAt.toISOString(),
       completed_at: new Date().toISOString(),
     };

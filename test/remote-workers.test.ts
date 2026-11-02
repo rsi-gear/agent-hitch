@@ -431,13 +431,16 @@ test("accepted remote work reconnects with exact lease proof instead of being re
   const events: Array<Record<string, unknown>> = [];
   const reconnect = (async () => {
     await waitForState(protocol, "worker_remote_a", offer.offer_id, "cancel-requested");
+    // Cancellation is persisted before recovery probes liveness. Do not restore
+    // the heartbeat until recovery has actually observed the lost worker.
+    await waitForEvent(events, "worker.heartbeat_missed");
     const heartbeat = {
       schema_version: "1" as const, generation: offer.generation, health: "healthy" as const,
       allocated: work.reservation, active_leases: [{ lease_id: lease.leaseId, epoch: 1 }], sent_at: new Date().toISOString(),
     };
     await protocol.validateHeartbeatLeases("worker_remote_a", heartbeat);
     await registry.heartbeat("worker_remote_a", heartbeat);
-    await delay(20);
+    await waitForEvent(events, "worker.reconnected");
     await protocol.releaseOffer("worker_remote_a", {
       schema_version: "1", offer_id: offer.offer_id, nonce: offer.nonce, generation: offer.generation,
       lease_id: lease.leaseId, epoch: 1, sent_at: new Date().toISOString(),
@@ -566,6 +569,14 @@ async function waitForState(protocol: RemoteWorkerProtocol, workerId: string, of
   for (;;) {
     if ((await protocol.getOffer(workerId, offerId))?.state === state) return;
     if (Date.now() >= deadline) throw new Error(`timed out waiting for remote offer state: ${state}`);
+    await delay(5);
+  }
+}
+
+async function waitForEvent(events: Array<Record<string, unknown>>, type: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!events.some((event) => event.type === type)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for remote worker event: ${type}`);
     await delay(5);
   }
 }

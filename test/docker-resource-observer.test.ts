@@ -16,7 +16,7 @@ const reservation = { cpu_millis: 2_500, memory_bytes: 2_000_000, container_slot
 
 test("Docker observer records bounded peak memory, OOM, and exit evidence without inventing CPU time", async () => {
   const id = "e".repeat(64);
-  const labels = dockerOwnershipLabelMap(ownership);
+  const labels = { ...dockerOwnershipLabelMap(ownership), "com.docker.compose.service": "main", "io.hitch.environment-role": "verifier" };
   let inspections = 0;
   const observer = startDockerResourceObserver({
     ownership,
@@ -49,6 +49,8 @@ test("Docker observer records bounded peak memory, OOM, and exit evidence withou
   assert.equal(terminal.observed.containers[0]?.exit_code, 137);
   assert.equal(terminal.observed.containers[0]?.exit_reason, "oom-killed");
   assert.equal(terminal.observed.containers[0]?.image_config_digest, `sha256:${"f".repeat(64)}`);
+  assert.equal(terminal.observed.containers[0]?.service, "main");
+  assert.equal(terminal.observed.containers[0]?.role, "verifier");
   assert.deepEqual(terminal.observed.unavailable_fields, ["cpu_time_ns"]);
   assert.deepEqual(parseExecutionEvidence(terminal), terminal);
 });
@@ -96,4 +98,52 @@ test("Docker Engine stats parser accepts only safe cumulative nanoseconds", () =
   }), { cpu_time_ns: 123_456, memory_bytes: 654_321 });
   assert.deepEqual(parseDockerEngineContainerStats({ cpu_stats: {} }), {});
   assert.throws(() => parseDockerEngineContainerStats({ cpu_stats: { cpu_usage: { total_usage: -1 } } }), /cumulative CPU time/);
+});
+
+test("Docker observer retries a transient list failure and retains redacted diagnostics", async () => {
+  let calls = 0;
+  const id = "e".repeat(64);
+  const observer = startDockerResourceObserver({
+    ownership, workerId: "local", collisionDomainId: "docker", reservation, mainLimits: reservation,
+    sidecarLimits: {}, intervalMs: 60_000, env: { OPENAI_API_KEY: "private-observer-secret" },
+    run: async (args) => {
+      if (args[1] === "ls") {
+        calls += 1;
+        if (calls === 1) throw new Error("Docker timeout private-observer-secret");
+        return { stdout: id };
+      }
+      return { stdout: JSON.stringify([{
+        Id: id, Image: `sha256:${"f".repeat(64)}`, Config: { Labels: dockerOwnershipLabelMap(ownership) },
+        State: { Running: false, ExitCode: 0 },
+      }]) };
+    },
+  });
+  try {
+    const snapshot = await observer.capture();
+    assert.equal(snapshot.observed.containers[0]?.image_config_digest, `sha256:${"f".repeat(64)}`);
+    assert.ok(snapshot.observed.sample_count > 0);
+    assert.match(snapshot.observed.issues.join(" "), /Docker timeout/);
+    assert.ok(!JSON.stringify(snapshot).includes("private-observer-secret"));
+  } finally { await observer.stop(); }
+});
+
+test("Docker observer bounds retries per sample without permanently disabling later captures", async () => {
+  let calls = 0;
+  let healthy = false;
+  const observer = startDockerResourceObserver({
+    ownership, workerId: "local", collisionDomainId: "docker", reservation, mainLimits: reservation,
+    sidecarLimits: {}, intervalMs: 60_000,
+    run: async () => { calls += 1; if (!healthy) throw new Error("temporarily unavailable"); return { stdout: "" }; },
+  });
+  const failed = await observer.capture();
+  assert.equal(calls, 3);
+  assert.equal(failed.observed.sample_count, 0);
+  healthy = true;
+  const recovered = await observer.capture();
+  assert.equal(recovered.observed.sample_count, 1);
+  await observer.stop();
+  const stoppedCalls = calls;
+  await observer.capture();
+  await observer.stop();
+  assert.equal(calls, stoppedCalls);
 });

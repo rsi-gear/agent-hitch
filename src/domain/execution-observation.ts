@@ -31,7 +31,8 @@ export interface HarborEnvironmentObservationV2 {
 export interface ExecutionObservationSourceV2 {
   initialize(): Promise<void>;
   observeRuntime(): Promise<ResidentRuntimeObservationV2>;
-  observe(signal?: AbortSignal): Promise<{ runtime: ResidentRuntimeObservationV2; environment: HarborEnvironmentObservationV2 }>;
+  observe(signal?: AbortSignal): Promise<{ runtime: ResidentRuntimeObservationV2; environment: HarborEnvironmentObservationV2;
+    diagnostics?: ExecutionObservationDiagnosticsV1 }>;
 }
 
 export interface RemoteExecutionObservationChallengeV2 {
@@ -52,4 +53,22 @@ export interface RemoteExecutionObservationReceiptV2 {
   runtime: ResidentRuntimeObservationV2;
   environment: HarborEnvironmentObservationV2;
   environment_digest: string;
+  diagnostics?: ExecutionObservationDiagnosticsV1;
+}
+
+/** Operational diagnostics are outside the stable environment identity. No command output is included. */
+export interface ExecutionObservationProbeV1 {
+  probe: "harbor_version" | "docker_info" | "buildx_version";
+  attempt: 1 | 2;
+  stage: "resolve" | "fingerprint" | "command" | "parse" | "validate" | "identity" | "complete";
+  outcome: "ok" | "not_found" | "io_error" | "spawn_error" | "nonzero_exit" | "signal_exit" | "timed_out"
+    | "output_limit" | "invalid_encoding" | "invalid_json" | "invalid_fields" | "executable_changed";
+  elapsed_ms: number;
+  exit_code: number | null;
+  signal: "SIGTERM" | "SIGKILL" | "other" | null;
+}
+
+export interface ExecutionObservationDiagnosticsV1 {
+  schema_version: "1";
+  probes: ExecutionObservationProbeV1[];
 }

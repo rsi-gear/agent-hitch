@@ -60,6 +60,25 @@ The extra Codex argument allows this trusted example to write its answer without
 
 The example is an installation check, not a quality benchmark. Its Ubuntu base uses a version tag; pin the image digest as well before using a task as part of a reproducibility claim. Setup can take substantially longer than the agent's task on a cold cache.
 
+Planned local evaluations prepare supported main and simple Compose sidecar
+images before starting a trial. Sidecars bind service names to immutable images;
+the original Compose dependencies and health checks remain in effect. Image
+preparation uses the existing 30-minute command deadline and evaluation
+cancellation signal. `--setup-timeout` controls Agent setup, while the Harbor
+task's `environment.build_timeout_sec` independently controls environment
+startup. See the [environment image service](../../environment-images.md) for
+supported builds, records, and fallback rules.
+
+Single-step separate verifiers prepare their own `tests/Dockerfile` context or
+use their effective `docker_image`, with an independent image role. Shared
+verifiers use the candidate environment; multi-step contexts and task-authored
+verifier Compose retain explicit fallback. Preferred prebuild may fall back on
+build failure; required prebuild fails before Target starts. A verifier
+environment startup timeout reports its environment build budget and preserves
+the cause, while scoring keeps its separate timeout. Explicit local
+verifier-only regrade checks only the verifier role and retains the original
+candidate bundle.
+
 ## Interpret the result
 
 Copy the returned `eval_id`, then replace `EVAL_ID` below:
@@ -78,6 +97,14 @@ hitch trajectory project RUN_ID --profile analysis --json
 ```
 
 For the example task, valid reward `1` means the expected file was produced; valid reward `0` means it was not. An invalid trial indicates an execution or evidence problem. Hitch's `summary` excludes invalid observations; `backend_summary` retains Harbor's aggregate for diagnosis.
+
+Docker observation retries each sample up to three times, with bounded backoff, and continues sampling after transient failures. Before image validation, planned local work saves the observation in `evals/EVAL_ID/harbor/work-items/WORK_ID/epoch-NNNNNN/execution.json` (physical retries use their own backend directory), alongside `environment/image.manifest.json`. These diagnostic snapshots include sample counts, containers and redacted issues; they do not certify a trial. `environment_image_evidence_unavailable` means the required immutable image observation is missing; `environment_image_mismatch` means observed image identities disagree with the plan. Both prevent accepting that trial. Exceptional failed results retain the dataset, candidate and prepared artifacts available at failure, plus already certified trials and the original error. Historical records are not rewritten.
+
+An explicit Harbor setup exception with no Target or verifier execution keeps
+its upstream error when containers are missing; observed image conflicts still
+fail. Owned trial cleanup retains images while removing containers, networks,
+and volumes. `hitch images gc` manages registered images; unregistered native
+fallback images may require explicit operator cleanup.
 
 Records live under `~/.hitch/evals/EVAL_ID/`. During execution, `progress.json` describes published trials. The terminal `result.json` becomes authoritative when the evaluation finishes. Per-trial evidence is published under the ordinary `runs/` directory.
 

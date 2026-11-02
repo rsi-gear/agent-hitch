@@ -61,11 +61,13 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
 
 function container(value: unknown, index: number): ObservedContainerResourcesV1 {
   const record = exact(value, ["container_id", "first_observed_at", "last_observed_at"], `execution evidence container ${index}`, [
-    "name", "image_reference", "image_config_digest", "peak_memory_bytes", "cpu_time_ns", "oom_killed", "exit_code", "exit_reason",
+    "name", "service", "role", "image_reference", "image_config_digest", "peak_memory_bytes", "cpu_time_ns", "oom_killed", "exit_code", "exit_reason",
   ]);
   if (typeof record.container_id !== "string" || !/^[a-f0-9]{12,64}$/.test(record.container_id)
     || (record.name !== undefined && !validText(record.name, 256)) || !timestamp(record.first_observed_at) || !timestamp(record.last_observed_at)
     || (record.image_reference !== undefined && !validText(record.image_reference, 1_024))
+    || (record.service !== undefined && (typeof record.service !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/.test(record.service)))
+    || (record.role !== undefined && record.role !== "candidate" && record.role !== "verifier")
     || (record.image_config_digest !== undefined && (typeof record.image_config_digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(record.image_config_digest)))
     || Date.parse(record.last_observed_at as string) < Date.parse(record.first_observed_at as string)
     || (record.peak_memory_bytes !== undefined && (!Number.isSafeInteger(record.peak_memory_bytes) || (record.peak_memory_bytes as number) < 0))

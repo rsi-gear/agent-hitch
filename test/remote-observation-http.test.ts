@@ -46,7 +46,8 @@ test("remote observation is worker-authenticated and a slow probe does not stop 
         signal?.addEventListener("abort", abort, { once: true });
         if (signal?.aborted) abort();
       });
-      return observationFixture();
+      return { ...observationFixture(), diagnostics: { schema_version: "1", probes: [{ probe: "docker_info", attempt: 1,
+        stage: "complete", outcome: "ok", elapsed_ms: 10, exit_code: 0, signal: null }] } };
     },
   };
   let heartbeats = 0;
@@ -69,6 +70,8 @@ test("remote observation is worker-authenticated and a slow probe does not stop 
   assert.equal(result.nonce, nonce); assert.equal(result.generation, 1); assert.equal(result.provider, registration.provider);
   assert.deepEqual(result.worker_runtime, observationFixture().runtime);
   assert.equal(result.environment_digest, sha256JSON(result.environment));
+  assert.deepEqual(result.diagnostics, { schema_version: "1", probes: [{ probe: "docker_info", attempt: 1,
+    stage: "complete", outcome: "ok", elapsed_ms: 10, exit_code: 0, signal: null }] });
   assert.equal(JSON.stringify(result).includes(credential.token), false);
   assert.deepEqual(errors, []);
 });
@@ -98,6 +101,7 @@ test("packaged worker CLI observes its own executable selections and returns fre
   const first = await observe(nonce);
   assert.equal(first.worker_id, registration.worker_id); assert.equal(first.generation, 1);
   assert.equal(first.environment.docker.engine_id, "packaged-worker-engine-1");
+  assert.equal((first.diagnostics as { probes: { probe: string; outcome: string }[] }).probes.find(p => p.probe === "docker_info")?.outcome, "ok");
   assert.equal(first.worker_runtime.unchanged, true); assert.equal(first.daemon_runtime.unchanged, true);
   assert.equal(first.worker_runtime.current.runtime_id, first.daemon_runtime.current.runtime_id);
   assert.equal(JSON.stringify(first).includes(workerRoot), false); assert.equal(JSON.stringify(first).includes(credential.token), false);

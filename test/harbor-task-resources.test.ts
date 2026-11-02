@@ -41,6 +41,11 @@ models = types.ModuleType("harbor.models")
 task = types.ModuleType("harbor.models.task")
 config = types.ModuleType("harbor.models.task.config")
 config.TaskConfig, config.VerifierEnvironmentMode = TaskConfig, VerifierEnvironmentMode
+modes = types.ModuleType("harbor.models.task.verifier_mode")
+modes.resolve_task_verifier_mode = lambda task: VerifierEnvironmentMode.SEPARATE
+modes.resolve_effective_verifier_env_config = lambda task, step: task.verifier.environment
+modes.resolve_step_verifier_mode = lambda task, step: VerifierEnvironmentMode.SEPARATE
+sys.modules["harbor.models.task.verifier_mode"] = modes
 yaml = types.ModuleType("yaml"); yaml.safe_load = json.loads
 tomllib = types.ModuleType("tomllib"); tomllib.load = lambda handle: {"name": "resource-task"}
 sys.modules.update({"harbor": harbor, "harbor.models": models, "harbor.models.task": task, "harbor.models.task.config": config, "yaml": yaml, "tomllib": tomllib})
@@ -74,6 +79,40 @@ test("task resource declaration parser rejects unknown evidence", () => {
     schema_version: "1", task: {}, verifier: { separate: false }, compose_services: [],
     provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [], surprise: true,
   }), /fields are invalid/);
+});
+
+test("Harbor discovers bounded independent Compose sidecar builds before trial startup", () => {
+  const result = spawnSync("python3", ["test-support/harbor_compose_images_smoke.py"], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
+
+for (const pathFlavor of ["native", "windows"]) test(`Compose subdirectory build contexts cross the inspector/parser boundary with ${pathFlavor} paths`, () => {
+  const script = String.raw`
+import importlib.util, json, sys
+from pathlib import Path, PureWindowsPath
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location("compose_smoke", "test-support/harbor_compose_images_smoke.py")
+smoke = importlib.util.module_from_spec(spec); spec.loader.exec_module(smoke)
+fixture = smoke.ComposeImageDiscoveryTests()
+fixture.setUp()
+try:
+    context = fixture.environment / "nested" / "simulator"
+    context.mkdir(parents=True)
+    (context / "Dockerfile.simulator").write_text("FROM scratch\n")
+    fixture.document["services"]["simulator"]["build"]["context"] = "./nested/simulator"
+    with patch.object(sys.modules["hitch_harbor_task_resources"], "Path", PureWindowsPath if sys.argv[1] == "windows" else Path):
+        print(json.dumps(fixture.inspect(fixture.document)))
+finally:
+    fixture.tearDown()
+`;
+  const result = spawnSync("python3", ["-c", script, pathFlavor], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const declaration = parseHarborTaskResourceDeclaration(JSON.parse(result.stdout));
+  const sidecar = declaration.environment_builds[0]!;
+  assert.deepEqual(sidecar, { source: "compose", service: "simulator", context: "environment/nested/simulator", dockerfile: "Dockerfile.simulator", platform: "linux/amd64" });
+  assert.throws(() => parseHarborTaskResourceDeclaration({ ...declaration,
+    environment_builds: [{ ...sidecar, context: sidecar.context.replaceAll("/", "\\") }],
+  }), /environment build 0 is invalid/);
 });
 
 test("task resource declaration accepts only the supported main Dockerfile build", () => {

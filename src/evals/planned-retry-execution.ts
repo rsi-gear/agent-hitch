@@ -109,6 +109,7 @@ export async function runPlannedInfrastructureRetriesFromSource(
     preparedArtifact: preparedArtifactForWorkItem(options, workItem),
     executionResources: resourceRequirementForTask(options.plan, source.tasks[0] as string)?.main_limits ?? options.plan.default_trial_resources,
     resolvedImages: resolvedImageMapping(workItem.image_refs ?? []),
+    verifierImages: { resolvedImages: resolvedImageMapping(workItem.image_refs ?? [], "verifier") },
     ...(source.environmentImages ? { environmentImages: source.environmentImages } : {}),
     beginRetry: async ({ retry, triggers, backendDirectory }) => {
       const directRelease = await semaphore?.acquire(options.signal, workSchedulingPriority(workItem));

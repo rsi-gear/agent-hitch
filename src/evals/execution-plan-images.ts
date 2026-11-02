@@ -10,20 +10,27 @@ export function parseEnvironmentImageUses(value: unknown, taskIds: readonly stri
   const allowedTasks = new Set(taskIds);
   const uses = value.map((entry, index) => {
     if (!isRecord(entry)) throw new TypeError(`${label} ${index} is invalid`);
-    assertOnlyKeys(entry, ["task_ids", "image_id", "requested_reference", "reference", "manifest_digest", "platform", "resolution", "cache_hit"], `${label} ${index}`);
+    assertOnlyKeys(entry, ["task_ids", "role", "service", "image_id", "requested_reference", "reference", "manifest_digest", "platform", "resolution", "cache_hit"], `${label} ${index}`);
     if (!Array.isArray(entry.task_ids) || entry.task_ids.length === 0 || entry.task_ids.some((task) => typeof task !== "string" || !allowedTasks.has(task))
       || new Set(entry.task_ids).size !== entry.task_ids.length || !isSha256(entry.image_id) || !isSha256(entry.manifest_digest)
       || !validImageReference(entry.requested_reference) || !validImageReference(entry.reference)
       || !(entry.reference as string).endsWith(`@${entry.manifest_digest}`)
       || imageRepository(entry.requested_reference as string) !== imageRepository(entry.reference as string)
       || typeof entry.platform !== "string" || !entry.platform
-      || !new Set(["registry", "prebuilt", "backend-build"]).has(entry.resolution as string) || typeof entry.cache_hit !== "boolean") {
+      || !new Set(["registry", "prebuilt", "backend-build"]).has(entry.resolution as string) || typeof entry.cache_hit !== "boolean"
+      || entry.role !== undefined && entry.role !== "candidate" && entry.role !== "verifier"
+      || entry.role === "verifier" && entry.service !== undefined
+      || entry.service !== undefined && (entry.resolution !== "prebuilt" || typeof entry.service !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/.test(entry.service) || entry.service === "main")) {
       throw new TypeError(`${label} ${index} is invalid`);
     }
     return { ...entry, task_ids: [...entry.task_ids].sort(compareBytes) } as EnvironmentImageUseV1;
   });
-  const canonical = [...uses].sort((left, right) => compareBytes(`${left.task_ids.join("\0")}\0${left.requested_reference}`, `${right.task_ids.join("\0")}\0${right.requested_reference}`));
-  if (new Set(canonical.map((entry) => `${entry.task_ids.join("\0")}\0${entry.requested_reference}`)).size !== canonical.length) throw new TypeError(`${label} are duplicated`);
+  const key = (entry: EnvironmentImageUseV1) => `${entry.task_ids.join("\0")}\0${entry.requested_reference}\0${entry.service ?? ""}\0${entry.role ?? ""}`;
+  const canonical = [...uses].sort((left, right) => compareBytes(key(left), key(right)));
+  const identity = (entry: EnvironmentImageUseV1) => `${entry.task_ids.join("\0")}\0${entry.requested_reference}\0${entry.service ?? ""}\0${entry.role ?? "candidate"}`;
+  if (new Set(canonical.map(identity)).size !== canonical.length) throw new TypeError(`${label} are duplicated`);
+  const services = canonical.flatMap((entry) => entry.service === undefined ? [] : entry.task_ids.map((taskId) => `${taskId}\0${entry.service}`));
+  if (new Set(services).size !== services.length) throw new TypeError(`${label} service bindings are duplicated`);
   return canonical;
 }
 

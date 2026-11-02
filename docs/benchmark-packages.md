@@ -10,7 +10,8 @@ text with JSON-first precedence. Standard command graders require reward JSON.
 Independent producers are available under `benchmark-packages/automationbench`,
 `harbor-source` (Terminal-Bench 4.0 and Science 0.1), `gdpval` (public weighted
 rubric), `hle` (authorized public data, separate no-tools/with-tools profiles),
-and `osworld`. AutomationBench emits a self-contained ordinary Harbor dataset
+`osworld`, `jobbench` (official weighted rubric), and `lab` (Harvey LAB official
+all-pass evaluation). AutomationBench emits a self-contained ordinary Harbor dataset
 directly. Every current Package v1 producer is normalized by the same
 `hitch benchmark compile` boundary into that dataset form. Gear runs only the
 compiled `--dataset`; it does not select a benchmark verifier or execute Package
@@ -63,7 +64,7 @@ normalization, and weighted objectives remain the consumer's responsibility;
 the registry does not change Hitch's `total_score` or `process_score` handling.
 Manifests without this field retain their existing identity and behavior.
 
-All currently runnable benchmark adapters use this score mapping:
+Implemented benchmark adapters use this score mapping:
 
 | Benchmark | Standard input | `total_score` source | `process_score` | `feedback` |
 | --- | --- | --- | --- | --- |
@@ -73,11 +74,21 @@ All currently runnable benchmark adapters use this score mapping:
 | GDPval public rubric | compiled Package v1 | `rubric_score` | unavailable | unavailable |
 | HLE | compiled Package v1 | `correct` | unavailable | unavailable |
 | OSWorld V2 | compiled Package v1 | `native_score` | unavailable | unavailable |
+| JobBench | compiled Package v1 | official normalized `reward` | unavailable | unavailable |
+| Harvey LAB | compiled Package v1 | single all-pass / dual all-pass rate (`lab_all_pass`) | unavailable | unavailable |
 
 GDPval's `strict_success` remains an auxiliary raw metric; it is not a process
 score. OSWorld's fractional `native_score` is the official final scalar and is
 therefore a total score, not a process score. The compiler never fabricates a
-missing optional channel.
+missing optional channel. Harvey LAB's criterion pass fraction is an auxiliary raw
+metric; its canonical task score uses all-pass grading. The
+[JobBench producer](../benchmark-packages/jobbench/README.md) and
+[Harvey LAB producer](../benchmark-packages/lab/README.md) document pinned imports,
+independent verifier credentials, network/cost requirements and artifact-only
+regrade. Their current [acceptance record](evidence/jobbench-lab-producers-2026-10-19.json)
+covers offline regression plus real single-task import/compile/schema validation;
+container and paid model execution remain unverified. LAB's open-network Hitch
+profile differs from the official reference harness.
 
 The package requires `benchmark.toml`, `source-manifest.json`, its selected
 profile, and the explicit `tasks/` membership. Each task requires original

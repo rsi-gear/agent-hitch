@@ -31,6 +31,8 @@ class DockerEnvironment:
         return {"HITCH_HOST_CREDENTIAL_HELPER_JSON": "host-only-helper", "SAFE_COMPOSE_VALUE": "kept"}
     async def _run_docker_compose_command(self, command, *args, **kwargs):
         self.commands = getattr(self, "commands", []) + [command]
+        if getattr(self, "fail_down", False) and command[:1] == ["down"]:
+            raise RuntimeError("fixture cleanup failed")
         return types.SimpleNamespace(stdout=json.dumps({"services": {"main": getattr(self, "resolved_main", {})}}))
     async def start(self, force_build):
         await self._run_docker_compose_command(["up", "--wait"])
@@ -64,14 +66,27 @@ overlay = json.loads(env._hitch_ownership_compose_path.read_text())
 assert set(overlay["services"]) == {"main", "database"}
 assert set(overlay["networks"]) == {"default", "private"}
 assert set(overlay["volumes"]) == {"data"}
-for group in overlay.values():
-    for config in group.values(): assert config["labels"] == labels
+for name, group in overlay.items():
+    expected = {**labels, "io.hitch.environment-role": "candidate"} if name == "services" else labels
+    for config in group.values(): assert config["labels"] == expected
 assert overlay["services"]["database"]["cpus"] == 0.5
 assert overlay["services"]["database"]["mem_limit"] == 67108864
 assert overlay["services"]["database"]["image"] == resolved["registry.test/database:16"]
 assert env.task_env_config.docker_image == resolved["registry.test/task:v1"]
 assert "cpus" not in overlay["services"]["main"]
 assert env._docker_compose_paths[-1] == env._hitch_ownership_compose_path
+asyncio.run(env._run_docker_compose_command(["down", "--rmi", "local", "--volumes", "--remove-orphans"]))
+assert env.commands[-1] == ["down", "--volumes", "--remove-orphans"]
+asyncio.run(env._run_docker_compose_command(["down", "--rmi", "all"]))
+assert env.commands[-1] == ["down", "--rmi", "all"]
+plain = module.HitchHarborDockerEnvironment(environment_dir=root)
+asyncio.run(plain._run_docker_compose_command(["down", "--rmi", "local"]))
+assert plain.commands[-1] == ["down", "--rmi", "local"]
+env.fail_down = True
+try: asyncio.run(env._run_docker_compose_command(["down", "--rmi", "local", "--volumes"]))
+except RuntimeError as error: assert str(error) == "fixture cleanup failed"
+else: raise AssertionError("cleanup error was hidden")
+env.fail_down = False
 env._hitch_benchmark_platform = "linux/amd64"
 benchmark_overlay_path = env._write_ownership_overlay()
 benchmark_overlay = json.loads(benchmark_overlay_path.read_text())
@@ -95,8 +110,8 @@ assert '"build": !reset null' in prebuilt_overlay_text
 (root / "docker-compose-hitch-prebuilt.yaml").write_text(prebuilt_overlay_text)
 gateway_env = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_model_proxy_host_gateway=True)
 gateway_overlay = json.loads(gateway_env._hitch_ownership_compose_path.read_text())
-assert gateway_overlay["services"]["main"] == {"extra_hosts": ["host.docker.internal:host-gateway"]}
-assert gateway_overlay["services"]["database"] == {}
+assert gateway_overlay["services"]["main"] == {"extra_hosts": ["host.docker.internal:host-gateway"], "labels": {"io.hitch.environment-role": "candidate"}}
+assert gateway_overlay["services"]["database"] == {"labels": {"io.hitch.environment-role": "candidate"}}
 (root / "controller/payload").mkdir(parents=True)
 (root / "artifact").mkdir()
 shared_paths = {"runtime_directory": str(root / "controller"), "artifact_directory": str(root / "artifact")}
@@ -109,7 +124,7 @@ assert all(mount["read_only"] for mount in shared_overlay["services"]["main"]["v
 assert "volumes" not in shared_overlay["services"]["database"]
 verifier_env = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="task__verifier__trial", hitch_shared_runtime=shared_paths)
 assert verifier_env._hitch_shared_runtime is None
-assert verifier_env._hitch_ownership_compose_path is None
+assert json.loads(verifier_env._hitch_ownership_compose_path.read_text())["services"]["main"]["labels"]["io.hitch.environment-role"] == "verifier"
 verifier_prebuilt = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="task__verifier__trial", task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt)
 assert verifier_prebuilt.task_env_config.docker_image is None
 assert verifier_prebuilt._hitch_prebuilt_task_image is None
@@ -180,6 +195,32 @@ try:
             candidate._hitch_ownership_temp_dir.cleanup()
 finally:
     (root / "docker-compose.yaml").write_text(original)
+sales = {"services": {
+    "main": {"platform": "linux/amd64", "build": {"context": ".", "dockerfile": "Dockerfile"},
+             "depends_on": {"simulator": {"condition": "service_healthy"}}},
+    "simulator": {"platform": "linux/amd64", "build": {"context": ".", "dockerfile": "Dockerfile.simulator"},
+                  "healthcheck": {"test": ["CMD", "true"]}},
+}}
+(root / "sales-compose.yaml").write_text(json.dumps(sales))
+try:
+    (root / "docker-compose.yaml").write_text(json.dumps(sales))
+    simulator_image = "sha256:" + "d" * 64
+    prepared = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="sales__env",
+        hitch_ownership_labels=labels, task_env_config=TaskEnvironment(None),
+        hitch_prebuilt_task_image=prebuilt, hitch_prebuilt_service_images={"simulator": simulator_image})
+    overlay_text = prepared._hitch_ownership_compose_path.read_text()
+    assert overlay_text.count('"build": !reset null') == 2
+    (root / "sales-overlay.yaml").write_text(overlay_text)
+    verifier = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="sales__verifier__env",
+        task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt,
+        hitch_prebuilt_service_images={"simulator": simulator_image})
+    assert verifier._hitch_prebuilt_task_image is None and verifier._hitch_prebuilt_service_images == {}
+    for invalid in ({"simulator": None}, {"simulator": "mutable:tag"}, [], {"unknown": simulator_image}):
+        try: module.HitchHarborDockerEnvironment(environment_dir=root, hitch_prebuilt_service_images=invalid)
+        except ValueError: pass
+        else: raise AssertionError("invalid service image mapping accepted")
+finally:
+    (root / "docker-compose.yaml").write_text(original)
 `;
   const result = spawnSync("python3", ["-c", script, directory, source], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -217,4 +258,16 @@ finally:
   const platforms = JSON.parse(platformMerged.stdout).services;
   assert.equal(platforms.main.platform, "linux/amd64");
   assert.equal(platforms.database.platform, "linux/arm64");
+  const salesMerged = spawnSync("docker", ["compose", "-f", path.join(directory, "sales-compose.yaml"),
+    "-f", path.join(directory, "sales-overlay.yaml"), "config", "--format", "json"], { encoding: "utf8" });
+  assert.equal(salesMerged.status, 0, salesMerged.stderr || salesMerged.stdout);
+  const sales = JSON.parse(salesMerged.stdout).services;
+  for (const service of [sales.main, sales.simulator]) {
+    assert.equal("build" in service, false);
+    assert.equal(service.pull_policy, "never");
+  }
+  assert.equal(sales.main.image, `sha256:${"c".repeat(64)}`);
+  assert.equal(sales.simulator.image, `sha256:${"d".repeat(64)}`);
+  assert.equal(sales.main.depends_on.simulator.condition, "service_healthy");
+  assert.deepEqual(sales.simulator.healthcheck.test, ["CMD", "true"]);
 });

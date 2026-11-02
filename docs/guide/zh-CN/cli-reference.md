@@ -208,6 +208,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 
 `list` 从 daemon 查询 Worker 状态。`observe` 返回新的执行观测，可选 nonce 为 32 位小写十六进制字符串。`register` 轮换 Worker 凭据并写入指定文件。`run` 下载并校验输入，执行接受的任务、回报结果并处理获准的资源清理。每个 Worker 主机使用独立的状态目录。
 
+`observe` 对可重试的 Docker info 探测失败最多重试一次，每次都执行新命令；首次得到有效观测后立即结束，真实身份变化仍会返回。每次 Docker info 命令期限为 10s，环境探测的取消期限为 25s；等待子进程与文件操作收尾可能使取消返回晚于该期限。持续失败仍返回不可用环境。可选[探测诊断](../../schemas/execution-observation-diagnostics.schema.json)在环境字段之外提供安全的失败分类、尝试次数与耗时，不含命令输出或路径，不参与环境身份摘要。旧版无诊断观测仍可读取。
+
 `--once` 在处理工作、完成待处理任务与清理后退出，可能需要等待任务到达。默认轮询间隔 1s、心跳间隔 10s；每个间隔范围为 50ms 到 5m。注册文件遵循 [Worker 注册 Schema](../../schemas/remote-worker-registration.schema.json)，执行能力见[执行 Provider 契约](../../hitch-harbor-control-plane-implementation-status.md)。
 
 ## 结果与对比

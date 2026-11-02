@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +9,74 @@ import { BuildSlotAdmission, ResourceLedger } from "../src/control-plane/index.j
 import { DockerBuildKitBuilder, DockerRegistryResolver, EnvironmentImageService, inspectEnvironmentBuild, inspectPinnedDockerfileBases, parseEnvironmentImageManifest, resolveBuildContext, resolveRegistryEnvironmentImage } from "../src/images/index.js";
 import type { EnvironmentImageBuilder } from "../src/images/index.js";
 import { delay, sha256JSON, statePaths } from "../src/foundation/index.js";
+
+test("failed image preparation retains bounded useful diagnostics with credentials redacted", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-image-build-diagnostic-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const context = path.join(root, "context");
+  await mkdir(context);
+  await writeFile(path.join(context, "Dockerfile"), "FROM scratch\n");
+  const events: Record<string, unknown>[] = [];
+  const service = new EnvironmentImageService({ root, onEvent: (event) => events.push(event), builder: {
+    id: "failing-buildkit", probe: async () => false, build: async () => {
+      throw new Error(`#7 RUN pip install failed: password=private-build-token\n${"progress\n".repeat(4_096)}`);
+    },
+  } });
+  await assert.rejects(service.build({ benchmarkId: "demo", benchmarkRevision: "1", contextDirectory: context, platform: "linux/amd64" }));
+  const buildId = events.find((event) => event.type === "build.started")?.build_id as string;
+  const record = await inspectEnvironmentBuild(root, buildId);
+  const message = record?.record.error?.message ?? "";
+  assert.match(message, /#7 RUN pip install failed/);
+  assert.match(message, /\[REDACTED\]/);
+  assert.equal(message.includes("private-build-token"), false);
+  assert.ok(message.length <= 16 * 1024);
+  assert.match(message, /truncated/);
+});
+
+test("cancelling an image build drains the Docker process before releasing admission", { skip: process.platform === "win32" }, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-image-build-cancel-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const context = path.join(root, "context");
+  await mkdir(context);
+  await writeFile(path.join(context, "Dockerfile"), "FROM scratch\n");
+  const started = path.join(root, "started");
+  const exited = path.join(root, "exited");
+  const docker = path.join(root, "fake-docker");
+  await writeFile(docker, `#!/usr/bin/env node
+const fs = require("node:fs");
+process.on("SIGTERM", () => setTimeout(() => {
+  fs.writeFileSync(${JSON.stringify(exited)}, "drained");
+  process.exit(143);
+}, 25));
+setInterval(() => {}, 1000);
+fs.writeFileSync(${JSON.stringify(started)}, String(process.pid));
+`, { mode: 0o755 });
+  const abort = new AbortController();
+  t.after(() => abort.abort());
+  const events: Record<string, unknown>[] = [];
+  let releasedAfterExit = false;
+  const service = new EnvironmentImageService({ root, builder: new DockerBuildKitBuilder({ root, dockerExecutable: docker }),
+    onEvent: (event) => events.push(event), acquireBuildSlot: async () => ({ release: () => {
+      releasedAfterExit = existsSync(exited);
+    } }) });
+  const build = service.build({ benchmarkId: "demo", benchmarkRevision: "1", contextDirectory: context, platform: "linux/amd64", signal: abort.signal });
+  const rejected = assert.rejects(build, { code: "cancelled" });
+  const deadline = Date.now() + 10_000;
+  let pid: number | undefined;
+  while (Date.now() < deadline) {
+    try { pid = Number(await readFile(started, "utf8")); break; } catch { await delay(10); }
+  }
+  assert.ok(pid, "Docker build did not start");
+  abort.abort();
+  await rejected;
+  assert.equal(await readFile(exited, "utf8"), "drained");
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  assert.equal(releasedAfterExit, true);
+  const buildId = events.find((event) => event.type === "build.started")?.build_id as string;
+  const record = await inspectEnvironmentBuild(root, buildId);
+  assert.equal(record?.record.state, "failed");
+  assert.equal(record?.record.error?.code, "cancelled");
+});
 
 test("ten concurrent requests for one environment image invoke BuildKit once", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-images-"));

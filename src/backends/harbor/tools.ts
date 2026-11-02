@@ -6,6 +6,17 @@ import { HitchError, PROVIDER_ENVIRONMENT_NAMES, SCHEMA_VERSION, atomicWriteJSON
 import { HOST_CREDENTIAL_HELPER_CAPABILITY } from "./host-credential-helper.js";
 
 export const DEFAULT_HARBOR_VERSION = "0.21.0";
+
+export async function discoverHarbor(explicit: string | undefined, root: string, env: NodeJS.ProcessEnv): Promise<string> {
+  const located = await locateHarbor({ root, explicit, env });
+  if (!located.executable) {
+    throw new HitchError(`Harbor executable not found: ${located.requested}`, {
+      code: "harbor_unavailable",
+      exitCode: 3,
+    });
+  }
+  return located.executable;
+}
 export const HARBOR_CREDENTIAL_ENV: string[] = [...PROVIDER_ENVIRONMENT_NAMES];
 const PROVIDER_CREDENTIAL_ENV = [
   "DEEPSEEK_API_KEY",

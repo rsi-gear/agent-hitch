@@ -29,13 +29,20 @@ export async function executionObservation(request: IncomingMessage, response: S
       json(response, 200, { schema_version: "2", nonce: challenge.nonce, provider: challenge.provider,
         worker_id: challenge.worker_id, collision_domain_id: challenge.collision_domain_id, generation: challenge.generation,
         daemon_instance_id: input.instanceId, daemon_runtime: runtime, worker_runtime: result.runtime,
-        environment: result.environment, environment_digest: result.environment_digest });
+        environment: result.environment, environment_digest: result.environment_digest,
+        ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
     } finally { response.removeListener("close", abort); }
     return;
   }
   if (!input.source) throw new HitchError("daemon has no startup runtime observation; restart it with a supported Hitch CLI", { code: "execution_observation_unavailable", exitCode: 12 });
-  const { runtime, environment } = await input.source.observe();
-  json(response, 200, { schema_version: "2", nonce: body.nonce, provider: input.local.provider,
-    worker_id: input.local.worker_id, collision_domain_id: input.local.collision_domain_id, generation: null,
-    daemon_instance_id: input.instanceId, daemon_runtime: runtime, environment, environment_digest: sha256JSON(environment) });
+  const controller = new AbortController(), abort = () => controller.abort();
+  response.once("close", abort);
+  try {
+    const { runtime, environment, diagnostics } = await input.source.observe(controller.signal);
+    controller.signal.throwIfAborted();
+    json(response, 200, { schema_version: "2", nonce: body.nonce, provider: input.local.provider,
+      worker_id: input.local.worker_id, collision_domain_id: input.local.collision_domain_id, generation: null,
+      daemon_instance_id: input.instanceId, daemon_runtime: runtime, environment, environment_digest: sha256JSON(environment),
+      ...(diagnostics ? { diagnostics } : {}) });
+  } finally { response.removeListener("close", abort); }
 }

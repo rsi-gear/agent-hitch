@@ -67,7 +67,9 @@ fs.writeFileSync(counter, String(count));
   await response.text();
   const interruption = ${JSON.stringify(interruption ?? null)};
   if (interruption) {
-    fs.writeFileSync(interruption.reached, JSON.stringify({runId, pid: process.pid}));
+    const reachedTemporary = interruption.reached + "." + process.pid + "." + require("node:crypto").randomUUID() + ".tmp";
+    fs.writeFileSync(reachedTemporary, JSON.stringify({runId, pid: process.pid}), {flag: "wx"});
+    fs.renameSync(reachedTemporary, interruption.reached);
     const deadline = Date.now() + 30000;
     while (!fs.existsSync(interruption.resume)) {
       if (Date.now() >= deadline) throw new Error("controller interruption did not resume");

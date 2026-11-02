@@ -1,4 +1,4 @@
-import type { ControllerRuntimeObservationV2, HarborEnvironmentObservationV2, RemoteExecutionObservationChallengeV2, RemoteExecutionObservationReceiptV2, ResidentRuntimeObservationV2 } from "../domain/index.js";
+import type { ControllerRuntimeObservationV2, ExecutionObservationDiagnosticsV1, HarborEnvironmentObservationV2, RemoteExecutionObservationChallengeV2, RemoteExecutionObservationReceiptV2, ResidentRuntimeObservationV2 } from "../domain/index.js";
 import { invalidInput, sha256JSON } from "../foundation/index.js";
 
 type Json = Record<string, unknown>;
@@ -57,10 +57,38 @@ export function parseHarborEnvironmentObservation(value: unknown): HarborEnviron
 }
 
 export function parseExecutionObservationReceipt(value: unknown): RemoteExecutionObservationReceiptV2 {
-  const r = exact(value, "schema_version,challenge,runtime,environment,environment_digest");
+  const hasDiagnostics = value !== null && typeof value === "object" && Object.hasOwn(value, "diagnostics");
+  const r = exact(value, `schema_version,challenge,runtime,environment,environment_digest${hasDiagnostics ? ",diagnostics" : ""}`);
   check(r.schema_version === "2");
   const environment = parseHarborEnvironmentObservation(r.environment);
   check(r.environment_digest === sha256JSON(environment));
   return { schema_version: "2", challenge: parseExecutionObservationChallenge(r.challenge),
-    runtime: parseResidentRuntimeObservation(r.runtime), environment, environment_digest: r.environment_digest as string };
+    runtime: parseResidentRuntimeObservation(r.runtime), environment, environment_digest: r.environment_digest as string,
+    ...(hasDiagnostics ? { diagnostics: parseExecutionObservationDiagnostics(r.diagnostics) } : {}) };
+}
+
+export function parseExecutionObservationDiagnostics(value: unknown): ExecutionObservationDiagnosticsV1 {
+  const diagnostics = exact(value, "schema_version,probes");
+  check(diagnostics.schema_version === "1" && Array.isArray(diagnostics.probes) && diagnostics.probes.length >= 1 && diagnostics.probes.length <= 4);
+  const seen = new Set<string>();
+  const stages: Record<string, string[]> = {
+    ok: ["complete"], not_found: ["resolve"], io_error: ["resolve", "fingerprint", "identity"],
+    spawn_error: ["command"], nonzero_exit: ["command"], signal_exit: ["command"], timed_out: ["command"], output_limit: ["command"],
+    invalid_encoding: ["parse"], invalid_json: ["parse"], invalid_fields: ["validate"], executable_changed: ["identity"],
+  };
+  for (const item of diagnostics.probes) {
+    const probe = exact(item, "probe,attempt,stage,outcome,elapsed_ms,exit_code,signal");
+    check(typeof probe.probe === "string" && ["harbor_version", "docker_info", "buildx_version"].includes(probe.probe)
+      && (probe.attempt === 1 || probe.attempt === 2 && probe.probe === "docker_info" && seen.has("docker_info:1"))
+      && typeof probe.outcome === "string" && Object.hasOwn(stages, probe.outcome) && typeof probe.stage === "string" && stages[probe.outcome]!.includes(probe.stage)
+      && Number.isSafeInteger(probe.elapsed_ms) && Number(probe.elapsed_ms) >= 0 && Number(probe.elapsed_ms) <= 30_000
+      && (probe.exit_code === null || Number.isSafeInteger(probe.exit_code) && Number(probe.exit_code) >= -2_147_483_648 && Number(probe.exit_code) <= 4_294_967_295)
+      && [null, "SIGTERM", "SIGKILL", "other"].includes(probe.signal as string | null));
+    check(probe.outcome !== "nonzero_exit" || probe.exit_code !== null && probe.exit_code !== 0 && probe.signal === null);
+    check(probe.outcome !== "signal_exit" || probe.exit_code === null && probe.signal !== null);
+    check(probe.outcome !== "ok" || probe.exit_code === 0 && probe.signal === null);
+    const key = `${probe.probe}:${probe.attempt}`;
+    check(!seen.has(key)); seen.add(key);
+  }
+  return structuredClone(diagnostics) as unknown as ExecutionObservationDiagnosticsV1;
 }

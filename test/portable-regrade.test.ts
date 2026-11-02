@@ -62,9 +62,19 @@ test("portable regrade rejects unsupported host dependencies, credential-bearing
 test("portable verifier replay strips host preparation paths and preserves managed keepalive", () => {
   const original = source();
   Object.assign(original.environment.kwargs, { hitch_image_cache_dir: "/original/prepared-images", hitch_image_build_slots: 2,
-    hitch_shared_runtime: { runtime_directory: "/original/runtime", artifact_directory: "/original/artifact" }, hitch_managed_keepalive: true });
+    hitch_shared_runtime: { runtime_directory: "/original/runtime", artifact_directory: "/original/artifact" }, hitch_managed_keepalive: true,
+    hitch_prebuilt_service_images: { simulator: `sha256:${"b".repeat(64)}` } });
+  Object.assign(original.environment.kwargs, { hitch_prebuilt_verifier_image: `sha256:${"c".repeat(64)}`,
+    hitch_verifier_resolved_images: { "grader:v1": `grader@sha256:${"d".repeat(64)}` } });
   const portable = capturePortableHarborRegradeConfig(original, "/original/task");
   assert.equal(JSON.stringify(portable).includes("/original/"), false);
   assert.equal(((portable.config.environment as any).kwargs).hitch_managed_keepalive, true);
+  assert.deepEqual(((portable.config.environment as any).kwargs).hitch_prebuilt_service_images, { simulator: `sha256:${"b".repeat(64)}` });
+  assert.equal(((portable.config.environment as any).kwargs).hitch_prebuilt_verifier_image, `sha256:${"c".repeat(64)}`);
+  assert.deepEqual(((portable.config.environment as any).kwargs).hitch_verifier_resolved_images, { "grader:v1": `grader@sha256:${"d".repeat(64)}` });
   assert.deepEqual(parsePortableHarborRegradeConfig(portable), portable);
+  for (const changed of [{ hitch_prebuilt_verifier_image: "mutable:tag" }, { hitch_verifier_resolved_images: { grader: "mutable:tag" } }]) {
+    Object.assign(original.environment.kwargs, changed);
+    assert.throws(() => capturePortableHarborRegradeConfig(original, "/original/task"), { code: "eval_verifier_only_unavailable" });
+  }
 });

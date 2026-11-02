@@ -43,6 +43,7 @@ export function localEnvironmentImageBuild(
       contextDirectory: input.contextDirectory,
       dockerfile: input.dockerfile,
       platform: input.platform,
+      ...(input.sourceKind ? { sourceKind: input.sourceKind } : {}),
       baseImages,
       ...(input.signal ? { signal: input.signal } : {}),
     });

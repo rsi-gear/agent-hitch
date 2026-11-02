@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { EnvironmentBuildRecordV1, EnvironmentImageManifestV1, Sha256 } from "../domain/index.js";
-import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
+import { HitchError, atomicWriteJSON, credentialValuesFromEnv, ensureDir, isSensitiveFieldName, readJSON, safeDiagnosticMessage, sha256JSON, statePaths, withFileLock } from "../foundation/index.js";
 import { resolveBuildContext } from "./context.js";
 import { environmentImageIdentity, parseEnvironmentBuildRecord, parseEnvironmentImageManifest } from "./manifest.js";
 
@@ -26,6 +26,7 @@ export interface EnvironmentImageBuilder {
     outputReference: string;
     cacheKey: Sha256;
     cacheReference: string;
+    signal?: AbortSignal;
   }): Promise<EnvironmentImageBuilderOutput>;
 }
 
@@ -121,6 +122,7 @@ export class EnvironmentImageService {
           outputReference: input.outputReference,
           cacheKey: input.cacheKey,
           cacheReference: input.cacheReference,
+          ...(signal ? { signal } : {}),
         });
         if (output.platform !== input.platform || !/^sha256:[a-f0-9]{64}$/.test(output.manifest_digest)) throw new HitchError("BuildKit output identity does not match the image plan", { code: "image_output_mismatch", exitCode: 12 });
         const withoutIdentity: Omit<EnvironmentImageManifestV1, "image_id" | "created_at"> = {
@@ -155,7 +157,9 @@ export class EnvironmentImageService {
           ...recordBase,
           state: "failed",
           completed_at: new Date().toISOString(),
-          error: { code, message: "environment image build failed" },
+          error: { code, message: safeDiagnosticMessage(error, credentialValuesFromEnv([
+            ...new Set([...input.secretNames, ...Object.keys(process.env).filter((name) => isSensitiveFieldName(name) || /_PROXY$/i.test(name))]),
+          ], process.env), 16 * 1024) },
         }));
         this.emit({ type: "build.failed", build_id: recordBase.build_id, cache_key: input.cacheKey, code, duration_ms: Date.now() - started });
         throw new HitchError("environment image build failed", { code, exitCode: error instanceof HitchError ? error.exitCode : 12, cause: error });

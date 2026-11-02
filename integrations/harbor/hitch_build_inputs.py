@@ -136,11 +136,77 @@ def pinned_dockerfile(source):
     return sorted(set(bases))
 
 
-async def snapshot_context(source, target):
+def context_inputs(content, dockerfile):
+    """A safe subset of Dockerfile input selection, never a Dockerignore parser.
+
+    Literal COPY sources (including complete directories) suffice for ordinary
+    builds. Dynamic paths, globs and unfamiliar COPY options retain the full
+    context. Docker itself applies the unchanged ignore files to the snapshot.
+    The caller must validate the frontend, bases and external inputs separately.
+    """
+    # Python's split/splitlines accept whitespace Docker treats as filename
+    # bytes. Keep unfamiliar characters on the full-context path, including
+    # Unicode whitespace and nonstandard line separators.
+    content = content.replace("\r\n", "\n")
+    if re.search(r"[^\t\n\x20-\x7e]", content):
+        return None
+    # Continuations can join tokens, not only operands (e.g. pay\\\nload).
+    # Retain the complete context instead of implementing Docker's lexer here.
+    if any(line.rstrip().endswith("\\") for line in content.splitlines()):
+        return None
+    selected = {dockerfile, ".dockerignore", dockerfile + ".dockerignore"}
+    for line in content.splitlines():
+        tokens = line.strip().split(None, 1)
+        if not tokens or tokens[0].upper() != "COPY":
+            continue
+        body = tokens[1] if len(tokens) == 2 else ""
+        from_stage = False
+        while body.startswith("--"):
+            flag, separator, body = body.partition(" ")
+            body = body.lstrip()
+            if not separator:
+                return None
+            if re.fullmatch(r"--from=[\w./:@-]+", flag):
+                from_stage = True
+            elif not re.fullmatch(r"--(?:chown|chmod)=[\w:$,=+-]+|--link(?:=(?:true|false))?", flag):
+                return None
+        if from_stage:
+            continue
+        try:
+            operands = json.loads(body) if body.startswith("[") else body.split()
+        except ValueError:
+            return None
+        if not isinstance(operands, list) or len(operands) < 2 or any(not isinstance(p, str) for p in operands):
+            return None
+        for value in operands[:-1]:
+            # Keep Docker's normalization and pattern grammar on its full path
+            # instead of guessing at variable, escaping or parent semantics.
+            value = value.rstrip("/")
+            if (not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", value)
+                    or any(part in (".", "..") for part in value.split("/"))):
+                return None
+            selected.add(value)
+    return selected
+
+
+async def snapshot_context(source, target, dockerfile=None):
     listxattr = getattr(os, "listxattr", None)
     if not callable(listxattr):
         raise UnsupportedBuild("context-xattr-inspection")
     entries = []
+    selected = original_dockerfile = None
+    if dockerfile is not None:
+        # Validate before selecting inputs: ADD, RUN mounts, ONBUILD and custom
+        # frontends can consume inputs outside literal COPY instructions.
+        pinned_dockerfile(source / dockerfile)
+        with read_context():
+            original_dockerfile = (source / dockerfile).read_bytes()
+        selected = context_inputs(original_dockerfile.decode("utf-8"), dockerfile)
+
+    def needed(relative):
+        return selected is None or not relative or any(
+            relative == item or relative.startswith(item + "/") or item.startswith(relative + "/")
+            for item in selected)
 
     async def copy(current, destination, relative):
         with read_context():
@@ -160,7 +226,9 @@ async def snapshot_context(source, target):
                 children = sorted(current.iterdir(), key=lambda p: os.fsencode(p.name))
             entries.append([relative, "directory", mode])
             for child in children:
-                await copy(child, destination / child.name, f"{relative}/{child.name}" if relative else child.name)
+                child_relative = f"{relative}/{child.name}" if relative else child.name
+                if needed(child_relative):
+                    await copy(child, destination / child.name, child_relative)
             with read_context():
                 if [p.name for p in children] != sorted(os.listdir(current), key=os.fsencode):
                     raise UnsupportedBuild("context-changed")
@@ -199,6 +267,8 @@ async def snapshot_context(source, target):
         await asyncio.sleep(0)
 
     await copy(source, target, "")
+    if dockerfile is not None and (target / dockerfile).read_bytes() != original_dockerfile:
+        raise UnsupportedBuild("context-changed")
     return digest(entries)
 
 

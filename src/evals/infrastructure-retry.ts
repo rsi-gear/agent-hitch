@@ -45,7 +45,7 @@ export interface InfrastructureRetryRun {
 
 type RetryBackendOverrides = Pick<RunHarborBackendOptions,
   "executionResources" | "dockerOwnership" | "dockerServiceLimits" | "resolvedImages"
-  | "prebuiltTaskImage" | "recoverableProcess" | "onProcessStarted" | "onProcessExited">;
+  | "prebuiltTaskImage" | "prebuiltServiceImages" | "verifierImages" | "recoverableProcess" | "onProcessStarted" | "onProcessExited">;
 
 export interface InfrastructureRetryLifecycle {
   leaseId: string;
@@ -86,6 +86,7 @@ export interface RunInfrastructureRetriesOptions {
   stopAfterResult?: (rawResult: Record<string, unknown> | null) => boolean;
   executionResources?: ResourceVectorV1;
   resolvedImages?: Record<string, string>;
+  verifierImages?: RunHarborBackendOptions["verifierImages"];
   environmentImages?: TrialEnvironmentImagesV1;
   beginRetry?: BeginInfrastructureRetry;
   modelCapturePlan?: ModelCapturePlanV1;
@@ -236,6 +237,7 @@ export async function runInfrastructureRetries(
         preparedArtifact: options.preparedArtifact,
         ...(options.executionResources ? { executionResources: options.executionResources } : {}),
         ...(options.resolvedImages ? { resolvedImages: options.resolvedImages } : {}),
+        ...(options.verifierImages ? { verifierImages: options.verifierImages } : {}),
         ...(options.interactionCaptureExporter ? { modelProxy: options.interactionCaptureExporter.route } : {}),
         ...lifecycle?.backend,
         env: options.env,

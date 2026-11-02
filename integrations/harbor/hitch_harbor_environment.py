@@ -6,6 +6,8 @@ import asyncio
 import json
 import re
 import tempfile
+from contextlib import AsyncExitStack, asynccontextmanager
+from functools import wraps
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,6 +22,7 @@ _LABEL_WORK = "io.hitch.work-id"
 _LABEL_LEASE = "io.hitch.lease-id"
 _LABEL_EPOCH = "io.hitch.lease-epoch"
 _LABEL_TASK = "io.hitch.task-id"
+_LABEL_ROLE = "io.hitch.environment-role"
 _REQUIRED_LABELS = {
     _LABEL_ROOT,
     _LABEL_PROVIDER,
@@ -60,6 +63,9 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         hitch_service_resource_limits: Mapping[str, Mapping[str, int]] | None = None,
         hitch_resolved_images: Mapping[str, str] | None = None,
         hitch_prebuilt_task_image: str | None = None,
+        hitch_prebuilt_service_images: Mapping[str, str] | None = None,
+        hitch_prebuilt_verifier_image: str | None = None,
+        hitch_verifier_resolved_images: Mapping[str, str] | None = None,
         hitch_model_proxy_host_gateway: bool = False,
         hitch_main_gpu_count: int = 0,
         hitch_shared_runtime: Mapping[str, str] | None = None,
@@ -76,14 +82,32 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         self._hitch_prebuilt_task_image = _validate_prebuilt_task_image(
             hitch_prebuilt_task_image
         )
+        if hitch_prebuilt_service_images is not None and not isinstance(hitch_prebuilt_service_images, Mapping):
+            raise ValueError("Hitch prebuilt service images must be a mapping")
+        self._hitch_prebuilt_service_images = dict(hitch_prebuilt_service_images or {})
+        for service, image in self._hitch_prebuilt_service_images.items():
+            if (not isinstance(service, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}", service)
+                    or service == MAIN_SERVICE_NAME):
+                raise ValueError("Hitch prebuilt service name is invalid")
+            if image is None:
+                raise ValueError("Hitch prebuilt service image is required")
+            _validate_prebuilt_task_image(image)
         # Harbor passes environment kwargs to separate verifiers too. A planned
         # candidate image must never replace a verifier's independent context.
         session_id = kwargs.get("session_id", args[2] if len(args) > 2 else "")
         trial_paths = kwargs.get("trial_paths", args[3] if len(args) > 3 else None)
         trial_name = trial_paths.trial_dir.name if trial_paths is not None else None
         candidate = _candidate_session(session_id, trial_name)
+        self._hitch_environment_role = "candidate" if candidate or not session_id else "verifier"
+        verifier_image = _validate_prebuilt_task_image(hitch_prebuilt_verifier_image)
+        verifier_images = _validate_resolved_images(hitch_verifier_resolved_images)
         if session_id and not candidate:
-            self._hitch_prebuilt_task_image = None
+            self._hitch_prebuilt_task_image = verifier_image
+            self._hitch_prebuilt_service_images = {}
+            # Absence retains the historical provider contract. New plans pass
+            # even an empty map to prevent candidate registry substitutions.
+            if hitch_verifier_resolved_images is not None:
+                self._hitch_resolved_images = verifier_images
         if hitch_image_cache_dir is not None and (not isinstance(hitch_image_cache_dir, str) or not Path(hitch_image_cache_dir).is_absolute()):
             raise ValueError("Hitch image cache directory must be absolute")
         if not isinstance(hitch_managed_keepalive, bool):
@@ -134,9 +158,11 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             self._hitch_benchmark = BenchmarkSession(self, descriptor(directory))
         if (
             self._hitch_ownership_labels
+            or self._hitch_environment_role
             or self._hitch_service_resource_limits
             or self._hitch_resolved_images
             or self._hitch_prebuilt_task_image
+            or self._hitch_prebuilt_service_images
             or self._hitch_model_proxy_host_gateway
             or self._hitch_main_gpu_count > 0
             or self._hitch_benchmark_platform
@@ -179,6 +205,14 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             except Exception as error:
                 raise _SharedRuntimeConfigurationError(str(error)) from error
         preparation = self._hitch_preparation
+        if command[:1] == ["down"] and "--rmi" in command and (self._hitch_ownership_labels
+                or self._hitch_prebuilt_task_image or self._hitch_prebuilt_service_images or preparation and preparation.images):
+            index = command.index("--rmi")
+            if command[index + 1:index + 2] == ["local"]:
+                # Image pruning enumerates the daemon's image metadata before
+                # Compose can remove networks/volumes. Keep shared images for
+                # Hitch image GC; physical cleanup remains owner-scoped.
+                command = command[:index] + command[index + 2:]
         if preparation:
             if command == ["build"]:
                 cached = await preparation.build(run)
@@ -189,13 +223,6 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 # Compose's original image/pull-policy choices, including any
                 # sidecars. An implicit up is not an explicit build request.
                 await preparation.runtime(run)
-            elif command[:1] == ["down"] and preparation.images and "--rmi" in command:
-                index = command.index("--rmi")
-                if command[index + 1:index + 2] == ["local"]:
-                    # Compose treats an immutable image ID as an untagged local
-                    # image even though our persistent cache also owns a tag.
-                    # Keep prepared images; retain all container/volume cleanup.
-                    command = command[:index] + command[index + 2:]
         return await run(command, *args, **kwargs)
 
     def _requires_egress_control(self, *, startup_network_policy, phase_network_policies):
@@ -354,6 +381,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
 
         labels = dict(self._hitch_ownership_labels)
         service_overlays: dict[str, dict[str, Any]] = {}
+        if not set(self._hitch_prebuilt_service_images).issubset(services):
+            raise ValueError("Hitch prebuilt image names an unknown Compose service")
         for name in sorted(services):
             config: dict[str, Any] = {}
             if name == MAIN_SERVICE_NAME and include_shared_runtime and self._hitch_shared_runtime:
@@ -362,18 +391,21 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
             # architecture, e.g. an ARM QEMU sidecar beside an AMD64 candidate.
             if getattr(self, "_hitch_benchmark_platform", None) and name not in declared_platforms:
                 config["platform"] = self._hitch_benchmark_platform
-            if labels:
-                config["labels"] = labels
+            config["labels"] = {**labels, _LABEL_ROLE: self._hitch_environment_role}
             if name == MAIN_SERVICE_NAME and self._hitch_static_no_network:
                 config["network_mode"] = "none"
             resolved_image = image_overlays.get(name)
             if name == MAIN_SERVICE_NAME and self._hitch_prebuilt_task_image:
                 resolved_image = self._hitch_prebuilt_task_image
+            if name in self._hitch_prebuilt_service_images:
+                resolved_image = self._hitch_prebuilt_service_images[name]
             if resolved_image is not None:
                 config["image"] = resolved_image
+            if name == MAIN_SERVICE_NAME and self._hitch_prebuilt_task_image or name in self._hitch_prebuilt_service_images:
+                config["pull_policy"] = "never"
             if (
-                name == MAIN_SERVICE_NAME
-                and self._hitch_prebuilt_task_image
+                (name == MAIN_SERVICE_NAME and self._hitch_prebuilt_task_image
+                 or name in self._hitch_prebuilt_service_images)
                 and name in build_services
             ):
                 # Compose's normal merge semantics retain an earlier build stanza
@@ -381,6 +413,7 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 # !reset tag is the supported way to make a successful Hitch
                 # prebuild authoritative and prevent a second mutable-context build.
                 config["build"] = _COMPOSE_RESET_MARKER
+                config["pull_policy"] = "never"
             if name == MAIN_SERVICE_NAME and self._hitch_model_proxy_host_gateway:
                 config["extra_hosts"] = ["host.docker.internal:host-gateway"]
             if name == MAIN_SERVICE_NAME and self._hitch_main_gpu_count > 0:
@@ -581,3 +614,49 @@ def _image_repository(reference: str) -> str:
     slash = without_digest.rfind("/")
     colon = without_digest.rfind(":")
     return without_digest[:colon] if colon > slash else without_digest
+
+
+class VerifierEnvironmentStartError(RuntimeError):
+    """Independent environment startup failed before scoring was entered."""
+
+
+class VerifierEnvironmentStartTimeoutError(VerifierEnvironmentStartError):
+    """Independent environment startup timed out before scoring was entered."""
+
+
+def _install_verifier_start_timeout_hook():
+    # Keep this hook in the provider: historical verifier repair is deliberately
+    # authorized to replace this single file, without adding runtime modules.
+    try:
+        from harbor.trial.trial import Trial
+    except ImportError:
+        return  # Minimal provider smoke fixtures do not import Harbor trials.
+    original = Trial._separate_verifier_env
+    if getattr(original, "_hitch_verifier_start_timeout_hook", False):
+        return
+
+    @asynccontextmanager
+    @wraps(original)
+    async def separate_verifier_env(trial, *args, **kwargs):
+        async with AsyncExitStack() as stack:
+            try:
+                environment = await stack.enter_async_context(original(trial, *args, **kwargs))
+            except asyncio.TimeoutError as error:
+                if trial.config.environment.import_path != "hitch_harbor_environment:HitchHarborDockerEnvironment":
+                    raise
+                raise VerifierEnvironmentStartTimeoutError(
+                    f"Verifier environment startup timed out (environment build budget: {trial._environment_build_timeout_sec} seconds)"
+                ) from error
+            except Exception as error:
+                if trial.config.environment.import_path != "hitch_harbor_environment:HitchHarborDockerEnvironment":
+                    raise
+                raise VerifierEnvironmentStartError("Verifier environment startup failed") from error
+            # Scoring, context-exit errors and external cancellation retain
+            # their native semantics, including __aexit__ suppression.
+            yield environment
+
+    separate_verifier_env._hitch_verifier_start_timeout_hook = True
+    Trial._separate_verifier_env = separate_verifier_env
+
+
+_install_verifier_start_timeout_hook()

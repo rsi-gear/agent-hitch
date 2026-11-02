@@ -8,6 +8,42 @@ contexts are prebuilt when every Dockerfile base is digest-pinned. The Harbor
 overlay injects the resulting immutable local config digest and uses Compose's
 `!reset` merge tag to remove the original main-service build stanza.
 
+Plain, independent Compose sidecar builds are also prepared during eval
+planning, before Harbor starts a trial. This supported form uses unnamed
+images, an explicit `linux/amd64` or `linux/arm64` platform, a literal local
+context inside the task's `environment/` directory, and a Dockerfile with
+digest-pinned bases. The build may specify only `context` and `dockerfile`.
+The main Compose build must match `environment/Dockerfile`. Named image
+producers or consumers, image mounts, build arguments, targets, secrets,
+additional contexts, pull overrides, and other unsupported inputs retain the
+native backend path. A context or Dockerfile that escapes the environment or
+uses a symlink is not prebuilt.
+
+The execution plan gives each prepared sidecar an explicit service binding.
+Harbor receives its immutable local config digest with `build: !reset null`
+and `pull_policy: never`; dependencies and health checks retain their original
+Compose definitions. Separate verifier sessions do not inherit the candidate's
+prepared main or sidecar images. Historical prebuilt image uses without a
+service binding still identify the main image.
+
+Single-step separate verifiers have an independent `verifier` role. Discovery
+uses Harbor 0.21's effective verifier configuration: an explicit verifier
+environment takes precedence; separate mode without one inherits the task
+environment, including its `docker_image`. An effective `docker_image` wins
+over a Dockerfile. Otherwise Hitch prepares the verifier's own `tests/Dockerfile`
+with `tests/` as the build context. It never substitutes the candidate's main
+or sidecar binding. Shared verifiers require no second image. Task-authored
+`tests/docker-compose.yaml`, multi-step verifier contexts and linked context or
+Dockerfile paths retain an explicit backend fallback. Required prebuild rejects
+these unsupported forms before Target starts.
+
+New image uses and observed containers record the environment role separately
+from the Compose service name; both environments can have a service named
+`main`. Verification rejects images swapped between those roles. Historical
+records retain their original bytes: prebuilt main images belong to the
+candidate, while registry uses without recorded roles retain their old shared
+mapping and observation semantics.
+
 The service hashes every regular context file (path, content digest, executable
 bit), the Dockerfile, non-secret build arguments, platform, target, immutable
 base-image digests, and secret names. Secret values are passed to BuildKit only
@@ -31,6 +67,13 @@ stored separately under `store/build-records/sha256/`.
 used by evals while keeping `container_slots` independent. The default build
 reservation is one build slot and no trial container slot. Operators can pass a
 larger CPU/memory build vector when their builder needs it.
+
+Preparation uses the existing 30-minute Docker command deadline and the eval's
+cancellation signal; Harbor's task `environment.build_timeout_sec` remains the
+independent trial startup limit. Build events and persisted build records expose
+queued, started, completed, and failed phases. A failed record retains at most
+16,384 characters of redacted diagnostic text, including available BuildKit output.
+Historical slow-build causes remain undetermined unless supported by those logs.
 
 `DockerBuildKitBuilder` uses `docker buildx build --load`, a metadata file for
 the output manifest/config digests, and `docker image inspect` for platform and
@@ -59,6 +102,8 @@ fallback reason separately. `prebuild-preferred` can fall back; a
 `prebuild-required` request fails before Harbor starts if any service cannot be
 prebuilt. Harbor's final Compose overlay replaces only exact discovered image
 references and the same mapping is reused by infrastructure retries.
+An actual builder failure also records `resolution-failed` and can fall back
+under `prebuild-preferred`; `prebuild-required` stops before Target execution.
 Before a planned work item starts Harbor, every referenced global manifest is
 reloaded and matched against the immutable plan. Each imported or diagnostic
 run then embeds the uses and full, de-duplicated manifests in
@@ -68,6 +113,58 @@ Owned Harbor environments retain containers until the fenced Hitch reaper runs.
 The resource observer records Docker's configured image reference and config
 digest, and a planned immutable image is accepted only when that config digest
 was actually observed during the trial.
+
+The Docker observer records Compose service labels with image identities, so a
+prepared sidecar must be observed under its planned service. If Harbor reports
+an explicit setup exception with both Target and verifier executions null,
+missing containers preserve that upstream diagnostic. An observed conflicting
+image still fails verification, and successful trials require image evidence.
+
+Managed separate-verifier startup failures retain a dedicated environment-start
+exception and the original cause. Startup timeout diagnostics report the
+configured environment build budget, taken from the task's top-level
+`environment.build_timeout_sec` and Harbor's multiplier; a shorter internal
+probe timeout can also cause startup failure. Scoring retains its own verifier
+timeout. This phase distinction also applies to explicit verifier-only regrade;
+it neither reruns Target nor increases any timeout. Local regrade validates only
+the new plan's explicit verifier image evidence against the sealed source and
+its original configuration, leaving the candidate bundle unchanged. Portable
+regrade preserves the separate image kwargs; this change adds no remote image
+evidence transport protocol.
+
+Owned trial cleanup omits Compose's `--rmi local` operation. That operation
+enumerates image metadata and can fail before pending network and volume
+removal. Container, network, and volume cleanup remains owner-scoped. Prepared
+images remain subject to `hitch images gc`; images built by native fallback
+paths are retained because they lack Hitch's immutable image ownership proof.
+Those unregistered fallback images may require explicit operator cleanup.
+No host-wide image prune is performed.
+
+The manual cleanup canary uses the installed Compose binary against a local
+fake Engine that rejects image enumeration. It verifies that the original
+`--rmi local` path fails and leaves network/volume cleanup pending, while the
+updated command removes project resources without an image API request:
+
+```sh
+python3 test-support/compose_cleanup_engine_canary.py /tmp/hitch-compose-cleanup-canary
+```
+
+Pass `--compose-binary /path/to/docker-compose` when the binary is not on PATH.
+This proves the installed Compose command boundary; it does not reproduce a
+large containerd image store or certify a particular deployed Compose version.
+
+The verifier lifecycle canary requires Python with Harbor 0.21.0 installed and
+an installed Compose binary. It exercises real Harbor task resolution,
+SingleStepTrial, RegradeTrial and Compose configuration while replacing daemon
+I/O. No model or Docker daemon is needed:
+
+```sh
+/path/to/harbor-venv/bin/python test-support/harbor_verifier_lifecycle_canary.py /tmp/hitch-verifier-lifecycle
+```
+
+This verifies role isolation, removal of runtime builds, inheritance and timeout
+classification. It does not establish why a historical build was slow or promise
+a particular startup latency.
 
 `npm run canary:docker-images` starts three ownership-labeled containers with
 distinct main, sidecar, and separate-Verifier config digests. It runs the real

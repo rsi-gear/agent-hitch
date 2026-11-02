@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { RemoteExecutionObservationCoordinator, RemoteWorkerRegistry } from "../src/control-plane/index.js";
-import { parseExecutionObservationReceipt } from "../src/control-plane/execution-observation-contract.js";
+import { parseExecutionObservationDiagnostics, parseExecutionObservationReceipt } from "../src/control-plane/execution-observation-contract.js";
 import { sha256JSON } from "../src/foundation/index.js";
 import { observationReceipt, observationRegistration, waitObservation } from "../test-support/execution-observation.js";
 
@@ -89,4 +90,59 @@ test("worker observation receipts enforce environment integrity and reject extra
   changed.runtime.unchanged = false;
   await f.coordinator.submit("worker_observed", changed);
   assert.equal((await pending).runtime.unchanged, false, "drift is returned as evidence so admission can reject it");
+});
+
+test("optional probe diagnostics preserve legacy receipts and never change the environment digest", async t => {
+  const f = await setup(t), pending = f.begin(), challenge = await f.poll();
+  const legacy = observationReceipt(challenge), probe = { probe: "docker_info", attempt: 1, stage: "command", outcome: "nonzero_exit",
+    elapsed_ms: 100, exit_code: 7, signal: null };
+  const diagnostics = { schema_version: "1", probes: [probe, { ...probe, attempt: 2, stage: "complete", outcome: "ok", exit_code: 0, elapsed_ms: 200 }] };
+  assert.equal(Object.hasOwn(parseExecutionObservationReceipt(legacy), "diagnostics"), false);
+  const current = parseExecutionObservationReceipt({ ...legacy, diagnostics });
+  assert.deepEqual(current.diagnostics, diagnostics);
+  assert.deepEqual(current.environment, legacy.environment);
+  assert.equal(current.environment_digest, legacy.environment_digest);
+  const timingChanged = parseExecutionObservationReceipt({ ...legacy, diagnostics: { ...diagnostics, probes: diagnostics.probes.map(p => ({ ...p, elapsed_ms: 1 })) } });
+  assert.equal(timingChanged.environment_digest, current.environment_digest);
+  await f.coordinator.submit("worker_observed", current);
+  assert.deepEqual((await pending).diagnostics, diagnostics);
+});
+
+test("diagnostic parser and shipped schema reject private fields, coerced enums and inconsistent attempts", async () => {
+  const probe = { probe: "docker_info", attempt: 1, stage: "complete", outcome: "ok", elapsed_ms: 100, exit_code: 0, signal: null };
+  const diagnostics = { schema_version: "1", probes: [probe] };
+  const schema = JSON.parse(await readFile("docs/schemas/execution-observation-diagnostics.schema.json", "utf8"));
+  const validate = new Ajv2020({ strict: false }).compile(schema);
+  const invalid = [
+    { ...diagnostics, private_token: "must-not-echo-this-private-token" },
+    { ...diagnostics, probes: [{ ...probe, stderr: "must-not-echo-this-private-token" }] },
+    { ...diagnostics, schema_version: "2" }, { ...diagnostics, probes: [] }, { ...diagnostics, probes: Array(5).fill(probe) },
+    { ...diagnostics, probes: [{ ...probe, probe: ["docker_info"] }] },
+    { ...diagnostics, probes: [{ ...probe, stage: [["complete"]] }] },
+    { ...diagnostics, probes: [{ ...probe, outcome: ["ok"] }] },
+    { ...diagnostics, probes: [{ ...probe, probe: "harbor_version", attempt: 2 }] },
+    { ...diagnostics, probes: [{ ...probe, attempt: 2 }] },
+    { ...diagnostics, probes: [{ ...probe, attempt: 2 }, probe] },
+    { ...diagnostics, probes: [probe, { ...probe, elapsed_ms: 200 }] },
+    { ...diagnostics, probes: [{ ...probe, stage: "command" }] },
+    { ...diagnostics, probes: [{ ...probe, outcome: "nonzero_exit", stage: "command" }] },
+    { ...diagnostics, probes: [{ ...probe, outcome: "signal_exit", stage: "command", signal: "SIGTERM" }] },
+    { ...diagnostics, probes: [{ ...probe, exit_code: 1 }] }, { ...diagnostics, probes: [{ ...probe, signal: "SIGKILL" }] },
+    { ...diagnostics, probes: [{ ...probe, elapsed_ms: 30_001 }] }, { ...diagnostics, probes: [{ ...probe, elapsed_ms: 0.5 }] },
+    { ...diagnostics, probes: [{ ...probe, exit_code: 4_294_967_296 }] },
+  ];
+  assert.equal(validate(diagnostics), true);
+  assert.deepEqual(parseExecutionObservationDiagnostics(diagnostics), diagnostics);
+  const harbor = { ...probe, probe: "harbor_version" }, buildx = { ...probe, probe: "buildx_version" };
+  for (const probes of [[probe, { ...probe, attempt: 2 }], [harbor, probe, { ...probe, attempt: 2 }], [harbor, buildx, probe, { ...probe, attempt: 2 }]]) {
+    assert.equal(validate({ ...diagnostics, probes }), true);
+    parseExecutionObservationDiagnostics({ ...diagnostics, probes });
+  }
+  for (const value of invalid) {
+    assert.equal(validate(value), false, "shipped schema rejects the same invalid observation diagnostics");
+    assert.throws(() => parseExecutionObservationDiagnostics(value), error => {
+      assert.equal(String(error).includes("must-not-echo-this-private-token"), false);
+      return /invalid execution observation/.test(String(error));
+    });
+  }
 });

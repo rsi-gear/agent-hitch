@@ -100,10 +100,10 @@ function compare(left: string, right: string): number {
 function resumedImages(plan: EvalExecutionPlanV1): EnvironmentImageUseV1[] {
   const unique = new Map<string, EnvironmentImageUseV1>();
   for (const item of plan.work_items) for (const image of item.image_refs ?? []) {
-    unique.set(`${image.task_ids.join("\0")}\0${image.requested_reference}`, image);
+    unique.set(`${image.task_ids.join("\0")}\0${image.requested_reference}\0${image.service ?? ""}\0${image.role ?? ""}`, image);
   }
   return [...unique.values()].sort((left, right) => Buffer.compare(
-    Buffer.from(`${left.task_ids.join("\0")}\0${left.requested_reference}`),
-    Buffer.from(`${right.task_ids.join("\0")}\0${right.requested_reference}`),
+    Buffer.from(`${left.task_ids.join("\0")}\0${left.requested_reference}\0${left.service ?? ""}\0${left.role ?? ""}`),
+    Buffer.from(`${right.task_ids.join("\0")}\0${right.requested_reference}\0${right.service ?? ""}\0${right.role ?? ""}`),
   ));
 }

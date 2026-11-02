@@ -1,0 +1,16 @@
+{
+  "jobbench_revision": "660b33a86ed032559df0b2fdc1ad38cf7ceb83f3",
+  "lab_revision": "e9b1f9f4dc25576f9a020d857e3e3a6420834dc3",
+  "purpose": "offline source fixtures; pure functions may be extracted with import-only headers; model/provider dependencies are replaced by deterministic fakes by test setup",
+  "source_file_sha256": {
+    "jobbench/eval/judge.py": "sha256:956203dfb679276447913c59bfc2b3c28a762a4946e4258e0b41875b500b7215",
+    "jobbench/harbor/jobbench_harbor/prepare.py": "sha256:3e816fbb1d425620c4c168596983ac8a470d160ee2600a4debe7c70d06775dbb",
+    "lab/lab_core/evaluation/judge.py": "sha256:28f709d85f65d35753ceb8693efab89776ce4f617ff2e32c64c342fee7e5e580"
+  },
+  "lab_judge_extracted_members": [
+    "_detect_provider",
+    "_JUDGE_MAX_OUTPUT_TOKENS",
+    "Judge.evaluate_from_file",
+    "Judge._parse_json"
+  ]
+}

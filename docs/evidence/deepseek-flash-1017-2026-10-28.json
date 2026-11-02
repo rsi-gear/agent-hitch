@@ -1,0 +1,237 @@
+{
+  "kind": "deepseek-flash-1017-integration-evidence",
+  "date": "2026-10-28",
+  "official_alias_source": "https://api-docs.deepseek.com/quick_start/agent_integrations/",
+  "attribution": "Official mutable alias mapping to DeepSeek-V4.1-Flash-1017",
+  "api_probe": {
+    "requested_model": "deepseek-flash",
+    "attribution": "Official mutable alias mapping to DeepSeek-V4.1-Flash-1017",
+    "source": "https://api-docs.deepseek.com/quick_start/agent_integrations/",
+    "passed": true,
+    "records": [
+      {
+        "case": "text",
+        "at": "2026-10-28T02:06:49.647011+00:00",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "requested_model": "deepseek-flash",
+        "thinking": "enabled",
+        "reasoning_effort": "high",
+        "request_sha256": "6998b61657f53c81b43058646ccca7501312d1f8e31b025a72d378fa1f29e3df",
+        "returned_model": "deepseek-flash",
+        "usage": {
+          "prompt_tokens": 37,
+          "completion_tokens": 17,
+          "total_tokens": 54,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 13
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 37
+        },
+        "response_sha256": "88cea91d8f07c0560b81f637ee83d68af1ca2ceddef38dede903d6a85fd23b7d",
+        "elapsed_seconds": 0.815,
+        "finish_reason": "stop",
+        "reasoning_observed": true,
+        "status": "passed"
+      },
+      {
+        "case": "image",
+        "at": "2026-10-28T02:06:50.463885+00:00",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "requested_model": "deepseek-flash",
+        "thinking": "enabled",
+        "reasoning_effort": "high",
+        "request_sha256": "551697cdf6900153d189f3c16584581e7dc2955fc80ac9e7b8f2c731577fe250",
+        "returned_model": "deepseek-flash",
+        "usage": {
+          "prompt_tokens": 226,
+          "completion_tokens": 13,
+          "total_tokens": 239,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 11
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 226
+        },
+        "response_sha256": "7dc21ab7b5f09dd874260ca58fdf2cc49d8d79ae3e4eec380cd4e87c71501f4e",
+        "elapsed_seconds": 0.866,
+        "finish_reason": "stop",
+        "reasoning_observed": true,
+        "status": "passed"
+      },
+      {
+        "case": "tool_request",
+        "at": "2026-10-28T02:06:51.330905+00:00",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "requested_model": "deepseek-flash",
+        "thinking": "enabled",
+        "reasoning_effort": "high",
+        "request_sha256": "e132c6efb2a34198454f365dc0cb13de2fb6a171297dae552c16e6b35a51dc18",
+        "returned_model": "deepseek-flash",
+        "usage": {
+          "prompt_tokens": 302,
+          "completion_tokens": 41,
+          "total_tokens": 343,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_cache_hit_tokens": 0,
+          "prompt_cache_miss_tokens": 302
+        },
+        "response_sha256": "b422df3d81ec904b9b5fd7386ed09c1d4564e9dec7d575cbba8da8129bb53e91",
+        "elapsed_seconds": 0.835,
+        "finish_reason": "tool_calls",
+        "reasoning_observed": false,
+        "status": "passed"
+      },
+      {
+        "case": "tool_result",
+        "at": "2026-10-28T02:06:52.167063+00:00",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "requested_model": "deepseek-flash",
+        "thinking": "enabled",
+        "reasoning_effort": "high",
+        "request_sha256": "5082f801831eba22a4b04e541df145d2f281c2da0210d40f51a2435232d0fdda",
+        "returned_model": "deepseek-flash",
+        "usage": {
+          "prompt_tokens": 360,
+          "completion_tokens": 6,
+          "total_tokens": 366,
+          "prompt_tokens_details": {
+            "cached_tokens": 128
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_cache_hit_tokens": 128,
+          "prompt_cache_miss_tokens": 232
+        },
+        "response_sha256": "047d1fd1df8bd2844d08f059740197527ccd64daf7e17d0565c500c6d66eb4c8",
+        "elapsed_seconds": 1.02,
+        "finish_reason": "stop",
+        "reasoning_observed": false,
+        "status": "passed"
+      },
+      {
+        "case": "responses_text",
+        "at": "2026-10-28T02:06:53.187966+00:00",
+        "endpoint": "https://api.deepseek.com/responses",
+        "requested_model": "deepseek-flash",
+        "thinking": "enabled",
+        "reasoning_effort": "high",
+        "request_sha256": "46e795a50878caef19ab61f3009cea07ae8ab8a9502ae698d8bf850da4c81cf4",
+        "returned_model": "deepseek-flash",
+        "usage": {
+          "input_tokens": 41,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 24,
+          "output_tokens_details": {
+            "reasoning_tokens": 16
+          },
+          "total_tokens": 65
+        },
+        "response_sha256": "e62e3687c29b3b2a60dc8ee3826be561a996000924bcb5ec22164dcfde74ba37",
+        "elapsed_seconds": 0.707,
+        "status": "passed"
+      }
+    ]
+  },
+  "hitch_run": {
+    "run_id": "run_566114397f034d8ab9d85655b616522f",
+    "status": "succeeded",
+    "exit_code": 0,
+    "effective_model": "deepseek-flash",
+    "hitch_base_commit": "40036b4592d6480395543fa4d27a96cc2446a4c0",
+    "harness_reference": "deepseek@version:0.2.1-rc.2",
+    "artifact_id": "sha256:b5dca9f383f3bc96330932072c589ae735c6aba97f6f1c9e0051eaa006b5a530",
+    "revision_identity": "sha256:1cde3c05c4772fe13092260a0e74fd7f7ff8422b5a67bc6af35124147d67024f",
+    "started_at": "2026-10-28T02:11:18.021Z",
+    "completed_at": "2026-10-28T02:16:07.651Z",
+    "native_format_version": 4,
+    "native_model_config": {
+      "provider": "deepseek-official",
+      "model": "deepseek-flash",
+      "maxTokens": 256000,
+      "reasoningEffort": "high"
+    },
+    "trajectory": {
+      "session_id": "run_566114397f034d8ab9d85655b616522f",
+      "path": "trajectory/canonical/--tmp-rsi-gear-hitch-smoke-task--/run_566114397f034d8ab9d85655b616522f/session.jsonl",
+      "fidelity": "provider_native",
+      "sha256": "sha256:cb9cac4b2766ca785793cc5d29b4ab44a19a13008a2cfd5d6faeab7a8c6f1f4b"
+    },
+    "observed_assistant_usages": [
+      {
+        "inputTokens": 485,
+        "outputTokens": 105,
+        "cacheReadTokens": 5376,
+        "cacheWriteTokens": 0,
+        "totalTokens": 5966
+      },
+      {
+        "inputTokens": 251,
+        "outputTokens": 51,
+        "cacheReadTokens": 5760,
+        "cacheWriteTokens": 0,
+        "totalTokens": 6062
+      },
+      {
+        "inputTokens": 233,
+        "outputTokens": 6,
+        "cacheReadTokens": 5888,
+        "cacheWriteTokens": 0,
+        "totalTokens": 6127
+      }
+    ],
+    "benchmark_score": null
+  },
+  "limits": [
+    "Synthetic API and file-tool integration only; no benchmark score.",
+    "Provider alias attribution does not prove immutable checkpoint identity.",
+    "Native token fields are recorded as emitted; cache fields are not assumed to follow Chat Completions accounting."
+  ],
+  "validation": {
+    "offline_transport_profile_tests": {
+      "passed": 7
+    },
+    "typecheck": "passed",
+    "build": "passed",
+    "architecture": "passed",
+    "documentation": "passed",
+    "full_regression": {
+      "tests": 997,
+      "passed": 977,
+      "failed": 5,
+      "skipped": 15,
+      "unresolved_failures": [
+        "host-model-proxy route recovery assertion",
+        "remote-verifier success scoring timeout",
+        "remote-verifier invalid scoring timeout",
+        "remote-verifier release-lost scoring timeout",
+        "remote-verifier generation-cleanup scoring timeout"
+      ]
+    },
+    "remote_verifier_isolated_retry": {
+      "passed": [
+        "success",
+        "generation-cleanup"
+      ],
+      "failed": [
+        "invalid",
+        "release-lost"
+      ],
+      "failure": "remote scoring test timed out"
+    }
+  }
+}

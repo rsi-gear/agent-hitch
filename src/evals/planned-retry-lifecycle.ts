@@ -8,7 +8,8 @@ import type { InfrastructureRetryLifecycle } from "./infrastructure-retry.js";
 import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord } from "./local-docker-provider.js";
 import type { ExecutePlannedHarborOptions } from "./planned-execution.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
-import { prebuiltTaskImage, verifyTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
+import { prebuiltTaskImage, prebuiltVerifierImage, prebuiltServiceImages, persistTrialEnvironmentImageExecution } from "./trial-environment-evidence.js";
+import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 import { physicalRetryWorkItem } from "./physical-retry-work.js";
 
@@ -88,6 +89,7 @@ function retryLifecycle(
   runningAnnounced: boolean,
 ): InfrastructureRetryLifecycle {
   const { options, item } = input;
+  const prebuiltImage = prebuiltTaskImage(input.environmentImages);
   const taskId = item.task_ids[0] as string;
   const epoch = lease.current().epoch;
   const runtime = runtimeResourcesForTask(options.plan, taskId, item.reservation);
@@ -122,7 +124,6 @@ function retryLifecycle(
   }, DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS);
   timer.unref();
   let closed: Promise<void> | undefined;
-  const prebuiltImage = prebuiltTaskImage(input.environmentImages);
   const close = (): Promise<void> => closed ??= closeRetryLifecycle({ input, lease, permit, observer, timer, heartbeatTail: () => heartbeatTail, heartbeatFailure: () => heartbeatFailure, processRecorded: () => processRecorded, runningAnnounced });
   return {
     leaseId: lease.leaseId,
@@ -130,7 +131,7 @@ function retryLifecycle(
     ...(input.environmentImages ? { environmentImages: input.environmentImages } : {}),
     captureExecutionEvidence: async () => {
       if (heartbeatFailure !== undefined) throw heartbeatFailure;
-      return verifyTrialEnvironmentImageExecution(await observer.capture(), input.environmentImages);
+      return persistTrialEnvironmentImageExecution(input.backendDirectory, await observer.capture(), input.environmentImages);
     },
     backend: {
       executionResources: resourceRequirementForTask(options.plan, taskId)?.main_limits ?? options.plan.default_trial_resources,
@@ -138,6 +139,8 @@ function retryLifecycle(
       dockerOwnership: ownership,
       resolvedImages: resolvedImageMapping(item.image_refs ?? []),
       ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
+      prebuiltServiceImages: prebuiltServiceImages(input.environmentImages),
+      verifierImages: { resolvedImages: resolvedImageMapping(item.image_refs ?? [], "verifier"), prebuiltImage: prebuiltVerifierImage(input.environmentImages) },
       ...(options.worker.provider === "local-docker" && process.platform !== "win32" ? {
         recoverableProcess: true,
         onProcessStarted: (pid: number) => recordLocalDockerProcessStart({
@@ -161,7 +164,7 @@ function retryLifecycle(
 }
 
 async function closeRetryLifecycle(input: {
-  input: { options: ExecutePlannedHarborOptions; item: BackendWorkItemV1; retry: number };
+  input: { options: ExecutePlannedHarborOptions; item: BackendWorkItemV1; retry: number; backendDirectory: string };
   lease: ExecutionLeaseHandle;
   permit: Awaited<ReturnType<NonNullable<ExecutePlannedHarborOptions["admission"]>["acquire"]>> | undefined;
   observer: ReturnType<typeof startDockerResourceObserver>;
@@ -178,7 +181,7 @@ async function closeRetryLifecycle(input: {
     try { await operation(); } catch (error) { failure ??= error; }
   };
   clearInterval(input.timer);
-  await attempt(() => input.observer.stop());
+  await attempt(async () => writeTrialExecutionEvidence(input.input.backendDirectory, await input.observer.stop(), { evalId: options.evalId, taskId: item.task_ids[0] as string }));
   await attempt(input.heartbeatTail);
   failure ??= input.heartbeatFailure();
   if (input.processRecorded()) await attempt(() => releaseLocalDockerProcessRecord({ root: options.root, leaseId: input.lease.leaseId, epoch }));

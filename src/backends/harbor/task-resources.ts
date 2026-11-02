@@ -31,10 +31,11 @@ export interface HarborEnvironmentImageFallbackV1 {
 }
 
 export interface HarborEnvironmentBuildDeclarationV1 {
-  source: "task";
-  service: "main";
-  context: "environment";
-  dockerfile: "Dockerfile";
+  source: "task" | "verifier" | "compose";
+  service: string;
+  context: string;
+  dockerfile: string;
+  platform?: string;
 }
 
 export async function inspectHarborTaskResources(input: {
@@ -130,12 +131,23 @@ function normalizeRuntimePlatform(value: unknown): string {
 function imageBuilds(value: unknown): HarborEnvironmentBuildDeclarationV1[] {
   if (!Array.isArray(value)) throw new TypeError("environment build declarations are invalid");
   return value.map((entry, index) => {
-    const record = exactRecord(entry, ["source", "service", "context", "dockerfile"], `environment build ${index}`);
-    if (record.source !== "task" || record.service !== "main" || record.context !== "environment" || record.dockerfile !== "Dockerfile") {
+    const record = exactRecord(entry, ["source", "service", "context", "dockerfile"], `environment build ${index}`, ["platform"]);
+    const main = (record.source === "task" && record.context === "environment" || record.source === "verifier" && record.context === "tests")
+      && record.service === "main" && record.dockerfile === "Dockerfile" && record.platform === undefined;
+    const sidecar = record.source === "compose" && typeof record.service === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/.test(record.service) && record.service !== "main"
+      && typeof record.context === "string" && (record.context === "environment" || record.context.startsWith("environment/")) && relativeBuildPath(record.context)
+      && typeof record.dockerfile === "string" && relativeBuildPath(record.dockerfile)
+      && (record.platform === undefined || record.platform === "linux/amd64" || record.platform === "linux/arm64");
+    if (!main && !sidecar) {
       throw new TypeError(`environment build ${index} is invalid`);
     }
     return record as unknown as HarborEnvironmentBuildDeclarationV1;
   });
+}
+
+function relativeBuildPath(value: string): boolean {
+  return value.length > 0 && value.length <= 4_096 && !/[\\$\0\r\n]/.test(value) && !path.isAbsolute(value)
+    && value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
 function imageDeclarations(value: unknown): HarborEnvironmentImageDeclarationV1[] {

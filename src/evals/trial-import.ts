@@ -22,7 +22,7 @@ import { readHarborBridgeError } from "./harbor-bridge-error.js";
 import { detectVerifierInfrastructureFailure, primaryVerifierReward, verifierObservation, verifierResult, writeVerifierInfrastructureDiagnostic } from "./verifier-diagnostics.js";
 import { persistTrialVerifierDiagnostics } from "./verifier-artifacts.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
-import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
+import { trialFailedBeforeExecution, verifyTrialEnvironmentImageExecution, writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 import type { EvalInteractionCaptureExporter } from "./service-types.js";
 import { importTrialInteractionCapture, writeTrialCapturePolicy } from "./interaction-capture-import.js";
@@ -100,6 +100,7 @@ export async function importEvalTrialRun(
   }
   let bundle: string | null = null;
   let published = false;
+  if (options.executionEvidence) verifyTrialEnvironmentImageExecution(options.executionEvidence, options.environmentImages, trial);
   try {
     const verifiedTrialBinding = { ...options, revisionIdentity: options.resolvedRevision.identity, taskId, trialDirectory };
     const verifiedTrialBenchmark = await verifyTrialBenchmark(verifiedTrialBinding, taskId, options.verifiedBenchmark);
@@ -381,7 +382,9 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
       exit_code: 12,
       error: bridgeError
         ? { code: bridgeError.code, message: bridgeError.message }
-        : { code: reason, message: "Harbor trial completed without an importable Hitch run bundle" },
+        : { code: reason, message: trialFailedBeforeExecution(input.trial)
+          ? safeDiagnosticMessage({ message: `${(input.trial.exception_info as Record<string, unknown>).exception_type}: ${String((input.trial.exception_info as Record<string, unknown>).exception_message ?? "environment setup failed before Target execution")}` }, credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env))
+          : "Harbor trial completed without an importable Hitch run bundle" },
       completed_at: now,
     });
     await sealTrialResources(input, runDirectory, runId, false);

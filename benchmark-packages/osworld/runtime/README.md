@@ -151,8 +151,8 @@ response hashes, without prompts, responses, keys or exception messages. It is
 controller evidence, not a claim that the backend response exposes the exact
 served model version. A failed audit cannot publish `native-execution.json`.
 
-`../deepseek-profile.json` is the explicit substituted-model profile authorized
-for this local run. Apply its environment only to the private controller and
+`../deepseek-profile.json` is the archived substituted-model profile used
+for the historical local run (`assemble.py --model-profile legacy`). Apply its environment only to the private controller and
 inject `DEEPSEEK_API_KEY` there. It selects `hitch_deepseek_chat_v1`, whose SDK
 extension in `deepseek_backend.py` preserves native prompts, message/image
 construction and outer retry settings. It sends `max_tokens`, because a live
@@ -162,6 +162,13 @@ redirects and rejects truncated/empty/refused replies before task scoring. Text
 models reject images; select an explicitly named vision profile when needed.
 Transport audit entries retain requested/returned model, usage, token ceiling,
 finish status and request/response hashes. Aliases are mutable.
+
+New assemblies default to `../deepseek-flash-thinking-high-profile.json` and
+`hitch_deepseek_chat_v2`. The private evaluator and user simulator both select
+`deepseek-flash`; thinking is enabled and effort defaults to high. This v2 route
+preserves native Flash image inputs and the existing token, retry and invalid
+reply contracts. It emits `osworld-deepseek-chat@2` audit entries with effective
+effort. The legacy profile and its historical evidence are not rewritten.
 
 `test-support/osworld_deepseek_canary.py` has exercised the installed pinned SDK,
 the original Task031 grader method on synthetic criteria/messages, the native
