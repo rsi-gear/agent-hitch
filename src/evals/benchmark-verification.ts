@@ -1,8 +1,8 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { EvalRequest } from "../domain/index.js";
-import { readResourceInput } from "../resources/index.js";
-import { readJSON, sha256JSON, statePaths } from "../foundation/index.js";
+import { configuredResourceStore, parseStrictJson, readResourceInput, type ResourceTask } from "../resources/index.js";
+import { readJSON, sha256Bytes, sha256JSON, statePaths } from "../foundation/index.js";
 import { loadBenchmarkAdapterManifest, readStandardBenchmarkManifest, verifyBenchmarkTaskMembership, verifyBenchmarkTaskSnapshot } from "./benchmark-adapter-manifest.js";
 import type { BenchmarkAdapterManifest, BenchmarkAdapterManifestV1 } from "./benchmark-adapter-manifest.js";
 
@@ -95,6 +95,19 @@ export async function verifiedTrialManifest(receipt: VerifiedTrialBenchmark, inp
     }));
   if (sha256JSON(current) !== sha256JSON(verified.manifest)) throw new TypeError("benchmark adapter manifest changed during trial import");
   return verified.manifest ? structuredClone(verified.manifest) : null;
+}
+
+/** Resource selections name metadata files; optional native descriptors live in their sealed source trees. */
+export async function resourceNativeDescriptor(root: string, task: ResourceTask): Promise<unknown | null> {
+  const { store } = await configuredResourceStore(root);
+  const tree = await store.objects.readTree(task.sourceTree.manifestDigest);
+  const entry = tree.entries.find(value => value.path === ".hitch-benchmark.json");
+  if (!entry) return null;
+  if (entry.kind !== "file" || entry.size > 1024 * 1024) throw new TypeError("invalid resource native descriptor");
+  await store.objects.verify(entry.digest, entry.size);
+  const bytes = await readFile(store.objects.objectPath(entry.digest));
+  if (bytes.length !== entry.size || sha256Bytes(bytes) !== entry.digest) throw new TypeError("resource native descriptor changed");
+  return parseStrictJson(bytes.toString("utf8"));
 }
 
 export function verifiedNativeDescriptor(receipt: VerifiedTrialBenchmark, input: TrialBenchmarkBinding): unknown | null | undefined {
