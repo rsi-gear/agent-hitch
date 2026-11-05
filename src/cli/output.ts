@@ -88,6 +88,8 @@ Usage:
   hitch run --harness <ref> [--model <id>] [--model-binding-file <ready.json>] [--max-output-tokens <n>] [--context-file <json>] [--workspace-mode <mode>] --prompt <text> [--daemon]
   hitch runs list [filters] [--json]
   hitch runs inspect <run-id> [--json]
+  hitch runs artifacts list <run-id> [--json]
+  hitch runs artifacts export <run-id> --manifest-digest <sha256:digest> --out <absolute-directory> [--json]
   hitch runs rebuild-index [--json]
   hitch runs candidate <run-id> [--context-license allowed|denied|unknown] [--capture-required] [--json]
   hitch compare model|harness [filters] [--reference-run <run-id>] [--json]

@@ -70,6 +70,8 @@
     "integrations/model-call/cli.js",
     "integrations/training-tool/cli.js",
     "docs/resource-storage.zh-CN.md",
+    "docs/run-output-artifacts.zh-CN.md",
+    "test-contracts/run-output-artifacts-v1.json",
     "docs/evidence/eval-preparation-2026-10-09.md",
     "docs/evidence/eval-preparation-2026-10-09.json",
     "benchmark-packages/shared-tree/",
