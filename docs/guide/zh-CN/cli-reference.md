@@ -97,6 +97,7 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 | `--backend harbor` | 当前后端，默认 `harbor`。 |
 | `--dataset REF`, `--harness REF` | 必需的数据集和不可变 Harness 引用。 |
 | `--model ID` | 独立于 Harness 选择模型。 |
+| `--no-model` | 使用不可变 `sealed-python` 源码执行，不创建模型会话。要求 `--infrastructure-retries 0` 且仅一次 attempt；不能与 `--model`、模型/环境绑定、凭据转发或 agent 参数组合。见[封存源码执行](../../sealed-python.zh-CN.md)。 |
 | `--attempts N`, `--max-concurrent N` | 正整数；普通数据集默认 1 次 attempt、最多 4 个并行 Trial，实际还受资源约束。 |
 | `--timeout DURATION`, `--setup-timeout DURATION` | 候选执行和准备阶段的预算。标准编译任务保留任务预算，除非显式覆盖；其他默认值见[评测契约](../../evals.md)。 |
 | `--infrastructure-retries N`, `--infrastructure-retry-backoff DURATION` | 控制符合条件的基础设施重试；N 可为 0，表示禁用。 |
@@ -218,6 +219,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 | --- | --- |
 | `hitch runs list [FILTERS] [--json]` | 查询运行记录。 |
 | `hitch runs inspect RUN_ID [--json]` | 查看 Run 并校验关联轨迹证据。 |
+| `hitch runs artifacts list RUN_ID [--json]` | 校验并列出已封存本地 Docker Run 的声明产物；JSON 包含导出所需的 manifest digest。 |
+| `hitch runs artifacts export RUN_ID --manifest-digest SHA256 --out ABSOLUTE_DIRECTORY [--json]` | 导出指定清单及已校验文件。父目录必须存在；目标目录须不存在或已包含相同的完整导出。见[产物协议](../../run-output-artifacts.zh-CN.md)。 |
 | `hitch runs rebuild-index [--json]` | 从已存 Run 重建查询索引。 |
 | `hitch runs candidate RUN_ID [--context-license allowed\|denied\|unknown] [--capture-required] [--redaction-policy ID] [--json]` | 从验证过的结果包派生训练数据候选。许可默认 unknown，策略标签默认 `hitch-provider-redaction-v1`。 |
 | `hitch compare model [FILTERS] [--reference-run RUN_ID] [--json]` | 比较模型结果，并报告是否满足严格可比条件。 |
