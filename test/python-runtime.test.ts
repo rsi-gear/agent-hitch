@@ -52,7 +52,7 @@ fs.writeFileSync(${JSON.stringify(marker + ".pid")}, String(process.pid));
 fs.renameSync(${JSON.stringify(marker + ".pid")}, ${JSON.stringify(marker)});
 setInterval(() => {
   if (fs.existsSync(${JSON.stringify(release)})) {
-    console.log(${JSON.stringify(JSON.stringify(observation))}); process.exit(0);
+    console.log(${JSON.stringify(JSON.stringify({ runtime: observation, proof: "b".repeat(64) }))}); process.exit(0);
   }
 }, 5);
 `, { mode: 0o755 });

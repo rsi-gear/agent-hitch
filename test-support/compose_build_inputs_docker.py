@@ -119,6 +119,9 @@ async def main(root, base_image):
         # Actual permissions matter here; root can read mode 000 and does not
         # encounter this failure. Unit tests also inject EACCES on every host.
         if os.geteuid() != 0:
+            # A literal COPY no longer reads unrelated files. Keep this case
+            # on the full-context path so Dockerignore fallback is exercised.
+            (context / "Dockerfile").write_text("FROM scratch\nCOPY . /data\n")
             ignored = context / "ignored"
             for directory in (False, True):
                 if directory:

@@ -105,7 +105,9 @@ def assemble(args):
                 raise ValueError('asset acquisition is not the verified release')
             previous = asset_records.setdefault(item['file'], item)
             if previous['sha256'] != item['sha256'] or previous['size'] != item['size']: raise ValueError('conflicting asset receipts')
-    model_profile = json.loads((HERE / 'deepseek-profile.json').read_bytes())
+    profile_name = getattr(args, 'model_profile', 'thinking-high')
+    profile_file = {'thinking-high': 'deepseek-flash-thinking-high-profile.json', 'legacy': 'deepseek-profile.json'}[profile_name]
+    model_profile = json.loads((HERE / profile_file).read_bytes())
     profile = {'schema_version': '1', 'id': 'osworld-v2-deepseek-graphical-' + ('host-local' if local else 'portable') + (f'-tcg-http-{args.screenshot_http_timeout_sec}s' if args.screenshot_http_timeout_sec != 10 else ''),
         'track': 'custom', 'input_mode': 'instruction',
         'tool_policy': {'id': 'osworld-graphical-computer13', 'allowed': CAPS, 'network': 'open', 'enforcement': 'required'},
@@ -117,6 +119,8 @@ def assemble(args):
             'screen_size': [1920, 1080], 'screenshot_transport': transport,
             'candidate_guide_sha256': sha((HERE / 'candidate-guide.md').read_bytes()),
             'task_current_date': 'unchanged native SDK', 'leaderboard_comparable': False}}
+    if profile_name != 'legacy':
+        profile['id'] += '-flash-thinking-high'
     profile_digest = sha(json.dumps(profile, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode())
     output = Path(args.out).absolute()
     if output.exists() or output.is_symlink(): raise ValueError('assembly requires fresh output')
@@ -126,6 +130,7 @@ def assemble(args):
         (staging / 'adapter').mkdir()
         for name in ('assemble.py', 'prepare-state-assets.py', 'web_routes.py', 'deepseek-profile.json', 'candidate-guide.md'):
             shutil.copyfile(HERE / name, staging / 'adapter' / name)
+        shutil.copyfile(HERE / 'deepseek-flash-thinking-high-profile.json', staging / 'adapter/deepseek-flash-thinking-high-profile.json')
         runtime = staging / 'runtime'; runtime.mkdir()
         for file in (HERE / 'runtime').glob('*.py'): shutil.copyfile(file, runtime / file.name)
         # Import only the pinned public action definitions, never task classes.
@@ -287,6 +292,8 @@ if __name__ == '__main__':
     parser.add_argument('--asset-receipts', required=True, nargs='+')
     parser.add_argument('--max-steps', required=True, type=int)
     parser.add_argument('--agent-timeout-sec', required=True, type=int)
+    parser.add_argument('--model-profile', choices=('thinking-high', 'legacy'), default='thinking-high',
+                        help='Flash thinking/high by default; legacy preserves the archived non-thinking profile')
     parser.add_argument('--screenshot-http-timeout-sec', default=10, type=int,
                         help='Explicit TCG screenshot transport override (10..120); default keeps native SDK behavior')
     print(json.dumps(assemble(parser.parse_args()), indent=2))

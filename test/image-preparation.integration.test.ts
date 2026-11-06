@@ -6,6 +6,17 @@ import path from "node:path";
 import { runCommand } from "../src/foundation/index.js";
 import { forceRemove } from "../test-support/helpers.js";
 
+test("real BuildKit input selection preserves native filesystems and shares literal COPY inputs", {
+  skip: process.env.HITCH_IMAGE_PREPARATION_DOCKER_TEST !== "1", timeout: 240_000,
+}, async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hitch-build-input-selection-"));
+  t.after(() => forceRemove(directory));
+  const result = await runCommand(process.env.HITCH_HARBOR_TEST_PYTHON || "python3",
+    ["test-support/build_input_selection_docker.py", directory], { timeoutMs: 230_000 });
+  assert.match(result.stdout, /native filesystem parity, literal reuse, changed inputs and ignore precedence OK/);
+  t.diagnostic(result.stdout.trim());
+});
+
 test("real Docker image preparation shares immutable images and preserves verifier isolation", {
   skip: process.env.HITCH_IMAGE_PREPARATION_DOCKER_TEST !== "1", timeout: 240_000,
 }, async t => {

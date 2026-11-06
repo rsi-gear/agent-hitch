@@ -303,7 +303,7 @@ class ImagePreparationCache:
         async with context_snapshot(self.directory) as temporary:
             context = temporary / "context"
             phase = time.monotonic()
-            context_digest = await snapshot_context(source, context)
+            context_digest = await snapshot_context(source, context, spec["dockerfile"])
             phases["snapshot_seconds"] = time.monotonic() - phase
             bases = pinned_dockerfile(context / spec["dockerfile"])
             phase = time.monotonic()
@@ -314,7 +314,7 @@ class ImagePreparationCache:
                 *_PROXY_NAMES, *(name.lower() for name in _PROXY_NAMES),
             )}
             implicit.update({name: value for name, value in self.env.items() if name.startswith(("BUILDX_", "BUILDKIT_"))})
-            key = digest({"schema": 1, "context": context_digest, "build": spec, "daemon": daemon,
+            key = digest({"schema": 2, "context": context_digest, "build": spec, "daemon": daemon,
                           "implicit": implicit})
             record = self.directory / f"image-{key}.json"
             tag = f"hitch-prepared:{digest(str(self.directory))[:16]}-{key}"

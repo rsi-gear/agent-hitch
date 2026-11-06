@@ -165,3 +165,21 @@ Sources: [official setup](https://github.com/xlang-ai/OSWorld-V2),
 [release manifest](https://github.com/xlang-ai/OSWorld-V2/blob/main/benchmark_releases/osworld-v2-2026.08.08.json),
 [task access](https://huggingface.co/datasets/xlangai/osworld_v2_tasks),
 [asset access](https://huggingface.co/datasets/xlangai/osworld_v2_assets_gated).
+
+## DeepSeek Flash thinking profile
+
+Assembly now defaults to `--model-profile thinking-high`, selecting
+`hitch_deepseek_chat_v2` for the evaluator and user simulator. It uses the official
+`deepseek-flash` alias, supports native image inputs, and explicitly enables
+thinking with high effort. The pinned SDK passes
+`OSWORLD_EVAL_MODEL_REASONING_EFFORT=high` through both model paths. Requests retain
+the native token budget, HTTPS restriction and upstream retry policy; truncated,
+empty, refused or tool-only judge replies remain invalid model dependencies.
+
+Use `--model-profile legacy` to retain the archived v1 non-thinking profile.
+The selected profile and its transport protocol enter the package identity; new
+thinking results must not overwrite or be pooled with historical v1 evidence.
+The official alias currently maps to DeepSeek-V4.1-Flash-1017 according to
+[DeepSeek's integration documentation](https://api-docs.deepseek.com/quick_start/agent_integrations/).
+Record requested/returned model, execution date and usage; the alias is mutable.
+The synthetic model canary is integration evidence, not an official OSWorld score.

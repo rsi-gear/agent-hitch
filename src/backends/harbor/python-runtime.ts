@@ -12,6 +12,9 @@ export interface HarborPythonRuntimeV1 {
 }
 
 const TIMEOUT_ENV = "HITCH_HARBOR_PYTHON_RUNTIME_TIMEOUT_MS";
+// Private to this executor process. Never load a verdict from mutable disk or
+// reuse a runtime observation: the probe rehashes the full input on every call.
+const verifiedBytecode = new Set<string>();
 
 function inventoryTimeout(env: NodeJS.ProcessEnv): number {
   const value = env[TIMEOUT_ENV];
@@ -42,16 +45,25 @@ export async function observeHarborPythonRuntime(input: {
     const python = firstLine.match(/^#!(\/[^\s]+)$/)?.[1];
     if (!python || !/^python(?:[0-9.]+)?$/.test(path.basename(python))) throw unavailable();
     const probe = path.join(packageRoot(), "integrations", "harbor", "hitch_python_runtime.py");
-    const result = await runCommand(python, ["-B", probe, harbor.executable], {
+    const result = await runCommand(python, ["-B", probe, harbor.executable, "--memo", ...verifiedBytecode], {
       env: { ...input.env, PYTHONDONTWRITEBYTECODE: "1" }, timeoutMs, signal,
     });
-    const value: unknown = JSON.parse(result.stdout);
+    const receipt: unknown = JSON.parse(result.stdout);
+    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) throw unavailable();
+    const envelope = receipt as Record<string, unknown>;
+    if (Object.keys(envelope).sort().join(",") !== "proof,runtime"
+      || typeof envelope.proof !== "string" || !/^[a-f0-9]{64}$/.test(envelope.proof)) throw unavailable();
+    const value = envelope.runtime;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable();
     const object = value as Record<string, unknown>;
     if (Object.keys(object).sort().join(",") !== "file_count,integrity,python_version,schema_version"
       || object.schema_version !== "1" || typeof object.integrity !== "string" || !/^sha256:[a-f0-9]{64}$/.test(object.integrity)
       || typeof object.python_version !== "string" || !/^3\.\d+\.\d+$/.test(object.python_version)
       || !Number.isSafeInteger(object.file_count) || (object.file_count as number) < 1) throw unavailable();
+    signal.throwIfAborted();
+    verifiedBytecode.delete(envelope.proof);
+    verifiedBytecode.add(envelope.proof);
+    if (verifiedBytecode.size > 8) verifiedBytecode.delete(verifiedBytecode.values().next().value!);
     return value as HarborPythonRuntimeV1;
   } catch {
     if (input.signal?.aborted) {
