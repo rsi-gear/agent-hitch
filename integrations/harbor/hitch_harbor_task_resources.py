@@ -96,35 +96,6 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
     }
 
 
-def _requires_egress(environment: Any, phase_modes: list[Any], compose_file: Path) -> bool:
-    if environment.os.value != "linux":
-        return False
-    baseline = environment.network_mode
-    # Match HitchHarborDockerEnvironment._static_no_network. A no-network
-    # policy cannot have allowed_hosts, so equal modes imply equal policies.
-    # Hitch's supported job config supplies no extra host/Compose overrides.
-    if (baseline.value == "no-network" and _static_compose_safe(compose_file)
-            and all(mode is None or mode.value == "no-network" for mode in phase_modes)):
-        return False
-    return any(mode is not None and mode.value != "public" for mode in [baseline, *phase_modes])
-
-
-def _static_compose_safe(path: Path) -> bool:
-    # Keep identical to the environment's admission rule; this determines the
-    # expected phase topology before a container can be started.
-    if not path.exists():
-        return True
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or set(document) != {"services"}:
-        return False
-    services = document["services"]
-    if not isinstance(services, dict) or set(services) != {"main"}:
-        return False
-    main = services["main"]
-    allowed = {"platform", "image", "build", "user", "init", "tmpfs", "working_dir", "command"}
-    return isinstance(main, dict) and set(main).issubset(allowed)
-
-
 def _compose_runtime_platform(compose_file: Path) -> str | None:
     if not compose_file.exists():
         return None
@@ -361,6 +332,35 @@ def _memory_bytes(value: Any, service: str) -> int:
     if bytes_value != bytes_value.to_integral_value() or bytes_value <= 0:
         raise ValueError(f"Compose memory limit is not a whole positive byte size: {service}")
     return int(bytes_value)
+
+
+def _requires_egress(environment: Any, phase_modes: list[Any], compose_file: Path) -> bool:
+    if environment.os.value != "linux":
+        return False
+    baseline = environment.network_mode
+    # Match HitchHarborDockerEnvironment._static_no_network. A no-network
+    # policy cannot have allowed_hosts, so equal modes imply equal policies.
+    # Hitch's supported job config supplies no extra host/Compose overrides.
+    if (getattr(baseline, "value", None) == "no-network" and _static_compose_safe(compose_file)
+            and all(mode is None or mode.value == "no-network" for mode in phase_modes)):
+        return False
+    return any(mode is not None and mode.value != "public" for mode in [baseline, *phase_modes])
+
+
+def _static_compose_safe(path: Path) -> bool:
+    # Keep identical to the environment's admission rule; this determines the
+    # expected phase topology before a container can be started.
+    if not path.exists():
+        return True
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or set(document) != {"services"}:
+        return False
+    services = document["services"]
+    if not isinstance(services, dict) or set(services) != {"main"}:
+        return False
+    main = services["main"]
+    allowed = {"platform", "image", "build", "user", "init", "tmpfs", "working_dir", "command"}
+    return isinstance(main, dict) and set(main).issubset(allowed)
 
 
 def main() -> None:

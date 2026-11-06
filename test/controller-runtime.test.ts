@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashRuntimePayload, verifyRuntimePayload, canonicalEncodeManifest, isEntrypointPath } from "../src/controller-runtime/hash.js";
@@ -18,7 +18,7 @@ import type { ControllerRuntimeManifest } from "../src/domain/index.js";
  * `dist/scripts` exists in the checkout but is release tooling and must be
  * excluded from the execution closure.
  */
-async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<void> }> {
+async function payloadFixture(): Promise<{ root: string; expectedFileCount: number; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-runtime-payload-"));
   await mkdir(path.join(root, "dist", "bin"), { recursive: true });
   await mkdir(path.join(root, "dist", "src"), { recursive: true });
@@ -43,6 +43,7 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
   }
   return {
     root,
+    expectedFileCount: 4 + (await readdir(path.join(root, "integrations"), { recursive: true, withFileTypes: true })).filter(entry => entry.isFile()).length,
     cleanup: () => forceRemove(root),
   };
 }
@@ -68,7 +69,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 27);
+  assert.equal(first.fileCount, fixture.expectedFileCount);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -481,7 +482,7 @@ test("runtime allowlist is the execution closure, excluding dev artifacts and re
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
-  assert.equal(result.fileCount, 27);
+  assert.equal(result.fileCount, fixture.expectedFileCount);
   await fixture.cleanup();
 });
 
