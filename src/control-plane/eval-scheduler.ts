@@ -21,6 +21,7 @@ import type { RemoteWorkerProtocol } from "./remote-worker-protocol.js";
 import type { RemoteWorkerRegistry } from "./remote-workers.js";
 import { schedulerCapturePlan, schedulerQueuedEval, type SchedulerQueuedEval } from "./scheduler-eval-entry.js";
 import { emitPersistedEvalEvent, updateEvalControl } from "./eval-control-state.js";
+import { reapStartupDockerResources } from "./startup-docker-cleanup.js";
 
 import { persistEvalSubmission } from "./eval-submission-persist.js";
 import { assertOrderedSubmission, evalCommandPath } from "./ordered-eval-control.js";
@@ -99,6 +100,7 @@ export class EvalScheduler {
   private completions = new Map<EvalId, Promise<void>>();
   private accepting = true;
   private draining = false;
+  private initialized = false;
 
   constructor({ root, resources, trialResources, executor = runEval, onEvent = () => {}, collisions = new CollisionLockManager(), workerId, provider = "local-docker", collisionDomainId, dockerResourceReaper = reapOwnedDockerResources, environmentImageResolver, environmentImageBuilder, remoteWorkers, remoteWorkerProtocol, credentialEnv = process.env }: EvalSchedulerOptions) {
     this.root = root;
@@ -127,13 +129,9 @@ export class EvalScheduler {
     await ensureDir(this.evalsRoot);
     await this.recoverInterruptedEvals();
     if (this.provider === "local-docker") {
-      try {
-        const report = await this.dockerResourceReaper({ root: this.root });
-        this.onEvent({ type: "docker.reaper.completed", root_id: report.root_id, scanned: report.scanned, deleted: report.deleted.length, issues: report.issues.length });
-      } catch (error) {
-        this.onEvent({ type: "docker.reaper.failed", code: (error as { code?: string }).code || "docker_reaper_failed" });
-      }
+      await reapStartupDockerResources({ root: this.root, reaper: this.dockerResourceReaper, env: this.credentialEnv, emit: this.onEvent });
     }
+    this.initialized = true;
     this.scheduleDrain();
   }
 
@@ -299,7 +297,8 @@ export class EvalScheduler {
   async shutdown(): Promise<void> {
     if (!this.accepting && this.completions.size === 0) return;
     this.accepting = false;
-    for (const entry of [...this.queue]) await this.cancel(entry.evalId);
+    // Failed startup must leave persisted requests queued for a later recovery.
+    for (const entry of this.initialized ? [...this.queue] : []) await this.cancel(entry.evalId);
     for (const [evalId] of this.active) await this.cancel(evalId);
     await Promise.all([...this.completions.values()]);
     this.workItems.close(); this.environmentImages.close();
@@ -313,7 +312,7 @@ export class EvalScheduler {
   }
 
   private drain(): void {
-    if (this.draining || !this.accepting) return;
+    if (this.draining || !this.accepting || !this.initialized) return;
     this.draining = true;
     try {
       for (;;) {
@@ -338,11 +337,14 @@ export class EvalScheduler {
       const entry = this.queue[index] as QueuedEval;
       if (entry.fineGrained) return { index, parallelism: entry.execution.max_parallelism, fineGrained: true };
       const unit = entry.execution.resources.default_trial;
-      const parallelism = this.resources.maximumUnits(unit, entry.execution.max_parallelism);
+      const parallelism = this.resources.maximumUnits(unit, Math.min(entry.execution.max_parallelism, entry.coarseParallelism ?? Infinity,
+        entry.coarseProfiling ? Math.min(entry.coarseProfiling.unknown_max_parallelism, this.resources.resourceProfilingPolicy.unknown_max_parallelism) : Infinity));
       if (parallelism < 1) continue;
+      const reservation = scaleResources(unit, parallelism), profiling = entry.coarseProfiling ? { ...entry.coarseProfiling, unknown_slots: parallelism } : undefined;
+      if (!this.resources.canAcquire(reservation, profiling)) continue;
       const collisions = this.collisions.tryAcquire(entry.evalId, entry.collisionKeys);
       if (!collisions) continue;
-      const lease = this.resources.tryAcquire(entry.evalId, "eval", scaleResources(unit, parallelism));
+      const lease = this.resources.tryAcquire(entry.evalId, "eval", reservation, profiling);
       if (lease) return { index, parallelism, fineGrained: false, lease, collisions };
       collisions.release();
     }
@@ -391,6 +393,7 @@ export class EvalScheduler {
       normalizedRequest: entry.request,
       maxConcurrentOverride: parallelism,
       executionResources: entry.execution.resources.default_trial,
+      resourceProfilingPolicy: this.resources.resourceProfilingPolicy,
       ...(entry.modelCapturePlan ? { modelCapturePlan: entry.modelCapturePlan } : {}),
       executionResourceSource: "submission-default",
       executionStrategy: "local-task-slots-v1",
@@ -472,7 +475,7 @@ export class EvalScheduler {
   }
 
   private async queuedEval(evalId: EvalId, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string, resumeExisting = false): Promise<QueuedEval> {
-    return schedulerQueuedEval({ evalId, request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}), directory, collisionDomainId: this.collisionDomainId, resumeExisting }); }
+    return schedulerQueuedEval({ evalId, request, execution, ...(modelCapturePlan ? { modelCapturePlan } : {}), directory, collisionDomainId: this.collisionDomainId, resumeExisting, unknownMaxParallelism: this.resources.resourceProfilingPolicy.unknown_max_parallelism }); }
   private async updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<EvalControlV1> { return updateEvalControl(directory, update); }
   private async emitPersisted(directory: string, evalId: EvalId, event: Record<string, unknown>): Promise<void> { return emitPersistedEvalEvent(directory, evalId, this.onEvent, event); }
 }

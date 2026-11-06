@@ -25,6 +25,8 @@ class DockerEnvironment:
         self.extra_docker_compose_paths = [pathlib.Path(p) for p in (extra_docker_compose or [])]
         self._enable_egress_control = False
         self.task_env_config = kwargs.get("task_env_config")
+        self.trial_paths = kwargs.get("trial_paths")
+        self.session_id = kwargs.get("session_id")
     @property
     def _docker_compose_paths(self): return [pathlib.Path("base.json")]
     def _compose_env_vars(self, include_os_env=True):
@@ -45,6 +47,7 @@ docker_package = types.ModuleType("harbor.environments.docker")
 docker_module = types.ModuleType("harbor.environments.docker.docker"); docker_module.DockerEnvironment = DockerEnvironment
 yaml = types.ModuleType("yaml"); yaml.safe_load = json.loads
 sys.modules.update({"harbor": harbor, "harbor.constants": constants, "harbor.environments": environments, "harbor.environments.docker": docker_package, "harbor.environments.docker.docker": docker_module, "yaml": yaml})
+sys.path.insert(0, str(source.parent))
 spec = importlib.util.spec_from_file_location("hitch_harbor_environment", source)
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 labels = {
@@ -154,6 +157,28 @@ assert '"devices": !override [{"capabilities": ["gpu"], "count": 1}]' in gpu_sid
 try: module._validate_labels({**labels, "unexpected": "x"})
 except ValueError: pass
 else: raise AssertionError("unknown ownership label accepted")
+# Trusted native session identity distinguishes both main services without naming heuristics.
+trial = root / "trial__abc"; trial.mkdir()
+from hitch_phase_resources import _verifier_session
+for session, requested, expected in [(trial.name + "__env", "agent", "agent"), (trial.name + "__env", "shared", "shared"), (_verifier_session(trial.name), "agent", "verifier"), ("untrusted-name-verifier", "agent", None)]:
+    observed = module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels,
+        trial_paths=types.SimpleNamespace(trial_dir=trial), session_id=session, hitch_agent_environment_role=requested)
+    rendered = json.loads(observed._hitch_ownership_compose_path.read_text())
+    for service in rendered["services"].values():
+        assert service["labels"].get("io.hitch.environment-role") == expected
+    if expected:
+        observed._hitch_observation_event(expected)
+        receipt_path = trial / ("hitch-environment-observation-" + expected + ".json")
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["phase"] == expected and receipt["ownership"] == labels
+        observed._hitch_observation_event(None)
+        assert json.loads(receipt_path.read_text())["phase"] is None
+try: module._validate_labels({**labels, "io.hitch.environment-role": "verifier"})
+except ValueError: pass
+else: raise AssertionError("caller-provided environment role label accepted")
+try: module.HitchHarborDockerEnvironment(environment_dir=root, hitch_ownership_labels=labels, hitch_agent_environment_role="verifier")
+except ValueError: pass
+else: raise AssertionError("caller selected verifier role")
 for provider in ["local-docker", "remote-docker", "remote.us-1"]:
     assert module._validate_labels({**labels, "io.hitch.provider": provider})["io.hitch.provider"] == provider
 for provider in ["Remote", "remote/docker", "bad provider", "a" * 129, "", None]:

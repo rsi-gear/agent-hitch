@@ -7,7 +7,7 @@ import type { HarborPreparedArtifactUse } from "../backends/index.js";
 import { useControllerRuntimeDirectory } from "../controller-runtime/index.js";
 import type { RemoteWorkInputRefV1, RemoteWorkOfferV1 } from "../domain/index.js";
 import { ensureDir, sha256JSON, statePaths } from "../foundation/index.js";
-import { captureRemoteVerifierSource, dockerResourceOwnership, importEvalTrialRun, resolvedImageMapping, runtimeResourcesForTask, startDockerResourceObserver, startEvalModelCaptureRuntime } from "../evals/index.js";
+import { agentEnvironmentRoleForTask, frozenDockerObservation, captureRemoteVerifierSource, dockerResourceOwnership, importEvalTrialRun, resolvedImageMapping, runtimeResourcesForTask, startDockerResourceObserver, startEvalModelCaptureRuntime } from "../evals/index.js";
 import { encodeRemoteResultEnvelope, materializeRemoteTreeEnvelope, startWorkerModelRelay } from "../control-plane/index.js";
 import type { RemoteWorkerExecutor, RemoteWorkerExecutionResult } from "../control-plane/index.js";
 import { parseRemoteHarborWorkSpec } from "./remote-harbor-work-spec.js";
@@ -71,12 +71,14 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
     const taskId = spec.task.task_id;
     const runtimeResources = runtimeResourcesForTask(spec.plan, taskId, offer.lease.reservation);
     const ownership = dockerResourceOwnership(root, offer.lease, taskId);
+    const backendDirectory = path.join(evalDirectory, "remote-work", offer.work.work_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
+    const agentEnvironmentRole = agentEnvironmentRoleForTask(spec.plan, taskId);
     const observer = startDockerResourceObserver({
+      ...frozenDockerObservation(spec.plan, taskId, ownership, { trialParent: path.join(backendDirectory, "job") }),
       ownership, workerId: offer.worker_id, collisionDomainId: offer.lease.collision_domain_id,
       reservation: offer.lease.reservation, mainLimits: runtimeResources.mainLimits,
       sidecarLimits: runtimeResources.sidecarLimits, env, signal,
     });
-    const backendDirectory = path.join(evalDirectory, "remote-work", offer.work.work_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
     const relay = binding ? await startWorkerModelRelay({ binding, relay: relayModel!, signal }) : undefined;
     const captureRuntime = await startEvalModelCaptureRuntime({
       plan: spec.plan.model_capture ?? { requested_mode: "native", effective_mode: "native", required: false },
@@ -105,7 +107,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         request: { ...spec.request, dataset: datasetDirectory, attempts: 1, max_concurrent: 1 },
         root, resolvedRevision: spec.resolution, runtimeDirectory: runtime.directory,
         runtimeId: runtime.runtime_id, preparedArtifact: preparedUse(prepared, harnessDirectory, spec.harness_artifact),
-        executionResources: runtimeResources.mainLimits,
+        executionResources: runtimeResources.mainLimits, ...(agentEnvironmentRole ? { agentEnvironmentRole } : {}),
         ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
         dockerOwnership: ownership, resolvedImages: resolvedImageMapping(offer.work.image_refs ?? []),
         verifierImages: { resolvedImages: resolvedImageMapping(offer.work.image_refs ?? [], "verifier") },

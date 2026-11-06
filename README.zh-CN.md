@@ -146,6 +146,13 @@ Hitch 采用 **Harbor 的任务定义格式**，接入已有 Benchmark 和自定
 存活进程接管要求 POSIX 和完整的执行证据；普通 Harness Run 不会在 daemon
 崩溃后自动续跑。
 
+资源声明缺少 CPU 或内存的新计划默认先按未知任务并发上限 1 试跑，
+缺失字段分别回退到 1 CPU 或 1 GiB；daemon/worker 共享试跑槽位，direct
+仅在本进程共享。`hitch resources profile` 和 `hitch resources recommend`
+可通过 `--eval`、`--task` 查看冻结身份、角色观测和现有限额；当前生命周期证据仍为 partial，不能据此
+给出安全降限数字。显式批准配置、旧计划兼容与清理范围见
+[资源画像和准入说明](docs/hitch-phase-resource-reservation-spec.zh-CN.md#13-p1-实际接口与使用边界2026-10-21)。
+
 [配置、示例与恢复边界 →](https://rsigear.xyz/docs/hitch/zh/daemon)
 
 ## 评测模型与 Harness

@@ -1,10 +1,46 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { atomicWriteJSON, sha256JSON } from "../src/foundation/index.js";
 import { verifyResultBundleIndex, writeResultBundleIndex } from "../src/runs/index.js";
+
+test("bundle memory summaries distinguish per-container maxima, independent sums and sampled cycle totals without rewriting legacy indexes", async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hitch-bundle-memory-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await atomicWriteJSON(path.join(directory, "manifest.json"), { schema_version: "1", run_id: `run_${"b".repeat(32)}`, sealed: true,
+    context: { kind: "ad_hoc" }, harness: {}, model: {}, protocol: {} });
+  const limits = { cpu_millis: 1000, memory_bytes: 1024, container_slots: 1, build_slots: 0 };
+  const execution = { reservation: limits, enforced: { main_limits: limits, sidecar_limits: {} },
+    observed: { sample_count: 2, containers: [{ peak_memory_bytes: 100 }, { peak_memory_bytes: 200 }, { peak_memory_bytes: 0 }, {}],
+      memory: { groups: [], group_peaks: [{ group_id: "task", memory_bytes: 200, max_span_ms: 10, sample_count: 4, approximate: false, complete: true },
+        { group_id: "task", memory_bytes: 250, max_span_ms: 600, max_source_span_ms: 1000, sample_count: 1, approximate: true, complete: false }] } } };
+  await atomicWriteJSON(path.join(directory, "execution.json"), execution);
+  const index = await writeResultBundleIndex(directory);
+  assert.equal(index.resources!.observed!.max_container_sampled_peak_bytes, 200);
+  assert.equal(index.resources!.observed!.sum_container_sampled_peaks_bytes, 300);
+  assert.equal(index.resources!.observed!.sampled_task_group_peak_bytes, 250);
+  assert.equal(index.resources!.observed!.task_group_approximate_sample_count, 1);
+  assert.equal(index.resources!.observed!.task_group_sample_count, 5);
+  assert.equal(index.resources!.observed!.task_group_max_span_ms, 600);
+  assert.equal(index.resources!.observed!.task_group_max_source_span_ms, 1000);
+  assert.equal(index.resources!.observed!.peak_memory_bytes, undefined);
+  assert.deepEqual(index.resources!.effective, execution.enforced);
+  // Historical execution evidence has neither cycle totals nor effective
+  // bundle summaries. Its zero-valued sampled maximum must remain present.
+  await atomicWriteJSON(path.join(directory, "execution.json"), { reservation: limits, observed: { sample_count: 1, containers: [{ peak_memory_bytes: 0 }, {}] } });
+  const old = await writeResultBundleIndex(directory);
+  old.resources!.observed!.peak_memory_bytes = old.resources!.observed!.max_container_sampled_peak_bytes!;
+  delete old.resources!.observed!.max_container_sampled_peak_bytes;
+  delete old.resources!.observed!.sum_container_sampled_peaks_bytes;
+  const { bundle_digest: _digest, created_at: _created, ...identity } = old;
+  old.bundle_digest = sha256JSON(identity);
+  const file = path.join(directory, "bundle.index.json");
+  await atomicWriteJSON(file, old); const before = await readFile(file, "utf8");
+  assert.equal((await verifyResultBundleIndex(directory)).resources!.observed!.peak_memory_bytes, 0);
+  assert.equal(await readFile(file, "utf8"), before);
+});
 
 test("result bundle index seals every run file and detects later mutation", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "hitch-result-bundle-"));

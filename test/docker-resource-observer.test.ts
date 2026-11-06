@@ -97,7 +97,11 @@ test("Docker Engine stats parser accepts only safe cumulative nanoseconds", () =
     cpu_stats: { cpu_usage: { total_usage: 123_456 } }, memory_stats: { usage: 654_321 },
   }), { cpu_time_ns: 123_456, memory_bytes: 654_321 });
   assert.deepEqual(parseDockerEngineContainerStats({ cpu_stats: {} }), {});
+  assert.deepEqual(parseDockerEngineContainerStats({ memory_stats: { usage: 0, max_usage: 0 }, read: "2026-10-21T00:00:00.000Z" }),
+    { memory_bytes: 0, kernel_peak_bytes: 0, read_at: "2026-10-21T00:00:00.000Z" });
+  assert.deepEqual(parseDockerEngineContainerStats({ memory_stats: { usage: 10, max_usage: 0 } }), { memory_bytes: 10 });
   assert.throws(() => parseDockerEngineContainerStats({ cpu_stats: { cpu_usage: { total_usage: -1 } } }), /cumulative CPU time/);
+  assert.throws(() => parseDockerEngineContainerStats({ memory_stats: { max_usage: -1 } }), /memory peak/);
 });
 
 test("Docker observer retries a transient list failure and retains redacted diagnostics", async () => {
@@ -138,9 +142,12 @@ test("Docker observer bounds retries per sample without permanently disabling la
   const failed = await observer.capture();
   assert.equal(calls, 3);
   assert.equal(failed.observed.sample_count, 0);
+  assert.equal(failed.observed.memory?.attempted_cycles, 3);
+  assert.equal(failed.observed.memory?.gaps.filter(gap => gap.reason === "poll-failed").length, 3);
   healthy = true;
   const recovered = await observer.capture();
   assert.equal(recovered.observed.sample_count, 1);
+  assert.equal(recovered.observed.memory?.attempted_cycles, 4);
   await observer.stop();
   const stoppedCalls = calls;
   await observer.capture();

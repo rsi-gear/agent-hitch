@@ -4,8 +4,14 @@ import { credentialValuesFromEnv, isSensitiveFieldName, runCommand, safeDiagnost
 import { DOCKER_OWNERSHIP_LABELS, dockerOwnershipLabelMap, validateDockerResourceOwnership } from "./docker-ownership.js";
 import { parseExecutionEvidence } from "./execution-evidence.js";
 import { readDockerEngineContainerStats } from "./docker-engine-stats.js";
+import type { DockerEngineContainerStatsV1 } from "./docker-engine-stats.js";
+import type { MemoryObservationV1 } from "../domain/index.js";
+import { memoryGap, newMemoryObservation, recordMemoryCycle, sampleContainerMemory, summarizeMemory } from "./docker-memory-sampling.js";
+import type { MemoryCycleRow, MemorySamplingOptions } from "./docker-memory-sampling.js";
+export { parseDockerMemoryBytes } from "./docker-memory-sampling.js";
+export type { DockerResourceObserverTopology } from "./docker-memory-sampling.js";
 
-export interface DockerResourceObserverOptions {
+export interface DockerResourceObserverOptions extends MemorySamplingOptions {
   ownership: DockerResourceOwnershipV1;
   workerId: string;
   collisionDomainId: string;
@@ -16,7 +22,7 @@ export interface DockerResourceObserverOptions {
   signal?: AbortSignal;
   intervalMs?: number;
   run?: (args: string[]) => Promise<{ stdout: string; stderr?: string }>;
-  engineStats?: (containerId: string) => Promise<{ cpu_time_ns?: number; memory_bytes?: number }>;
+  engineStats?: (containerId: string) => Promise<DockerEngineContainerStatsV1>;
 }
 
 export interface DockerResourceObserver {
@@ -24,7 +30,7 @@ export interface DockerResourceObserver {
   stop(): Promise<ExecutionEvidenceV1>;
 }
 
-interface MutableContainer {
+interface MutableContainer extends ObservedContainerResourcesV1 {
   container_id: string;
   name?: string;
   service?: string;
@@ -44,6 +50,7 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
   const ownership = validateDockerResourceOwnership(options.ownership);
   const intervalMs = options.intervalMs ?? 250;
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 50 || intervalMs > 60_000) throw new TypeError("Docker resource observer interval is invalid");
+  if (new Set(options.topology?.components.flatMap(c => c.phase_ids)).size > 32) throw new TypeError("Docker resource observer topology has too many phases");
   const env = options.env ?? process.env;
   const credentials = credentialValuesFromEnv(Object.keys(env).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && isSensitiveFieldName(name)), env);
   const command = options.run ?? ((args: string[]) => runCommand(
@@ -64,9 +71,12 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
   const startedAt = new Date().toISOString();
   const containers = new Map<string, MutableContainer>();
   const issues: string[] = [];
+  const memory = newMemoryObservation(intervalMs);
+  const missing = new Set<string>();
   let sampleCount = 0;
   let tail = Promise.resolve();
   let pending = false;
+  let previousCycleAt: string | undefined;
   let stopped = false;
   let stopping: Promise<ExecutionEvidenceV1> | undefined;
   const recordIssue = (error: unknown): void => addIssue(issues, safeDiagnosticMessage(error, credentials, 512));
@@ -74,14 +84,19 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
     if (pending) return tail;
     pending = true;
     tail = tail.then(async () => {
-      // Each sample is bounded; a transient Docker failure must not disable future samples.
+      // Keep transient retries bounded while accounting for every attempted sampling cycle.
       for (let attempt = 0; attempt < 3 && !options.signal?.aborted; attempt += 1) {
+        const cycleAt = new Date().toISOString();
+        if (previousCycleAt && Date.parse(cycleAt) - Date.parse(previousCycleAt) > intervalMs * 1.5) memoryGap(memory, previousCycleAt, "interval-overrun", cycleAt);
+        previousCycleAt = cycleAt;
+        memory.attempted_cycles += 1;
         try {
-          await poll(ownership, command, engineStats, containers, recordIssue);
+          await poll(ownership, command, engineStats, containers, recordIssue, memory, options, missing, cycleAt);
           sampleCount += 1;
           break;
         } catch (error) {
           recordIssue(error);
+          memoryGap(memory, cycleAt, "poll-failed");
           if (attempt < 2) await delay(100 * (attempt + 1), undefined, {
             ...(options.signal ? { signal: options.signal } : {}),
           }).catch(() => {});
@@ -105,7 +120,7 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
     task_id: ownership.task_id,
     reservation: options.reservation,
     enforced: { main_limits: options.mainLimits, sidecar_limits: options.sidecarLimits },
-    observed: observation(startedAt, sampleCount, containers, issues),
+    observed: observation(startedAt, sampleCount, containers, issues, memory),
   });
   return {
     capture: async () => { await (stopped ? tail : enqueue()); return evidence(); },
@@ -121,9 +136,13 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
 async function poll(
   ownership: DockerResourceOwnershipV1,
   command: (args: string[]) => Promise<{ stdout: string; stderr?: string }>,
-  engineStats: ((containerId: string) => Promise<{ cpu_time_ns?: number; memory_bytes?: number }>) | undefined,
+  engineStats: ((containerId: string) => Promise<DockerEngineContainerStatsV1>) | undefined,
   containers: Map<string, MutableContainer>,
   recordIssue: (error: unknown) => void,
+  memory: MemoryObservationV1,
+  options: MemorySamplingOptions,
+  missing: Set<string>,
+  cycleAt: string,
 ): Promise<void> {
   const labels = dockerOwnershipLabelMap(ownership);
   const listed = await command([
@@ -135,19 +154,31 @@ async function poll(
   ]);
   const ids = [...new Set(listed.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean))].sort();
   if (ids.length > 256 || ids.some((id) => !/^[a-f0-9]{12,64}$/.test(id))) throw new TypeError("Docker resource observation returned invalid container IDs");
+  const rows: MemoryCycleRow[] = [];
+  let complete = true;
   for (const id of ids) {
-    try { await observeContainer(id, ownership, command, engineStats, containers); }
-    catch (error) { recordIssue(error); }
+    try { rows.push(await observeContainer(id, ownership, command, engineStats, containers, memory, options)); }
+    catch (error) { complete = false; recordIssue(error); memoryGap(memory, cycleAt, "inspect-failed"); }
   }
+  for (const container of containers.values()) {
+    if (ids.some(id => container.container_id.startsWith(id))) { missing.delete(container.container_id); continue; }
+    if (!missing.has(container.container_id)) {
+      missing.add(container.container_id); memoryGap(memory, container.last_observed_at, "container-disappeared");
+      if (container.memory) memoryGap(container.memory, container.last_observed_at, "container-disappeared");
+    }
+  }
+  recordMemoryCycle(memory, rows, cycleAt, complete);
 }
 
 async function observeContainer(
   id: string,
   ownership: DockerResourceOwnershipV1,
   command: (args: string[]) => Promise<{ stdout: string; stderr?: string }>,
-  engineStats: ((containerId: string) => Promise<{ cpu_time_ns?: number; memory_bytes?: number }>) | undefined,
+  engineStats: ((containerId: string) => Promise<DockerEngineContainerStatsV1>) | undefined,
   containers: Map<string, MutableContainer>,
-): Promise<void> {
+  memory: MemoryObservationV1,
+  options: MemorySamplingOptions,
+): Promise<MemoryCycleRow> {
   const inspected = JSON.parse((await command(["container", "inspect", id])).stdout) as unknown;
   if (!Array.isArray(inspected) || inspected.length !== 1 || !record(inspected[0])) throw new TypeError("Docker resource observation inspect response is invalid");
   const item = inspected[0];
@@ -177,6 +208,8 @@ async function observeContainer(
   if (typeof service === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/.test(service)) observed.service = service;
   const role = rawLabels["io.hitch.environment-role"];
   if (role === "candidate" || role === "verifier") observed.role = role;
+  // The detailed phase topology uses agent/shared; legacy image attestation groups both as candidate.
+  else if (role === "agent" || role === "shared") observed.role = "candidate";
   if (typeof item.Name === "string" && item.Name.replace(/^\//, "")) observed.name = item.Name.replace(/^\//, "").replace(/[\0\r\n]/g, " ").slice(0, 256);
   if (typeof config.Image === "string" && config.Image && config.Image.length <= 1_024 && !/[\0\r\n]/.test(config.Image)) observed.image_reference = config.Image;
   if (typeof item.Image === "string" && /^sha256:[a-f0-9]{64}$/.test(item.Image)) observed.image_config_digest = item.Image as Sha256;
@@ -189,23 +222,9 @@ async function observeContainer(
       : state.OOMKilled === true ? "oom-killed" : `exit-code-${state.ExitCode}`;
     observed.exit_reason = rawReason.replace(/[\0\r\n]/g, " ").slice(0, 512);
   }
-  if (state.Running === true) {
-    if (engineStats) {
-      try {
-        const stats = await engineStats(item.Id);
-        if (stats.cpu_time_ns !== undefined) observed.cpu_time_ns = Math.max(observed.cpu_time_ns ?? 0, stats.cpu_time_ns);
-        if (stats.memory_bytes !== undefined) observed.peak_memory_bytes = Math.max(observed.peak_memory_bytes ?? 0, stats.memory_bytes);
-      } catch { /* CLI evidence remains useful when the Engine stats API is unavailable. */ }
-    }
-    if (observed.peak_memory_bytes === undefined) try {
-      const stats = await command(["container", "stats", "--no-stream", "--format", "{{json .}}", item.Id]);
-      const line = stats.stdout.split(/\r?\n/).find((entry) => entry.trim());
-      const parsed = line ? JSON.parse(line) as unknown : null;
-      const memory = record(parsed) ? parseDockerMemoryBytes(parsed.MemUsage) : null;
-      if (memory !== null) observed.peak_memory_bytes = Math.max(observed.peak_memory_bytes ?? 0, memory);
-    } catch { /* Inspect evidence remains useful when stats is unavailable. */ }
-  }
   containers.set(item.Id, observed);
+  return sampleContainerMemory({ container: observed, state, labels: rawLabels, cycle: memory.attempted_cycles,
+    command, ...(engineStats ? { engineStats } : {}), observation: memory, options });
 }
 
 function observation(
@@ -213,6 +232,7 @@ function observation(
   sampleCount: number,
   values: Map<string, MutableContainer>,
   issues: string[],
+  memory: MemoryObservationV1,
 ): ExecutionEvidenceV1["observed"] {
   const containers = [...values.values()].sort((left, right) => left.container_id.localeCompare(right.container_id)) as ObservedContainerResourcesV1[];
   const unavailable: ExecutionEvidenceV1["observed"]["unavailable_fields"] = [];
@@ -226,21 +246,10 @@ function observation(
     collected_at: new Date().toISOString(),
     sample_count: sampleCount,
     containers,
+    memory: summarizeMemory(memory, containers),
     unavailable_fields: unavailable,
     issues: [...issues],
   };
-}
-
-export function parseDockerMemoryBytes(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const first = value.split("/", 1)[0]?.trim() ?? "";
-  const match = first.match(/^([0-9]+(?:\.[0-9]+)?)\s*(B|kB|KB|KiB|MB|MiB|GB|GiB|TB|TiB)$/);
-  if (!match) return null;
-  const amount = Number(match[1]);
-  const unit = match[2] as string;
-  const powers: Record<string, number> = { B: 1, kB: 1_000, KB: 1_000, KiB: 1024, MB: 1_000_000, MiB: 1024 ** 2, GB: 1_000_000_000, GiB: 1024 ** 3, TB: 1_000_000_000_000, TiB: 1024 ** 4 };
-  const bytes = amount * (powers[unit] as number);
-  return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null;
 }
 
 function addIssue(issues: string[], message: string): void {

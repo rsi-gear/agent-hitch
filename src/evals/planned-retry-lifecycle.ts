@@ -1,3 +1,7 @@
+import { agentEnvironmentRoleForTask, frozenDockerObservation } from "./frozen-docker-observation.js";
+import path from "node:path";
+import { phaseResourceContractForTask } from "./phase-resource-runtime.js";
+import { bindPhaseDockerBackend, preparePhaseDockerExecution } from "./phase-docker-backend.js";
 import type { BackendWorkItemV1, EvalTrialRefV1 } from "../domain/index.js";
 import { dockerResourceOwnership } from "./docker-ownership.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
@@ -12,6 +16,7 @@ import { prebuiltTaskImage, prebuiltVerifierImage, prebuiltServiceImages, persis
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 import { physicalRetryWorkItem } from "./physical-retry-work.js";
+import { confirmPhaseResourceCleanup, phaseCleanupUnconfirmed, requiresConfirmedResourceCleanup } from "./phase-resource-cleanup.js";
 
 export async function beginPlannedInfrastructureRetry(input: {
   options: ExecutePlannedHarborOptions;
@@ -52,6 +57,7 @@ export async function beginPlannedInfrastructureRetry(input: {
       ttlMs: DEFAULT_EXECUTION_LEASE_TTL_MS,
     });
     const epoch = lease.current().epoch;
+    if (requiresConfirmedResourceCleanup(item)) await preparePhaseDockerExecution({ root: options.root, lease: lease.current() });
     await lease.markRunning(epoch);
     await options.onWorkItemState?.(item.work_id, lease.leaseId, "running");
     runningAnnounced = true;
@@ -93,8 +99,11 @@ function retryLifecycle(
   const taskId = item.task_ids[0] as string;
   const epoch = lease.current().epoch;
   const runtime = runtimeResourcesForTask(options.plan, taskId, item.reservation);
+  const phaseResourceContract = phaseResourceContractForTask(options.plan, item, taskId);
+  const agentEnvironmentRole = agentEnvironmentRoleForTask(options.plan, taskId);
   const ownership = dockerResourceOwnership(options.root, lease.current(), taskId);
   const observer = startDockerResourceObserver({
+    ...frozenDockerObservation(options.plan, taskId, ownership, { trialParent: path.join(input.backendDirectory, "job") }),
     ownership,
     workerId: options.worker.workerId,
     collisionDomainId: options.worker.collisionDomainId,
@@ -136,7 +145,9 @@ function retryLifecycle(
     backend: {
       executionResources: resourceRequirementForTask(options.plan, taskId)?.main_limits ?? options.plan.default_trial_resources,
       ...(Object.keys(runtime.sidecarLimits).length > 0 ? { dockerServiceLimits: runtime.sidecarLimits } : {}),
+      ...(phaseResourceContract ? { phaseResourceContract } : {}), ...(agentEnvironmentRole ? { agentEnvironmentRole } : {}),
       dockerOwnership: ownership,
+      ...(requiresConfirmedResourceCleanup(item) ? { onProcessStarting: (env: NodeJS.ProcessEnv) => bindPhaseDockerBackend({ root: options.root, lease: lease.current(), env }) } : {}),
       resolvedImages: resolvedImageMapping(item.image_refs ?? []),
       ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
       prebuiltServiceImages: prebuiltServiceImages(input.environmentImages),
@@ -176,16 +187,19 @@ async function closeRetryLifecycle(input: {
 }): Promise<void> {
   const { options, item } = input.input;
   const epoch = input.lease.current().epoch;
+  const confirmedRequired = requiresConfirmedResourceCleanup(item);
+  let releaseConfirmed = !confirmedRequired;
+  let cleanupBlocked = false;
   let failure: unknown;
-  const attempt = async (operation: () => Promise<unknown>): Promise<void> => {
-    try { await operation(); } catch (error) { failure ??= error; }
+  const attempt = async (operation: () => Promise<unknown>, cleanupCritical = false): Promise<void> => {
+    try { await operation(); } catch (error) { failure ??= error; if (cleanupCritical) cleanupBlocked = true; }
   };
   clearInterval(input.timer);
   await attempt(async () => writeTrialExecutionEvidence(input.input.backendDirectory, await input.observer.stop(), { evalId: options.evalId, taskId: item.task_ids[0] as string }));
   await attempt(input.heartbeatTail);
   failure ??= input.heartbeatFailure();
-  if (input.processRecorded()) await attempt(() => releaseLocalDockerProcessRecord({ root: options.root, leaseId: input.lease.leaseId, epoch }));
-  await attempt(async () => {
+  if (input.processRecorded()) await attempt(() => releaseLocalDockerProcessRecord({ root: options.root, leaseId: input.lease.leaseId, epoch }), true);
+  if (!confirmedRequired || !cleanupBlocked) await attempt(async () => {
     const released = await input.lease.release(epoch);
     options.sink.emit({
       type: "eval.physical-retry.lease-released",
@@ -196,16 +210,23 @@ async function closeRetryLifecycle(input: {
       retry: input.input.retry,
       state: released.state,
     });
-  });
-  if (options.dockerResourceReaper) {
+  }, true);
+  if (options.dockerResourceReaper || confirmedRequired) {
     try {
-      const report = await options.dockerResourceReaper({ root: options.root, leaseIds: [input.lease.leaseId], env: options.env });
+      if (confirmedRequired && cleanupBlocked) throw phaseCleanupUnconfirmed(failure);
+      const report = confirmedRequired
+        ? await confirmPhaseResourceCleanup({ root: options.root, lease: input.lease.current(), env: options.env,
+          trialParents: [path.join(input.input.backendDirectory, "job")],
+          ...(options.dockerResourceReaper ? { reaper: options.dockerResourceReaper } : {}) })
+        : await options.dockerResourceReaper!({ root: options.root, leaseIds: [input.lease.leaseId], env: options.env });
+      releaseConfirmed = true;
       options.sink.emit({ type: "eval.physical-retry.resources-reaped", work_id: item.work_id, lease_id: input.lease.leaseId, retry: input.input.retry, scanned: report.scanned, deleted: report.deleted.length, issues: report.issues.length });
     } catch (error) {
       options.sink.emit({ type: "eval.physical-retry.reaper-failed", work_id: item.work_id, lease_id: input.lease.leaseId, retry: input.input.retry, code: (error as { code?: string }).code || "docker_reaper_failed" });
+      if (confirmedRequired) failure = phaseCleanupUnconfirmed(error);
     }
   }
-  if (input.runningAnnounced) await attempt(() => options.onWorkItemState?.(item.work_id, input.lease.leaseId, "terminal") ?? Promise.resolve());
-  input.permit?.release();
+  if (input.runningAnnounced && releaseConfirmed) await attempt(() => options.onWorkItemState?.(item.work_id, input.lease.leaseId, "terminal") ?? Promise.resolve());
+  if (releaseConfirmed) input.permit?.release();
   if (failure !== undefined) throw failure;
 }

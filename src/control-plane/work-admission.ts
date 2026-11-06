@@ -16,6 +16,7 @@ export function workItemAdmission(input: {
         workId: workItem.work_id,
         maxParallelism,
         reservation: workItem.reservation,
+        ...(workItem.resource_profiling ? { resourceProfiling: workItem.resource_profiling } : {}),
         collisionKeys: workItem.task_ids.map((taskId) => evalTaskCollisionKey(input.request, taskId, input.collisionDomainId)),
         priority: workSchedulingPriority(workItem),
         ...(signal ? { signal } : {}),

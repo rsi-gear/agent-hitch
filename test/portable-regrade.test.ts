@@ -50,6 +50,7 @@ test("portable regrade rejects unsupported host dependencies, credential-bearing
     (s: any) => { s.verifier.kwargs.api_key = "private"; },
     (s: any) => { s.extra_instruction_paths = ["/host/prompt"]; },
     (s: any) => { s.environment.kwargs.hitch_other = "unknown behavior"; },
+    (s: any) => { s.environment.kwargs.hitch_phase_resource_contract = { schema_version: "1" }; },
     (s: any) => { s.verifier.import_path = "untrusted:Verifier"; },
   ]) { const original = source(); modify(original); assert.throws(() => capturePortableHarborRegradeConfig(original, "/original/task"), { code: "eval_verifier_only_unavailable" }); }
   const original = source(), portable = capturePortableHarborRegradeConfig(original, "/original/task");

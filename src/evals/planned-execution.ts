@@ -1,5 +1,8 @@
-import { emitWorkLeaseRelease } from "./resource-eval-lifecycle.js";
-import { configuredResourceStore, reclaimResourceExecution } from "../resources/index.js";
+import { agentEnvironmentRoleForTask, frozenDockerObservation } from "./frozen-docker-observation.js";
+import { phaseResourceContractForTask } from "./phase-resource-runtime.js";
+import { finishPlannedLocalWork } from "./planned-work-cleanup.js";
+import { requiresConfirmedResourceCleanup } from "./phase-resource-cleanup.js";
+import { bindPhaseDockerBackend, preparePhaseDockerExecution } from "./phase-docker-backend.js";
 import { ProgressPublisher } from "./planned-progress-publisher.js";
 import path from "node:path";
 import type { ResolvedRevision } from "../artifacts/index.js";
@@ -11,7 +14,7 @@ import { HitchError, readJSON } from "../foundation/index.js";
 import { EvalEventSink } from "./events.js";
 import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease } from "./execution-leases.js";
 import type { ExecutionWorkerIdentity } from "./execution-leases.js";
-import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord } from "./local-docker-provider.js";
+import { recordLocalDockerProcessExit, recordLocalDockerProcessStart } from "./local-docker-provider.js";
 import { dockerResourceOwnership } from "./docker-ownership.js";
 import type { InfrastructureRetryRun } from "./infrastructure-retry.js";
 import { assertBackendTrialSet, localSourceBackendFailure } from "./result-helpers.js";
@@ -23,6 +26,7 @@ import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
 import { loadTrialEnvironmentImages, prebuiltTaskImage, prebuiltVerifierImage, prebuiltServiceImages, persistTrialEnvironmentImageExecution, writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
+import { processWorkItemAdmission } from "./process-resource-profiling.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
 import { PrioritySemaphore, assertTaskSlotPlan, workOrder, workSchedulingPriority } from "./planned-execution-support.js";
 import type { PlannedBackendRun } from "./planned-execution-support.js";
@@ -70,6 +74,10 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
   schedulerSummary: EvalSchedulerSummaryV1;
 }> {
   assertTaskSlotPlan(options.plan);
+  const dispatch = new AbortController();
+  const admission = options.admission ?? (options.plan.resource_profiling && !options.remoteWorkExecutor ? processWorkItemAdmission(options.plan.max_parallelism) : undefined);
+  if (admission) options = { ...options, admission: { acquire: input => admission.acquire({ ...input,
+    signal: input.signal ? AbortSignal.any([input.signal, dispatch.signal]) : dispatch.signal }) } };
   const publisher = new ProgressPublisher(options.progress, options);
   const semaphore = options.admission ? undefined : new PrioritySemaphore(options.plan.max_parallelism);
   const metrics = new EvalSchedulerMetrics();
@@ -112,6 +120,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       } catch (error) {
         executionFailure ??= error;
         stopDispatch = true;
+        dispatch.abort();
       }
     }
     for (const item of items) {
@@ -119,6 +128,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
       let release: (() => void) | undefined;
       let completed: PlannedBackendRun | undefined;
       let initialStarted = false;
+      const allocation = { held: false };
       try {
         options.sink.emit({
           type: "eval.work.ready", work_id: item.work_id, slot_id: item.slots[0], task_id: taskId,
@@ -156,7 +166,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
         if (stopDispatch || options.signal?.aborted) break;
         metrics.startWork(item.work_id, "initial");
         initialStarted = true;
-        completed = await executeWorkItem(options, publisher, item, metrics, parentAllocationId);
+        completed = await executeWorkItem(options, publisher, item, metrics, allocation, parentAllocationId);
         results.push(completed);
         if (completed.durationMs !== undefined) {
           await recordTaskDuration({
@@ -206,10 +216,11 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
         });
         executionFailure ??= error;
         stopDispatch = true;
+        dispatch.abort();
         break;
       } finally {
         if (initialStarted) metrics.finishWork(item.work_id);
-        release?.();
+        if (!allocation.held || !options.admission) release?.();
       }
       if (!completed || stopDispatch || options.signal?.aborted) break;
       try {
@@ -226,6 +237,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
         });
         executionFailure ??= error;
         stopDispatch = true;
+        dispatch.abort();
         break;
       }
     }
@@ -250,6 +262,7 @@ async function executeWorkItem(
   publisher: ProgressPublisher,
   item: BackendWorkItemV1,
   metrics: EvalSchedulerMetrics,
+  allocation: { held: boolean },
   parentAllocationId?: string,
 ): Promise<PlannedBackendRun> {
   const startedAt = Date.now();
@@ -324,6 +337,8 @@ async function executeWorkItem(
   }, DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS);
   heartbeatTimer.unref();
   try {
+    allocation.held = requiresConfirmedResourceCleanup(item);
+    if (allocation.held) await preparePhaseDockerExecution({ root: options.root, lease: lease.current() });
     const completed = await executeLeasedWorkItem(options, publisher, item, lease.current(), providerProcess, metrics);
     await heartbeatTail;
     if (heartbeatFailure !== undefined) throw heartbeatFailure;
@@ -331,27 +346,7 @@ async function executeWorkItem(
   } finally {
     clearInterval(heartbeatTimer);
     await heartbeatTail;
-    if (providerProcess.recorded) await releaseLocalDockerProcessRecord({ root: options.root, leaseId: lease.leaseId, epoch });
-    const released = await lease.release(epoch);
-    emitWorkLeaseRelease(options.sink, item.work_id, lease.leaseId, released.epoch, options.worker.workerId, released.state);
-    if (options.dockerResourceReaper) {
-      options.sink.emit({ type: "sandbox.cleanup.started", work_id: item.work_id, lease_id: lease.leaseId });
-      try {
-        const report = await options.dockerResourceReaper({
-          root: options.root,
-          leaseIds: [lease.leaseId],
-          env: options.env,
-        });
-        options.sink.emit({ type: "eval.work-item.resources-reaped", work_id: item.work_id, lease_id: lease.leaseId, scanned: report.scanned, deleted: report.deleted.length, issues: report.issues.length });
-        if (report.issues.length === 0) await reclaimResourceExecution((await configuredResourceStore(options.root)).store,
-          path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(epoch).padStart(6, "0")}`, "resource-evidence.json"), true);
-        options.sink.emit({ type: "sandbox.cleanup.completed", work_id: item.work_id, lease_id: lease.leaseId, scanned: report.scanned, deleted: report.deleted.length, residual_resources: report.issues.length });
-      } catch (error) {
-        options.sink.emit({ type: "eval.work-item.reaper-failed", work_id: item.work_id, lease_id: lease.leaseId, code: (error as { code?: string }).code || "docker_reaper_failed" });
-        options.sink.emit({ type: "sandbox.cleanup.failed", work_id: item.work_id, lease_id: lease.leaseId, code: (error as { code?: string }).code || "docker_reaper_failed" });
-      }
-    }
-    await options.onWorkItemState?.(item.work_id, lease.leaseId, "terminal");
+    await finishPlannedLocalWork({ options, item, lease, epoch, processRecorded: providerProcess.recorded, allocation });
   }
 }
 
@@ -367,12 +362,14 @@ async function executeLeasedWorkItem(
   const taskId = item.task_ids[0] as string;
   const environmentImages = await loadTrialEnvironmentImages({ taskId, uses: item.image_refs ?? [], ...(options.environmentImageManifestLoader ? { loader: options.environmentImageManifestLoader } : {}) });
   const runtimeResources = runtimeResourcesForTask(options.plan, taskId, item.reservation);
+  const phaseResourceContract = phaseResourceContractForTask(options.plan, item, taskId);
+  const agentEnvironmentRole = agentEnvironmentRoleForTask(options.plan, taskId);
   const ownership = dockerResourceOwnership(options.root, lease, taskId);
   const backendDirectory = path.join(options.evalDirectory, "harbor", "work-items", item.work_id, `epoch-${String(lease.epoch).padStart(6, "0")}`);
   const harborJobDirectory = path.join(backendDirectory, "job");
   const prebuiltImage = prebuiltTaskImage(environmentImages);
   await writeTrialEnvironmentImageEvidence(backendDirectory, taskId, environmentImages);
-  const resourceObserver = startDockerResourceObserver({ ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
+  const resourceObserver = startDockerResourceObserver({ ...frozenDockerObservation(options.plan, taskId, ownership, { trialParent: harborJobDirectory }), ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
   const refs: EvalTrialRefV1[] = [];
   const publish = async (ref: EvalTrialRefV1): Promise<void> => {
     if (ref.attempt !== logicalAttempt || ref.task_id !== taskId) {
@@ -408,7 +405,9 @@ async function executeLeasedWorkItem(
     ...(options.interactionCaptureExporter ? { modelProxy: options.interactionCaptureExporter.route } : {}),
     executionResources: runtimeResources.mainLimits,
     ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
+    ...(phaseResourceContract ? { phaseResourceContract } : {}), ...(agentEnvironmentRole ? { agentEnvironmentRole } : {}),
     dockerOwnership: ownership,
+    ...(requiresConfirmedResourceCleanup(item) ? { onProcessStarting: (env: NodeJS.ProcessEnv) => bindPhaseDockerBackend({ root: options.root, lease, env }) } : {}),
     resolvedImages: resolvedImageMapping(item.image_refs ?? []),
     ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
     prebuiltServiceImages: prebuiltServiceImages(environmentImages),

@@ -10,6 +10,8 @@ import {
   readRemoteRerunCompletion,
   evalRerunSemantics,
   rerunEval,
+  parseEvalExecutionPlan,
+  reapOwnedDockerResources,
   validateEvalId,
 } from "../evals/index.js";
 import type { EvalRerunResult, EvalRerunType, RerunEvalOptions, RerunSelector } from "../evals/index.js";
@@ -24,13 +26,13 @@ import { assertRerunStateIdentity, recoverPersistedReruns } from "./rerun-recove
 import type { RemoteWorkCoordinator } from "./remote-work-coordinator.js";
 import { ResourceLedger, scaleResources, zeroResources } from "./resources.js";
 import type { ResourceLease } from "./resources.js";
-
+import { WorkItemDispatcher } from "./work-dispatcher.js";
+import { localRerunWorkAdmission } from "./rerun-admission.js";
+import { localEnvironmentImageManifestLoader } from "./eval-image-resolution.js";
 import { parseEvalRerunSubmissionInput, parsePersistedSubmission, serializedSelector, validateRerunId } from "./rerun-submission.js";
 import type { ParsedRerunInput } from "./rerun-submission.js";
 export { parseEvalRerunSubmissionInput } from "./rerun-submission.js";
-
 export type EvalRerunExecutor = (options: RerunEvalOptions) => Promise<EvalRerunResult>;
-
 export interface EvalRerunSubmissionInput {
   rerun_id?: string;
   rerun_type?: EvalRerunType;
@@ -38,7 +40,6 @@ export interface EvalRerunSubmissionInput {
   endpoint_attempt?: import("../evals/index.js").EndpointEvaluationAttemptV1;
   selector: RerunSelector;
 }
-
 export interface EvalRerunSchedulerOptions {
   root: string;
   resources: ResourceLedger;
@@ -71,13 +72,11 @@ interface QueuedRerun {
   directory: string;
   collisionKeys: string[];
   resumeRemoteRerun?: boolean;
+  independentWorkAdmission?: boolean;
+  coarseProfiling?: import("../domain/index.js").WorkResourceProfilingV1;
 }
 
-interface ActiveRerun {
-  controller: AbortController;
-  resources: ResourceLease;
-  collisions: CollisionLease;
-}
+interface ActiveRerun { controller: AbortController; resources: ResourceLease; collisions: CollisionLease }
 
 export class EvalRerunScheduler {
   readonly root: string;
@@ -92,6 +91,7 @@ export class EvalRerunScheduler {
   private readonly onEvent: (event: Record<string, unknown>) => void;
   private readonly credentialEnv: NodeJS.ProcessEnv;
   private readonly remoteWork: RemoteWorkCoordinator | undefined;
+  private readonly rerunWork: WorkItemDispatcher;
   private readonly unsubscribeResources: () => void;
   private readonly unsubscribeCollisions: () => void;
   private readonly queue: QueuedRerun[] = [];
@@ -114,6 +114,7 @@ export class EvalRerunScheduler {
     this.onEvent = onEvent;
     this.credentialEnv = credentialEnv;
     this.remoteWork = remoteWork;
+    this.rerunWork = new WorkItemDispatcher({ resources, collisions });
     this.unsubscribeResources = resources.subscribe(() => this.scheduleDrain());
     this.unsubscribeCollisions = collisions.subscribe(() => this.scheduleDrain());
   }
@@ -268,6 +269,7 @@ export class EvalRerunScheduler {
     await Promise.all([...this.completions.values()]);
     this.unsubscribeResources();
     this.unsubscribeCollisions();
+    this.rerunWork.close();
   }
 
   private scheduleDrain(): void {
@@ -294,23 +296,23 @@ export class EvalRerunScheduler {
       this.draining = false;
     }
   }
-
   private selectRunnable(): { index: number; parallelism: number; resources: ResourceLease; collisions: CollisionLease } | null {
     for (let index = 0; index < this.queue.length; index += 1) {
       const entry = this.queue[index] as QueuedRerun;
       const remote = entry.execution.provider !== this.provider;
-      const unit = rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial, remote);
-      const parallelism = entry.rerunType === "collect-only" ? 1 : remote ? entry.execution.max_parallelism : this.resources.maximumUnits(unit, entry.execution.max_parallelism);
+      const unit = entry.independentWorkAdmission ? zeroResources() : rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial, remote);
+      const parallelism = entry.rerunType === "collect-only" ? 1 : remote ? entry.execution.max_parallelism : this.resources.maximumUnits(unit, Math.min(entry.execution.max_parallelism, entry.coarseProfiling ? Math.min(entry.coarseProfiling.unknown_max_parallelism, this.resources.resourceProfilingPolicy.unknown_max_parallelism) : Infinity));
       if (parallelism < 1) continue;
+      const reservation = scaleResources(unit, parallelism), profiling = entry.coarseProfiling ? { ...entry.coarseProfiling, unknown_slots: parallelism } : undefined;
+      if (!this.resources.canAcquire(reservation, profiling)) continue;
       const collisions = this.collisions.tryAcquire(operationKey(entry.evalId, entry.rerunId), entry.collisionKeys);
       if (!collisions) continue;
-      const resources = this.resources.tryAcquire(operationKey(entry.evalId, entry.rerunId), "eval", scaleResources(unit, parallelism));
+      const resources = this.resources.tryAcquire(operationKey(entry.evalId, entry.rerunId), "eval", reservation, profiling);
       if (resources) return { index, parallelism, resources, collisions };
       collisions.release();
     }
     return null;
   }
-
   private start(entry: QueuedRerun, parallelism: number, resources: ResourceLease, collisions: CollisionLease): void {
     const controller = new AbortController();
     const key = operationKey(entry.evalId, entry.rerunId);
@@ -352,12 +354,19 @@ export class EvalRerunScheduler {
       root: this.root,
       maxConcurrentOverride: parallelism,
       executionResources: rerunResourceUnit(entry.rerunType, entry.execution.resources.default_trial),
+      resourceProfilingPolicy: this.resources.resourceProfilingPolicy,
       executionResourceSource: "submission-default",
       executionStrategy: "local-task-slots-v1",
       environmentBuildMode: entry.execution.build.mode,
       ...(entry.modelCapturePlan ? { modelCapturePlan: entry.modelCapturePlan } : {}),
       env: this.credentialEnv,
       signal: controller.signal,
+      ...(entry.independentWorkAdmission ? {
+        executionWorker: { workerId: this.workerId, provider: this.provider, collisionDomainId: this.collisionDomainId },
+        dockerResourceReaper: reapOwnedDockerResources,
+        environmentImageManifestLoader: localEnvironmentImageManifestLoader(this.root),
+        workItemAdmission: localRerunWorkAdmission(this.rerunWork, entry.collisionKeys, entry.execution.max_parallelism),
+      } : {}),
       ...(entry.resumeRemoteRerun ? { resumeRemoteRerun: true } : {}),
       ...(entry.execution.provider !== this.provider && this.remoteWork ? {
         remoteWorkExecutor: this.remoteWork.execute,
@@ -427,13 +436,20 @@ export class EvalRerunScheduler {
   }
 
   private async queuedEntry(evalId: EvalId, rerunId: string, rerunType: EvalRerunType, selector: RerunSelector, request: EvalRequest, execution: EvalExecutionPolicyV1, modelCapturePlan: ModelCapturePlanV1 | undefined, directory: string): Promise<QueuedRerun> {
+    const savedPlan = execution.provider === this.provider && ["verifier-only", "candidate-restart"].includes(rerunType)
+      ? await readJSON(path.join(this.rerunsRoot, evalId, "execution-plan.json"), null) : null;
+    const parsedPlan = savedPlan !== null ? parseEvalExecutionPlan(savedPlan) : null;
+    const independentWorkAdmission = parsedPlan !== null && (parsedPlan.resource_contract_version === "2" || parsedPlan.resource_profiling !== undefined && parsedPlan.work_items.every(item => item.slots.length === 1));
+    const coarseProfiling = independentWorkAdmission ? undefined : parsedPlan?.work_items.find(work => work.resource_profiling?.unknown)?.resource_profiling
+      ?? (!parsedPlan && execution.provider === this.provider && rerunType === "candidate-restart" ? { schema_version: "1" as const, unknown: true, ...this.resources.resourceProfilingPolicy,
+        unknown_slots: 1, reason: "unknown-task-membership" as const, approval_digests: [] } : undefined);
     return {
-      evalId,
-      rerunId,
-      rerunType,
+      evalId, rerunId, rerunType,
       selector,
       request,
       execution,
+      ...(independentWorkAdmission ? { independentWorkAdmission: true } : {}),
+      ...(coarseProfiling ? { coarseProfiling } : {}),
       ...(modelCapturePlan ? { modelCapturePlan } : {}),
       directory,
       collisionKeys: [`eval-rerun:${evalId}`, ...(rerunType === "collect-only" || execution.provider !== this.provider ? [] : await evalCollisionKeys(request, this.collisionDomainId))],

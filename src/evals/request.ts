@@ -1,6 +1,7 @@
 import { parseEndpointBinding, parseGeneration } from "../model-access/index.js";
 import { readResourceInput } from "../resources/index.js";
 import { parseEvalArtifactPins } from "../backends/index.js";
+import { parseApprovedResourceConfiguration } from "./resource-profile-approval.js";
 import { parseModelNodeBinding } from "../domain/index.js";
 export const DEFAULT_EVAL_TIMEOUT_MS = 15 * 60 * 1_000;
 export const DEFAULT_EVAL_SETUP_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -42,6 +43,7 @@ export interface EvalRequestInput {
   training_binding?: unknown;
   environment_binding?: unknown;
   artifact_pins?: unknown;
+  resource_config?: unknown;
 }
 
 export async function validateEvalRequest(input: EvalRequestInput): Promise<EvalRequest> {
@@ -49,7 +51,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   const allowed = new Set([
     "schema_version", "backend", "dataset", "harness_ref", "model", "attempts",
     "max_concurrent", "infrastructure_retries", "infrastructure_retry_backoff_ms",
-    "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env", "local_inference", "endpoint_binding", "model_binding", "generation", "training_binding", "environment_binding", "artifact_pins",
+    "timeout_ms", "setup_timeout_ms", "agent_args", "pass_env", "local_inference", "endpoint_binding", "model_binding", "generation", "training_binding", "environment_binding", "artifact_pins", "resource_config",
   ]);
   const unexpected = Object.keys(input).find((field) => !allowed.has(field));
   if (unexpected) throw invalidInput(`unknown eval request field: ${unexpected}`);
@@ -121,6 +123,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
     ...(input.endpoint_binding ? { endpoint_binding: parseEndpointBinding(input.endpoint_binding) } : {}),
     ...(typeof input.environment_binding === "string" ? { environment_binding: input.environment_binding } : {}),
     ...(input.artifact_pins === undefined ? {} : { artifact_pins: parseEvalArtifactPins(input.artifact_pins) }),
+    ...(input.resource_config === undefined ? {} : { resource_config: parseApprovedResourceConfiguration(input.resource_config) }),
   };
 }
 

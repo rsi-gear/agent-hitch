@@ -18,7 +18,7 @@ class TaskConfig:
         if TaskConfig.fixture is not None:
             return TaskConfig.fixture
         environment = SimpleNamespace(cpus=1, memory_mb=128, docker_image=None,
-                                      os=SimpleNamespace(value="linux"), network_mode=None)
+                                      os=SimpleNamespace(value="linux"), network_mode=SimpleNamespace(value="public"))
         return SimpleNamespace(environment=environment, agent=SimpleNamespace(network_mode=None),
                                verifier=SimpleNamespace(environment_mode=None, environment=None, network_mode=None))
 
@@ -122,7 +122,7 @@ class VerifierImageDiscoveryTests(unittest.TestCase):
             (self.root / directory / "Dockerfile").write_text(f"FROM scratch\n# {directory}\n")
         (self.root / "task.toml").write_text('schema_version = "1.4"\n')
         environment = SimpleNamespace(cpus=1, memory_mb=128, docker_image=None,
-                                      os=SimpleNamespace(value="linux"), network_mode=None)
+                                      os=SimpleNamespace(value="linux"), network_mode=SimpleNamespace(value="public"))
         self.config = SimpleNamespace(environment=environment, agent=SimpleNamespace(network_mode=None), steps=None,
                                       verifier=SimpleNamespace(environment_mode="separate", environment=None, network_mode=None))
         TaskConfig.fixture = self.config
@@ -162,8 +162,8 @@ class VerifierImageDiscoveryTests(unittest.TestCase):
         self.config.environment.docker_image = None
         (tests / "Dockerfile").write_text("FROM scratch\n")
         (tests / "docker-compose.yaml").write_text('services: {main: {build: {context: other, args: {MODE: custom}}}}')
-        self.assertEqual(self.verifier_entries("environment_builds"), [])
-        self.assertEqual(self.verifier_entries("environment_image_fallbacks")[0]["code"], "backend-build")
+        with self.assertRaisesRegex(ValueError, "verifier_compose_topology_unsupported"):
+            inspect_task(self.root)
 
     def test_linked_verifier_context_and_dockerfile_are_not_followed(self):
         tests = self.root / "tests"
@@ -182,9 +182,8 @@ class VerifierImageDiscoveryTests(unittest.TestCase):
         self.config.steps = [SimpleNamespace(name="custom", verifier=SimpleNamespace(environment_mode="separate", environment=None))]
         (self.root / "steps/custom/tests").mkdir(parents=True)
         (self.root / "steps/custom/tests/Dockerfile").write_text("FROM scratch\n# different step\n")
-        self.assertEqual(self.verifier_entries("environment_builds"), [])
-        self.assertEqual(self.verifier_entries("environment_images"), [])
-        self.assertEqual(self.verifier_entries("environment_image_fallbacks"), [{"source": "verifier", "service": "main", "code": "backend-build"}])
+        with self.assertRaisesRegex(ValueError, "multi_step_resource_topology_unsupported"):
+            inspect_task(self.root)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-hitch.local/schemas/approved-resource-configuration.schema.json",
+  "title": "Explicit operator resource configuration approval V1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "kind", "identity", "identity_digest", "role_limits", "approval", "configuration_digest"],
+  "properties": {
+    "schema_version": { "const": "1" }, "kind": { "const": "operator-approved-resource-configuration" },
+    "identity": { "$ref": "resource-profile-identity.schema.json" },
+    "identity_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "role_limits": { "type": "array", "minItems": 1, "maxItems": 256, "items": { "type": "object", "additionalProperties": false, "required": ["component_id", "cpu_millis", "memory_bytes"], "properties": { "component_id": { "type": "string", "minLength": 1 }, "cpu_millis": { "type": "integer", "minimum": 1 }, "memory_bytes": { "type": "integer", "minimum": 1 } } } },
+    "approval": { "type": "object", "additionalProperties": false, "required": ["actor", "reason", "approved_at"], "properties": { "actor": { "type": "string", "minLength": 1 }, "reason": { "type": "string", "minLength": 1 }, "approved_at": { "type": "string", "minLength": 1 } } },
+    "configuration_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

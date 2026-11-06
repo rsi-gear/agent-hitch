@@ -3,8 +3,12 @@ import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { prepareHostHarborArtifactForTest as prepareHostArtifact } from "../src/evals/prepared-harness.js";
 import type { EvalHarborArtifactBuilder } from "../src/evals/index.js";
+import { installEmptyDockerBackendForTest } from "./empty-docker-backend.js";
 
-export const prepareHostHarborArtifactForTest: EvalHarborArtifactBuilder = prepareHostArtifact;
+export const prepareHostHarborArtifactForTest: EvalHarborArtifactBuilder = async input => {
+  await installEmptyDockerBackendForTest(input.root, input.env);
+  return prepareHostArtifact(input);
+};
 
 export function safetensorsFixture(): Buffer {
   const rawHeader = Buffer.from(JSON.stringify({ weight: { dtype: "F32", shape: [1], data_offsets: [0, 4] } }));

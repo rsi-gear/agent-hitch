@@ -5,6 +5,7 @@ import type {
   TaskResourceComponentV1,
   TaskResourceRequirementV1,
 } from "../domain/index.js";
+import { EGRESS_SERVICE, validatePhaseRequirement, VERIFIER_EGRESS_COMPONENT } from "./phase-resources.js";
 
 const RESOURCE_FIELDS = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
 const OPTIONAL_RESOURCE_FIELDS = ["gpu_count", "ephemeral_disk_bytes"] as const;
@@ -12,10 +13,10 @@ const SOURCES = new Set<ResourceRequirementSourceV1>([
   "task", "compose", "submission-default", "operator-default", "provider-policy", "derived-components",
 ]);
 
-export function parseTaskResourceRequirements(value: unknown, taskIds: readonly string[]): TaskResourceRequirementV1[] | undefined {
+export function parseTaskResourceRequirements(value: unknown, taskIds: readonly string[], contractVersion?: "2"): TaskResourceRequirementV1[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new TypeError("execution plan task resources must be an array");
-  const requirements = value.map((entry, index) => parseRequirement(entry, index));
+  const requirements = value.map((entry, index) => parseRequirement(entry, index, contractVersion));
   const actual = requirements.map((entry) => entry.task_id);
   const expected = [...taskIds].sort(compareBytes);
   if (new Set(actual).size !== actual.length || JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -65,7 +66,7 @@ export function runtimeResourcesForTask(
   const requirement = resourceRequirementForTask(plan, taskId);
   const sidecarLimits = Object.fromEntries((requirement?.components ?? [])
     .filter((entry) => entry.role === "task-sidecar" || entry.role === "provider-sidecar")
-    .map((entry) => [entry.name, {
+    .map((entry) => [entry.name === VERIFIER_EGRESS_COMPONENT ? EGRESS_SERVICE : entry.name, {
       cpu_millis: entry.fields.cpu_millis.value,
       memory_bytes: entry.fields.memory_bytes.value,
       ...(entry.fields.gpu_count && entry.fields.gpu_count.value > 0 ? { gpu_count: entry.fields.gpu_count.value } : {}),
@@ -73,8 +74,11 @@ export function runtimeResourcesForTask(
   return { mainLimits: requirement?.main_limits ?? fallback, sidecarLimits };
 }
 
-function parseRequirement(value: unknown, index: number): TaskResourceRequirementV1 {
-  const record = exactRecord(value, ["task_id", "reservation", "main_limits", "fields", "components", "diagnostics"], `task resources ${index}`);
+function parseRequirement(value: unknown, index: number, contractVersion?: "2"): TaskResourceRequirementV1 {
+  const record = exactRecord(value, ["task_id", "reservation", "main_limits", "fields", "components", "diagnostics"], `task resources ${index}`,
+    contractVersion === "2" ? ["resource_model", "declared_limits", "lifecycle"] : []);
+  const phase = record.resource_model === "phase-envelope-v1";
+  if (!phase && (record.resource_model !== undefined || record.lifecycle !== undefined || record.declared_limits !== undefined)) throw new TypeError("unsupported resource model");
   if (typeof record.task_id !== "string" || !record.task_id) throw new TypeError(`task resources ${index} identity is invalid`);
   const reservation = parseVector(record.reservation, `task resources ${index} reservation`);
   const mainLimits = parseVector(record.main_limits, `task resources ${index} main limits`);
@@ -96,8 +100,8 @@ function parseRequirement(value: unknown, index: number): TaskResourceRequiremen
     throw new TypeError(`task resources ${index} component identities are invalid`);
   }
   const sum = sumComponents(components);
-  if (RESOURCE_FIELDS.some((name) => sum[name] !== reservation[name])
-    || OPTIONAL_RESOURCE_FIELDS.some((name) => (sum[name] ?? 0) !== (reservation[name] ?? 0))) throw new TypeError(`task resources ${index} components do not match reservation`);
+  if (!phase && (RESOURCE_FIELDS.some((name) => sum[name] !== reservation[name])
+    || OPTIONAL_RESOURCE_FIELDS.some((name) => (sum[name] ?? 0) !== (reservation[name] ?? 0)))) throw new TypeError(`task resources ${index} components do not match reservation`);
   for (const component of components.filter((entry) => entry.role === "main" || entry.role === "verifier")) {
     if (component.fields.cpu_millis.value > mainLimits.cpu_millis || component.fields.memory_bytes.value > mainLimits.memory_bytes) {
       throw new TypeError(`task resources ${index} main limits do not cover runtime components`);
@@ -105,14 +109,19 @@ function parseRequirement(value: unknown, index: number): TaskResourceRequiremen
   }
   if (!Array.isArray(record.diagnostics) || record.diagnostics.some((entry) => typeof entry !== "string" || !entry)
     || new Set(record.diagnostics).size !== record.diagnostics.length) throw new TypeError(`task resources ${index} diagnostics are invalid`);
-  return {
+  const requirement: TaskResourceRequirementV1 = {
     task_id: record.task_id,
     reservation,
     main_limits: mainLimits,
     fields,
     components,
     diagnostics: [...record.diagnostics] as string[],
+    ...(phase ? { resource_model: "phase-envelope-v1" as const,
+      declared_limits: record.declared_limits as NonNullable<TaskResourceRequirementV1["declared_limits"]>,
+      lifecycle: record.lifecycle as NonNullable<TaskResourceRequirementV1["lifecycle"]> } : {}),
   };
+  if (phase) validatePhaseRequirement(requirement);
+  return requirement;
 }
 
 function parseComponent(value: unknown, requirementIndex: number, componentIndex: number): TaskResourceComponentV1 {

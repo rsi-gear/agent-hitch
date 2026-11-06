@@ -1,6 +1,7 @@
-import type { RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, ResourceVectorV1, ExecutionObservationSourceV2 } from "../domain/index.js";
-import { HitchError, safeDiagnosticMessage } from "../foundation/index.js";
+import type { RemoteWorkArtifactRefV1, RemoteWorkInputRefV1, RemoteWorkOfferV1, ResourceVectorV1, ResourceProfilingPolicyV1, ExecutionObservationSourceV2 } from "../domain/index.js";
+import { HitchError, resourceProfilingPolicy, safeDiagnosticMessage } from "../foundation/index.js";
 import { ResourceLedger } from "./resources.js";
+import { assertLegacyRemoteResourceWork } from "./remote-resource-contract.js";
 import { RemoteWorkerHttpClient } from "./remote-worker-client.js";
 import { RemoteObservationReporter } from "./remote-observation-reporter.js";
 import { RemoteWorkerGenerationRecovery } from "./remote-worker-generation-recovery.js";
@@ -35,6 +36,7 @@ export type RemoteWorkerExecutor = ((input: RemoteWorkerExecutorInput) => Promis
 export interface RemoteWorkerRunnerOptions {
   client: RemoteWorkerHttpClient;
   capacity: ResourceVectorV1;
+  resourceProfilingPolicy?: ResourceProfilingPolicyV1;
   execute: RemoteWorkerExecutor;
   signal?: AbortSignal;
   once?: boolean;
@@ -92,7 +94,7 @@ export class RemoteWorkerRunner {
     this.retryIntervalMs = interval(options.retryIntervalMs ?? 1_000, "retry");
     this.onError = options.onError ?? (() => undefined);
     this.releaseUnknown = options.releaseUnknown;
-    this.ledger = new ResourceLedger(options.capacity);
+    this.ledger = new ResourceLedger(options.capacity, resourceProfilingPolicy(options.resourceProfilingPolicy));
     this.observations = options.executionObserver ? new RemoteObservationReporter(this.client, options.executionObserver, this.onError) : undefined;
     this.generationRecovery = options.releasePreviousGeneration ? new RemoteWorkerGenerationRecovery(this.client, options.releasePreviousGeneration,
       this.signal!, this.retryIntervalMs, this.onError, () => { this.handled++; }) : undefined;
@@ -128,6 +130,11 @@ export class RemoteWorkerRunner {
     this.observations?.tick();
     const offers = await this.client.listOffers();
     this.generationRecovery?.tick(offers);
+    // A restarted runner has no local allocations for pre-existing executions.
+    // Fence new work until their provider cleanup is acknowledged; otherwise
+    // both resource capacity and the worker-wide unknown budget start at zero.
+    const recovering = this.generationRecovery?.idle === false || offers.some(offer => !this.jobs.has(offer.offer_id)
+      && (offer.accepted_at !== undefined || ["accepted", "completed", "release-requested"].includes(offer.state)));
     const visible = new Map(offers.map((offer) => [offer.offer_id, offer]));
     const released = new Set<string>();
     for (const job of this.jobs.values()) {
@@ -154,8 +161,11 @@ export class RemoteWorkerRunner {
           schema_version: "1", code: "remote_worker_interrupted", at: new Date().toISOString(),
         })}\n`));
         await this.client.complete(offer, "failed", [artifact]);
-      } else if (offer.state === "offered" && (!this.once || this.handled === 0)) {
-        this.startOffer(offer);
+      } else if (offer.state === "offered" && !recovering && (!this.once || this.handled === 0)) {
+        if (offer.work.resource_profiling?.unknown && offer.work.resource_profiling.unknown_slots > this.ledger.resourceProfilingPolicy.unknown_max_parallelism) {
+          await this.client.reject(offer, "resource_profiling_capacity_exceeded");
+          this.handled += 1;
+        } else this.startOffer(offer);
       }
     }
     if (Date.now() - this.lastHeartbeat >= this.heartbeatIntervalMs) await this.heartbeat();
@@ -180,7 +190,7 @@ export class RemoteWorkerRunner {
   }
 
   private startOffer(offer: RemoteWorkOfferV1): void {
-    const allocation = this.ledger.tryAcquire(offer.lease.lease_id, "eval", offer.lease.reservation);
+    const allocation = this.ledger.tryAcquire(offer.lease.lease_id, "eval", offer.lease.reservation, offer.work.resource_profiling);
     if (!allocation) return;
     const controller = new AbortController();
     const job: ActiveJob = {
@@ -199,6 +209,7 @@ export class RemoteWorkerRunner {
     let inputs: Map<RemoteWorkInputRefV1["kind"], Buffer>;
     let ownership: RemoteWorkerExecutionOwnership | undefined;
     try {
+      assertLegacyRemoteResourceWork(job.offer.work);
       inputs = await this.downloadInputs(job.offer);
       ownership = await this.execute.prepare?.(job.offer) || undefined;
     } catch (error) {
@@ -270,7 +281,8 @@ export class RemoteWorkerRunner {
       || new Set(refs.map((ref) => ref.kind)).size !== expected.size) throw runnerError("remote work offer is missing required inputs");
     const inputs = new Map<RemoteWorkInputRefV1["kind"], Buffer>();
     for (const ref of refs) inputs.set(ref.kind, await this.client.downloadInput(offer, ref));
-    const spec = JSON.parse(inputs.get("work-spec")!.toString()) as { schema_version?: unknown; verifier_only?: unknown; physical_execution?: { kind?: unknown } };
+    const spec = JSON.parse(inputs.get("work-spec")!.toString()) as { schema_version?: unknown; plan?: unknown; verifier_only?: unknown; physical_execution?: { kind?: unknown } };
+    assertLegacyRemoteResourceWork(offer.work, spec.plan);
     if (verifier ? spec?.schema_version !== "2" || !spec.verifier_only || spec.physical_execution?.kind !== "verifier-only"
       : spec?.verifier_only !== undefined || spec?.physical_execution?.kind === "verifier-only") throw runnerError("remote verifier input set differs from its scoring contract");
     return inputs;

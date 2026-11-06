@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonServer, daemonClient, probeDaemonHealth, readDaemonLogs, startDetachedDaemon } from "../../daemon/index.js";
 import type { DaemonResourcePolicy } from "../../daemon/index.js";
 import { discoverAgents } from "../../adapters/index.js";
-import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger, runCommand } from "../../foundation/index.js";
+import { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, HitchError, SCHEMA_VERSION, delay, invalidInput, positiveInteger, resourceProfilingPolicy, runCommand } from "../../foundation/index.js";
 import { assertNoArgs, parseRunRequest, takeFlag, takeOption } from "../arguments.js";
 import { waitForDaemonRun } from "../output.js";
 import { LocalExecutionObserver } from "../../workers/index.js";
@@ -42,6 +42,7 @@ async function serveDaemon(root: string, port: number, maxConcurrent: number, re
     resourceCapacity: resourcePolicy.capacity,
     runResources: resourcePolicy.run,
     evalTrialResources: resourcePolicy.eval_trial,
+    ...(resourcePolicy.resource_profiling ? { resourceProfilingPolicy: resourcePolicy.resource_profiling } : {}),
   });
   await server.start();
   const shutdown = () => server.close().catch((error) => process.stderr.write(`shutdown error: ${(error as Error).message}\n`));
@@ -83,6 +84,8 @@ export async function parseDaemonResourcePolicy(
   } = {},
 ): Promise<DaemonResourcePolicy> {
   const env = options.env ?? process.env;
+  const unknownMax = takeOption(args, "--unknown-max-parallelism");
+  const profiling = resourceProfilingPolicy(unknownMax === undefined ? undefined : { unknown_max_parallelism: unknownMax }, env);
   const capacityCpuOption = policyOption(takeOption(args, "--capacity-cpu-millis"), env.HITCH_CAPACITY_CPU_MILLIS);
   const capacityMemoryOption = policyOption(takeOption(args, "--capacity-memory-mib"), env.HITCH_CAPACITY_MEMORY_MIB);
   const containerSlotsOption = policyOption(takeOption(args, "--container-slots"), env.HITCH_CONTAINER_SLOTS);
@@ -112,6 +115,7 @@ export async function parseDaemonResourcePolicy(
   const containerSlots = parseNonNegative(containerSlotsOption, derivedSlots, "--container-slots");
   const buildSlots = parseNonNegative(buildSlotsOption, 1, "--build-slots");
   return {
+    resource_profiling: profiling,
     capacity: { cpu_millis: capacityCpu, memory_bytes: capacityMemory, container_slots: containerSlots, build_slots: buildSlots, ...(capacityGpuOption === undefined ? {} : { gpu_count: capacityGpus }), ...(capacityDiskOption === undefined ? {} : { ephemeral_disk_bytes: capacityDisk }) },
     run: { cpu_millis: runCpu, memory_bytes: runMemory, container_slots: 0, build_slots: 0 },
     eval_trial: { cpu_millis: evalCpu, memory_bytes: evalMemory, container_slots: 1, build_slots: 0, ...(evalGpuOption === undefined ? {} : { gpu_count: evalGpus }), ...(evalDiskOption === undefined ? {} : { ephemeral_disk_bytes: evalDisk }) },

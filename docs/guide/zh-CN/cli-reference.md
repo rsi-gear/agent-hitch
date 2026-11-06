@@ -104,6 +104,7 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 | `--environment-binding ID` | 准入和每次 Harbor 执行前检查 `eval bind` 返回的绑定；支持本地 Docker、外部模型及 capture `off`/`native`。 |
 | `--artifact-pin JSON` | 每个使用的平台传一条，固定 `platform`、`artifact_id`、`artifact_integrity` 和 `entrypoint_integrity`，任务执行前核对。详见[产物约束协议](../../evaluation-artifact-pins.zh-CN.md)。 |
 | `--training-binding-file JSON` | 将受支持的训练 episode 绑定到外部训练网关，见[训练集成](../../slime-training-binding.zh-CN.md)。 |
+| `--resource-config FILE` | 附加由 `resources approve` 生成的显式资源批准。与冻结任务及当前有效限额精确匹配时可解除该任务的未知资源标记；此文件不覆盖限额。 |
 | `--daemon` | 仅 `eval run`：提交给 daemon 并等待。托管模型的数据集评测自动使用此路径。 |
 | `--output json\|jsonl` | 仅 `eval run`，默认 `json`。`eval submit` 始终返回受理 JSON。 |
 | `--idempotency-key KEY` | 仅用于 daemon 提交，相同不可变请求可复用同一 key。 |
@@ -154,6 +155,13 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 | --- | --- |
 | `hitch resources request OPERATION [--input JSON_FILE]` | 在选定的 `--root` 下调用资源 API，始终返回 JSON。输入文件提供该操作的请求对象；省略时传入 `{}`。 |
 | `hitch resources legacy-export --ref DATASET_OR_SELECTION --output NEW_DIRECTORY` | 显式物化为具有新身份的旧协议数据集；目标目录必须尚不存在。 |
+| `hitch resources profile --eval EVAL_ID --task TASK_ID [--output FILE]` | 从已有评测收集单个任务的内存观测与冻结资源身份。 |
+| `hitch resources recommend --eval EVAL_ID --task TASK_ID [--identity FILE] [--min-complete-trials N] [--output FILE]` | 报告当前角色限额、观测与降低内存建议的资格。最少完整 Trial 数默认 3；`--identity` 额外校验画像是否匹配当前身份文件。 |
+| `hitch resources approve --config FILE --actor NAME --reason TEXT --output FILE` | 为身份及其角色限额写出显式批准。四个参数均必需；批准不改变容器限额。 |
+
+`resources profile` 与 `resources recommend` 必须选择一种输入：`--eval EVAL_ID --task TASK_ID`、执行证据列表 `--input FILE`，或已保存画像 `--profile FILE`。导入文件不提供 Provider 生命周期证明。`--identity` 和 `--min-complete-trials` 仅用于 `recommend`。这些命令输出 JSON；指定 `--output FILE` 时保存结果，并改为输出文件元数据。当前真实观测仍为 `partial`，建议报告会说明降限被阻断的原因，不输出更低的内存数值。详见[资源画像与批准契约](../../hitch-phase-resource-reservation-spec.zh-CN.md#13-p1-实际接口与使用边界2026-10-21)。
+
+重跑样本的 endpoint/runtime 身份发生变化或无法核验时，证据仍保留，但排除出原配置的统计。依赖显式资源批准的重跑若改变该身份，须创建新计划并重新审查配置。
 
 操作包括 `capabilities`、`configure`、`inspect`、`import`、`seal-task`、`seal-dataset`、`selection`、`preflight`、`pin`、`release`、`materialize`、`workspace-end`、`lease-end`、`audit`、`bundle-export` 和 `bundle-import`。资源数据集通过 v2 输入显式启用，普通 v1 数据集保持原有行为。查看和审计可以省略输入文件；审计默认 dry-run，只有请求显式设置 `apply: true` 才变更存储。
 
@@ -196,6 +204,7 @@ Run/eval accept `--model-binding-file READY.json`, `--max-output-tokens N`, `--t
 | `--capacity-ephemeral-disk-mib N`, `--eval-ephemeral-disk-mib N` | 临时磁盘总预算和每 Trial 预算，默认 0，仅用于准入计账。 |
 | `--run-cpu-millis N`, `--run-memory-mib N` | 普通 Run 默认预留：1000 millicores、512 MiB。 |
 | `--eval-cpu-millis N`, `--eval-memory-mib N` | Trial 默认预留：1000 millicores、1024 MiB；任务声明可能要求更多。 |
+| `--unknown-max-parallelism N` | 缺少 CPU 或内存声明的任务共享此准入上限，默认 1，范围 1–10000；`worker run` 也接受此参数。覆盖 `HITCH_RESOURCE_PROFILING_UNKNOWN_MAX_PARALLELISM`，普通资源容量仍同时生效。 |
 
 ## 远程 Worker
 
@@ -203,7 +212,7 @@ Run/eval accept `--model-binding-file READY.json`, `--max-output-tokens N`, `--t
 hitch worker list [--json]
 hitch worker observe PROVIDER [--nonce HEX] [--json]
 hitch worker register --server URL --registration JSON --admin-token-file FILE --credential-file FILE
-hitch worker run --server URL --registration JSON --credential-file FILE [--harbor PATH] [--docker PATH] [--once] [--poll-interval DURATION] [--heartbeat-interval DURATION]
+hitch worker run --server URL --registration JSON --credential-file FILE [--harbor PATH] [--docker PATH] [--unknown-max-parallelism N] [--once] [--poll-interval DURATION] [--heartbeat-interval DURATION]
 ```
 
 `list` 从 daemon 查询 Worker 状态。`observe` 返回新的执行观测，可选 nonce 为 32 位小写十六进制字符串。`register` 轮换 Worker 凭据并写入指定文件。`run` 下载并校验输入，执行接受的任务、回报结果并处理获准的资源清理。每个 Worker 主机使用独立的状态目录。

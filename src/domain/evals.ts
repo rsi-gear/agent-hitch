@@ -1,5 +1,6 @@
 import type { LocalInferenceSelectionV1 } from "./inference.js";
 import type { TrainingExternalBindingV1 } from "./training.js";
+import type { ApprovedResourceConfigurationV1 } from "./resource-profiles.js";
 
 /** Exact content selected before submission; local cache paths are not identity. */
 export interface EvalArtifactPinV1 {
@@ -31,4 +32,5 @@ export interface EvalRequest {
   /** Private resident environment and resolved host credentials, prepared by the daemon. */
   environment_binding?: string;
   artifact_pins?: EvalArtifactPinV1[];
+  resource_config?: ApprovedResourceConfigurationV1;
 }

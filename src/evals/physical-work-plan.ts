@@ -1,5 +1,7 @@
 import type { BackendWorkItemV1, EvalExecutionPlanV1, RemotePhysicalExecutionV2 } from "../domain/index.js";
-import { sha256JSON } from "../foundation/index.js";
+import { HitchError, sha256JSON } from "../foundation/index.js";
+import { assertWorkResourceContract, parseWorkResourceContract } from "./work-resource-contract.js";
+import { validatePhaseRequirement } from "./phase-resources.js";
 import { physicalRetryWorkItemForTriggerIds } from "./physical-retry-work.js";
 
 /** Validate a physical execution without changing the frozen logical plan or its digest. */
@@ -9,7 +11,7 @@ export function assertPhysicalWork(plan: EvalExecutionPlanV1, work: BackendWorkI
   if (!source || proof && plan.training_binding) throw new TypeError("physical work has no permitted frozen logical source");
   const expected = !proof ? source : proof.kind === "candidate-restart"
     ? candidateRestartWorkItem(source, proof.rerun_id)
-    : proof.kind === "verifier-only" ? verifierOnlyWorkItem(source, proof.rerun_id, proof.assessment_id)
+    : proof.kind === "verifier-only" ? verifierOnlyWorkItem(source, proof.rerun_id, proof.assessment_id, plan)
     : physicalRetryWorkItemForTriggerIds(source, proof.retry_index, proof.trigger_trial_ids);
   if (sha256JSON(expected) !== sha256JSON(work)) throw new TypeError("physical work changed its frozen execution contract");
 }
@@ -20,11 +22,37 @@ export function candidateRestartWorkItem(source: BackendWorkItemV1, rerunId: str
     source_work_id: source.work_id, slots: source.slots }).slice(7, 39)}` };
 }
 
-export function verifierOnlyWorkItem(source: BackendWorkItemV1, rerunId: string, assessmentId: string): BackendWorkItemV1 {
+export function verifierOnlyWorkItem(source: BackendWorkItemV1, rerunId: string, assessmentId: string, plan?: EvalExecutionPlanV1): BackendWorkItemV1 {
   if (!/^rerun_[a-f0-9]{32}$/.test(rerunId) || !/^assessment_[a-f0-9]{32}$/.test(assessmentId)
     || source.task_ids.length !== 1 || source.slots.length !== 1) throw new TypeError("verifier-only requires an assessment and isolated logical slot");
-  return { ...source, work_id: `work_${sha256JSON({ execution_kind: "verifier-only", rerun_id: rerunId,
-    assessment_id: assessmentId, source_work_id: source.work_id, slots: source.slots }).slice(7, 39)}` };
+  const reservation = verifierOnlyReservation(source, plan);
+  const binding = source.schema_version === "2" ? { resource_contract_digest: sha256JSON({
+    resource_contract_version: "2", execution_kind: "verifier-only", source_resource_contract_digest: source.resource_contract_digest,
+    task_ids: source.task_ids, reservation,
+  }) } : {};
+  return { ...source, ...binding, reservation, work_id: `work_${sha256JSON({ execution_kind: "verifier-only", rerun_id: rerunId,
+    assessment_id: assessmentId, source_work_id: source.work_id, slots: source.slots, ...binding }).slice(7, 39)}` };
+}
+
+/** Only a frozen, supported local phase contract authorizes a smaller regrade
+ * work item. Disk and GPU keep the original conservative whole-trial sum. */
+export function verifierOnlyReservation(source: BackendWorkItemV1, plan?: EvalExecutionPlanV1): BackendWorkItemV1["reservation"] {
+  if (parseWorkResourceContract(source).schema_version === "1") return source.reservation;
+  if (!plan || source.provider !== "local-docker" || source.task_ids.length !== 1 || source.slots.length !== 1) {
+    throw new HitchError("phase resource verifier-only requires a frozen local plan and independently admitted verifier contract", {
+      code: "eval_verifier_only_unavailable", exitCode: 2,
+    });
+  }
+  assertWorkResourceContract(source, plan.task_resources, plan.resource_contract_version);
+  const requirement = plan.task_resources?.find(item => item.task_id === source.task_ids[0]);
+  if (requirement?.resource_model !== "phase-envelope-v1") return source.reservation;
+  validatePhaseRequirement(requirement);
+  const verifier = requirement.lifecycle!.phases.find(phase => phase.id === "verifier");
+  if (!verifier || requirement.lifecycle!.verifier_inputs !== "artifacts-only") {
+    throw new HitchError("phase resource regrade requires an artifacts-only verifier stage", { code: "eval_verifier_only_unavailable", exitCode: 2 });
+  }
+  return { ...source.reservation, cpu_millis: verifier.demand.cpu_millis, memory_bytes: verifier.demand.memory_bytes,
+    container_slots: verifier.demand.container_slots };
 }
 
 export function parsePhysicalExecution(value: unknown): RemotePhysicalExecutionV2 {

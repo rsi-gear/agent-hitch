@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-hitch.local/schemas/remote-work-offer.schema.json",
-  "title": "Hitch remote work offer V1",
+  "title": "Hitch remote work offer V1/V2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,7 +18,10 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1"
+      "enum": [
+        "1",
+        "2"
+      ]
     },
     "offer_id": {
       "type": "string",
@@ -122,6 +125,20 @@
           "format": "date-time"
         }
       }
+    },
+    "resource_contract_version": {
+      "const": "2"
+    },
+    "resource_contract_digest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "required_capabilities": {
+      "type": "array",
+      "maxItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "const": "phase-exclusive-teardown-v1"
+      }
     }
   },
   "$defs": {
@@ -191,5 +208,62 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": "2"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "resource_contract_version",
+          "resource_contract_digest",
+          "required_capabilities"
+        ],
+        "properties": {
+          "work": {
+            "properties": {
+              "schema_version": {
+                "const": "2"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "resource_contract_version"
+              ]
+            },
+            {
+              "required": [
+                "resource_contract_digest"
+              ]
+            },
+            {
+              "required": [
+                "required_capabilities"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "work": {
+            "properties": {
+              "schema_version": {
+                "const": "1"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

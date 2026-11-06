@@ -167,7 +167,7 @@ function registration(workerId: string) {
   return {
     schema_version: "1", worker_id: workerId, provider: "remote-docker", collision_domain_id: `docker:${workerId}`,
     platforms: [`${process.platform}-${process.arch}`], backends: [{ id: "harbor", version: "0.21.0" }],
-    features: { docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false },
+    features: { resource_profiling: "1" as const, docker: true, buildkit: true, model_proxy: true, isolated_same_task_attempts: false },
     task_membership: ["known"], capacity: { total: WORK_CAPACITY, reserved_for_system: ZERO, allocatable: WORK_CAPACITY },
   };
 }

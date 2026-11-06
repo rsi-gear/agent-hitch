@@ -1,5 +1,6 @@
 import { cumulativeEndpointUsage } from "./endpoint-usage.js";
 import { freezeEndpointRequest, loadFrozenEndpoint } from "../model-access/index.js";
+import { loadResumedEvalArtifacts, resumedArtifactPlanFields } from "./resume-artifacts.js";
 import { admitEvalResources } from "./resource-eval-lifecycle.js";
 import path from "node:path";
 import { resolveHarness } from "../artifacts/index.js";
@@ -20,7 +21,7 @@ import { planLocalEvalInputs } from "./local-eval-planning.js";
 import { resolvedImageMapping } from "./environment-image-planning.js";
 import { assertBackendTrialSet, attemptDirectoryName, localSourceBackendFailure, transportSummary } from "./result-helpers.js";
 import { executePlannedHarborTasks } from "./planned-execution.js";
-import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState } from "./resume-state.js";
+import { assertEvalResumeState, executionPlanWorkState, loadEvalResumeState, loadResumedControllerRuntime, loadResumedEvalSource } from "./resume-state.js";
 import type { EvalExecutionPhase, EvalResult, RunEvalOptions } from "./service-types.js";
 import { forceLocalInferenceCapturePlan, modelCaptureDegradationEvent, resolveEvalModelCapturePlan } from "./model-capture-plan.js";
 import { finalizeEvalResult } from "./eval-finalization.js";
@@ -33,9 +34,11 @@ import { emitEvalPlanLifecycle } from "./eval-lifecycle-events.js";
 import { materializeEvalPlan, writeEvalPlanningCheckpoint, type EvalLogicalPlanV1 } from "./eval-logical-plan.js";
 import { planTaskSchedulingHints, schedulingHintsFromPlan } from "./duration-estimator.js";
 import { buildCompletedEvalResult, buildFailedEvalResult } from "./eval-result-builder.js";
+import { planEvalResourceProfiling } from "./eval-resource-profiling.js";
+import { acquireProcessResourceProfiling } from "./process-resource-profiling.js";
 import { verifyBenchmarkExecution } from "./benchmark-verification.js";
 import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, resourceProfilingPolicy, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const frozenRequest = await freezeEndpointRequest(root, normalizedRequest || request, env);
@@ -64,12 +67,14 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
     sink.emit({ type: "eval.planning.started" });
     await onControlPhase?.("planning");
+    const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
     const requestedReference = parseHarnessReference(normalized.harness_ref);
-    const resolvedRevision = await resolveHarness(normalized.harness_ref, { root, env });
+    const resumedSource = resume ? await loadResumedEvalSource(evalDirectory, resume, env, signal) : undefined;
+    const resolvedRevision = resumedSource?.resolvedRevision ?? await resolveHarness(normalized.harness_ref, { root, env });
     failureStage = "preparing";
     await onControlPhase?.("preparing");
-    let localTransport: LocalGitTransportUse | undefined;
-    if (resolvedRevision.source.type === "git" && resolvedRevision.source.registered !== true) {
+    let localTransport: LocalGitTransportUse | undefined = resumedSource?.localTransport;
+    if (!resume && resolvedRevision.source.type === "git" && resolvedRevision.source.registered !== true) {
       const selector = requestedReference.selector;
       if (selector.type !== "commit" || !selector.source?.explicit) throw invalidInput("Harbor local Git eval requires an explicit git+file source");
       if (resolvedRevision.revision.commit !== selector.value) {
@@ -91,7 +96,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         status: "verified",
       });
     }
-    const controllerRuntime: ControllerRuntimeUseResult = await ensureControllerRuntime({ root });
+    const controllerRuntime: ControllerRuntimeUseResult = resume ? await loadResumedControllerRuntime(root, resume) : await ensureControllerRuntime({ root });
     const runtimeRefFile = await writeRuntimeReference(evalDirectory, controllerRuntime);
     sink.emit({
       type: "eval.controller-runtime",
@@ -99,10 +104,9 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       cache_hit: controllerRuntime.cache_hit,
       reference: runtimeRefFile,
     });
-    const localTaskIds = await resolveLocalDatasetTaskIds(normalized.dataset);
-    const verifiedBenchmark = localTaskIds !== null ? await verifyBenchmarkExecution({ root, evalId, evalDirectory, request: normalized, revisionIdentity: resolvedRevision.identity }) : null;
-    const standardDataset = localTaskIds !== null && (verifiedBenchmark !== null || await import("../resources/index.js").then(m => m.readResourceInput(normalized.dataset)) !== undefined);
-    const resume = resumeExisting ? await loadEvalResumeState(evalDirectory) : null;
+    const localTaskIds = resume ? resume.executionPlan.membership === "opaque" ? null : [...new Set(resume.executionPlan.slots.map(slot => slot.task_id))] : await resolveLocalDatasetTaskIds(normalized.dataset);
+    const verifiedBenchmark = !resume && localTaskIds !== null ? await verifyBenchmarkExecution({ root, evalId, evalDirectory, request: normalized, revisionIdentity: resolvedRevision.identity }) : null;
+    const standardDataset = !resume && localTaskIds !== null && (verifiedBenchmark !== null || await import("../resources/index.js").then(m => m.readResourceInput(normalized.dataset)) !== undefined);
     await withEnvironmentImageReferenceLock(root, () => beginEvalEnvironmentImagePlanning(evalDirectory, evalId));
     const localPlanning = await planLocalEvalInputs({ root, dataset: normalized.dataset, taskIds: localTaskIds, defaultResources: executionResources ?? DEFAULT_EVAL_TRIAL_RESOURCES, defaultSource: executionResourceSource, benchmarkId: normalized.benchmark_id, benchmarkRevision: normalized.benchmark_revision, buildMode: environmentBuildMode, harborTaskResourceInspector: path.join(controllerRuntime.directory, "payload", "integrations", "harbor", "hitch_harbor_task_resources.py"), ...(environmentImageResolver ? { resolver: environmentImageResolver } : {}), ...(environmentImageBuilder ? { builder: environmentImageBuilder } : {}), ...(resume ? { resumePlan: resume.executionPlan } : {}), ...(harborExecutable ? { harborExecutable } : {}), env, ...(signal ? { signal } : {}) });
     await withEnvironmentImageReferenceLock(root, () => writeEvalEnvironmentImageReferences(evalDirectory, evalId, localPlanning.environmentImages));
@@ -124,6 +128,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       capture.persist = true;
     }
     const multipleRuntimeContracts = localPlanning.taskRuntimeContracts.length > 1;
+    const taskSlotPlanning = resume ? resume.plan.attempt_execution === "harbor-task-slots-v1" : (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null;
     const logicalPlan: EvalLogicalPlanV1 = {
       schema_version: SCHEMA_VERSION,
       kind: "eval-logical-plan",
@@ -141,7 +146,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       benchmark_id: normalized.benchmark_id,
       benchmark_revision: normalized.benchmark_revision,
       attempts: normalized.attempts,
-      attempt_execution: (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null
+      attempt_execution: taskSlotPlanning
         ? "harbor-task-slots-v1"
         : "harbor-attempt-shards-v1",
       max_concurrent: normalized.max_concurrent,
@@ -168,7 +173,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       writeEvalPlanningCheckpoint(evalDirectory, logicalPlan, progress),
     ]);
     const selectedArtifactBuilder = harborArtifactBuilder ?? (env.NODE_ENV === "test" && env.HITCH_TEST_HOST_ARTIFACT_BUILDER === "1" ? prepareHostHarborArtifactForTest : prepareHarborArtifact);
-    const prepared = await prepareEvalArtifactAssignments({ builder: selectedArtifactBuilder, root, resolvedRevision, requestedReference, controllerRuntime, ...(!remoteWorkExecutor ? { sharedRuntimeDirectory: path.join(evalDirectory, "shared-runtime") } : {}), ...(localTransport ? { localTransport } : {}), taskRuntimeContracts: localPlanning.taskRuntimeContracts, sink, env, ...(signal ? { signal } : {}) });
+    const prepared = resume ? await loadResumedEvalArtifacts(root, resume, localPlanning.taskRuntimeContracts, { directory: !remoteWorkExecutor ? path.join(evalDirectory, "shared-runtime") : undefined, controllerRuntime, transport: env.HITCH_HARBOR_RUNTIME_TRANSPORT, signal }) : await prepareEvalArtifactAssignments({ builder: selectedArtifactBuilder, root, resolvedRevision, requestedReference, controllerRuntime, ...(!remoteWorkExecutor ? { sharedRuntimeDirectory: path.join(evalDirectory, "shared-runtime") } : {}), ...(localTransport ? { localTransport } : {}), taskRuntimeContracts: localPlanning.taskRuntimeContracts, sink, env, ...(signal ? { signal } : {}) });
     const preparedAssignments = prepared.assignments;
     failureIdentity.preparedAssignments = preparedAssignments;
     assertHarborArtifactPins(normalized.artifact_pins, preparedAssignments.map(entry => entry.artifact));
@@ -181,15 +186,14 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     });
     captureRuntime = activeCaptureRuntime;
     capture.plan = activeCaptureRuntime.plan;
-    const plan = materializeEvalPlan(logicalPlan, capture.persist ? capture.plan : undefined, preparedArtifactPlanFields(preparedAssignments));
-    const taskSlotPlanning = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null;
+    const plan = materializeEvalPlan(logicalPlan, capture.persist ? capture.plan : undefined, resume ? resumedArtifactPlanFields(resume) : preparedArtifactPlanFields(preparedAssignments));
     const taskScheduling = taskSlotPlanning
       ? resume
         ? schedulingHintsFromPlan(resume.executionPlan)
         : await planTaskSchedulingHints({
           root,
           dataset: normalized.dataset,
-          taskIds: localTaskIds,
+          taskIds: localTaskIds!,
           benchmarkId: normalized.benchmark_id,
           benchmarkRevision: normalized.benchmark_revision,
           provider: executionWorker?.provider ?? "local-docker",
@@ -199,13 +203,18 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
           ...(evolutionBaselineDurations ? { evolutionBaselineDurations } : {}),
         })
       : undefined;
+    const resourceProfiling = await planEvalResourceProfiling({ root, evalDirectory, request: normalized, ...(taskResources ? { taskResources } : {}), preparedAssignments, controllerRuntime: { runtime_id: controllerRuntime.runtime_id as import("../domain/index.js").Sha256 },
+      environmentImages: localPlanning.environmentImages, ...(localPlanning.taskProfileInputs ? { taskPlanningInputs: localPlanning.taskProfileInputs } : {}), provider: executionWorker?.provider ?? "local-docker", env,
+      ...(resourceProfilingPolicy ? { policy: resourceProfilingPolicy } : {}), scope: executionWorker ? "worker" : "process", taskSlotPlanning, requestedParallelism: persistedRequest.max_concurrent,
+      ...(resume ? { resumePlan: resume.executionPlan } : {}) });
     const expectedExecutionPlan = buildEvalExecutionPlan({
+      ...(resourceProfiling ? { resourceProfiling } : {}),
       evalId,
       request: normalized,
       candidate: {
         revisionIdentity: resolvedRevision.identity,
         artifactId: preparedArtifact.artifact_id,
-        artifactAssignments: preparedAssignments.map((entry) => ({
+        ...(resume && resume.executionPlan.work_items.every(work => !work.artifact_id) ? {} : { artifactAssignments: preparedAssignments.map((entry) => ({
           taskIds: entry.taskIds,
           artifactId: entry.artifact.artifact_id,
           runtimeContract: {
@@ -213,11 +222,11 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
             artifact_platform: entry.runtimeContract.artifactPlatform,
             node_version: entry.runtimeContract.nodeVersion,
           },
-        })),
+        })) }),
       },
       tasks: localTaskIds,
       maxParallelism: normalized.max_concurrent,
-      ...(executionResources ? { trialResources: executionResources } : {}),
+      ...(resume ? { trialResources: resume.executionPlan.default_trial_resources } : executionResources ? { trialResources: executionResources } : {}),
       ...(taskResources ? { taskResources } : {}),
       ...(localPlanning.environmentImages.length > 0 ? { environmentImages: localPlanning.environmentImages } : {}),
       ...(localPlanning.environmentImageFallbacks.length > 0 ? { environmentImageFallbacks: localPlanning.environmentImageFallbacks } : {}),
@@ -244,6 +253,8 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       planned_trials: plannedTrials,
       work_items: executionPlan.work_items.length,
       membership: executionPlan.membership,
+      resource_contract_version: executionPlan.resource_contract_version ?? "1",
+      resource_plan: path.join(evalDirectory, "execution-plan.json"), resource_profiling: executionPlan.resource_profiling ?? null, admission_scope: executionWorker ? "worker" : "process",
     });
     sink.emit({
       type: "eval.execution-strategy.verified",
@@ -271,7 +282,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     }
     const backendRuns: Array<{ attempt: number; run: HarborBackendResult; workId?: string; tasks?: string[]; leaseId?: string }> = [];
     const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
-    const plannedTaskExecution = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null;
+    const plannedTaskExecution = taskSlotPlanning;
     if (plannedTaskExecution) {
       const execution = await executePlannedHarborTasks({
         evalId,
@@ -319,147 +330,150 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
       schedulerSummary = execution.schedulerSummary;
     } else for (let logicalAttempt = 1; logicalAttempt <= normalized.attempts; logicalAttempt += 1) {
       if (signal?.aborted) break;
-      const backendDirectory = normalized.attempts === 1
-        ? path.join(evalDirectory, "harbor")
-        : path.join(evalDirectory, "harbor", attemptDirectoryName(logicalAttempt));
-      const harborJobDirectory = path.join(backendDirectory, "job");
-      const imageRefs = executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? [];
-      const shardRefs: EvalTrialRefV1[] = [];
-      const publish = async (ref: EvalTrialRefV1): Promise<void> => {
-        if (ref.attempt !== logicalAttempt) {
-          throw new HitchError(`Harbor returned attempt ${ref.attempt}, expected ${logicalAttempt}`, {
-            code: "eval_trial_attempt_mismatch",
-            exitCode: 12,
+      const work = executionPlan.work_items.find(item => item.logical_attempt === logicalAttempt || item.opaque_membership)!;
+      const releaseProfiling = await acquireProcessResourceProfiling(executionWorker?.parentAllocationId ? undefined : work.resource_profiling, signal);
+      try {
+        const backendDirectory = normalized.attempts === 1
+          ? path.join(evalDirectory, "harbor")
+          : path.join(evalDirectory, "harbor", attemptDirectoryName(logicalAttempt));
+        const harborJobDirectory = path.join(backendDirectory, "job");
+        const imageRefs = executionPlan.work_items.find((item) => item.logical_attempt === logicalAttempt)?.image_refs ?? [];
+        const shardRefs: EvalTrialRefV1[] = [];
+        const publish = async (ref: EvalTrialRefV1): Promise<void> => {
+          if (ref.attempt !== logicalAttempt) {
+            throw new HitchError(`Harbor returned attempt ${ref.attempt}, expected ${logicalAttempt}`, {
+              code: "eval_trial_attempt_mismatch",
+              exitCode: 12,
+            });
+          }
+          if (!shardRefs.some((current) => current.trial_id === ref.trial_id)) shardRefs.push(ref);
+          if (progress === null) throw new Error("eval progress was not initialized");
+          const previousGeneration = progress.generation;
+          const next = mergeEvalProgressTrial(progress, ref);
+          if (next.generation === previousGeneration) return;
+          await validateEvalTrialReferences(root, evalId, [ref], {
+            benchmarkId: normalized.benchmark_id,
+            benchmarkRevision: normalized.benchmark_revision,
           });
-        }
-        if (!shardRefs.some((current) => current.trial_id === ref.trial_id)) shardRefs.push(ref);
-        if (progress === null) throw new Error("eval progress was not initialized");
-        const previousGeneration = progress.generation;
-        const next = mergeEvalProgressTrial(progress, ref);
-        if (next.generation === previousGeneration) return;
-        await validateEvalTrialReferences(root, evalId, [ref], {
+          progress = await writeEvalProgress(evalDirectory, next);
+          sink.emit({
+            type: "eval.trial.published",
+            trial_id: ref.trial_id,
+            task_id: ref.task_id,
+            attempt: ref.attempt,
+            run_id: ref.run_id,
+            observation_status: ref.observation_status,
+            settled_trials: progress.trials.length,
+            generation: progress.generation,
+          });
+        };
+        const backendRun = await runHarborBackend({
+          evalId,
+          evalDirectory,
+          backendDirectory,
+          logicalAttempt,
+          request: { ...normalized, attempts: 1, max_concurrent: work.requested_parallelism },
+          root,
+          resolvedRevision,
+          runtimeDirectory: controllerRuntime.directory,
+          runtimeId: controllerRuntime.runtime_id,
+          preparedArtifact,
+          ...(activeCaptureRuntime.exporter ? { modelProxy: activeCaptureRuntime.exporter.route } : {}),
+          resolvedImages: resolvedImageMapping(imageRefs),
+          ...(imageRefs.length ? { verifierImages: { resolvedImages: resolvedImageMapping(imageRefs, "verifier") } } : {}),
+          ...(executionResources ? { executionResources } : {}),
+          env,
+          ...(harborExecutable !== undefined ? { harborExecutable } : {}),
+          ...(signal ? { signal } : {}),
+          ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
+          emit: (event) => sink.emit(event),
+          onTrialSettled: async (trial, context): Promise<boolean> => {
+            try {
+              const ref = await importEvalTrialRun({
+                root,
+                evalId,
+                evalDirectory,
+                harborJobDirectory,
+                expectedAttempt: logicalAttempt,
+                request: normalized,
+                ...(verifiedBenchmark ? { verifiedBenchmark } : {}),
+                resolvedRevision,
+                benchmarkId: normalized.benchmark_id,
+                benchmarkRevision: normalized.benchmark_revision,
+                runtimeId: controllerRuntime.runtime_id,
+                env, ...(signal ? { signal } : {}),
+                modelCapturePlan: activeCaptureRuntime.plan,
+                ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
+                requireCompleteMarker: true,
+                allowMissingBundleDiagnostic: context.bundleWaitExpired,
+              }, trial, shardRefs.length, shardRefs);
+              await publish(ref);
+              return true;
+            } catch (error) {
+              if (error instanceof TrialBundlePendingError) return false;
+              throw error;
+            }
+          },
+        });
+        backendRuns.push({ attempt: logicalAttempt, run: backendRun });
+        const terminalRefs = await importEvalTrialRuns({
+          root,
+          evalId,
+          evalDirectory,
+          harborJobDirectory,
+          expectedAttempt: logicalAttempt,
+          request: normalized,
+          ...(verifiedBenchmark ? { verifiedBenchmark } : {}),
+          resolvedRevision,
+          benchmarkId: normalized.benchmark_id,
+          benchmarkRevision: normalized.benchmark_revision,
+          runtimeId: controllerRuntime.runtime_id,
+          env, ...(signal ? { signal } : {}),
+          modelCapturePlan: activeCaptureRuntime.plan,
+          ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
+          rawResult: backendRun.rawResult,
+        }, shardRefs);
+        for (const ref of terminalRefs) await publish(ref);
+        assertBackendTrialSet(backendRun.rawResult, shardRefs);
+        await validateEvalTrialReferences(root, evalId, shardRefs, {
           benchmarkId: normalized.benchmark_id,
           benchmarkRevision: normalized.benchmark_revision,
         });
-        progress = await writeEvalProgress(evalDirectory, next);
-        sink.emit({
-          type: "eval.trial.published",
-          trial_id: ref.trial_id,
-          task_id: ref.task_id,
-          attempt: ref.attempt,
-          run_id: ref.run_id,
-          observation_status: ref.observation_status,
-          settled_trials: progress.trials.length,
-          generation: progress.generation,
+        if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) break;
+        if (localTransport && localSourceBackendFailure(backendRun.rawResult)) break;
+        if (progress === null) throw new Error("eval progress was not initialized");
+        const retries = await runInfrastructureRetries({
+          evalId,
+          evalDirectory,
+          logicalAttempt,
+          initialRefs: shardRefs,
+          progress,
+          request: { ...normalized, max_concurrent: work.requested_parallelism },
+          root,
+          resolvedRevision,
+          controllerRuntime,
+          preparedArtifact,
+          resolvedImages: resolvedImageMapping(imageRefs),
+          ...(imageRefs.length ? { verifierImages: { resolvedImages: resolvedImageMapping(imageRefs, "verifier") } } : {}),
+          ...(executionResources ? { executionResources } : {}),
+          modelCapturePlan: activeCaptureRuntime.plan,
+          ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
+          ...(localTransport ? { localTransport } : {}),
+          env,
+          ...(harborExecutable !== undefined ? { harborExecutable } : {}),
+          ...(signal ? { signal } : {}),
+          ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
+          sink,
+          ...(localTransport ? { stopAfterResult: localSourceBackendFailure } : {}),
         });
-      };
-      const backendRun = await runHarborBackend({
-        evalId,
-        evalDirectory,
-        backendDirectory,
-        logicalAttempt,
-        request: { ...normalized, attempts: 1 },
-        root,
-        resolvedRevision,
-        runtimeDirectory: controllerRuntime.directory,
-        runtimeId: controllerRuntime.runtime_id,
-        preparedArtifact,
-        ...(activeCaptureRuntime.exporter ? { modelProxy: activeCaptureRuntime.exporter.route } : {}),
-        resolvedImages: resolvedImageMapping(imageRefs),
-        ...(imageRefs.length ? { verifierImages: { resolvedImages: resolvedImageMapping(imageRefs, "verifier") } } : {}),
-        ...(executionResources ? { executionResources } : {}),
-        env,
-        ...(harborExecutable !== undefined ? { harborExecutable } : {}),
-        ...(signal ? { signal } : {}),
-        ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
-        emit: (event) => sink.emit(event),
-        onTrialSettled: async (trial, context): Promise<boolean> => {
-          try {
-            const ref = await importEvalTrialRun({
-              root,
-              evalId,
-              evalDirectory,
-              harborJobDirectory,
-              expectedAttempt: logicalAttempt,
-              request: normalized,
-              ...(verifiedBenchmark ? { verifiedBenchmark } : {}),
-              resolvedRevision,
-              benchmarkId: normalized.benchmark_id,
-              benchmarkRevision: normalized.benchmark_revision,
-              runtimeId: controllerRuntime.runtime_id,
-              env, ...(signal ? { signal } : {}),
-              modelCapturePlan: activeCaptureRuntime.plan,
-              ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
-              requireCompleteMarker: true,
-              allowMissingBundleDiagnostic: context.bundleWaitExpired,
-            }, trial, shardRefs.length, shardRefs);
-            await publish(ref);
-            return true;
-          } catch (error) {
-            if (error instanceof TrialBundlePendingError) return false;
-            throw error;
-          }
-        },
-      });
-      backendRuns.push({ attempt: logicalAttempt, run: backendRun });
-      const terminalRefs = await importEvalTrialRuns({
-        root,
-        evalId,
-        evalDirectory,
-        harborJobDirectory,
-        expectedAttempt: logicalAttempt,
-        request: normalized,
-        ...(verifiedBenchmark ? { verifiedBenchmark } : {}),
-        resolvedRevision,
-        benchmarkId: normalized.benchmark_id,
-        benchmarkRevision: normalized.benchmark_revision,
-        runtimeId: controllerRuntime.runtime_id,
-        env, ...(signal ? { signal } : {}),
-        modelCapturePlan: activeCaptureRuntime.plan,
-        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
-        rawResult: backendRun.rawResult,
-      }, shardRefs);
-      for (const ref of terminalRefs) await publish(ref);
-      assertBackendTrialSet(backendRun.rawResult, shardRefs);
-      await validateEvalTrialReferences(root, evalId, shardRefs, {
-        benchmarkId: normalized.benchmark_id,
-        benchmarkRevision: normalized.benchmark_revision,
-      });
-      if (backendRun.backend.process_exit_code !== 0 || backendRun.rawResult === null) break;
-      if (localTransport && localSourceBackendFailure(backendRun.rawResult)) break;
-      if (progress === null) throw new Error("eval progress was not initialized");
-      const retries = await runInfrastructureRetries({
-        evalId,
-        evalDirectory,
-        logicalAttempt,
-        initialRefs: shardRefs,
-        progress,
-        request: normalized,
-        root,
-        resolvedRevision,
-        controllerRuntime,
-        preparedArtifact,
-        resolvedImages: resolvedImageMapping(imageRefs),
-        ...(imageRefs.length ? { verifierImages: { resolvedImages: resolvedImageMapping(imageRefs, "verifier") } } : {}),
-        ...(executionResources ? { executionResources } : {}),
-        modelCapturePlan: activeCaptureRuntime.plan,
-        ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
-        ...(localTransport ? { localTransport } : {}),
-        env,
-        ...(harborExecutable !== undefined ? { harborExecutable } : {}),
-        ...(signal ? { signal } : {}),
-        ...(trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs }),
-        sink,
-        ...(localTransport ? { stopAfterResult: localSourceBackendFailure } : {}),
-      });
-      progress = retries.progress;
-      infrastructureRetryRuns.push(...retries.runs);
+        progress = retries.progress;
+        infrastructureRetryRuns.push(...retries.runs);
+      } finally { releaseProfiling(); }
     }
     if (progress === null) throw new Error("eval progress was not initialized");
     failureStage = "finalizing";
     await onControlPhase?.("finalizing");
     trialRefs = progress.trials;
-    // Sweep already-collected and unselected tasks again before finalization.
     if (standardDataset && !signal?.aborted) {
       const manifest = await loadBenchmarkAdapterManifest(normalized.dataset);
       if (!manifest) throw invalidInput("benchmark adapter manifest disappeared after eval admission");

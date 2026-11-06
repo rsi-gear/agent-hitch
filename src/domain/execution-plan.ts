@@ -3,6 +3,7 @@ import type { ResourceVectorV1 } from "./resources.js";
 import type { EnvironmentImageFallbackV1, EnvironmentImageUseV1 } from "./images.js";
 import type { ModelCapturePlanV1 } from "./interactions.js";
 import type { TrainingExternalBindingV1 } from "./training.js";
+import type { EvalResourceProfilingV1, WorkResourceProfilingV1 } from "./resource-profiling.js";
 
 export type TrialSlotStateV1 =
   | "pending"
@@ -47,7 +48,12 @@ export interface SchedulingHintV1 {
 }
 
 export interface BackendWorkItemV1 {
-  schema_version: "1";
+  resource_profiling?: WorkResourceProfilingV1;
+  /** V1 remains readable byte-for-byte; V2 requires the resource binding below. */
+  schema_version: "1" | "2";
+  resource_contract_version?: "2";
+  resource_contract_digest?: Sha256;
+  required_capabilities?: string[];
   work_id: string;
   eval_id: string;
   backend: "harbor";
@@ -109,10 +115,46 @@ export interface TaskResourceRequirementV1 {
   };
   components: TaskResourceComponentV1[];
   diagnostics: string[];
+  /** Present only inside a resource_contract_version=2 plan. Components remain
+   * the effective per-role totals, preserving the execution overlay interface. */
+  resource_model?: "phase-envelope-v1";
+  declared_limits?: Array<{ component: string; fields: TaskResourceComponentV1["fields"] }>;
+  lifecycle?: TaskResourceLifecycleV2;
+}
+
+export interface TaskResourceLifecycleV2 {
+  capability_identity: "phase-exclusive-teardown-v1";
+  backend_contract: "harbor-native-docker-single-step-v1";
+  verifier_inputs: "artifacts-only" | "shared";
+  retained_services: string[];
+  artifacts: Array<{ service: string; path: string }>;
+  phases: Array<{ id: string; live_components: string[]; demand: ResourceVectorV1 }>;
+  transitions: Array<{ from: string; to: string; requires_stop: string[] }>;
+}
+
+export interface TaskResourceRequirementV2 extends TaskResourceRequirementV1 {
+  resource_model: "phase-envelope-v1";
+  declared_limits: NonNullable<TaskResourceRequirementV1["declared_limits"]>;
+  lifecycle: TaskResourceLifecycleV2;
+}
+
+/** Trusted controller input; never supplied by candidate code. */
+export interface HarborPhaseResourceContractV1 {
+  schema_version: "1";
+  capability: "phase-exclusive-teardown-v1";
+  verifier_mode: "separate";
+  plan_digest: Sha256;
+  task_id: string;
+  attempt: number;
+  agent_services: Array<{ name: string; replicas: number }>;
+  verifier_services: Array<{ name: string; replicas: number }>;
+  artifacts: Array<{ service: string; path: string }>;
 }
 
 export interface EvalExecutionPlanV1 {
+  resource_profiling?: EvalResourceProfilingV1;
   schema_version: "1";
+  resource_contract_version?: "2";
   planner: "hitch-local-v1";
   eval_id: string;
   membership: "known" | "opaque";

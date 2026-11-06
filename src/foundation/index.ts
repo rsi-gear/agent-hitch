@@ -1,5 +1,6 @@
 export { DEFAULT_MAX_CONCURRENT, DEFAULT_PORT, SCHEMA_VERSION, defaultRoot, hitchRootId, parseDuration, positiveInteger, statePaths } from "./config.js";
 export type { StatePaths } from "./config.js";
+export { resourceProfilingPolicy } from "./resource-profiling.js";
 export { HitchError, invalidInput } from "./errors.js";
 export type { HitchErrorOptions } from "./errors.js";
 export { appendLine, atomicWriteJSON, ensureDir, readJSON, removeIfExists, writePrivateFile } from "./fs.js";
@@ -23,3 +24,4 @@ export { isBase64 } from "./base64.js";
 export { CREDENTIAL_REDACTION_MARKER, PROVIDER_ENVIRONMENT_NAMES, createCredentialRedactionTransform, credentialValuesFromEnv, isSensitiveFieldName, redactCredentialText, safeDiagnosticMessage } from "./credential-redaction.js";
 export type { CredentialRedactionResult } from "./credential-redaction.js";
 export { durableWriteJSON, syncDirectory } from "./durable-json.js";
+export { UnknownResourceBudget } from "./unknown-resource-budget.js";

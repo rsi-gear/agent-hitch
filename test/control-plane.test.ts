@@ -12,6 +12,8 @@ import { createExecutionLease, parseEvalExecutionPlan, readExecutionLeases, reco
 import { DaemonServer, daemonClient } from "../src/daemon/index.js";
 import { atomicWriteJSON, delay, readJSON, sha256Bytes, sha256JSON } from "../src/foundation/index.js";
 import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFakeNpm } from "../test-support/helpers.js";
+import { installEmptyDockerBackendForTest } from "../test-support/empty-docker-backend.js";
+import { resolveModelProxyBinding } from "../src/evals/model-capture-runtime.js";
 import { EnvironmentImageService } from "../src/images/index.js";
 import { writeResultBundleIndex } from "../src/runs/index.js";
 
@@ -145,7 +147,7 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
   await waitFor(() => scheduler.status(first).then((status) => status?.control.state === "planning"));
   const firstStatus = await scheduler.status(first);
   assert.equal(firstStatus?.control.requested_parallelism, 8);
-  assert.equal(firstStatus?.control.admitted_parallelism, 2);
+  assert.equal(firstStatus?.control.admitted_parallelism, 1);
   assert.equal(firstStatus?.execution?.build.mode, "prebuild-preferred");
   assert.equal((await scheduler.status(second))?.control.state, "queued");
   assert.equal((await readJSON<EvalRequest>(path.join(root, "evals", first, "request.json"))).max_concurrent, 8);
@@ -154,7 +156,7 @@ test("eval scheduler caps Harbor concurrency, persists requested policy, and rel
   await waitFor(() => scheduler.status(first).then((status) => status?.result !== null));
   await waitFor(() => scheduler.status(second).then((status) => status?.control.state === "planning"));
   await waitFor(() => Promise.resolve(observed.length >= 2));
-  assert.deepEqual(observed.slice(0, 2), [2, 2]);
+  assert.deepEqual(observed.slice(0, 2), [1, 1]);
   await waitFor(() => scheduler.status(second).then((status) => status?.result !== null));
   assert.equal((await scheduler.status(first))?.result?.status, "cancelled");
   assert.equal((await scheduler.status(second))?.result?.status, "succeeded");
@@ -199,7 +201,7 @@ test("eval cancellation preserves a terminal record while executor cleanup is pe
 
 test("eval submission execution policy is pinned and drives admission", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-eval-execution-policy-"));
-  const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 4, build_slots: 1 });
+  const ledger = new ResourceLedger({ cpu_millis: 4_000, memory_bytes: 8 * GIB, container_slots: 4, build_slots: 1 }, { unknown_max_parallelism: 3 });
   let observed: RunEvalOptions | undefined;
   const scheduler = new EvalScheduler({
     root,
@@ -576,13 +578,15 @@ test("eval scheduler reattaches Harbor before Candidate start and executes the C
   const activityLog = path.join(root, "activity.jsonl");
   const harbor = await writeFakeHarbor(root, { candidateStartDelayMs: 1_000, activityLog });
   const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  await installEmptyDockerBackendForTest(root, env);
   const child = spawn(process.execPath, [
     path.join(import.meta.dirname, "..", "test-support", "recovery-scheduler-child.js"),
     root,
     harbor,
     npm,
     dataset,
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  ], { env, stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
   const evalId = await childEvalId(child);
   const evalDirectory = path.join(root, "evals", evalId);
@@ -596,12 +600,13 @@ test("eval scheduler reattaches Harbor before Candidate start and executes the C
 
   const scheduler = new EvalScheduler({
     root,
+    credentialEnv: env,
     resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
     trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
     executor: (options) => runEval({
       ...options,
       harborExecutable: harbor,
-      env: { ...process.env, HITCH_NPM_PATH: npm },
+      env,
       trialBundleGraceMs: 0,
     }),
   });
@@ -637,10 +642,16 @@ test("eval recovery restores the exact host model proxy route before reattaching
   const activityLog = path.join(root, "proxy-activity.jsonl");
   const harbor = await writeFakeHarbor(root, { delayMs: 1_000, activityLog });
   const npm = await writeFakeNpm(root, { packageName: "@openai/codex", binName: "codex" });
+  const env = { ...process.env, HITCH_NPM_PATH: npm,
+    HITCH_MODEL_PROXY_BIND_HOST: "127.0.0.1", HITCH_MODEL_PROXY_ADVERTISED_HOST: "127.0.0.1" };
+  await installEmptyDockerBackendForTest(root, env);
+  assert.deepEqual(await resolveModelProxyBinding(env, { platform: "linux", inspectDockerBridge: async () => {
+    throw new Error("host-only proxy recovery must not inspect the Docker bridge");
+  } }), { bindHost: "127.0.0.1", advertisedHost: "127.0.0.1" });
   const child = spawn(process.execPath, [
     path.join(import.meta.dirname, "..", "test-support", "recovery-scheduler-child.js"),
     root, harbor, npm, dataset, "codex@version:1.2.3", "proxy",
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  ], { env, stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
   const evalId = await childEvalId(child);
   const evalDirectory = path.join(root, "evals", evalId);
@@ -659,12 +670,13 @@ test("eval recovery restores the exact host model proxy route before reattaching
 
   const scheduler = new EvalScheduler({
     root,
+    credentialEnv: env,
     resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
     trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
     executor: (options) => runEval({
       ...options,
       harborExecutable: harbor,
-      env: { ...process.env, HITCH_NPM_PATH: npm },
+      env,
       trialBundleGraceMs: 0,
     }),
   });
@@ -697,13 +709,15 @@ test("eval recovery collects a verifier-complete local execution without rerunni
   const activityLog = path.join(root, "terminal-collection-activity.jsonl");
   const harbor = await writeFakeHarbor(root, { postResultDelayMs: 1_000, activityLog });
   const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  await installEmptyDockerBackendForTest(root, env);
   const child = spawn(process.execPath, [
     path.join(import.meta.dirname, "..", "test-support", "recovery-scheduler-child.js"),
     root,
     harbor,
     npm,
     dataset,
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  ], { env, stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
   const evalId = await childEvalId(child);
   const evalDirectory = path.join(root, "evals", evalId);
@@ -714,12 +728,13 @@ test("eval recovery collects a verifier-complete local execution without rerunni
 
   const scheduler = new EvalScheduler({
     root,
+    credentialEnv: env,
     resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
     trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
     executor: (options) => runEval({
       ...options,
       harborExecutable: harbor,
-      env: { ...process.env, HITCH_NPM_PATH: npm },
+      env,
       trialBundleGraceMs: 0,
     }),
   });
@@ -747,14 +762,17 @@ test("eval recovery finalizes persisted progress without starting another Candid
   const activityLog = path.join(root, "finalizing-activity.jsonl");
   const harbor = await writeFakeHarbor(root, { activityLog });
   const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  await installEmptyDockerBackendForTest(root, env);
   const createScheduler = () => new EvalScheduler({
     root,
+    credentialEnv: env,
     resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
     trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
     executor: (options) => runEval({
       ...options,
       harborExecutable: harbor,
-      env: { ...process.env, HITCH_NPM_PATH: npm },
+      env,
       trialBundleGraceMs: 0,
     }),
   });
@@ -811,14 +829,17 @@ test("eval recovery reconciles a promoted bundle before progress and does not re
   const activityLog = path.join(root, "promoted-bundle-activity.jsonl");
   const harbor = await writeFakeHarbor(root, { activityLog });
   const npm = await writeFakeNpm(root);
+  const env = { ...process.env, HITCH_NPM_PATH: npm };
+  await installEmptyDockerBackendForTest(root, env);
   const createScheduler = () => new EvalScheduler({
     root,
+    credentialEnv: env,
     resources: new ResourceLedger({ cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 1 }),
     trialResources: { cpu_millis: 1_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 },
     executor: (options) => runEval({
       ...options,
       harborExecutable: harbor,
-      env: { ...process.env, HITCH_NPM_PATH: npm },
+      env,
       trialBundleGraceMs: 0,
     }),
   });

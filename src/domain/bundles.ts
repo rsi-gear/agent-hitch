@@ -41,6 +41,7 @@ export interface ResultBundleIndexV1 {
   resources?: {
     requested: ResourceVectorV1;
     observed?: Record<string, number>;
+    effective?: import("./execution-evidence.js").ExecutionEvidenceV1["enforced"];
   };
   interaction_ref?: string;
   capture?: {

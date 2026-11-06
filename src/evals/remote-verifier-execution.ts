@@ -1,3 +1,4 @@
+import { frozenDockerObservation } from "./frozen-docker-observation.js";
 import { cp, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseTOML } from "smol-toml";
@@ -77,7 +78,7 @@ export async function runRemoteVerifierWork(input: {
     || (kwargs.hitch_main_gpu_count ?? 0) !== (limits.mainLimits.gpu_count ?? 0)
     || environment.override_gpus != null && environment.override_gpus !== (limits.mainLimits.gpu_count ?? 0)
     || sha256JSON(kwargs.hitch_service_resource_limits ?? {}) !== sha256JSON(limits.sidecarLimits)) throw unavailable("remote verifier resource settings differ from its lease plan");
-  const observer = startDockerResourceObserver({ ownership, workerId: input.lease.worker_id, collisionDomainId: input.lease.collision_domain_id,
+  const observer = startDockerResourceObserver({ ...frozenDockerObservation(input.plan, source.task_id, ownership, { trialDirectory: path.join(input.directory, "trials", input.trialName) }), ownership, workerId: input.lease.worker_id, collisionDomainId: input.lease.collision_domain_id,
     reservation: input.lease.reservation, mainLimits: limits.mainLimits, sidecarLimits: limits.sidecarLimits, env: input.env,
     ...(input.signal ? { signal: input.signal } : {}) });
   let outcome: Awaited<ReturnType<typeof runHarborRegrade>>;

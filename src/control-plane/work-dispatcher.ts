@@ -1,4 +1,4 @@
-import type { ResourceAllocationV1, ResourceVectorV1 } from "../domain/index.js";
+import type { ResourceAllocationV1, ResourceVectorV1, WorkResourceProfilingV1 } from "../domain/index.js";
 import { HitchError } from "../foundation/index.js";
 import { CollisionLockManager } from "./collisions.js";
 import type { CollisionLease } from "./collisions.js";
@@ -10,6 +10,7 @@ export interface WorkDispatchRequest {
   workId: string;
   maxParallelism: number;
   reservation: ResourceVectorV1;
+  resourceProfiling?: WorkResourceProfilingV1;
   collisionKeys: readonly string[];
   priority?: number;
   signal?: AbortSignal;
@@ -85,7 +86,7 @@ export class WorkItemDispatcher {
     validateRequest(request);
     if (this.closed) throw unavailable("work dispatcher is closed", "work_dispatcher_closed");
     if (request.signal?.aborted) throw cancelled();
-    if (!this.resources.canEverFit(request.reservation)) {
+    if (!this.resources.canEverFit(request.reservation, request.resourceProfiling)) {
       throw unavailable("work item exceeds the worker resource capacity", "resource_request_unsatisfiable");
     }
     let lane = this.lanes.get(request.evalId);
@@ -189,9 +190,10 @@ export class WorkItemDispatcher {
               continue;
             }
             eligibleByDeficit = true;
+            if (!this.resources.canAcquire(pending.request.reservation, pending.request.resourceProfiling)) continue;
             const collisions = this.collisions.tryAcquire(pending.request.workId, pending.request.collisionKeys);
             if (!collisions) continue;
-            const resources = this.resources.tryAcquire(pending.request.workId, "eval", pending.request.reservation);
+            const resources = this.resources.tryAcquire(pending.request.workId, "eval", pending.request.reservation, pending.request.resourceProfiling);
             if (!resources) {
               collisions.release();
               continue;

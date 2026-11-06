@@ -114,6 +114,11 @@ Usage:
   hitch images gc [--minimum-age <duration>] [--apply] [--json]
   hitch images pin <sha256:image-id> [--reason <text>]
   hitch images unpin <sha256:image-id>
+  hitch resources profile --eval <eval-id> --task <task-id> [--output <file>]
+  hitch resources recommend --eval <eval-id> --task <task-id> [--min-complete-trials 3] [--output <file>]
+  hitch resources profile --input <execution-evidence-list.json> [--output <file>]
+  hitch resources approve --config <identity-and-role-limits.json> --actor <name> --reason <text> --output <file>
+    pass an explicit approval to a new eval with --resource-config <file>; it never changes hard limits
   hitch trajectory inspect <run-id> [--json]
   hitch verifier inspect <run-id> [--json]
   hitch verifier artifact <run-id> <name> [--offset <bytes>] [--limit <bytes>] [--sha256 <digest>] [--json]
@@ -129,7 +134,7 @@ Usage:
   hitch feedback delete <run-id> --message <id> [--if-version <v>] [--json]
   hitch daemon start [--foreground] [--port <port>] [--max-concurrent <n>]
     [--capacity-cpu-millis <n>] [--capacity-memory-mib <n>]
-    [--container-slots <n>] [--build-slots <n>]
+    [--container-slots <n>] [--build-slots <n>] [--unknown-max-parallelism <n>]
     [--capacity-gpus <n>] [--eval-gpus <n>]
     [--capacity-ephemeral-disk-mib <n>] [--eval-ephemeral-disk-mib <n>]
     [--run-cpu-millis <n>] [--run-memory-mib <n>]
@@ -140,7 +145,7 @@ Usage:
   hitch worker list [--json]
   hitch worker observe PROVIDER [--nonce HEX] [--json]
   hitch worker register --server <url> --registration <json> --admin-token-file <file> --credential-file <file>
-  hitch worker run --server <url> --registration <json> --credential-file <file> [--harbor <path>] [--docker <path>] [--once]
+  hitch worker run --server <url> --registration <json> --credential-file <file> [--harbor <path>] [--docker <path>] [--unknown-max-parallelism <n>] [--once]
 
 Eval:
   Harbor runs each task in Docker; Hitch executes the selected harness inside that task container.

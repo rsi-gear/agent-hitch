@@ -73,6 +73,8 @@ export async function restartIncompleteEval(
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.trialBundleGraceMs === undefined ? {} : { trialBundleGraceMs: options.trialBundleGraceMs }),
       ...(options.executionResources ? { executionResources: options.executionResources } : {}),
+      ...(options.resourceProfilingPolicy ? { resourceProfilingPolicy: options.resourceProfilingPolicy } : {}),
+      ...(options.workItemAdmission ? { workItemAdmission: options.workItemAdmission } : {}),
       ...(options.executionResourceSource ? { executionResourceSource: options.executionResourceSource } : {}),
       executionStrategy: options.executionStrategy
         ?? (logicalPlan?.attempt_execution === "harbor-task-slots-v1" ? "local-task-slots-v1" : "legacy-attempt-shards"),

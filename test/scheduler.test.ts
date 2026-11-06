@@ -16,6 +16,8 @@ function request(overrides: Partial<RunRequestInput> = {}): RunRequestInput {
 
 test("scheduler can cancel a queued run without launching it", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-scheduler-"));
+  const workspace = path.join(root, "workspace");
+  await mkdir(workspace);
   const executable = await writeFakeCodex(root, { delayMs: 500 });
   const previous = process.env.HITCH_CODEX_PATH;
   process.env.HITCH_CODEX_PATH = executable;
@@ -26,8 +28,7 @@ test("scheduler can cancel a queued run without launching it", async (t) => {
   const scheduler = new Scheduler({ runsRoot: path.join(root, "runs"), maxConcurrent: 1 });
   t.after(() => scheduler.shutdown());
   await scheduler.initialize();
-  // Keep mutable daemon state outside the candidate workspace inventory.
-  const workspace = path.join(root, "work"); await mkdir(workspace);
+  // Keep mutable scheduler records outside the source tree being snapshotted.
   const base = request({ cwd: workspace });
   const first = await scheduler.submit(base);
   const second = await scheduler.submit(base);
@@ -69,6 +70,8 @@ test("scheduler fails ambiguous interrupted work instead of replaying it", async
 
 test("scheduler starts runs in FIFO order at bounded concurrency", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-fifo-"));
+  const workspace = path.join(root, "workspace");
+  await mkdir(workspace);
   const executable = await writeFakeCodex(root, { delayMs: 30 });
   const previous = process.env.HITCH_CODEX_PATH;
   process.env.HITCH_CODEX_PATH = executable;
@@ -84,7 +87,6 @@ test("scheduler starts runs in FIFO order at bounded concurrency", async (t) => 
   });
   await scheduler.initialize();
   t.after(() => scheduler.shutdown());
-  const workspace = path.join(root, "work"); await mkdir(workspace);
   const base = request({ cwd: workspace, prompt: "fifo" });
   const runIds: RunId[] = [];
   for (let index = 0; index < 3; index += 1) runIds.push(await scheduler.submit(base));

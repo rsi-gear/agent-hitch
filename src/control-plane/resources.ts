@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { ResourceAllocationV1, ResourceVectorV1 } from "../domain/index.js";
+import type { ResourceAllocationV1, ResourceVectorV1, ResourceProfilingPolicyV1, WorkResourceProfilingV1 } from "../domain/index.js";
+import { resourceProfilingPolicy, UnknownResourceBudget } from "../foundation/index.js";
 
 export type ResourceKind = ResourceAllocationV1["kind"];
 
@@ -13,6 +14,7 @@ export interface ResourceLedgerSnapshot {
   allocated: ResourceVectorV1;
   available: ResourceVectorV1;
   allocations: ResourceAllocationV1[];
+  resource_profiling: ReturnType<UnknownResourceBudget["snapshot"]>;
 }
 
 const REQUIRED_RESOURCE_FIELDS = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
@@ -21,26 +23,35 @@ const RESOURCE_FIELDS = [...REQUIRED_RESOURCE_FIELDS, ...OPTIONAL_RESOURCE_FIELD
 
 export class ResourceLedger {
   readonly capacity: ResourceVectorV1;
+  readonly resourceProfilingPolicy: ResourceProfilingPolicyV1;
+  private readonly unknownBudget: UnknownResourceBudget;
+  private readonly unknownReleases = new Map<string, () => void>();
   private readonly allocations = new Map<string, ResourceAllocationV1>();
   private readonly listeners = new Set<() => void>();
 
-  constructor(capacity: ResourceVectorV1) {
+  constructor(capacity: ResourceVectorV1, profiling?: ResourceProfilingPolicyV1) {
     this.capacity = validateResourceVector(capacity, "resource capacity");
+    this.resourceProfilingPolicy = resourceProfilingPolicy(profiling, {});
+    this.unknownBudget = new UnknownResourceBudget(this.resourceProfilingPolicy.unknown_max_parallelism);
   }
 
-  tryAcquire(ownerId: string, kind: ResourceKind, resources: ResourceVectorV1): ResourceLease | null {
+  tryAcquire(ownerId: string, kind: ResourceKind, resources: ResourceVectorV1, profiling?: WorkResourceProfilingV1): ResourceLease | null {
     if (!ownerId) throw new TypeError("resource owner_id must be non-empty");
     const requested = validateResourceVector(resources, "resource request");
     const available = this.available();
     if (!fits(requested, available)) return null;
+    const releaseUnknown = this.unknownBudget.tryAcquire(profiling);
+    if (!releaseUnknown) return null;
     const allocation: ResourceAllocationV1 = {
       allocation_id: `allocation_${randomUUID().replaceAll("-", "")}`,
       owner_id: ownerId,
       kind,
       resources: requested,
       acquired_at: new Date().toISOString(),
+      ...(profiling ? { resource_profiling: structuredClone(profiling) } : {}),
     };
     this.allocations.set(allocation.allocation_id, allocation);
+    this.unknownReleases.set(allocation.allocation_id, releaseUnknown);
     let released = false;
     return {
       allocation,
@@ -52,8 +63,16 @@ export class ResourceLedger {
     };
   }
 
-  canEverFit(resources: ResourceVectorV1): boolean {
-    return fits(validateResourceVector(resources, "resource request"), this.capacity);
+  canEverFit(resources: ResourceVectorV1, profiling?: WorkResourceProfilingV1): boolean {
+    return fits(validateResourceVector(resources, "resource request"), this.capacity) && this.unknownBudget.canEverFit(profiling);
+  }
+
+  /** Read-only admission check for callers that must acquire collision locks first. */
+  canAcquire(resources: ResourceVectorV1, profiling?: WorkResourceProfilingV1): boolean {
+    if (!fits(validateResourceVector(resources, "resource request"), this.available()) || !this.unknownBudget.canEverFit(profiling)) return false;
+    if (!profiling?.unknown) return true;
+    const budget = this.unknownBudget.snapshot();
+    return budget.active_unknown_slots + profiling.unknown_slots <= Math.min(budget.effective_limit, profiling.unknown_max_parallelism);
   }
 
   maximumUnits(unit: ResourceVectorV1, requested: number): number {
@@ -77,6 +96,7 @@ export class ResourceLedger {
     const allocated = this.allocated();
     return {
       capacity: { ...this.capacity },
+      resource_profiling: this.unknownBudget.snapshot(),
       allocated,
       available: subtract(this.capacity, allocated),
       allocations: [...this.allocations.values()].map((allocation) => ({
@@ -99,6 +119,8 @@ export class ResourceLedger {
 
   private release(allocationId: string): void {
     if (!this.allocations.delete(allocationId)) return;
+    this.unknownReleases.get(allocationId)?.();
+    this.unknownReleases.delete(allocationId);
     for (const listener of this.listeners) queueMicrotask(listener);
   }
 }

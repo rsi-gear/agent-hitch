@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashRuntimePayload, verifyRuntimePayload, canonicalEncodeManifest, isEntrypointPath } from "../src/controller-runtime/hash.js";
@@ -18,7 +18,7 @@ import type { ControllerRuntimeManifest } from "../src/domain/index.js";
  * `dist/scripts` exists in the checkout but is release tooling and must be
  * excluded from the execution closure.
  */
-async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<void> }> {
+async function payloadFixture(): Promise<{ root: string; expectedFileCount: number; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-runtime-payload-"));
   await mkdir(path.join(root, "dist", "bin"), { recursive: true });
   await mkdir(path.join(root, "dist", "src"), { recursive: true });
@@ -34,11 +34,12 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
   await writeFile(path.join(root, "dist", "scripts", "check.js"), "export const check = () => {};\n");
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_phase_resources.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
     await writeFile(path.join(root, "integrations", "harbor", name), `# ${name}\n`);
   }
   return {
     root,
+    expectedFileCount: 4 + (await readdir(path.join(root, "integrations"), { recursive: true, withFileTypes: true })).filter(entry => entry.isFile()).length,
     cleanup: () => forceRemove(root),
   };
 }
@@ -49,7 +50,7 @@ async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): P
   await cp(path.join(sourceRoot, "integrations", "training-tool"), path.join(destinationRoot, "integrations", "training-tool"), { recursive: true });
   const relative = path.join("integrations", "harbor");
   await mkdir(path.join(destinationRoot, relative), { recursive: true });
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_phase_resources.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
     await writeFile(
       path.join(destinationRoot, relative, name),
       await readFile(path.join(sourceRoot, relative, name)),
@@ -63,7 +64,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 22);
+  assert.equal(first.fileCount, fixture.expectedFileCount);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -476,7 +477,7 @@ test("runtime allowlist is the execution closure, excluding dev artifacts and re
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
-  assert.equal(result.fileCount, 22);
+  assert.equal(result.fileCount, fixture.expectedFileCount);
   await fixture.cleanup();
 });
 

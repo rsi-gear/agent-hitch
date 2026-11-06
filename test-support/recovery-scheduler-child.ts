@@ -1,18 +1,22 @@
 import { EvalScheduler, ResourceLedger } from "../src/control-plane/index.js";
 import { runEval } from "../src/evals/index.js";
+import { installEmptyDockerBackendForTest } from "./empty-docker-backend.js";
 
 const [root, harborExecutable, npmExecutable, dataset, harnessRef = "pi@version:1.2.3", captureMode] = process.argv.slice(2);
 if (!root || !harborExecutable || !npmExecutable || !dataset) throw new Error("recovery scheduler fixture arguments are missing");
 
+const env = { ...process.env, NODE_ENV: "test", HITCH_TEST_HOST_ARTIFACT_BUILDER: "1", HITCH_NPM_PATH: npmExecutable };
+await installEmptyDockerBackendForTest(root, env);
 const trial = { cpu_millis: 1_000, memory_bytes: 1024 * 1024 * 1024, container_slots: 1, build_slots: 0 };
 const scheduler = new EvalScheduler({
   root,
+  credentialEnv: env,
   resources: new ResourceLedger({ ...trial, build_slots: 1 }),
   trialResources: trial,
   executor: (options) => runEval({
     ...options,
     harborExecutable,
-    env: { ...process.env, NODE_ENV: "test", HITCH_TEST_HOST_ARTIFACT_BUILDER: "1", HITCH_NPM_PATH: npmExecutable },
+    env,
     trialBundleGraceMs: 0,
   }),
 });

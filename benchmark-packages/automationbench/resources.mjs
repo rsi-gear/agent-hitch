@@ -50,6 +50,10 @@ if (action === 'prepare-runtime') {
     const source = path.join(legacy, id), target = path.join(output, id);
     await mkdir(path.join(target, 'environment/candidate/runtime'), { recursive: true }); await mkdir(path.join(target, 'environment/services/simulator'), { recursive: true }); await mkdir(path.join(target, 'tests'));
     for (const name of ['task.toml', 'instruction.md', 'source-prompt.json']) await cp(path.join(source, name), path.join(target, name));
+    // The optional lifecycle declaration participates in the sealed task tree.
+    // Preserve the exact bytes when moving a v4 task into the v5 resource form.
+    const resourceDeclaration = path.join(source, 'hitch.resources.json');
+    if (await lstat(resourceDeclaration).catch(error => { if (error.code !== 'ENOENT') throw error; return undefined; })) await cp(resourceDeclaration, path.join(target, 'hitch.resources.json'));
     for (const name of ['call.py', 'tools.json']) await cp(path.join(source, 'environment/runtime', name), path.join(target, 'environment/candidate/runtime', name));
     await cp(path.join(source, 'tests/test.sh'), path.join(target, 'tests/test.sh'));
     const row = await readFile(path.join(source, 'tests/runtime/task.json'));
@@ -58,6 +62,11 @@ if (action === 'prepare-runtime') {
     await writeFile(path.join(target, 'environment/services/simulator/Dockerfile'), `FROM ${image}\nCOPY task.json /data/task.json\nCMD ["python", "/runtime/server.py"]\n`);
     await writeFile(path.join(target, 'tests/Dockerfile'), `FROM ${image}\nCOPY task.json /data/task.json\nCOPY test.sh /tests/test.sh\nCMD ["sleep", "infinity"]\n`);
     const compose = JSON.parse(await readFile(path.join(source, 'environment/docker-compose.yaml'), 'utf8'));
+    // Upgrade old v4 exports through the same generic role declaration as new
+    // exports. Preserve explicit task limits, including their deploy spelling.
+    const simulator = compose.services.simulator;
+    if (simulator.cpus === undefined && simulator.deploy?.resources?.limits?.cpus === undefined) simulator.cpus = 1;
+    if (simulator.mem_limit === undefined && simulator.deploy?.resources?.limits?.memory === undefined) simulator.mem_limit = '1024m';
     compose.services.main.build = { context: 'candidate', dockerfile: 'Dockerfile' }; compose.services.simulator.build = { context: 'services/simulator', dockerfile: 'Dockerfile' };
     await writeFile(path.join(target, 'environment/docker-compose.yaml'), JSON.stringify(compose));
     await writeFile(path.join(target, 'runtime-provenance.json'), JSON.stringify({ protocol: 'automationbench-resource-adapter@1', sourceTask: old.tasks.find(t => t.task_id === id), sourceDataset: old.dataset_digest, recipe }));

@@ -1,3 +1,4 @@
+import { frozenDockerObservation } from "./frozen-docker-observation.js";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -7,14 +8,18 @@ import { benchmarkTreeDigest } from "../benchmarks/index.js";
 import { useControllerRuntimeById } from "../controller-runtime/index.js";
 import { parseVerifierScores } from "../domain/index.js";
 import type { BenchmarkLockV1, EvalProgressV1, EvalRequest, EvalTrialRefV1, ExecutionEvidenceV1 } from "../domain/index.js";
-import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256JSON, statePaths } from "../foundation/index.js";
+import { HitchError, atomicWriteJSON, ensureDir, readJSON, sha256Bytes, sha256JSON, statePaths } from "../foundation/index.js";
 import { loadRunRecord, verifyResultBundleIndex } from "../runs/index.js";
 import { parseEvalExecutionPlan } from "./execution-plan.js";
 import { runtimeResourcesForTask } from "./execution-plan-resources.js";
+import { phaseResourceContractForTask } from "./phase-resource-runtime.js";
+import { verifierOnlyWorkItem } from "./physical-work-plan.js";
 import { createExecutionLease } from "./execution-leases.js";
 import { dockerOwnershipLabelMap, dockerResourceOwnership } from "./docker-ownership.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
-import { reapOwnedDockerResources } from "./docker-reaper.js";
+import { finishVerifierOnlyWork } from "./verifier-work-cleanup.js";
+import { requiresConfirmedResourceCleanup } from "./phase-resource-cleanup.js";
+import { bindPhaseDockerBackend, preparePhaseDockerExecution } from "./phase-docker-backend.js";
 import { replaceInvalidEvalProgressTrial, writeEvalProgress } from "./progress.js";
 import { regradeTreeDigest, sealRegradeAssessment } from "./regrade-evidence.js";
 import type { EvalRerunResult, RerunEvalOptions } from "./rerun-types.js";
@@ -99,6 +104,15 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     const sourceConfig = await readJSON<Record<string, unknown>>(path.join(sourceDirectory, "config.json"));
     const verifierImages = await loadVerifierEnvironmentImages({ taskId: slot.task_id, uses: work.image_refs ?? [], sourceConfig,
       manifestFile: path.join(runDirectory, "environment/image.manifest.json") });
+    const phaseContract = phaseResourceContractForTask(execution, work, slot.task_id);
+    const sourceEnvironment = sourceConfig.environment as { kwargs?: Record<string, unknown> } | undefined;
+    if (phaseContract && sha256JSON(sourceEnvironment?.kwargs?.hitch_phase_resource_contract) !== sha256JSON(phaseContract)) {
+      throw unavailable("original phase execution contract changed");
+    }
+    // This digest binds the controller-selected receipt. The provider validates
+    // its seal and freshly proves old containers stopped before starting regrade.
+    const phaseVerifierSource = phaseContract ? { schema_version: "1" as const, source_directory: sourceDirectory,
+      receipt_digest: sha256Bytes(await readFile(path.join(sourceDirectory, "hitch-phase-resources-agent.json"))) } : undefined;
     const sourceResult = await readJSON<Record<string, unknown>>(path.join(sourceDirectory, "result.json"));
     const agentResult = sourceResult.agent_result as { metadata?: { hitch_run_id?: string; controller_runtime_id?: string } } | undefined;
     if (agentResult?.metadata?.hitch_run_id !== original.run_id) throw unavailable("Harbor source candidate identity mismatch");
@@ -109,11 +123,12 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     const taskName = (task.task as Record<string, unknown> | undefined)?.name ?? slot.task_id;
     if (sourceResult.task_name !== taskName) throw unavailable("Harbor task name mismatch");
     const verifier = task.verifier as Record<string, unknown> | undefined;
-    if (task.steps || verifier?.environment_mode !== "separate") throw unavailable("artifact regrade requires a single-step task with its original separate verifier");
+    if (task.steps || (!phaseContract && verifier?.environment_mode !== "separate")) throw unavailable("artifact regrade requires a single-step task with its original separate verifier");
     const sourceDigest = await regradeTreeDigest(sourceDirectory);
     const taskDigest = await regradeTreeDigest(taskPath);
     const artifactsDigest = await regradeTreeDigest(path.join(sourceDirectory, "artifacts"));
     const assessmentId = `assessment_${randomUUID().replaceAll("-", "")}`;
+    const verifierWork = verifierOnlyWorkItem(work, input.rerunId, assessmentId, execution);
     const directory = path.join(await ensureDir(path.join(input.evalDirectory, "assessments")), assessmentId);
     await mkdir(directory);
     const evidence = await ensureDir(path.join(directory, "evidence"));
@@ -127,33 +142,45 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
       bundle_index_digest: sha256JSON(bundleIndex), trial_tree_digest: sourceDigest, artifacts_digest: artifactsDigest, task_tree_digest: taskDigest,
       artifact_capture_at: new Date().toISOString() };
     await atomicWriteJSON(path.join(evidence, "source.json"), source);
+    await atomicWriteJSON(path.join(evidence, "work.json"), verifierWork);
     if (runtimeRepair) await atomicWriteJSON(path.join(evidence, "runtime-repair.json"), runtimeRepair);
     sources.push({ source_trial_id: original.trial_id, source_run_id: original.run_id, source_work_id: work.work_id, source_backend_directory: source.backend_directory });
+    const admission = input.workItemAdmission ?? (execution.resource_profiling ? processWorkItemAdmission(1) : undefined);
+    const permit = await admission?.acquire({ evalId: execution.eval_id as import("../domain/index.js").EvalId,
+      workItem: verifierWork, maxParallelism: 1, ...(input.signal ? { signal: input.signal } : {}) });
+    const worker = input.executionWorker ?? { workerId: "local-regrade", provider: "local-docker", collisionDomainId: "local-docker" };
     const lease = await createExecutionLease({ evalDirectory: input.evalDirectory, evalId: input.evalId,
-      workId: `work_${randomUUID().replaceAll("-", "")}`, worker: { workerId: "local-regrade", provider: "local-docker", collisionDomainId: "local-docker" },
-      reservation: work.reservation, ttlMs: 45_000 });
+      workId: verifierWork.work_id, worker: { ...worker, ...(permit ? { parentAllocationId: permit.allocationId } : {}) },
+      reservation: verifierWork.reservation, ttlMs: 45_000 }).catch(error => { permit?.release(); throw error; });
     const ownership = dockerResourceOwnership(input.root, lease.current(), slot.task_id);
-    const resources = runtimeResourcesForTask(execution, slot.task_id, work.reservation);
+    const resources = runtimeResourcesForTask(execution, slot.task_id, verifierWork.reservation);
+    if (phaseContract) resources.sidecarLimits = Object.fromEntries(Object.entries(resources.sidecarLimits)
+      .filter(([name]) => phaseContract.verifier_services.some(service => service.name === name)));
     const env = input.env ?? process.env;
     const controller = new AbortController();
     const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
     const heartbeat = setInterval(() => { void lease.heartbeat().catch(() => controller.abort()); }, 10_000);
     heartbeat.unref();
-    const observer = startDockerResourceObserver({ ownership, workerId: "local-regrade", collisionDomainId: "local-docker", reservation: work.reservation,
-      mainLimits: resources.mainLimits, sidecarLimits: resources.sidecarLimits, env, intervalMs: 1000 });
     const trialName = `${slot.task_id.slice(0, 32)}__regrade_${assessmentId.slice(-12)}`;
+    const observer = startDockerResourceObserver({ ...frozenDockerObservation(execution, slot.task_id, ownership, { trialDirectory: path.join(evidence, "trials", trialName) }), ownership, workerId: worker.workerId, collisionDomainId: worker.collisionDomainId, reservation: verifierWork.reservation,
+      mainLimits: resources.mainLimits, sidecarLimits: resources.sidecarLimits, env, intervalMs: 1000 });
     let config: Record<string, unknown>;
     let outcome: Awaited<ReturnType<typeof runHarborRegrade>>;
     try {
-      config = buildHarborRegradeConfig({ sourceConfig, sourceResult, sourceDirectory, outputDirectory: path.join(evidence, "trials"), trialName, ownershipLabels: dockerOwnershipLabelMap(ownership) });
+      if (requiresConfirmedResourceCleanup(verifierWork)) await preparePhaseDockerExecution({ root: input.root, lease: lease.current() });
+      config = buildHarborRegradeConfig({ sourceConfig, sourceResult, sourceDirectory, outputDirectory: path.join(evidence, "trials"), trialName,
+        ownershipLabels: dockerOwnershipLabelMap(ownership), ...(phaseVerifierSource ? { phaseVerifierSource } : {}) });
       await lease.markRunning();
       outcome = await runHarborRegrade({ root: input.root, directory: evidence, config, runtimeDirectory: verifierRuntime.directory, env, trustedResult,
+        ...(requiresConfirmedResourceCleanup(verifierWork) ? { processHooks: {
+          onProcessStarting: startingEnv => bindPhaseDockerBackend({ root: input.root, lease: lease.current(), env: startingEnv }),
+        } } : {}),
         ...(input.harborExecutable ? { harborExecutable: input.harborExecutable } : {}), signal });
     } finally {
       clearInterval(heartbeat);
       await atomicWriteJSON(path.join(evidence, "execution.json"), await observer.stop());
-      await lease.release();
-      await atomicWriteJSON(path.join(evidence, "cleanup.json"), await reapOwnedDockerResources({ root: input.root, env, leaseIds: [lease.leaseId] }));
+      await finishVerifierOnlyWork({ root: input.root, env, work: verifierWork, lease, evidence,
+        ...(input.dockerResourceReaper ? { reaper: input.dockerResourceReaper } : {}), ...(permit ? { permit } : {}) });
     }
     if (sourceDigest !== await regradeTreeDigest(sourceDirectory) || taskDigest !== await regradeTreeDigest(taskPath)
       || sha256JSON(await verifyResultBundleIndex(runDirectory)) !== source.bundle_index_digest) throw unavailable("regrade source changed during verification");
@@ -189,3 +216,4 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
 }
 
 function unavailable(message: string): HitchError { return new HitchError(message, { code: "eval_verifier_only_unavailable", exitCode: 2 }); }
+import { processWorkItemAdmission } from "./process-resource-profiling.js";

@@ -34,6 +34,7 @@ export interface RerunEvalOptions {
   signal?: AbortSignal;
   trialBundleGraceMs?: number;
   executionResources?: ResourceVectorV1;
+  resourceProfilingPolicy?: import("../domain/index.js").ResourceProfilingPolicyV1;
   executionResourceSource?: "submission-default" | "operator-default";
   executionStrategy?: "legacy-attempt-shards" | "local-task-slots-v1";
   environmentBuildMode?: "backend" | "prebuild-preferred" | "prebuild-required";
@@ -41,6 +42,10 @@ export interface RerunEvalOptions {
   harborArtifactBuilder?: EvalHarborArtifactBuilder;
   remoteWorkExecutor?: import("./service-types.js").EvalRemoteWorkExecutor;
   executionWorker?: import("./execution-leases.js").ExecutionWorkerIdentity;
+  /** The daemon admits standalone phase verifiers against its shared ledger. */
+  workItemAdmission?: import("./service-types.js").WorkItemAdmissionController;
+  dockerResourceReaper?: import("./service-types.js").EvalDockerResourceReaper;
+  environmentImageManifestLoader?: import("./service-types.js").EvalEnvironmentImageManifestLoader;
   /** Internal: daemon has reconciled the original remote leases before resuming. */
   resumeRemoteRerun?: boolean;
 }

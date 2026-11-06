@@ -2,7 +2,7 @@ import type { HarborPreparedArtifactUse } from "../backends/index.js";
 import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalRequest, RemoteModelBindingV2, RemotePhysicalExecutionV2, RemoteVerifierWorkV2, RemoteWorkOfferV1, ResolvedRevision } from "../domain/index.js";
 import { HitchError, sha256JSON } from "../foundation/index.js";
 import { assertPhysicalWork, assertRemoteVerifierWork, parseEvalExecutionPlan, parsePhysicalExecution } from "../evals/index.js";
-import { parseRemoteModelBinding } from "../control-plane/index.js";
+import { assertLegacyRemoteResourceWork, parseRemoteModelBinding } from "../control-plane/index.js";
 
 export interface RemoteHarborWorkSpecV1 {
   schema_version: "1";
@@ -26,6 +26,7 @@ export type RemoteHarborWorkSpecV2 = Omit<RemoteHarborWorkSpecV1, "schema_versio
 export type RemoteHarborWorkSpecV3 = Omit<RemoteHarborWorkSpecV2, "schema_version"> & { schema_version: "3"; resource_delivery: `sha256:${string}` };
 
 export function parseRemoteHarborWorkSpec(value: unknown, offer: RemoteWorkOfferV1): RemoteHarborWorkSpecV1 | RemoteHarborWorkSpecV2 | RemoteHarborWorkSpecV3 {
+  assertLegacyRemoteResourceWork(offer.work, object(value) ? value.plan : undefined);
   const v3 = object(value) && value.schema_version === "3";
   const v2 = v3 || object(value) && value.schema_version === "2";
   const spec = exact(value, [

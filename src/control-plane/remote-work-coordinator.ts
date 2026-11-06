@@ -18,6 +18,7 @@ import type { RemoteModelTargetV2 } from "../model-access/index.js";
 import { verifierSourceRequested } from "./remote-verifier-source-transport.js";
 import { importRemoteVerifierResultEnvelope } from "./remote-verifier-import.js";
 import { collectRemoteRerunJournal, completeRemoteRerunJournal, loadRemoteRerunJournal } from "./remote-rerun-journal.js";
+import { assertLegacyRemoteResourceWork } from "./remote-resource-contract.js";
 
 export interface RemoteWorkCoordinatorOptions {
   root: string;
@@ -94,6 +95,7 @@ export class RemoteWorkCoordinator {
   }
 
   private async executeWork(input: Parameters<EvalRemoteWorkExecutor>[0]): ReturnType<EvalRemoteWorkExecutor> {
+    assertLegacyRemoteResourceWork(input.workItem, input.plan);
     const verifier = input.verifierOnly, physical = input.physicalExecution;
     if ((physical?.kind === "verifier-only") !== !!verifier || verifier && input.modelTarget) throw ambiguous("verifier work requires its scoring inputs and no model route");
     if (verifier) {
@@ -206,6 +208,7 @@ export class RemoteWorkCoordinator {
       if (input.signal?.aborted) throw cancelled();
       const registered = (await this.registry.list()).filter((worker) => !worker.revoked_at && worker.worker.provider === input.workItem.provider);
       const capable = registered.filter((worker) => supports(worker, input.workItem, input.preparedArtifact.platform, input.verifierOnly ? undefined : input.modelCapturePlan)
+        && (!input.workItem.resource_profiling || worker.provider_status.features.resource_profiling === "1")
         && (!needsResources || worker.provider_status.features.benchmark_resources === "1")
         && (!input.physicalExecution || worker.provider_status.features.physical_work === "2")
         && (!input.verifierOnly || worker.provider_status.features.verifier_only === "2")

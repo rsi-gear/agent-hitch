@@ -18,6 +18,7 @@ import { readRemoteExecutionLease } from "./remote-execution-lease.js";
 import { RemoteWorkerOwnershipStore, parseRemoteExecutionOwnership } from "./remote-worker-ownership.js";
 import type { RemoteWorkerExecutionAdmissionV2, RemoteWorkerExecutionOwnership } from "../domain/index.js";
 import { RemoteWorkerGenerationCleanup } from "./remote-worker-cleanup.js";
+import { assertLegacyRemoteResourceWork } from "./remote-resource-contract.js";
 
 import { parseRemoteWorkOffer, parseRemoteWorkerEvent, parseAcceptReceipt, parseTerminalReceipt, parseReleaseReceipt, parseInputRef } from "./remote-worker-codecs.js";
 export { parseRemoteWorkOffer, parseRemoteWorkerEvent } from "./remote-worker-codecs.js";
@@ -72,6 +73,7 @@ export class RemoteWorkerProtocol {
       const worker = await this.requireReadyWorker(workerId);
       const lease = parseExecutionLease(leaseValue);
       const work = parseRemoteWorkItem(workValue);
+      assertLegacyRemoteResourceWork(work);
       const inputs = inputRefs.map(parseInputRef);
       const credentials = this.credentials.requireAvailable(credentialNames);
       if (new Set(inputs.map((entry) => entry.kind)).size !== inputs.length) throw protocolError("remote work inputs are duplicated");

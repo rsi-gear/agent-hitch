@@ -111,6 +111,9 @@
         },
         "benchmark_resources": {
           "const": "1"
+        },
+        "resource_profiling": {
+          "const": "1"
         }
       },
       "allOf": [
@@ -146,6 +149,20 @@
                 "const": true
               },
               "buildkit": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "resource_profiling"
+            ]
+          },
+          "then": {
+            "properties": {
+              "docker": {
                 "const": true
               }
             }

@@ -1,4 +1,5 @@
 import type { ExecutionEvidenceV1, ObservedContainerResourcesV1, ResourceVectorV1 } from "../domain/index.js";
+import { parseContainerMemory, parseMemoryObservation } from "./memory-observation.js";
 
 const RESOURCE_FIELDS = ["cpu_millis", "memory_bytes", "container_slots", "build_slots"] as const;
 
@@ -21,7 +22,7 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
   const sidecarLimits = sidecars(enforcedRecord.sidecar_limits);
   const observedRecord = exact(record.observed, [
     "status", "started_at", "collected_at", "sample_count", "containers", "unavailable_fields", "issues",
-  ], "execution evidence observation");
+  ], "execution evidence observation", ["memory"]);
   if ((observedRecord.status !== "partial" && observedRecord.status !== "unavailable")
     || !timestamp(observedRecord.started_at) || !timestamp(observedRecord.collected_at)
     || Date.parse(observedRecord.collected_at as string) < Date.parse(observedRecord.started_at as string)
@@ -35,6 +36,27 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
   const containers = observedRecord.containers.map((entry, index) => container(entry, index));
   if (new Set(containers.map((entry) => entry.container_id)).size !== containers.length
     || (observedRecord.status === "unavailable" && containers.length !== 0)) throw new TypeError("execution evidence containers are invalid");
+  const memory = observedRecord.memory === undefined ? undefined : parseMemoryObservation(observedRecord.memory);
+  if (memory) {
+    const peaks = containers.flatMap(container => container.memory?.sampled_peak_bytes === undefined ? [] : [container.memory.sampled_peak_bytes]);
+    if (memory.attempted_cycles < (observedRecord.sample_count as number)
+      || memory.max_container_sampled_peak_bytes !== (peaks.length ? Math.max(...peaks) : undefined)
+      || memory.sum_container_sampled_peaks_bytes !== (peaks.length ? peaks.reduce((a, b) => a + b, 0) : undefined)) {
+      throw new TypeError("execution evidence memory summary differs from its containers");
+    }
+    if (containers.some(container => container.memory?.samples.some(sample => sample.cycle > memory.attempted_cycles))) {
+      throw new TypeError("execution evidence container memory cycle is invalid");
+    }
+    for (const group of [...memory.groups, ...memory.group_peaks]) {
+      const samples = containers.filter(container => group.group_id === "task" || container.memory?.attribution?.group_id === group.group_id)
+        .flatMap(container => container.memory?.samples.filter(sample => sample.cycle === group.cycle && sample.memory_bytes !== undefined) ?? []);
+      // Older retained cycles may have outlived their bounded container detail.
+      if (samples.length && samples.length === group.sampled_container_count
+        && samples.reduce((sum, sample) => sum + sample.memory_bytes!, 0) !== group.memory_bytes) {
+        throw new TypeError("execution evidence group memory differs from its samples");
+      }
+    }
+  }
   return {
     schema_version: "1",
     provider: record.provider as string,
@@ -55,13 +77,14 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
       containers,
       unavailable_fields: [...observedRecord.unavailable_fields] as ExecutionEvidenceV1["observed"]["unavailable_fields"],
       issues: [...observedRecord.issues] as string[],
+      ...(memory === undefined ? {} : { memory }),
     },
   };
 }
 
 function container(value: unknown, index: number): ObservedContainerResourcesV1 {
   const record = exact(value, ["container_id", "first_observed_at", "last_observed_at"], `execution evidence container ${index}`, [
-    "name", "service", "role", "image_reference", "image_config_digest", "peak_memory_bytes", "cpu_time_ns", "oom_killed", "exit_code", "exit_reason",
+    "name", "service", "role", "image_reference", "image_config_digest", "peak_memory_bytes", "cpu_time_ns", "oom_killed", "exit_code", "exit_reason", "memory",
   ]);
   if (typeof record.container_id !== "string" || !/^[a-f0-9]{12,64}$/.test(record.container_id)
     || (record.name !== undefined && !validText(record.name, 256)) || !timestamp(record.first_observed_at) || !timestamp(record.last_observed_at)
@@ -75,6 +98,11 @@ function container(value: unknown, index: number): ObservedContainerResourcesV1 
     || (record.oom_killed !== undefined && typeof record.oom_killed !== "boolean")
     || (record.exit_code !== undefined && (!Number.isSafeInteger(record.exit_code) || (record.exit_code as number) < 0 || (record.exit_code as number) > 255))
     || (record.exit_reason !== undefined && !validText(record.exit_reason, 512))) throw new TypeError(`execution evidence container ${index} is invalid`);
+  if (record.memory !== undefined) {
+    const memory = parseContainerMemory(record.memory);
+    if (record.peak_memory_bytes !== memory.sampled_peak_bytes) throw new TypeError("execution evidence sampled memory peak differs from compatibility field");
+    return { ...record, memory } as unknown as ObservedContainerResourcesV1;
+  }
   return record as unknown as ObservedContainerResourcesV1;
 }
 

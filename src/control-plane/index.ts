@@ -40,3 +40,4 @@ export { startWorkerModelRelay } from "./worker-model-relay.js";
 export { parseRemoteExecutionOwnership, parseRemoteExecutionAdmission, remoteExecutionBindingDigest } from "./remote-worker-ownership.js";
 export { orderedEvalControl, parseOrderedEvalCommand, readOrderedEvalIntent, withLegacyEvalMutation } from "./ordered-eval-control.js";
 export type { OrderedEvalCommandV2 } from "./ordered-eval-control.js";
+export { assertLegacyRemoteResourceWork } from "./remote-resource-contract.js";

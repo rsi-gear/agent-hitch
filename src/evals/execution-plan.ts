@@ -1,10 +1,14 @@
-import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, ModelCapturePlanV1, ResourceVectorV1, SchedulingHintV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
+import { parseSchedulingHint, parseTaskScheduling } from "./execution-plan-scheduling.js";
+import { applyResourceProfiling, parseEvalResourceProfiling, profiledWorkId, validatePlanResourceProfiling } from "./resource-profiling-plan.js";
+import type { BackendWorkItemV1, EnvironmentImageFallbackV1, EnvironmentImageUseV1, EvalExecutionPlanV1, EvalId, EvalRequest, EvalResourceProfilingV1, ModelCapturePlanV1, ResourceVectorV1, SchedulingHintV1, Sha256, TaskResourceRequirementV1, TrialSlotV1 } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
 import { parseTrainingBinding, parseEndpointBinding } from "../model-access/index.js";
 import { artifactPinFields, opaqueWorkId, parseArtifactAssignments, parseRuntimeContract, workItemId } from "./execution-plan-artifacts.js";
 import type { EvalArtifactAssignmentInputV1, ParsedArtifactAssignment } from "./execution-plan-artifacts.js";
 import { imagesForTasks, parseEnvironmentImageFallbacks, parseEnvironmentImageUses } from "./execution-plan-images.js";
 import { parseTaskResourceRequirements, reservationForTasks } from "./execution-plan-resources.js";
+import { conservativeTaskRequirement } from "./phase-resources.js";
+import { assertWorkResourceContract, parseWorkResourceContract, workResourceContractFields, workResourceIdentityFields } from "./work-resource-contract.js";
 export type { EvalArtifactAssignmentInputV1 } from "./execution-plan-artifacts.js";
 export const DEFAULT_EVAL_TRIAL_RESOURCES: ResourceVectorV1 = {
   cpu_millis: 1_000,
@@ -13,6 +17,7 @@ export const DEFAULT_EVAL_TRIAL_RESOURCES: ResourceVectorV1 = {
   build_slots: 0,
 };
 export interface BuildEvalExecutionPlanOptions {
+  resourceProfiling?: EvalResourceProfilingV1;
   evalId: EvalId;
   request: EvalRequest;
   candidate: {
@@ -49,12 +54,18 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
     required: false,
   });
   const tasks = options.tasks === null ? null : canonicalTasks(options.tasks);
+  const resourceProfiling = parseEvalResourceProfiling(options.resourceProfiling, tasks);
   if (options.taskScheduling && (tasks === null || options.workItemMode !== "task-slots")) {
     throw new TypeError("task scheduling hints require task-slot work items with known membership");
   }
   const taskScheduling = tasks === null ? undefined : parseTaskScheduling(options.taskScheduling, tasks);
   const artifactAssignments = parseArtifactAssignments(options.candidate.artifactAssignments, tasks, options.candidate.artifactId);
-  const taskResources = tasks === null ? undefined : parseTaskResourceRequirements(options.taskResources, tasks);
+  const validatedResources = tasks === null ? undefined : parseTaskResourceRequirements(options.taskResources, tasks,
+    options.taskResources?.some(requirement => requirement.resource_model) ? "2" : undefined);
+  const suppliedResources = provider === "local-docker" && options.workItemMode === "task-slots"
+    ? validatedResources : validatedResources?.map(requirement => conservativeTaskRequirement(requirement, provider === "local-docker" ? "work-item-isolation" : "provider-capability"));
+  const resourceContractVersion = suppliedResources?.some(requirement => requirement.resource_model) ? "2" : undefined;
+  const taskResources = tasks === null ? undefined : parseTaskResourceRequirements(suppliedResources, tasks, resourceContractVersion);
   const environmentImages = tasks === null ? [] : parseEnvironmentImageUses(options.environmentImages ?? [], tasks, "execution plan environment images");
   const imageFallbacks = tasks === null ? [] : parseEnvironmentImageFallbacks(options.environmentImageFallbacks ?? [], tasks);
   const candidateIdentity = sha256JSON({
@@ -74,14 +85,17 @@ export function buildEvalExecutionPlan(options: BuildEvalExecutionPlanOptions): 
     },
   });
   const slots = tasks === null ? [] : buildSlots(options.evalId, tasks, options.request.attempts, candidateIdentity);
-  const workItems = tasks === null
+  const unprofiledWorkItems = tasks === null
     ? [opaqueWorkItem(options.evalId, options.maxParallelism, resources, provider, artifactAssignments[0])]
     : options.workItemMode === "task-slots"
       ? buildTaskWorkItems(options.evalId, slots, resources, provider, taskResources, environmentImages, artifactAssignments, taskScheduling)
       : buildAttemptWorkItems(options.evalId, tasks, slots, options.request.attempts, options.maxParallelism, resources, provider, taskResources, environmentImages, artifactAssignments);
+  const workItems = unprofiledWorkItems.map(work => applyResourceProfiling(work, taskResources, resources, resourceProfiling));
   return parseEvalExecutionPlan({
     schema_version: "1",
+    ...(resourceContractVersion ? { resource_contract_version: resourceContractVersion } : {}),
     planner: "hitch-local-v1",
+    ...(resourceProfiling ? { resource_profiling: resourceProfiling } : {}),
     eval_id: options.evalId,
     membership: tasks === null ? "opaque" : "known",
     candidate_identity: candidateIdentity,
@@ -120,7 +134,7 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
   const plan = value;
   assertOnlyKeys(plan, [
     "schema_version", "planner", "eval_id", "membership", "candidate_identity", "benchmark", "provider", "model_capture", "training_binding", "endpoint_binding",
-    "max_parallelism", "default_trial_resources", "task_resources", "image_fallbacks", "slots", "work_items", "retry_policy", "created_at",
+    "max_parallelism", "default_trial_resources", "task_resources", "image_fallbacks", "slots", "work_items", "retry_policy", "created_at", "resource_contract_version", "resource_profiling",
   ], "eval execution plan");
   if (plan.schema_version !== "1" || plan.planner !== "hitch-local-v1" || !isEvalId(plan.eval_id)
     || (plan.membership !== "known" && plan.membership !== "opaque")
@@ -136,10 +150,15 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
   if (trainingBinding && (!modelCapture?.required || modelCapture.effective_mode !== "proxy"
     || modelCapture.topology !== (plan.provider === "local-docker" ? "host-side" : "in-sandbox"))) throw new TypeError("training plan requires a mandatory generation proxy on its execution provider");
   const resources = parseResourceVector(plan.default_trial_resources, "execution plan default trial resources");
+  if (plan.resource_contract_version !== undefined && plan.resource_contract_version !== "2") throw new TypeError("execution plan resource contract version is unsupported");
+  const resourceContractVersion = plan.resource_contract_version;
   if (!Array.isArray(plan.slots) || !Array.isArray(plan.work_items)) throw new TypeError("eval execution plan work graph is invalid");
   const slots = plan.slots.map((slot, index) => parseSlot(slot, plan.eval_id as string, plan.candidate_identity as Sha256, index));
-  const taskResources = parseTaskResourceRequirements(plan.task_resources, slots.map((slot) => slot.task_id).filter((task, index, all) => all.indexOf(task) === index));
+  const taskResources = parseTaskResourceRequirements(plan.task_resources, slots.map((slot) => slot.task_id).filter((task, index, all) => all.indexOf(task) === index), resourceContractVersion);
+  if (resourceContractVersion && (!taskResources || plan.membership !== "known" || plan.provider !== "local-docker")) throw new TypeError("phase resources require a bounded supported local provider plan");
   const taskIds = slots.map((slot) => slot.task_id).filter((task, index, all) => all.indexOf(task) === index);
+  const resourceProfiling = parseEvalResourceProfiling(plan.resource_profiling, plan.membership === "opaque" ? null : taskIds);
+  if (resourceProfiling && resourceProfiling.requested_parallelism < (plan.max_parallelism as number)) throw new TypeError("profiling requested parallelism is below the frozen execution limit");
   const imageFallbacks = parseEnvironmentImageFallbacks(plan.image_fallbacks ?? [], taskIds);
   const workItems = plan.work_items.map((item, index) => parseWorkItem(
     item,
@@ -148,10 +167,15 @@ export function parseEvalExecutionPlan(value: unknown): EvalExecutionPlanV1 {
     plan.max_parallelism as number,
     index,
   ));
+  if (resourceContractVersion && workItems.some(work => work.task_ids.length !== 1 || work.slots.length !== 1 || work.requested_parallelism !== 1)) throw new TypeError("phase resources require isolated task-slot work items");
   assertPlanGraph(plan.membership as "known" | "opaque", slots, workItems, resources, taskResources);
+  for (const work of workItems) validatePlanResourceProfiling(work, taskResources, resourceProfiling);
+  for (const item of workItems) assertWorkResourceContract(item, taskResources, resourceContractVersion);
   const retry = parseRetryPolicy(plan.retry_policy);
   return {
     schema_version: "1",
+    ...(resourceContractVersion ? { resource_contract_version: resourceContractVersion } : {}),
+    ...(resourceProfiling ? { resource_profiling: resourceProfiling } : {}),
     planner: "hitch-local-v1",
     eval_id: plan.eval_id as string,
     membership: plan.membership as "known" | "opaque",
@@ -269,9 +293,10 @@ function buildTaskWorkItems(evalId: EvalId, slots: TrialSlotV1[], resources: Res
     const imageRefs = imagesForTasks(environmentImages, [slot.task_id]);
     const assignment = artifactAssignments.find((entry) => entry.taskIds.includes(slot.task_id));
     const artifactPin = artifactPinFields(assignment);
+    const resourceContract = workResourceContractFields([slot.task_id], taskResources, taskResources?.some(requirement => requirement.resource_model) ? "2" : undefined);
     return {
-      schema_version: "1",
-      work_id: workItemId(evalId, slot.attempt, [slot.slot_id], imageRefs, artifactPin),
+      ...resourceContract,
+      work_id: workItemId(evalId, slot.attempt, [slot.slot_id], imageRefs, artifactPin, workResourceIdentityFields(resourceContract)),
       eval_id: evalId,
       backend: "harbor",
       logical_attempt: slot.attempt,
@@ -332,9 +357,10 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
   assertOnlyKeys(value, [
     "schema_version", "work_id", "eval_id", "backend", "logical_attempt", "task_ids", "slots",
     "opaque_membership", "requested_parallelism", "reservation", "provider",
-    "image_refs", "artifact_id", "runtime_contract", "scheduling",
+    "image_refs", "artifact_id", "runtime_contract", "scheduling", "resource_contract_version", "resource_contract_digest", "required_capabilities", "resource_profiling",
   ], `eval execution plan work item ${index}`);
-  if (value.schema_version !== "1" || typeof value.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(value.work_id)
+  const resourceContract = parseWorkResourceContract(value);
+  if (typeof value.work_id !== "string" || !/^work_[a-f0-9]{32}$/.test(value.work_id)
     || value.eval_id !== evalId || value.backend !== "harbor"
     || (value.logical_attempt !== null && (!Number.isSafeInteger(value.logical_attempt) || (value.logical_attempt as number) < 1))
     || !Array.isArray(value.task_ids) || value.task_ids.some((task) => typeof task !== "string" || !task)
@@ -353,38 +379,13 @@ function parseWorkItem(value: unknown, evalId: string, provider: string, maxPara
   if ((artifactId === undefined) !== (runtimeContract === undefined)) throw new TypeError(`eval execution plan work item ${index} artifact contract is incomplete`);
   return {
     ...value,
+    ...resourceContract,
     reservation: parseResourceVector(value.reservation, `eval execution plan work item ${index} reservation`),
     ...(imageRefs.length > 0 ? { image_refs: imageRefs } : {}),
     ...(artifactId ? { artifact_id: artifactId } : {}),
     ...(runtimeContract ? { runtime_contract: runtimeContract } : {}),
     ...(scheduling ? { scheduling } : {}),
   } as BackendWorkItemV1;
-}
-
-function parseSchedulingHint(value: unknown, label: string): BackendWorkItemV1["scheduling"] {
-  if (!isRecord(value)) throw new TypeError(`${label} scheduling hint is invalid`);
-  assertOnlyKeys(value, ["policy", "estimated_duration_ms", "remaining_path_ms", "estimate_source", "estimate_sample_count"], `${label} scheduling hint`);
-  const sources = new Set(["evolution-baseline", "history-p75", "task-budget", "default"]);
-  if (value.policy !== "critical-path-lpt-v1"
-    || !Number.isSafeInteger(value.estimated_duration_ms) || (value.estimated_duration_ms as number) < 1
-    || !Number.isSafeInteger(value.remaining_path_ms) || (value.remaining_path_ms as number) < (value.estimated_duration_ms as number)
-    || !sources.has(value.estimate_source as string)
-    || !Number.isSafeInteger(value.estimate_sample_count) || (value.estimate_sample_count as number) < 0) {
-    throw new TypeError(`${label} scheduling hint is invalid`);
-  }
-  if (value.estimate_source === "default" || value.estimate_source === "task-budget") {
-    if (value.estimate_sample_count !== 0) throw new TypeError(`${label} scheduling hint sample count is invalid`);
-  } else if ((value.estimate_sample_count as number) < 1) throw new TypeError(`${label} scheduling hint sample count is invalid`);
-  return value as unknown as BackendWorkItemV1["scheduling"];
-}
-
-function parseTaskScheduling(value: Readonly<Record<string, SchedulingHintV1>> | undefined, tasks: readonly string[]): Readonly<Record<string, SchedulingHintV1>> | undefined {
-  if (value === undefined) return undefined;
-  const keys = Object.keys(value).sort(compareBytes);
-  if (keys.length !== tasks.length || keys.some((task, index) => task !== tasks[index])) {
-    throw new TypeError("task scheduling hints must cover every planned task exactly once");
-  }
-  return Object.fromEntries(keys.map((task) => [task, parseSchedulingHint(value[task], `task ${task}`) as SchedulingHintV1]));
 }
 
 function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], workItems: BackendWorkItemV1[], resources: ResourceVectorV1, taskResources?: readonly TaskResourceRequirementV1[]): void {
@@ -394,7 +395,7 @@ function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], w
   if (membership === "opaque") {
     const item = workItems[0];
     if (slots.length !== 0 || workItems.length !== 1 || item?.opaque_membership !== true || item.logical_attempt !== null
-      || item.slots.length !== 0 || item.task_ids.length !== 0 || item.work_id !== opaqueWorkId(item.eval_id, artifactPinFields(item.artifact_id && item.runtime_contract ? { taskIds: [], artifactId: item.artifact_id, runtimeContract: item.runtime_contract } : undefined))
+      || item.slots.length !== 0 || item.task_ids.length !== 0 || item.work_id !== profiledWorkId(opaqueWorkId(item.eval_id, artifactPinFields(item.artifact_id && item.runtime_contract ? { taskIds: [], artifactId: item.artifact_id, runtimeContract: item.runtime_contract } : undefined)), item.resource_profiling)
       || taskResources !== undefined
       || JSON.stringify(item.reservation) !== JSON.stringify(scaleResources(resources, item.requested_parallelism))) {
       throw new TypeError("opaque execution plan shape is invalid");
@@ -420,8 +421,8 @@ function assertPlanGraph(membership: "known" | "opaque", slots: TrialSlotV1[], w
     const expected = workItemId(item.eval_id, item.logical_attempt, item.slots, item.image_refs ?? [], {
       ...(item.artifact_id ? { artifact_id: item.artifact_id } : {}),
       ...(item.runtime_contract ? { runtime_contract: item.runtime_contract } : {}),
-    });
-    if (item.work_id !== expected) throw new TypeError(`eval execution plan work item identity does not match: ${item.work_id}`);
+    }, workResourceIdentityFields(item));
+    if (item.work_id !== profiledWorkId(expected, item.resource_profiling)) throw new TypeError(`eval execution plan work item identity does not match: ${item.work_id}`);
   }
 }
 

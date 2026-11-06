@@ -276,7 +276,11 @@ export function parseExecutionLease(value: unknown): ExecutionLeaseV1 {
   const resourceEpochs = parseResourceEpochs(value.resource_epochs, value.epoch as number);
   const releaseConfirmation = parseRemoteReleaseConfirmation(value.release_confirmation, { state: value.state, epoch: value.epoch as number, provider: value.provider,
     ...(resourceEpochs ? { resourceEpochs } : {}) });
-  if (resourceEpochs && value.state !== "lost" && !releaseConfirmation && !resourceEpochs.includes(value.epoch as number)) {
+  // A local lost lease can be settled after its prior host process is proven
+  // terminal. Keep that fencing epoch without authorizing new container epochs.
+  const settledLocalFence = value.provider === "local-docker" && value.state === "released"
+    && resourceEpochs?.at(-1) === (value.epoch as number) - 1;
+  if (resourceEpochs && value.state !== "lost" && !releaseConfirmation && !settledLocalFence && !resourceEpochs.includes(value.epoch as number)) {
     throw new TypeError("execution lease current epoch is not authorized for resources");
   }
   return {
