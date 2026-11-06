@@ -14,11 +14,11 @@ export async function produceAnalysisTask(options, resourceRequest) {
   validateRequest(request);
   validateSchema('Task', request.task);
   if (request.solution) validateSchema('Solution', request.solution);
-  if (request.protocol === 'analysis-rollout-request@1') validateSchema('Checkpoint', JSON.parse(await readFile(join(candidate, 'checkpoint.json'), 'utf8')));
+  if (['analysis-rollout-request@1', 'analysis-rollout-request@2'].includes(request.protocol)) validateSchema('Checkpoint', JSON.parse(await readFile(join(candidate, 'checkpoint.json'), 'utf8')));
   if (!/^[^\s]+@sha256:[a-f0-9]{64}$/.test(baseImage) || !/^linux\/(amd64|arm64)$/.test(platform)
     || !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1) throw new Error('pinned runtime and bounded timeout required');
   resourceRequest ??= (await import('agent-hitch/resources')).resourceRequest;
-  const id = `analysis-${request.digest.slice(7, 31)}`, research = request.protocol === 'analysis-rollout-request@1';
+  const id = `analysis-${request.digest.slice(7, 31)}`, research = ['analysis-rollout-request@1', 'analysis-rollout-request@2'].includes(request.protocol);
   const staging = `${out}.partial-${randomUUID()}`, temporary = await mkdtemp(join(tmpdir(), 'analysis-private-'));
   const leases = [], owner = `producer:analysis:${request.digest}:${randomUUID()}`;
   const revision = sha(Buffer.concat(await Promise.all(['analysis-verify.py', 'scoring.py'].map(name => readFile(join(here, 'runtime', name))))));
@@ -49,7 +49,7 @@ export async function produceAnalysisTask(options, resourceRequest) {
     await copyFile(join(here, 'runtime/scoring.py'), join(task, 'tests/scoring.py'));
     await writeFile(join(task, 'tests/test.sh'), '#!/bin/sh\nset -eu\npython3 /tests/verify.py\n', { mode: 0o755 });
     await writeFile(join(task, 'task.toml'), `schema_version = "1.4"\nartifacts = [{ source = "/output" }]\n[environment]\nworkdir = "/app"\nnetwork_mode = "${research ? 'public' : 'no-network'}"\ncpus = 2\nmemory_mb = 4096\n[agent]\ntimeout_sec = ${timeoutSeconds}\n[verifier]\ntimeout_sec = 60\nenvironment_mode = "separate"\n[verifier.environment]\nnetwork_mode = "no-network"\ncpus = 1\nmemory_mb = 512\n`);
-    const generic = request.task.protocol === 'analysis-task@2';
+    const generic = request.task.protocol !== 'analysis-task@1';
     const metrics = ['valid_output', 'completed', ...(!research && expected ? [generic ? 'task_score' : 'accuracy'] : [])].map(metric => ({ id: metric,
       revision, unit: metric === 'task_score' ? request.task.prediction.metric : 'ratio',
       direction: metric === 'task_score' && request.task.prediction.metric === 'mean-column-wise-rmsle' ? 'minimize' : 'maximize',

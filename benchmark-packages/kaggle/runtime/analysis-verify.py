@@ -34,7 +34,7 @@ def score(private, output):
     receipt = json.loads(read(output / 'receipt.json'))
     if receipt.get('requestDigest') != request['digest']:
         raise ValueError('execution receipt request mismatch')
-    if request['protocol'] == 'analysis-rollout-request@1':
+    if request['protocol'] in ('analysis-rollout-request@1', 'analysis-rollout-request@2'):
         if receipt.get('protocol') != 'analysis-rollout-output@1':
             raise ValueError('invalid research receipt')
         return {'reward': 1, 'total_score': 1, 'valid_output': 1, 'completed': 1}

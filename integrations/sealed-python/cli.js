@@ -42,8 +42,8 @@ async function main() {
     ...(generic ? { prediction: request.task.prediction, predictIds: request.task.predictIds, publicFiles: request.task.publicFiles, publicDirectory: '/data/public' } : {}), inputs: { 'train.csv': '/data/train.csv', 'predict.csv': '/data/predict.csv' },
     entrypoint: solution.entrypoint, argv: ['--train', '/work/inputs/train.csv', '--predict', '/work/inputs/predict.csv',
       '--output', '/work/scratch/predictions.csv', '--seed', String(solution.trainingSeed)],
-    outputDirectory: '/run/analysis-refit/results', wallSeconds: Math.min(300, request.allowance.wallSeconds),
-    cpuSeconds: Math.min(600, request.allowance.cpuSeconds) };
+    outputDirectory: '/run/analysis-refit/results', wallSeconds: Math.min(1800, request.allowance.wallSeconds),
+    cpuSeconds: Math.min(3600, request.allowance.cpuSeconds) };
   await writeFile('/run/analysis-refit/job.json', JSON.stringify(job));
   const result = await new Promise((resolve, reject) => {
     const child = spawn('/usr/local/bin/python3', ['-B', join(here, 'worker.py'), '--job', '/run/analysis-refit/job.json'],
