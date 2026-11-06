@@ -32,6 +32,7 @@ import type { EvalTrialPublicationMode } from "./trial-publication.js";
 import { importNativePhaseTrial, nativePhaseDescriptor, NativePhaseBundlePendingError } from "./native-phase-evidence.js";
 import { readCandidateIneligibleDiagnostic } from "./verifier-eligibility.js";
 import { verifyTrialBenchmark } from "./benchmark-verification.js";
+import { captureTrialOutputArtifacts } from "./output-artifacts.js";
 import type { VerifiedBenchmarkExecution, VerifiedTrialBenchmark, TrialBenchmarkBinding } from "./benchmark-verification.js";
 export interface ImportEvalRunsOptions {
   verifiedBenchmark?: VerifiedBenchmarkExecution;
@@ -280,6 +281,9 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     });
     const ref = evalTrialRef(input, record.run_id, observation, structured.issue ? undefined : structured.scores);
     await writeEvalTrialPublication(staging, input.evalId, input.publicationMode ?? "settle", ref);
+    await captureTrialOutputArtifacts({ ...input, runDirectory: staging, runId: record.run_id,
+      ...(input.resolvedRevision.revision.type === "commit" ? { harnessCommit: input.resolvedRevision.revision.commit } : {}),
+      ...(input.executionEvidence ? { provider: input.executionEvidence.provider } : {}) });
     await writeResultBundleIndex(staging);
     const verified = await loadRunRecord(staging, { verifyTrajectory: true });
     if (verified.record.observation?.status !== observation.status) throw new Error(`failed to seal observation for ${record.run_id}`);

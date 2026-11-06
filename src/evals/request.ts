@@ -53,11 +53,22 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   ]);
   const unexpected = Object.keys(input).find((field) => !allowed.has(field));
   if (unexpected) throw invalidInput(`unknown eval request field: ${unexpected}`);
-  if (input.schema_version !== undefined && input.schema_version !== SCHEMA_VERSION) throw invalidInput(`unsupported schema_version: ${input.schema_version}`);
+  if (input.schema_version !== undefined && input.schema_version !== SCHEMA_VERSION && input.schema_version !== '2') throw invalidInput(`unsupported schema_version: ${input.schema_version}`);
   if ((input.backend || "harbor") !== "harbor") throw invalidInput("only the harbor eval backend is currently supported");
   if (typeof input.dataset !== "string" || !input.dataset.trim()) throw invalidInput("dataset must be a non-empty string");
   if (typeof input.harness_ref !== "string" || !input.harness_ref.trim()) throw invalidInput("harness_ref must be a non-empty string");
   const reference = parseHarnessReference(input.harness_ref);
+  const sealedSource = reference.harness_id === 'sealed-python';
+  if (sealedSource) {
+    if (input.schema_version !== '2' || (input.model !== null && input.model !== '')
+      || ['local_inference', 'endpoint_binding', 'model_binding', 'training_binding', 'environment_binding', 'generation'].some(key => Object.hasOwn(input, key))
+      || (input.agent_args as unknown[] | undefined)?.length
+      || (input.pass_env as unknown[] | undefined)?.length || input.infrastructure_retries !== 0 || (input.attempts ?? 1) !== 1) {
+      throw invalidInput('sealed-python requires schema_version=2, model=null, one attempt, zero automatic retries, and no model/credential/argument overrides');
+    }
+  } else if (input.schema_version === '2') {
+    throw invalidInput('eval schema_version=2 is reserved for sealed source execution');
+  }
   if (reference.selector.type === "installed") {
     throw invalidInput("eval requires an immutable harness ref: version:<exact> or commit:<sha>");
   }
@@ -75,7 +86,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   );
   const timeout = nonNegativeNumber(input.timeout_ms ?? (benchmark.manifest ? 0 : DEFAULT_EVAL_TIMEOUT_MS), "timeout_ms");
   const setupTimeout = nonNegativeNumber(input.setup_timeout_ms ?? DEFAULT_EVAL_SETUP_TIMEOUT_MS, "setup_timeout_ms");
-  if (input.model !== undefined && typeof input.model !== "string") throw invalidInput("model must be a string");
+  if (!sealedSource && input.model !== undefined && typeof input.model !== "string") throw invalidInput("model must be a string");
   if (input.agent_args !== undefined && (!Array.isArray(input.agent_args) || input.agent_args.some((value) => typeof value !== "string"))) {
     throw invalidInput("agent_args must be an array of strings");
   }
@@ -101,7 +112,7 @@ export async function validateEvalRequest(input: EvalRequestInput): Promise<Eval
   const bypassArg = HARBOR_EVAL_BYPASS_ARG[reference.harness_id];
   if (bypassArg && !agentArgs.includes(bypassArg)) agentArgs.unshift(bypassArg);
   return {
-    schema_version: SCHEMA_VERSION,
+    schema_version: sealedSource ? '2' : SCHEMA_VERSION,
     backend: "harbor",
     dataset: String(input.dataset).trim(),
     harness_ref: reference.canonical,

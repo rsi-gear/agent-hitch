@@ -1,0 +1,25 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const root = fileURLToPath(new URL("../../", import.meta.url));
+const python = process.env.KAGGLE_TEST_PYTHON ?? "python3";
+
+test("Kaggle producer and scorer preserve split, resource and reward contracts", { timeout: 100_000 }, t => {
+  if (spawnSync(python, ["--version"], { encoding: "utf8" }).error) {
+    t.skip("Python 3 is required for the Kaggle source example contract suite");
+    return;
+  }
+  for (const [command, args] of [
+    [python, ["-m", "unittest", "discover", "-s", "benchmark-packages/kaggle/tests", "-v"]],
+    [process.execPath, ["--test", "benchmark-packages/kaggle/tests/producer.test.mjs",
+      "benchmark-packages/kaggle/tests/analysis-mlebench.test.mjs"]],
+  ] as const) {
+    // A nested Node test runner otherwise sees NODE_TEST_CONTEXT and silently
+    // skips its files while returning zero, making this integration check fake.
+    const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(command, [...args], { cwd: root, env, encoding: "utf8", timeout: 90_000, maxBuffer: 2 * 1024 ** 2 });
+    assert.equal(result.status, 0, `${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`);
+  }
+});

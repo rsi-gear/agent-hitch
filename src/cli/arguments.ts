@@ -71,6 +71,8 @@ export function parseEvalRequest(args: string[], benchmark = false): Record<stri
   const dataset = takeOption(args, "--dataset");
   const harness = takeOption(args, "--harness");
   const model = takeOption(args, "--model") || "";
+  const noModel = takeFlag(args, '--no-model');
+  if (noModel && model) throw invalidInput('--no-model cannot be combined with --model');
   const attemptsValue = takeOption(args, "--attempts");
   const concurrentValue = takeOption(args, "--max-concurrent");
   const attempts = benchmark && attemptsValue === undefined ? undefined : positiveInteger(attemptsValue || 1, "--attempts");
@@ -93,7 +95,7 @@ export function parseEvalRequest(args: string[], benchmark = false): Record<stri
     ...(artifactPins.length ? { artifact_pins: artifactPins } : {}),
     dataset,
     harness_ref: harness,
-    model,
+    ...(noModel ? { schema_version: '2', model: null } : { model }),
     attempts,
     max_concurrent: maxConcurrent,
     infrastructure_retries: infrastructureRetries === undefined

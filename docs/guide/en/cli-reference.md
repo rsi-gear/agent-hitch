@@ -97,6 +97,7 @@ Shared by `eval run` and `eval submit` unless a row limits the scope. Start with
 | `--backend harbor` | Current backend; default `harbor`. |
 | `--dataset REF`, `--harness REF` | Required dataset and immutable harness reference. |
 | `--model ID` | Select the model independently of the harness. |
+| `--no-model` | Execute an immutable `sealed-python` source without a model session. Requires `--infrastructure-retries 0` and one attempt; cannot be combined with `--model`, model/environment bindings, credential forwarding, or agent arguments. See [sealed source execution](../../sealed-python.zh-CN.md). |
 | `--attempts N`, `--max-concurrent N` | Positive integers; ordinary dataset defaults are 1 attempt and up to 4 concurrent trials, further bounded by resources. |
 | `--timeout DURATION`, `--setup-timeout DURATION` | Candidate and setup budgets. Standard compiled tasks retain their task budget unless overridden; other defaults are described in the [evaluation contract](../../evals.md). |
 | `--infrastructure-retries N`, `--infrastructure-retry-backoff DURATION` | Control eligible infrastructure retries; N can be 0 to disable. |
@@ -218,6 +219,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 | --- | --- |
 | `hitch runs list [FILTERS] [--json]` | Query recorded runs. |
 | `hitch runs inspect RUN_ID [--json]` | Inspect a run and verify linked trajectory evidence. |
+| `hitch runs artifacts list RUN_ID [--json]` | Verify and list declared output artifacts from a sealed local Docker run. JSON includes the manifest digest needed for export. |
+| `hitch runs artifacts export RUN_ID --manifest-digest SHA256 --out ABSOLUTE_DIRECTORY [--json]` | Export the exact output manifest and verified files. The parent directory must exist; the destination must be absent or already contain the same complete export. See the [output artifact contract](../../run-output-artifacts.zh-CN.md). |
 | `hitch runs rebuild-index [--json]` | Rebuild derived query indexes from stored runs. |
 | `hitch runs candidate RUN_ID [--context-license allowed\|denied\|unknown] [--capture-required] [--redaction-policy ID] [--json]` | Derive a training-data candidate from a verified bundle. License defaults to unknown; the policy label defaults to `hitch-provider-redaction-v1`. |
 | `hitch compare model [FILTERS] [--reference-run RUN_ID] [--json]` | Compare model outcomes and report whether the runs meet strict comparability requirements. |
