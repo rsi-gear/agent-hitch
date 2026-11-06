@@ -175,6 +175,8 @@ async function loadOutput(root: string, runId: string): Promise<{ directory: str
   const record = loaded.record;
   const resolution = object(JSON.parse((await readSafe(runDirectory, record.resolution_ref, 1024 * 1024)).toString()));
   const revision = object(resolution.revision);
+  // The manifest carries the frozen task content digest. RunContextV1 uses a
+  // benchmark-scoped task identity, so its task_digest is not comparable here.
   if (manifest.run_id !== runId || record.context.kind !== "benchmark_task" || manifest.task_id !== record.context.task_id
     || manifest.eval_id !== record.parent?.eval_id || manifest.attempt !== record.parent?.attempt
     || revision.type !== "commit" || manifest.harness_commit !== revision.commit) throw corrupt();

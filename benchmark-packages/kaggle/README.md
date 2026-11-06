@@ -92,12 +92,16 @@ Run offline tests:
 ```sh
 python3 -m unittest discover -s benchmark-packages/kaggle/tests -v
 npm run build
-node --test benchmark-packages/kaggle/tests/producer.test.mjs
+node --test benchmark-packages/kaggle/tests/producer.test.mjs benchmark-packages/kaggle/tests/analysis-mlebench.test.mjs
 ```
 
 The latter uses real resource CAS/materialization with a test OCI provider.
 It also runs actual scorer outputs through Hitch's standard score and observation
 conversion, including legal zero accuracy and invalid predictions with no accuracy.
+Both suites also run through `npm test`. Worker CSV regressions cover both
+analysis protocol versions with fixture subprocess results; they do not exercise
+Linux chroot or seccomp. The sealed-runtime test checks the shipped worker hashes
+against the entrypoint's manifest digest.
 To additionally validate all generated task descriptors against an installed Harbor
 schema (Python 3.12+), set `KAGGLE_HARBOR_PYTHON=/path/to/harbor-venv/bin/python`
 when running the Node suite. That optional test imports Harbor's actual

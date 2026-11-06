@@ -50,6 +50,8 @@ test("terminal Harbor import seals only frozen declarations and retains valid ze
   assert.equal(ref.observation_status, "valid"); assert.equal(ref.scores?.total_score, 0);
   const outputs = await listRunOutputArtifacts(s.root, ref.run_id);
   assert.equal(outputs.harness_commit, s.commit); assert.equal(outputs.task_digest, s.manifest.tasks[0]?.task_digest);
+  const run = await readJSON<{ context: { task_digest: string } }>(path.join(s.root, "runs", ref.run_id, "manifest.json"));
+  assert.notEqual(outputs.task_digest, run.context.task_digest);
   assert.deepEqual(outputs.entries.map(entry => entry.path), ["app/output/submission.csv"]);
   await rm(s.trialDirectory, { recursive: true });
   assert.deepEqual(await listRunOutputArtifacts(s.root, ref.run_id), outputs);

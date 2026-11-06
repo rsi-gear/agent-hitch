@@ -13,7 +13,8 @@ test("Kaggle producer and scorer preserve split, resource and reward contracts",
   }
   for (const [command, args] of [
     [python, ["-m", "unittest", "discover", "-s", "benchmark-packages/kaggle/tests", "-v"]],
-    [process.execPath, ["--test", "benchmark-packages/kaggle/tests/producer.test.mjs"]],
+    [process.execPath, ["--test", "benchmark-packages/kaggle/tests/producer.test.mjs",
+      "benchmark-packages/kaggle/tests/analysis-mlebench.test.mjs"]],
   ] as const) {
     // A nested Node test runner otherwise sees NODE_TEST_CONTEXT and silently
     // skips its files while returning zero, making this integration check fake.

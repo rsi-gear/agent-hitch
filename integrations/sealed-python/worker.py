@@ -170,7 +170,7 @@ def evaluate(job, files, train_bytes, schema, plan):
             if result['exitCode'] != 0 or result['limit']:
                 raise ValueError('candidate execution failed')
             predictions = validate_predictions(result['outputs']['predictions.csv'], schema, validation)
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, csv.Error) as e:
             status = 'candidate_failed'
             logs.append({'validationError': str(e)})
             break
@@ -240,7 +240,7 @@ def evaluate_tabular(job, files, train_bytes, schema, plan):
                 raise ValueError('candidate execution failed')
             predicted = scoring.predictions(result['outputs']['predictions.csv'], schema, validation)
             value = scoring.score(schema, by_id, predicted, validation)
-        except (ValueError, KeyError, OverflowError) as error:
+        except (ValueError, KeyError, OverflowError, csv.Error) as error:
             status = 'candidate_failed'; logs.append({'validationError': str(error)}); break
         metrics.append({'fold': fold, 'rows': len(validation), 'score': value, 'utility': scoring.quality(schema['metric'], value)})
         oof.update(predicted)

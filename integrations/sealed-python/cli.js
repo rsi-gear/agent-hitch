@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const RUNTIME_MANIFEST_DIGEST = 'sha256:e2007fa9c7423c9f8dee4ffe61474d3767e503ca5b706bc37ee87cf0aa0018e1';
+const RUNTIME_MANIFEST_DIGEST = 'sha256:fe2ffe9c55b68951df7bff77fdce3f8c9951e0e0c7ef4172d11e73707d5d5b85';
 const sha = b => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const canonical = value => value && typeof value === 'object'
   ? Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}` : JSON.stringify(value);
