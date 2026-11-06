@@ -211,6 +211,12 @@ test("inspector matches static no-network egress topology independently for agen
   assert.deepEqual(inspect({ environment: { network_mode: "public" }, agent: { network_mode: "no-network" } }), { main_egress: true, verifier_egress: false });
   assert.deepEqual(inspect({ environment: base.environment }), { main_egress: false, verifier_egress: false });
   assert.deepEqual(inspect({ environment: base.environment, verifier: { network_mode: "public" } }), { main_egress: true, verifier_egress: false });
+  await writeFile(path.join(directory, "environment/docker-compose.yaml"), JSON.stringify({ services: { main: { tmpfs: ["/run:size=134217728,mode=755"], init: true } } }));
+  assert.deepEqual(inspect(base), { main_egress: false, verifier_egress: false });
+  for (const setting of [{ network_mode: "host" }, { volumes: ["/:/host"] }, { ports: ["8080:80"] }]) {
+    await writeFile(path.join(directory, "environment/docker-compose.yaml"), JSON.stringify({ services: { main: setting } }));
+    assert.deepEqual(inspect(base), { main_egress: true, verifier_egress: false });
+  }
   await writeFile(path.join(directory, "environment/docker-compose.yaml"), JSON.stringify({ services: { main: {}, simulator: {} } }));
   assert.deepEqual(inspect(base), { main_egress: true, verifier_egress: false });
 });

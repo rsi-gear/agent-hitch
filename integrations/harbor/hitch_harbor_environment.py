@@ -201,8 +201,8 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
 
     @property
     def _docker_compose_paths(self) -> list[Path]:
-        if self._hitch_static_no_network and (self._environment_docker_compose_path.exists() or self.extra_docker_compose_paths):
-            raise ValueError("static no-network requires a single Dockerfile/image environment without Compose additions")
+        if self._hitch_static_no_network and (not _static_compose_safe(self._environment_docker_compose_path) or self.extra_docker_compose_paths):
+            raise ValueError("static no-network requires a single isolated main service without Compose additions")
         paths = list(super()._docker_compose_paths)
         if self._hitch_ownership_compose_path is not None:
             paths.append(self._hitch_ownership_compose_path)
@@ -596,11 +596,26 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         return target
 
 
+def _static_compose_safe(path: Path) -> bool:
+    """Allow bounded storage/build settings, never sibling or host connectivity."""
+    if not path.exists():
+        return True
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or set(document) != {"services"}:
+        return False
+    services = document["services"]
+    if not isinstance(services, dict) or set(services) != {MAIN_SERVICE_NAME}:
+        return False
+    main = services[MAIN_SERVICE_NAME]
+    allowed = {"platform", "image", "build", "user", "init", "tmpfs", "working_dir", "command"}
+    return isinstance(main, dict) and set(main).issubset(allowed)
+
+
 def _static_no_network(positional, kwargs, task_env_config) -> bool:
     """Use Docker's isolated namespace only when no phase needs connectivity.
 
-    Compose tasks and dynamic policies retain Harbor's egress-control path.
-    A single image/Dockerfile has no sibling-service network to preserve.
+    Multi-service Compose tasks and dynamic policies retain Harbor's egress-control
+    path. A single isolated main service may declare bounded tmpfs storage.
     """
     policy = kwargs.get("network_policy", positional[6] if len(positional) > 6 else None)
     phases = kwargs.get("phase_network_policies", positional[7] if len(positional) > 7 else ()) or ()
@@ -610,7 +625,7 @@ def _static_no_network(positional, kwargs, task_env_config) -> bool:
         and getattr(getattr(policy, "network_mode", None), "value", None) == "no-network"
         and all(phase == policy for phase in phases)
         and directory is not None
-        and not (Path(directory) / "docker-compose.yaml").exists()
+        and _static_compose_safe(Path(directory) / "docker-compose.yaml")
         and not kwargs.get("extra_docker_compose")
     )
 
