@@ -7,7 +7,7 @@ import type { Sha256 } from "../domain/index.js";
 import { canonical, identity, object, parseResourceLock, parseStrictJson, portablePath, resourceId, sha, type Resource, type TaskResourceLock } from "./protocol.js";
 import { ResourceStore, type ResourceClosure } from "./store.js";
 
-export const RESOURCE_EXECUTION_CAPABILITIES = ["blob@1", "tree@1", "oci-image@1", "input-file@1", "input-tree@1", "environment-image@1", "private-copy@1", "harbor-role-context@1"];
+export const RESOURCE_EXECUTION_CAPABILITIES = ["blob@1", "tree@1", "oci-image@1", "input-file@1", "input-tree@1", "environment-image@1", "private-copy@1", "harbor-role-context@1", "bounded-tmpfs@1"];
 export interface ResourceTask {
   task_id: string;
   source_task_digest: Sha256;

@@ -28,6 +28,10 @@ async function payloadFixture(): Promise<{ root: string; cleanup: () => Promise<
   await writeFile(path.join(root, "integrations", "model-call", "cli.js"), "// trusted model-call fixture\n");
   await mkdir(path.join(root, "integrations", "training-tool"), { recursive: true });
   await writeFile(path.join(root, "integrations", "training-tool", "cli.js"), "// trusted training-tool fixture\n");
+  await mkdir(path.join(root, "integrations", "sealed-python"), { recursive: true });
+  for (const name of ["cli.js", "worker.py", "scoring.py", "confinement.py", "runtime-integrity.json"]) {
+    await writeFile(path.join(root, "integrations", "sealed-python", name), `sealed fixture ${name}\n`);
+  }
   await mkdir(path.join(root, "node_modules", "smol-toml"), { recursive: true });
   await writeFile(path.join(root, "node_modules", "smol-toml", "index.js"), "export const parse = () => ({});\n");
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ name: "fake-hitch", version: "0.2.0" })}\n`);
@@ -47,6 +51,7 @@ async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): P
   await cp(path.join(sourceRoot, "node_modules"), path.join(destinationRoot, "node_modules"), { recursive: true });
   await cp(path.join(sourceRoot, "integrations", "model-call"), path.join(destinationRoot, "integrations", "model-call"), { recursive: true });
   await cp(path.join(sourceRoot, "integrations", "training-tool"), path.join(destinationRoot, "integrations", "training-tool"), { recursive: true });
+  await cp(path.join(sourceRoot, "integrations", "sealed-python"), path.join(destinationRoot, "integrations", "sealed-python"), { recursive: true });
   const relative = path.join("integrations", "harbor");
   await mkdir(path.join(destinationRoot, relative), { recursive: true });
   for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
@@ -63,7 +68,7 @@ test("canonical hashing is deterministic and content-addressed", async () => {
   const second = await hashRuntimePayload({ payloadRoot: fixture.root });
   assert.equal(first.runtimeId, second.runtimeId);
   assert.match(first.runtimeId, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(first.fileCount, 22);
+  assert.equal(first.fileCount, 27);
   assert.ok(first.totalBytes > 0);
   await fixture.cleanup();
 });
@@ -476,7 +481,7 @@ test("runtime allowlist is the execution closure, excluding dev artifacts and re
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/test-support")), false);
   assert.equal(result.manifest.files.some((file) => file.path.startsWith("dist/scripts")), false);
-  assert.equal(result.fileCount, 22);
+  assert.equal(result.fileCount, 27);
   await fixture.cleanup();
 });
 

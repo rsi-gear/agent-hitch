@@ -69,6 +69,7 @@
     "integrations/harbor/hitch_tool_client.mjs",
     "integrations/model-call/cli.js",
     "integrations/training-tool/cli.js",
+    "integrations/sealed-python/",
     "docs/resource-storage.zh-CN.md",
     "docs/run-output-artifacts.zh-CN.md",
     "test-contracts/run-output-artifacts-v1.json",

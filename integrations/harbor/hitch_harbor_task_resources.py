@@ -37,22 +37,15 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
     separate_steps = [step for step in steps if resolve_step_verifier_mode(config, step) == VerifierEnvironmentMode.SEPARATE]
     separate = resolve_task_verifier_mode(config) == VerifierEnvironmentMode.SEPARATE
     verifier_environment = resolve_effective_verifier_env_config(config, None)
-    main_egress = config.environment.os.value == "linux" and any(
-        mode is not None and mode.value != "public"
-        for mode in (
-            config.environment.network_mode,
-            config.agent.network_mode,
-            None if separate else config.verifier.network_mode,
-        )
+    main_egress = _requires_egress(
+        config.environment,
+        [config.agent.network_mode] if separate else [config.agent.network_mode, config.verifier.network_mode],
+        task_dir / "environment" / "docker-compose.yaml",
     )
     verifier_egress = bool(
         separate
         and verifier_environment is not None
-        and verifier_environment.os.value == "linux"
-        and any(
-            mode is not None and mode.value != "public"
-            for mode in (verifier_environment.network_mode, config.verifier.network_mode)
-        )
+        and _requires_egress(verifier_environment, [config.verifier.network_mode], task_dir / "tests" / "docker-compose.yaml")
     )
     images, fallbacks, builds = _environment_images(
         config.environment, "task", task_dir / "environment", "environment"
@@ -101,6 +94,35 @@ def inspect_task(task_dir: Path) -> dict[str, Any]:
             builds, key=lambda entry: (entry["source"], entry["service"])
         ),
     }
+
+
+def _requires_egress(environment: Any, phase_modes: list[Any], compose_file: Path) -> bool:
+    if environment.os.value != "linux":
+        return False
+    baseline = environment.network_mode
+    # Match HitchHarborDockerEnvironment._static_no_network. A no-network
+    # policy cannot have allowed_hosts, so equal modes imply equal policies.
+    # Hitch's supported job config supplies no extra host/Compose overrides.
+    if (baseline.value == "no-network" and _static_compose_safe(compose_file)
+            and all(mode is None or mode.value == "no-network" for mode in phase_modes)):
+        return False
+    return any(mode is not None and mode.value != "public" for mode in [baseline, *phase_modes])
+
+
+def _static_compose_safe(path: Path) -> bool:
+    # Keep identical to the environment's admission rule; this determines the
+    # expected phase topology before a container can be started.
+    if not path.exists():
+        return True
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or set(document) != {"services"}:
+        return False
+    services = document["services"]
+    if not isinstance(services, dict) or set(services) != {"main"}:
+        return False
+    main = services["main"]
+    allowed = {"platform", "image", "build", "user", "init", "tmpfs", "working_dir", "command"}
+    return isinstance(main, dict) and set(main).issubset(allowed)
 
 
 def _compose_runtime_platform(compose_file: Path) -> str | None:
