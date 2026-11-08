@@ -1,7 +1,0 @@
-{
-  "worker.py": "sha256:045275e5d814af3b1a4fef19b47b224b126e886d1ff97a2350a56b8d069d5a3c",
-  "confinement.py": "sha256:39e6724b686a58eded648eeb20cfa5677a43add9dec7ea129698d05bccd17d53",
-  "scoring.py": "sha256:0d539e5f829f64c888b0280dd23083657a1de18330a6d78790bde0132b25c2e3",
-  "research_worker.py": "sha256:22a4801569d6bc557aab3679ec27947a5f7d20cc51f33ccc35748e5c4ada955d",
-  "pipeline_runner.py": "sha256:22473fdc80c2bbb9045eee859e0c7196591c0edf391e1801e26bd9ec6a251016"
-}

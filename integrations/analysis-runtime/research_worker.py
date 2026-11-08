@@ -43,12 +43,78 @@ def folds(rows, schema, validation, seed):
     else:
         position = 0
         for group in groups.values():
-            rng.shuffle(group)
+            if validation.get('shuffle', True):
+                rng.shuffle(group)
             for key in group:
                 buckets[position % count].append(key); position += 1
     if any(not b for b in buckets):
         raise ValueError('empty training validation fold')
     return [([k for k in ids if k not in set(b)], b) for b in buckets]
+
+
+def materialize_plan(train_bytes, schema, policy):
+    """Executed at experiment admission, never during a fit or recovery."""
+    rows = list(csv.DictReader(io.StringIO(train_bytes.decode('utf-8-sig'))))
+    ids = [row[schema['idColumn']] for row in rows]
+    if len(ids) != len(set(ids)) or not ids or any(not key for key in ids):
+        raise ValueError('validation requires unique nonempty row IDs')
+    config = policy['experiment']['validation']
+    method, seed, shuffle = config['method'], config['seed'], config['shuffle']
+    if method not in ('kfold', 'stratified_kfold', 'holdout', 'stratified_holdout'):
+        raise ValueError('unsupported validation method')
+    kind = 'stratified' if method.startswith('stratified_') else 'kfold'
+    count = config.get('folds', 1)
+    frozen = {'protocol': 'analysis-round-cv-plan@2', 'policyDigest': policy['policyDigest'],
+              'configurationDigest': policy['configurationDigest'],
+              'trainDigest': 'sha256:' + hashlib.sha256(train_bytes).hexdigest(),
+              'metric': schema['metric'], 'kind': kind, 'method': method, 'folds': count,
+              'shuffle': shuffle, 'seed': seed, 'splitter': 'python-random-materialized@1'}
+    if method.endswith('holdout'):
+        frozen['fraction'] = config['fraction']
+        groups, rng = {}, random.Random(seed)
+        for row in rows:
+            key = row[schema['targetColumns'][0]] if kind == 'stratified' else 'all'
+            groups.setdefault(key, []).append(row[schema['idColumn']])
+        query = set()
+        for group in groups.values():
+            if len(group) < 2:
+                raise ValueError('holdout requires at least two rows per stratum')
+            if shuffle:
+                rng.shuffle(group)
+            size = max(1, min(len(group)-1, math.ceil(len(group)*config['fraction'])))
+            query.update(group[:size])
+        assignment = [0 if key in query else -1 for key in ids]
+    else:
+        if len(ids) < count:
+            raise ValueError('fewer rows than folds')
+        if kind == 'stratified':
+            labels = [row[schema['targetColumns'][0]] for row in rows]
+            if min(labels.count(label) for label in set(labels)) < count:
+                raise ValueError('stratified CV requires at least folds rows per class')
+        split = folds(rows, schema, frozen, seed)
+        by_id = {key: i for i, (_, query) in enumerate(split) for key in query}
+        assignment = [by_id[key] for key in ids]
+    return {**frozen, 'rowIds': ids, 'foldAssignments': assignment}
+
+
+def frozen_splits(train_bytes, schema, frozen):
+    """Validate and consume persisted assignments; do not regenerate them."""
+    rows = list(csv.DictReader(io.StringIO(train_bytes.decode('utf-8-sig'))))
+    ids = [r[schema['idColumn']] for r in rows]
+    assignments = frozen['foldAssignments']
+    count = frozen['folds']
+    holdout = frozen['method'].endswith('holdout')
+    if (frozen['trainDigest'] != 'sha256:' + hashlib.sha256(train_bytes).hexdigest()
+            or frozen['metric'] != schema['metric'] or frozen['rowIds'] != ids
+            or len(ids) != len(set(ids)) or len(assignments) != len(ids)
+            or (holdout and count != 1) or (not holdout and not 2 <= count <= 10)
+            or any(type(a) is not int or not (-1 if holdout else 0) <= a < count for a in assignments)):
+        raise ValueError('changed data or invalid frozen row assignments')
+    splits = [([key for key, a in zip(ids, assignments) if a != i],
+               [key for key, a in zip(ids, assignments) if a == i]) for i in range(count)]
+    if any(not train or not query for train, query in splits):
+        raise ValueError('empty frozen split')
+    return {r[schema['idColumn']]: r for r in rows}, splits
 
 
 def invoke(worker, job, files, inputs, config, cpu, wall):
@@ -73,9 +139,22 @@ def invoke(worker, job, files, inputs, config, cpu, wall):
 def research(worker, job, files, train_bytes):
     schema, plan = job['prediction'], job['searchPlan']
     frozen = job['validationPlan']
-    round_cv = frozen.get('protocol') == 'analysis-round-cv-plan@1'
+    materialized = frozen.get('protocol') == 'analysis-round-cv-plan@2'
+    round_cv = materialized or frozen.get('protocol') == 'analysis-round-cv-plan@1'
     cv = None
-    if round_cv:
+    if materialized:
+        by_id, splits = frozen_splits(train_bytes, schema, frozen)
+        declared = plan['validation']
+        if (any(declared.get(k) != frozen[k] for k in ('folds', 'kind', 'shuffle', 'seed'))
+                or declared.get('method') != frozen['method']
+                or declared.get('fraction') != frozen.get('fraction')
+                or declared.get('column') or plan.get('refitReserve') != 1
+                or plan['maxFits'] < frozen['folds'] * len(plan['variants']) + 1):
+            raise ValueError('search must use the frozen outer validation policy')
+        training = [key for key, a in zip(frozen['rowIds'], frozen['foldAssignments']) if a >= 0]
+        validation = []
+        cv = {k: frozen[k] for k in ('rowIds', 'foldAssignments')}
+    elif round_cv:
         if (frozen.get('folds') != 5 or frozen.get('shuffle') is not True
                 or frozen.get('splitter') != 'python-random-stratified-round-robin@1'
                 or frozen.get('kind') not in ('stratified', 'kfold')
@@ -170,3 +249,9 @@ def research(worker, job, files, train_bytes):
             logs.append({'validationError': str(error)})
     result.update(cpuSeconds=cpu, wallSeconds=time.monotonic()-started, fits=fit_count, fitAttempts=fit_attempts, fitCalls=call_count)
     return result
+
+
+if __name__ == '__main__':
+    import sys
+    request = json.loads(sys.argv[1])
+    print(json.dumps(materialize_plan(Path(request['train']).read_bytes(), request['prediction'], request['policy'])))

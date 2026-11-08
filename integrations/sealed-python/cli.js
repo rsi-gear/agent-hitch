@@ -6,7 +6,8 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const RUNTIME_MANIFEST_DIGEST = 'sha256:d64d2c479562cec496a8ed73b333136279155fe57707a78984a29151e7786e2e';
+const runtimeDirectory = join(here, '../analysis-runtime');
+const RUNTIME_MANIFEST_DIGEST = 'sha256:7f86616122b2eef72169f9a437cdb41f1e4d30ec86e5c0ec1149ed04134e48c8';
 const sha = b => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const canonical = value => value && typeof value === 'object'
   ? Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}` : JSON.stringify(value);
@@ -18,10 +19,10 @@ function verify(value) { const { digest: expected, ...body } = value; assert(dig
 async function main() {
   if (process.argv.length === 3 && process.argv[2] === '--version') { console.log('hitch-sealed-python 1'); return; }
   assert(process.argv.length === 2, 'sealed executor accepts no command overrides');
-  const runtimeManifest = await regular(join(here, 'runtime-integrity.json'));
+  const runtimeManifest = await regular(join(runtimeDirectory, 'runtime-integrity.json'));
   assert(sha(runtimeManifest) === RUNTIME_MANIFEST_DIGEST, 'fixed runtime manifest changed');
   const expected = JSON.parse(runtimeManifest);
-  for (const [path, hash] of Object.entries(expected)) assert(sha(await regular(join(here, path))) === hash, 'fixed worker changed');
+  for (const [path, hash] of Object.entries(expected)) assert(sha(await regular(join(runtimeDirectory, path))) === hash, 'fixed worker changed');
   const request = verify(JSON.parse(await regular('/data/request.json')));
   assert(['analysis-delivery-request@1', 'analysis-audit-request@1', 'analysis-refit-request@1'].includes(request.protocol), 'not a sealed execution request');
   const solution = verify(request.solution);
@@ -51,7 +52,7 @@ async function main() {
     cpuSeconds: Math.min(3600, request.allowance.cpuSeconds) };
   await writeFile('/run/analysis-refit/job.json', JSON.stringify(job));
   const result = await new Promise((resolve, reject) => {
-    const child = spawn('/usr/local/bin/python3', ['-B', join(here, 'worker.py'), '--job', '/run/analysis-refit/job.json'],
+    const child = spawn('/usr/local/bin/python3', ['-B', join(runtimeDirectory, 'worker.py'), '--job', '/run/analysis-refit/job.json'],
       { env: { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     const abort = () => child.kill('SIGTERM'); process.once('SIGTERM', abort); process.once('SIGINT', abort);

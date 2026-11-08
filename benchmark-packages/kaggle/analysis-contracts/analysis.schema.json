@@ -59,6 +59,12 @@
         },
         {
           "$ref": "#/$defs/TaskV6"
+        },
+        {
+          "$ref": "#/$defs/TaskV7"
+        },
+        {
+          "$ref": "#/$defs/TaskV8"
         }
       ]
     },
@@ -118,6 +124,9 @@
         },
         {
           "$ref": "#/$defs/ExperimentV5"
+        },
+        {
+          "$ref": "#/$defs/ExperimentV6"
         }
       ]
     },
@@ -3107,6 +3116,16 @@
       "additionalProperties": false
     },
     "RoundValidation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RoundValidationV1"
+        },
+        {
+          "$ref": "#/$defs/RoundValidationV2"
+        }
+      ]
+    },
+    "RoundValidationV1": {
       "type": "object",
       "properties": {
         "protocol": {
@@ -3163,6 +3182,750 @@
         "shuffle",
         "seed",
         "splitter"
+      ],
+      "additionalProperties": false
+    },
+    "ExperimentConfiguration": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "maxExperiments": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "validation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "method": {
+                  "enum": [
+                    "kfold",
+                    "stratified_kfold"
+                  ]
+                },
+                "folds": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 10
+                },
+                "shuffle": {
+                  "type": "boolean"
+                },
+                "seed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                }
+              },
+              "required": [
+                "method",
+                "folds",
+                "shuffle",
+                "seed"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "method": {
+                  "enum": [
+                    "holdout",
+                    "stratified_holdout"
+                  ]
+                },
+                "fraction": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "shuffle": {
+                  "type": "boolean"
+                },
+                "seed": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                }
+              },
+              "required": [
+                "method",
+                "fraction",
+                "shuffle",
+                "seed"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "maxExperiments",
+        "validation"
+      ],
+      "additionalProperties": false
+    },
+    "RoundValidationV2": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-round-cv-plan@2"
+        },
+        "policyDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "configurationDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "trainDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "metric": {
+          "enum": [
+            "accuracy",
+            "auc-roc",
+            "mean-column-wise-rmsle"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "kfold",
+            "stratified"
+          ]
+        },
+        "method": {
+          "enum": [
+            "kfold",
+            "stratified_kfold",
+            "holdout",
+            "stratified_holdout"
+          ]
+        },
+        "folds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "shuffle": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "splitter": {
+          "const": "python-random-materialized@1"
+        },
+        "rowIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "foldAssignments": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 9
+          }
+        },
+        "fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "protocol",
+        "policyDigest",
+        "configurationDigest",
+        "trainDigest",
+        "metric",
+        "kind",
+        "method",
+        "folds",
+        "shuffle",
+        "seed",
+        "splitter",
+        "rowIds",
+        "foldAssignments"
+      ],
+      "additionalProperties": false
+    },
+    "TaskV7": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-task@7"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "taskFamilyId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "properties": {
+            "trainDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "predictDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "trainDigest",
+            "predictDigest"
+          ],
+          "additionalProperties": false
+        },
+        "predictIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "prediction": {
+          "$ref": "#/$defs/PredictionV2"
+        },
+        "publicFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "role": {
+                "enum": [
+                  "shared",
+                  "train",
+                  "predict"
+                ]
+              },
+              "rowId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "digest",
+              "bytes",
+              "role",
+              "rowId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "benchmark": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "const": "mle-bench"
+            },
+            "competitionId": {
+              "type": "string"
+            },
+            "definitionDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "publicTreeDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "sourceRevision": {
+              "type": "string"
+            },
+            "verification": {
+              "enum": [
+                "upstream-checksums",
+                "custom-checksums",
+                "fixture"
+              ]
+            }
+          },
+          "required": [
+            "format",
+            "competitionId",
+            "definitionDigest",
+            "publicTreeDigest",
+            "sourceRevision",
+            "verification"
+          ],
+          "additionalProperties": false
+        },
+        "experiment": {
+          "$ref": "#/$defs/ExperimentConfiguration"
+        },
+        "evaluationPlan": {
+          "$ref": "#/$defs/RoundValidationV2"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "taskId",
+        "taskFamilyId",
+        "description",
+        "inputs",
+        "predictIds",
+        "validationPlanDigest",
+        "runtimeDigest",
+        "prediction",
+        "publicFiles",
+        "benchmark",
+        "experiment",
+        "evaluationPlan",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "TaskV8": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-task@8"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "taskFamilyId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "properties": {
+            "trainDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "predictDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "trainDigest",
+            "predictDigest"
+          ],
+          "additionalProperties": false
+        },
+        "predictIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "runtimeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "prediction": {
+          "$ref": "#/$defs/PredictionV2"
+        },
+        "publicFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "role": {
+                "enum": [
+                  "shared",
+                  "train",
+                  "predict"
+                ]
+              },
+              "rowId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "digest",
+              "bytes",
+              "role",
+              "rowId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "experiment": {
+          "$ref": "#/$defs/ExperimentConfiguration"
+        },
+        "evaluationPlan": {
+          "$ref": "#/$defs/RoundValidationV2"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "taskId",
+        "taskFamilyId",
+        "description",
+        "inputs",
+        "predictIds",
+        "validationPlanDigest",
+        "runtimeDigest",
+        "prediction",
+        "publicFiles",
+        "experiment",
+        "evaluationPlan",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "FoldV3": {
+      "type": "object",
+      "properties": {
+        "fold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0
+        },
+        "utility": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "fold",
+        "rows",
+        "score",
+        "utility"
+      ],
+      "additionalProperties": false
+    },
+    "ExperimentV6": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "analysis-experiment@6"
+        },
+        "experimentId": {
+          "type": "string"
+        },
+        "sequenceId": {
+          "type": "string"
+        },
+        "rolloutRunId": {
+          "type": "string"
+        },
+        "slotIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parentExperimentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operator": {
+          "enum": [
+            "draft",
+            "debug",
+            "improve",
+            "confirm",
+            "reuse"
+          ]
+        },
+        "sourceDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validationPlanDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "trainingSeed": {
+          "type": "integer"
+        },
+        "claim": {
+          "type": "object",
+          "properties": {
+            "hypothesis": {
+              "type": "string"
+            },
+            "intendedChange": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "hypothesis",
+            "intendedChange"
+          ],
+          "additionalProperties": false
+        },
+        "interpretation": {
+          "type": "object",
+          "properties": {
+            "conclusion": {
+              "type": "string"
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "conclusion",
+            "limitations"
+          ],
+          "additionalProperties": false
+        },
+        "analysis": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": true
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "completed",
+                "reused",
+                "generation_failed",
+                "candidate_failed"
+              ]
+            },
+            "receiptDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "physicalAttemptRefs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "reusedEvidenceRefs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "cost": {
+              "$ref": "#/$defs/Cost"
+            },
+            "oofDigest": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "metric": {
+              "enum": [
+                "accuracy",
+                "auc-roc",
+                "mean-column-wise-rmsle"
+              ]
+            },
+            "foldMetrics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FoldV3"
+              }
+            },
+            "pooledScore": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pooledUtility": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "meanScore": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "meanUtility": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stdScore": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "receiptDigest",
+            "physicalAttemptRefs",
+            "reusedEvidenceRefs",
+            "cost",
+            "oofDigest",
+            "metric",
+            "foldMetrics",
+            "pooledScore",
+            "pooledUtility",
+            "meanScore",
+            "meanUtility",
+            "stdScore"
+          ],
+          "additionalProperties": false
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "protocol",
+        "experimentId",
+        "sequenceId",
+        "rolloutRunId",
+        "slotIndex",
+        "parentExperimentId",
+        "operator",
+        "sourceDigest",
+        "validationPlanDigest",
+        "trainingSeed",
+        "claim",
+        "interpretation",
+        "analysis",
+        "execution",
+        "digest"
       ],
       "additionalProperties": false
     },

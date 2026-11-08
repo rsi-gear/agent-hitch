@@ -40,10 +40,14 @@
     "./workspaces": "./dist/src/workspaces/index.js",
     "./cli": "./dist/src/cli/index.js",
     "./package.json": "./package.json",
-    "./resources": "./dist/src/resources/index.js"
+    "./resources": "./dist/src/resources/index.js",
+    "./analysis": "./integrations/analysis/index.mjs",
+    "./analysis/contracts": "./benchmark-packages/kaggle/analysis-contracts/schemas.mjs",
+    "./analysis/research": "./benchmark-packages/kaggle/research/index.mjs"
   },
   "bin": {
-    "hitch": "dist/bin/hitch.js"
+    "hitch": "dist/bin/hitch.js",
+    "hitch-analysis": "benchmark-packages/kaggle/research/cli.mjs"
   },
   "files": [
     "dist/bin/",
@@ -79,7 +83,11 @@
     "benchmark-packages/automationbench/resources.mjs",
     "benchmark-packages/automationbench/RESOURCES.md",
     "test-contracts/hitch-resources-v1.json",
-    "examples/external-inference/"
+    "examples/external-inference/",
+    "integrations/analysis/",
+    "integrations/analysis-runtime/",
+    "benchmark-packages/kaggle/",
+    "docs/analysis-research.zh-CN.md"
   ],
   "scripts": {
     "docs:check": "node scripts/check-guide.mjs",
@@ -95,10 +103,12 @@
     "canary:packaged-harness": "npm run build && node dist/scripts/canary-packaged-harness.js",
     "canary:collision-domains": "npm run build && node dist/scripts/canary-collision-domains.js",
     "canary:gpu-hardware": "npm run build && node dist/scripts/canary-gpu-hardware.js",
-    "check:architecture": "node dist/scripts/check-architecture.js",
+    "check:architecture": "node dist/scripts/check-architecture.js && node scripts/check-analysis-boundaries.mjs",
     "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && npm test",
     "prepublishOnly": "npm run check",
-    "canary:external-endpoint": "npm run build && node dist/scripts/canary-external-endpoint.js"
+    "canary:external-endpoint": "npm run build && node dist/scripts/canary-external-endpoint.js",
+    "test:analysis": "npm run build && node --test benchmark-packages/kaggle/tests/research/*.test.mjs",
+    "test:analysis:package": "npm run build && node scripts/check-analysis-package.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -109,10 +119,12 @@
   "devDependencies": {
     "@types/node": "^22.20.1",
     "ajv": "^8.20.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2"
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "js-yaml": "^4.3.2",
     "smol-toml": "1.8.0"
   },
   "bundleDependencies": true

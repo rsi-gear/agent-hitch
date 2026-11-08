@@ -5,7 +5,6 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { produceAnalysisTask } from '../analysis.mjs';
 import { ResourceStore, identity, parseResourceDataset, sealResourceTask } from '../../../dist/src/resources/index.js';
 import { FixtureImageProvider, fixtureReference } from '../../../dist/test-support/resource-fixture.js';
@@ -46,9 +45,9 @@ for (const version of [2, 3]) for (const metric of ['accuracy', 'auc-roc', 'mean
     if (columns.length === 2) assert.equal(raw.range, undefined);
     return manifest;
   };
-  await produceAnalysisTask({ root, candidate, out: join(dir,'dataset'), expected: join(privateDir,'expected.csv'),
+  const produced = await produceAnalysisTask({ root, candidate, out: join(dir,'dataset'), expected: join(privateDir,'expected.csv'),
     baseImage: fixtureReference, platform: 'linux/amd64', request, timeoutSeconds: 60 }, rpc);
-  const verifier = fileURLToPath(new URL('../runtime/analysis-verify.py', import.meta.url));
+  const verifier = join(produced.path, produced.taskId, 'tests/verify.py');
   const code = 'import sys,importlib.util,json; from pathlib import Path; p=Path(sys.argv[1]); sys.path.insert(0,str(p.parent)); s=importlib.util.spec_from_file_location("verify",p); m=importlib.util.module_from_spec(s);s.loader.exec_module(m); print(json.dumps(m.score(Path(sys.argv[2]),Path(sys.argv[3]))))';
   const score = () => { const r = spawnSync(process.env.KAGGLE_TEST_PYTHON ?? 'python3', ['-c', code, verifier, privateDir, output], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout); };
   const result = score(); assert.equal(result.total_score, 1); assert.equal(result.task_score, columns.length === 2 ? 0 : 1);
@@ -87,9 +86,9 @@ test('budgeted rollout requests remain research tasks and do not require externa
     const body = { schema_version: '2', kind: 'gear-harbor-benchmark', resource_protocol: 'hitch-resource-lock@1', ...input.manifest, tasks };
     return parseResourceDataset({ ...body, dataset_digest: identity('hitch-resource-dataset@2', body) });
   };
-  await produceAnalysisTask({ root, candidate, out: join(dir, 'dataset'), expected: null,
+  const produced = await produceAnalysisTask({ root, candidate, out: join(dir, 'dataset'), expected: null,
     baseImage: fixtureReference, platform: 'linux/amd64', request, timeoutSeconds: 60 }, rpc);
-  const verifier = fileURLToPath(new URL('../runtime/analysis-verify.py', import.meta.url));
+  const verifier = join(produced.path, produced.taskId, 'tests/verify.py');
   const code = 'import sys,importlib.util,json; from pathlib import Path; p=Path(sys.argv[1]);sys.path.insert(0,str(p.parent));s=importlib.util.spec_from_file_location("v",p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.score(Path(sys.argv[2]),Path(sys.argv[3]))))';
   const result = spawnSync(process.env.KAGGLE_TEST_PYTHON ?? 'python3', ['-B', '-c', code, verifier, candidate, output], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).valid_output, 1);

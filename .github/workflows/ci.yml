@@ -28,6 +28,9 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Prepare Python bridge test dependencies
         run: |
           python3 -m venv "$RUNNER_TEMP/hitch-test-python"
@@ -64,6 +67,11 @@ jobs:
       - name: Test with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run coverage
+      - name: Benchmark research lifecycle
+        run: node --test benchmark-packages/kaggle/tests/research/*.test.mjs
+      - name: Standalone analysis package
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: node scripts/check-analysis-package.mjs
       - name: Packaged harness canary
         if: matrix.os == 'ubuntu-latest'
         run: node dist/scripts/canary-packaged-harness.js

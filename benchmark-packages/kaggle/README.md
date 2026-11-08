@@ -1,5 +1,9 @@
 # Titanic benchmark producer
 
+Budgeted research sequences, versioned validation policies, recovery and refit are
+provided by `hitch-analysis`; see the [execution guide](../../docs/analysis-research.zh-CN.md).
+This page describes the task-per-fold resource producer.
+
 This source example compiles downloaded Titanic CSV files into three ordinary
 Hitch resource v2 datasets. It requires no changes to benchmark dispatch and does
 not download data or submit predictions to Kaggle.

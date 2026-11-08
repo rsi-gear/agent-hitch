@@ -120,6 +120,30 @@ schema.$defs.RoundValidation = object({ protocol: { const: 'analysis-round-cv-pl
   roundDigest: sha, trainDigest: sha, metric: schema.$defs.PredictionV2.properties.metric,
   kind: { enum: ['kfold', 'stratified'] }, folds: { const: 5 }, shuffle: { const: true },
   seed: { type: 'integer', minimum: 0, maximum: 4294967295 }, splitter: { const: 'python-random-stratified-round-robin@1' } })
+// Parameterized outer evaluation, with materialized row assignments frozen at admission.
+schema.$defs.RoundValidationV1 = schema.$defs.RoundValidation
+const seed = { type: 'integer', minimum: 0, maximum: 4294967295 }
+const cvPolicy = object({ method: { enum: ['kfold', 'stratified_kfold'] }, folds: { type: 'integer', minimum: 2, maximum: 10 }, shuffle: { type: 'boolean' }, seed })
+const holdoutPolicy = object({ method: { enum: ['holdout', 'stratified_holdout'] }, fraction: { type: 'number', minimum: 0, maximum: 1 }, shuffle: { type: 'boolean' }, seed })
+schema.$defs.ExperimentConfiguration = object({ version: str, maxExperiments: { type: 'integer', minimum: 1 }, validation: { anyOf: [cvPolicy, holdoutPolicy] } })
+schema.$defs.RoundValidationV2 = object({ protocol: { const: 'analysis-round-cv-plan@2' }, policyDigest: sha,
+  configurationDigest: sha, trainDigest: sha, metric: schema.$defs.PredictionV2.properties.metric,
+  kind: { enum: ['kfold', 'stratified'] }, method: { enum: ['kfold', 'stratified_kfold', 'holdout', 'stratified_holdout'] },
+  folds: { type: 'integer', minimum: 1, maximum: 10 }, shuffle: { type: 'boolean' }, seed,
+  splitter: { const: 'python-random-materialized@1' }, rowIds: { ...arr(str), minItems: 2, uniqueItems: true },
+  foldAssignments: arr({ type: 'integer', minimum: -1, maximum: 9 }) })
+schema.$defs.RoundValidationV2.properties.fraction = { type: 'number', minimum: 0, maximum: 1 }
+schema.$defs.RoundValidation = { anyOf: [ref('RoundValidationV1'), ref('RoundValidationV2')] }
+for (const [name, protocol, base] of [['TaskV7', 'analysis-task@7', 'TaskV5'], ['TaskV8', 'analysis-task@8', 'TaskV6']]) {
+  schema.$defs[name] = sealed(protocol, { ...Object.fromEntries(Object.entries(schema.$defs[base].properties).filter(([k]) => !['protocol', 'digest'].includes(k))),
+    experiment: ref('ExperimentConfiguration'), evaluationPlan: ref('RoundValidationV2') })
+  schema.$defs.Task.anyOf.push(ref(name))
+}
+schema.$defs.FoldV3 = object({ ...schema.$defs.FoldV2.properties, fold: { type: 'integer', minimum: 0, maximum: 9 } })
+schema.$defs.ExperimentV6 = sealed('analysis-experiment@6', {
+  ...Object.fromEntries(Object.entries(schema.$defs.ExperimentV5.properties).filter(([k]) => !['protocol', 'digest', 'execution'].includes(k))),
+  execution: object({ ...schema.$defs.ExperimentV5.properties.execution.properties, foldMetrics: arr(ref('FoldV3')) }) })
+schema.$defs.Experiment.anyOf.push(ref('ExperimentV6'))
 for (const name of ['SequencePlanV1', 'SequencePlanV2', 'RolloutRequestV1', 'RolloutRequestV2'])
   schema.$defs[name].properties.roundValidation = ref('RoundValidation')
 schema.$defs.Selection.properties.slotIndex = { type: 'integer', minimum: 1 }
@@ -127,14 +151,20 @@ for (const [name, protocol] of [['DeliveryRequest', 'analysis-delivery-request@1
   schema.$defs[name] = sealed(protocol, { sequenceId: str, planDigest: sha, task: ref('Task'), harness: ref('Harness'), runtimeDigest: sha,
     solution: ref('Solution'), selectionsDigest: sha, allowance: ref('Allowance') })
 
+const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
+  : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
+  : JSON.stringify(value)
+
 export function validateRequest(value) {
   const name = { 'analysis-rollout-request@1': 'RolloutRequest', 'analysis-rollout-request@2': 'RolloutRequest', 'analysis-delivery-request@1': 'DeliveryRequest',
     'analysis-audit-request@1': 'AuditRequest', 'analysis-refit-request@1': 'RefitRequest' }[value?.protocol]
   if (!name) throw new Error('unsupported analysis request protocol')
   validateSchema(name, value)
   if (name === 'RolloutRequest') {
-    const cv = ['analysis-task@5', 'analysis-task@6'].includes(value.task.protocol)
+    const cv = ['analysis-task@5', 'analysis-task@6', 'analysis-task@7', 'analysis-task@8'].includes(value.task.protocol)
     if (cv !== Boolean(value.roundValidation)) throw new Error('round CV request must bind its frozen split')
+    if (value.task.evaluationPlan && canonical(value.roundValidation) !== canonical(value.task.evaluationPlan))
+      throw new Error('request changed frozen row assignments')
     if (cv && (value.roundValidation.policyDigest !== value.task.validationPlanDigest || value.roundValidation.trainDigest !== value.task.inputs.trainDigest))
       throw new Error('round CV data/policy mismatch')
   }

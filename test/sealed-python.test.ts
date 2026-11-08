@@ -43,13 +43,13 @@ test('sealed executor refuses arbitrary runtime bytes and model arguments', asyn
 });
 
 test("sealed executor ships the exact worker closure authenticated by its entrypoint", async () => {
-  const directory = path.join(packageRoot(), "integrations/sealed-python");
+  const directory = path.join(packageRoot(), "integrations/analysis-runtime");
   const manifest = await readFile(path.join(directory, "runtime-integrity.json"));
-  const entrypoint = await readFile(path.join(directory, "cli.js"), "utf8");
+  const entrypoint = await readFile(path.join(packageRoot(), "integrations/sealed-python/cli.js"), "utf8");
   const expected = entrypoint.match(/RUNTIME_MANIFEST_DIGEST = '(sha256:[a-f0-9]{64})'/)?.[1];
   assert.equal(sha256Bytes(manifest), expected);
   const files = JSON.parse(manifest.toString()) as Record<string, string>;
-  assert.deepEqual(Object.keys(files).sort(), ["confinement.py", "pipeline_runner.py", "research_worker.py", "scoring.py", "worker.py"]);
+  assert.deepEqual(Object.keys(files).sort(), ["client.mjs", "confinement.py", "pipeline_runner.py", "research_worker.py", "scoring.py", "worker.py"]);
   for (const [name, digest] of Object.entries(files)) {
     assert.equal(sha256Bytes(await readFile(path.join(directory, name))), digest, name);
   }

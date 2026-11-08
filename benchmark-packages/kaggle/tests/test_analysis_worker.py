@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-RUNTIME = Path(__file__).resolve().parents[3] / "integrations/sealed-python"
+RUNTIME = Path(__file__).resolve().parents[3] / "integrations/analysis-runtime"
 sys.path.insert(0, str(RUNTIME))
 spec = importlib.util.spec_from_file_location("sealed_worker", RUNTIME / "worker.py")
 worker = importlib.util.module_from_spec(spec)

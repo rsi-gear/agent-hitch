@@ -21,7 +21,8 @@ export async function produceAnalysisTask(options, resourceRequest) {
   const id = `analysis-${request.digest.slice(7, 31)}`, research = ['analysis-rollout-request@1', 'analysis-rollout-request@2'].includes(request.protocol);
   const staging = `${out}.partial-${randomUUID()}`, temporary = await mkdtemp(join(tmpdir(), 'analysis-private-'));
   const leases = [], owner = `producer:analysis:${request.digest}:${randomUUID()}`;
-  const revision = sha(Buffer.concat(await Promise.all(['analysis-verify.py', 'scoring.py'].map(name => readFile(join(here, 'runtime', name))))));
+  const scoringPath = join(here, '../../integrations/analysis-runtime/scoring.py');
+  const revision = sha(Buffer.concat(await Promise.all([readFile(join(here, 'runtime/analysis-verify.py')), readFile(scoringPath)])));
   try {
     await writeFile(join(temporary, 'request.json'), JSON.stringify(request));
     if (expected) await copyFile(expected, join(temporary, 'expected.csv'));
@@ -46,7 +47,7 @@ export async function produceAnalysisTask(options, resourceRequest) {
     await writeFile(join(task, 'environment/candidate/Dockerfile'), `FROM ${baseImage}\nCOPY data /data\nRUN --network=none mkdir -p /app /output && chmod 700 /output && chmod -R a-w /data\nWORKDIR /app\nCMD ["sleep", "infinity"]\n`);
     await writeFile(join(task, 'tests/Dockerfile'), `FROM ${baseImage}\nCOPY . /tests\nWORKDIR /tests\nCMD ["sleep", "infinity"]\n`);
     await copyFile(join(here, 'runtime/analysis-verify.py'), join(task, 'tests/verify.py'));
-    await copyFile(join(here, 'runtime/scoring.py'), join(task, 'tests/scoring.py'));
+    await copyFile(scoringPath, join(task, 'tests/scoring.py'));
     await writeFile(join(task, 'tests/test.sh'), '#!/bin/sh\nset -eu\npython3 /tests/verify.py\n', { mode: 0o755 });
     await writeFile(join(task, 'task.toml'), `schema_version = "1.4"\nartifacts = [{ source = "/output" }]\n[environment]\nworkdir = "/app"\nnetwork_mode = "${research ? 'public' : 'no-network'}"\ncpus = 2\nmemory_mb = 4096\n[agent]\ntimeout_sec = ${timeoutSeconds}\n[verifier]\ntimeout_sec = 60\nenvironment_mode = "separate"\n[verifier.environment]\nnetwork_mode = "no-network"\ncpus = 1\nmemory_mb = 512\n`);
     const generic = request.task.protocol !== 'analysis-task@1';

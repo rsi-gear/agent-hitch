@@ -334,7 +334,7 @@ def main():
                       'predictionsPath': None, 'formalFit': None, 'fits': None, 'fitAttempts': None, 'fitCalls': None,
                       'cpuSeconds': job['cpuSeconds'], 'wallSeconds': 0,
                       'logs': [{'validationError': str(error), 'accounting': 'conservative reservation on interrupted search'}]}
-            if job['validationPlan'].get('protocol') == 'analysis-round-cv-plan@1':
+            if job['validationPlan'].get('protocol') in ('analysis-round-cv-plan@1', 'analysis-round-cv-plan@2'):
                 result.update(cv=None, foldMetrics=[], meanScore=None, meanUtility=None, stdScore=None,
                               pooledScore=None, pooledUtility=None, oofPath=None)
     elif job['operation'] == 'evaluate':
