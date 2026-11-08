@@ -56,7 +56,7 @@ silently rebound to the current runtime.
 
 After building, `node --test dist/test/analysis-package.test.js
 dist/test/kaggle-producer.test.js` checks the API and execution contracts. Use
-Python 3.12 with `test-support/requirements.txt`; `KAGGLE_TEST_PYTHON` selects it.
+Python 3.12 with `test-support/analysis-requirements.txt`; `KAGGLE_TEST_PYTHON` selects it.
 Set `GEAR_MLEBENCH_REPOSITORY` to the pinned upstream checkout to include native
 grader parity (also install the upstream grader's Python dependencies). The
 Linux canaries live in `benchmark-packages/kaggle/tests/` and require the pinned

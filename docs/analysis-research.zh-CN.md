@@ -36,7 +36,7 @@ Hitch 在准备时生成一次 `data/validation.json`，记录配置摘要、训
 
 ## 准备任务
 
-安装 `agent-hitch`；宿主数据准备需要 Python 3.12 与 `test-support/requirements.txt` 中的依赖。训练使用已登记的固定 Linux OCI 镜像。配置 Hitch 的 OCI transport 和模型访问后：
+安装 `agent-hitch`；宿主数据准备需要 Python 3.12 与 `test-support/analysis-requirements.txt` 中的依赖。训练使用已登记的固定 Linux OCI 镜像。配置 Hitch 的 OCI transport 和模型访问后：
 
 ```sh
 hitch-analysis prepare \

@@ -28,13 +28,22 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - name: Prepare Python bridge test dependencies
         run: |
           python3 -m venv "$RUNNER_TEMP/hitch-test-python"
           "$RUNNER_TEMP/hitch-test-python/bin/python" -m pip install -r test-support/requirements.txt
+          echo "$RUNNER_TEMP/hitch-test-python/bin" >> "$GITHUB_PATH"
+          echo "HITCH_TEST_PYTHON=$RUNNER_TEMP/hitch-test-python/bin/python" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare isolated analysis test dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/hitch-analysis-python"
+          "$RUNNER_TEMP/hitch-analysis-python/bin/python" -m pip install -r test-support/analysis-requirements.txt
+          echo "KAGGLE_TEST_PYTHON=$RUNNER_TEMP/hitch-analysis-python/bin/python" >> "$GITHUB_ENV"
+          echo "GEAR_MLEBENCH_PYTHON=$RUNNER_TEMP/hitch-analysis-python/bin/python" >> "$GITHUB_ENV"
+          # Preserve the existing host interpreter for Harbor runtime identity tests.
           echo "$RUNNER_TEMP/hitch-test-python/bin" >> "$GITHUB_PATH"
       - run: npm ci
       # The build invokes tsc with the same configuration as typecheck.
