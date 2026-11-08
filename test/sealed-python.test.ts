@@ -49,7 +49,7 @@ test("sealed executor ships the exact worker closure authenticated by its entryp
   const expected = entrypoint.match(/RUNTIME_MANIFEST_DIGEST = '(sha256:[a-f0-9]{64})'/)?.[1];
   assert.equal(sha256Bytes(manifest), expected);
   const files = JSON.parse(manifest.toString()) as Record<string, string>;
-  assert.deepEqual(Object.keys(files).sort(), ["confinement.py", "scoring.py", "worker.py"]);
+  assert.deepEqual(Object.keys(files).sort(), ["confinement.py", "pipeline_runner.py", "research_worker.py", "scoring.py", "worker.py"]);
   for (const [name, digest] of Object.entries(files)) {
     assert.equal(sha256Bytes(await readFile(path.join(directory, name))), digest, name);
   }

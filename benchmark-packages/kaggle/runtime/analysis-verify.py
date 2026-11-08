@@ -45,6 +45,9 @@ def score(private, output):
         return failure
     if receipt['status'] != 'completed':
         raise ValueError('unavailable execution status')
+    if request['solution']['protocol'] == 'analysis-solution@2':
+        if receipt.get('resolvedPipelineDigest') != request['solution']['parameters']['digest'] or receipt.get('searchCalls') != 0 or receipt.get('fits') != 1:
+            raise ValueError('resolved refit contract changed')
     content = read(output / 'predictions.csv')
     if 'sha256:' + hashlib.sha256(content).hexdigest() != receipt['predictionsDigest']:
         raise ValueError('sealed predictions changed')

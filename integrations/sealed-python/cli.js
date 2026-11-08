@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const RUNTIME_MANIFEST_DIGEST = 'sha256:fe2ffe9c55b68951df7bff77fdce3f8c9951e0e0c7ef4172d11e73707d5d5b85';
+const RUNTIME_MANIFEST_DIGEST = 'sha256:d64d2c479562cec496a8ed73b333136279155fe57707a78984a29151e7786e2e';
 const sha = b => `sha256:${createHash('sha256').update(b).digest('hex')}`;
 const canonical = value => value && typeof value === 'object'
   ? Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}` : JSON.stringify(value);
@@ -25,7 +25,12 @@ async function main() {
   const request = verify(JSON.parse(await regular('/data/request.json')));
   assert(['analysis-delivery-request@1', 'analysis-audit-request@1', 'analysis-refit-request@1'].includes(request.protocol), 'not a sealed execution request');
   const solution = verify(request.solution);
-  assert(solution.protocol === 'analysis-solution@1' && solution.runtimeDigest === request.runtimeDigest, 'solution runtime mismatch');
+  assert(['analysis-solution@1', 'analysis-solution@2'].includes(solution.protocol) && solution.runtimeDigest === request.runtimeDigest, 'solution runtime mismatch');
+  const resolved = solution.protocol === 'analysis-solution@2' ? verify(solution.parameters) : null;
+  if (request.protocol === 'analysis-refit-request@1') assert(resolved, 'refit requires a resolved pipeline; legacy search programs are not deployable');
+  if (resolved) assert(resolved.protocol === 'analysis-resolved-pipeline@1' && resolved.configDigest === digest(resolved.config)
+    && resolved.codeDigest === digest(solution.files) && resolved.runtimeDigest === solution.runtimeDigest && resolved.entrypoint === solution.entrypoint
+    && resolved.trainingEntry === 'build_pipeline' && resolved.fitCount === 1 && resolved.actualParameters, 'invalid resolved pipeline');
   const files = {};
   for (const f of solution.files) {
     assert(/^[a-zA-Z0-9_./-]+$/.test(f.path) && f.path.split('/').every(p => p && p !== '.' && p !== '..'), 'unsafe source path');
@@ -38,7 +43,7 @@ async function main() {
   assert(/^run_[a-f0-9]{32}$/.test(process.env.HITCH_RUN_ID ?? ''), 'assigned run ID required');
   await mkdir('/run/analysis-refit', { recursive: true }); await mkdir('/output', { recursive: true });
   const generic = request.task.prediction.kind === 'tabular';
-  const job = { operation: generic ? 'predict' : 'script', files,
+  const job = { operation: generic ? 'predict' : 'script', files, ...(resolved ? { resolvedPipeline: resolved } : {}),
     ...(generic ? { prediction: request.task.prediction, predictIds: request.task.predictIds, publicFiles: request.task.publicFiles, publicDirectory: '/data/public' } : {}), inputs: { 'train.csv': '/data/train.csv', 'predict.csv': '/data/predict.csv' },
     entrypoint: solution.entrypoint, argv: ['--train', '/work/inputs/train.csv', '--predict', '/work/inputs/predict.csv',
       '--output', '/work/scratch/predictions.csv', '--seed', String(solution.trainingSeed)],
@@ -65,6 +70,7 @@ async function main() {
   }
   const body = { protocol: 'analysis-execution-receipt@1', requestDigest: request.digest, solutionDigest: solution.digest,
     runId: process.env.HITCH_RUN_ID, status: predictionsDigest ? 'completed' : 'candidate_failed',
+    ...(resolved ? { resolvedPipelineDigest: resolved.digest, fits: result.fitReceipt?.fits ?? 0, fitCalls: result.fitReceipt?.fitCalls ?? null, searchCalls: 0, fitReceipt: result.fitReceipt ?? null } : {}),
     predictionsDigest, modelRequests: 0, cpuSeconds: result.cpuSeconds, wallSeconds: result.wallSeconds, diagnostics: result.logs };
   await writeFile('/output/receipt.json', JSON.stringify({ ...body, digest: digest(body) }), { flag: 'wx', mode: 0o444 });
   console.log(JSON.stringify({ type: 'message.completed', text: `sealed execution: ${body.status}` }));

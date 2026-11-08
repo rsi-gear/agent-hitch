@@ -37,7 +37,7 @@ export async function produceAnalysisTask(options, resourceRequest) {
     await writeFile(join(task, 'resource.lock.json'), JSON.stringify({ protocol: 'hitch-resource-lock@1', resources, bindings,
       requiredCapabilities: ['tree@1', 'oci-image@1', 'private-copy@1', 'harbor-role-context@1', 'bounded-tmpfs@1'] }));
     await writeFile(join(task, 'instruction.md'), research
-      ? 'Complete exactly one experiment. Call task_inspect, follow its policy and guidance, evaluate or reuse one solution, select, and finish. All prior facts are explicitly provided in the checkpoint. Never search the network or estimate external labels.\n'
+      ? 'Complete one experiment. Call task_inspect, follow the current workflow and use the available experiment interface to retrieve evidence, run a bounded plan, select its resolved variant and finish. Prior evidence is in the authorized checkpoint.\n'
       : 'Execute the sealed solution and write its exact predictions. No model session or source changes are permitted.\n');
     await writeFile(join(task, 'environment/docker-compose.yaml'), JSON.stringify({ services: { main: {
       platform, build: { context: 'candidate', dockerfile: 'Dockerfile' }, user: '0:0', init: true,
