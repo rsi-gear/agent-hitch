@@ -97,7 +97,6 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 | `--backend harbor` | 当前后端，默认 `harbor`。 |
 | `--dataset REF`, `--harness REF` | 必需的数据集和不可变 Harness 引用。 |
 | `--model ID` | 独立于 Harness 选择模型。 |
-| `--no-model` | 使用不可变 `sealed-python` 源码执行，不创建模型会话。要求 `--infrastructure-retries 0` 且仅一次 attempt；不能与 `--model`、模型/环境绑定、凭据转发或 agent 参数组合。见[封存源码执行](../../sealed-python.zh-CN.md)。 |
 | `--attempts N`, `--max-concurrent N` | 正整数；普通数据集默认 1 次 attempt、最多 4 个并行 Trial，实际还受资源约束。 |
 | `--timeout DURATION`, `--setup-timeout DURATION` | 候选执行和准备阶段的预算。标准编译任务保留任务预算，除非显式覆盖；其他默认值见[评测契约](../../evals.md)。 |
 | `--infrastructure-retries N`, `--infrastructure-retry-backoff DURATION` | 控制符合条件的基础设施重试；N 可为 0，表示禁用。 |
@@ -156,7 +155,7 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 | `hitch resources request OPERATION [--input JSON_FILE]` | 在选定的 `--root` 下调用资源 API，始终返回 JSON。输入文件提供该操作的请求对象；省略时传入 `{}`。 |
 | `hitch resources legacy-export --ref DATASET_OR_SELECTION --output NEW_DIRECTORY` | 显式物化为具有新身份的旧协议数据集；目标目录必须尚不存在。 |
 
-操作包括 `capabilities`、`configure`、`inspect`、`import`、`seal-task`、`seal-dataset`、`selection`、`preflight`、`pin`、`release`、`materialize`、`workspace-end`、`lease-end`、`audit`、`bundle-export` 和 `bundle-import`。资源数据集通过 v2 输入显式启用，普通 v1 数据集保持原有行为。查看和审计可以省略输入文件；审计默认 dry-run，只有请求显式设置 `apply: true` 才变更存储。
+操作包括 `capabilities`、`configure`、`inspect`、`import`、`seal-task`、`seal-dataset`、`selection`、`preflight`、`pin`、`release`、`materialize`、`workspace-end`、`lease-end`、`audit`、`bundle-export` 和 `bundle-import`。资源数据集通过 v3 输入显式启用，普通 v1 数据集保持原有行为。查看和审计可以省略输入文件；审计默认 dry-run，只有请求显式设置 `apply: true` 才变更存储。
 
 释放引用须使用原 owner 和 generation。只有执行结束且结果封存得到确认后才能结束执行工作区；超时或 Worker 失联不能证明资源可以安全释放。请求字段、固定 OCI 身份、角色隔离、离线包与恢复边界见[资源存储协议及请求示例](../../resource-storage.zh-CN.md)。
 

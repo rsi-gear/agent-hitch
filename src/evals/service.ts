@@ -44,7 +44,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     throw invalidInput("control-plane max concurrency override is invalid");
   }
   const normalized = maxConcurrentOverride === undefined ? persistedRequest : { ...persistedRequest, max_concurrent: maxConcurrentOverride };
-  await admitEvalResources(root, normalized, evalId, environmentBuildMode, signal);
   const evalsDirectory = await ensureDir(statePaths(root).evals);
   const evalDirectory = await prepareEvalDirectory({ evalsDirectory, evalId, request: persistedRequest, precreated, replaceTerminal });
   let startedAt = new Date();
@@ -64,6 +63,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
     sink.emit({ type: "eval.planning.started" });
     await onControlPhase?.("planning");
+    await admitEvalResources(root, normalized, evalId, environmentBuildMode, signal);
     const requestedReference = parseHarnessReference(normalized.harness_ref);
     const resolvedRevision = await resolveHarness(normalized.harness_ref, { root, env });
     failureStage = "preparing";

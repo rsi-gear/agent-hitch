@@ -1,0 +1,482 @@
+{
+  "date": "2026-11-09",
+  "kind": "deterministic-linux-sandbox-validation",
+  "model_api_calls": 0,
+  "platform": "linux/arm64",
+  "harbor_version": "0.21.0",
+  "source_state": "working tree; execution runtimes content-addressed per evaluation",
+  "scope": "ordinary sklearn Pipeline with a Python lambda transformer; single task includes fit, prediction, CSV collection and independent verifier",
+  "limitations": [
+    "Synthetic data validates mechanics, not benchmark quality.",
+    "Target CV parameter registrations are configuration evidence; this fixture does not execute CV.",
+    "This deterministic harness is not a model-driven Agent run.",
+    "Initial native parity attempt found missing dependencies; a separately recorded test image added official grader imports."
+  ],
+  "dataset_digest": "sha256:ab917142b617c217f23a664c6d997724749a89493fdc7a81dd321101c2d493fa",
+  "groups": [
+    {
+      "name": "baseline",
+      "eval_id": "eval_b8a469d0b44048a2b9fd9a8f4234bd1d",
+      "result_sha256": "sha256:f49940f38995224f968923f77ad209441ec8b29b55e768e573203352dfe12061",
+      "runtime": {
+        "schema_version": "1",
+        "storage": "controller-runtime-ref-v1",
+        "runtime_id": "sha256:7e7de0f3c3d2e63ab105c0f15d2cde43942e487c248d998f5fea1de09dfda861",
+        "manifest_digest": "sha256:7e7de0f3c3d2e63ab105c0f15d2cde43942e487c248d998f5fea1de09dfda861",
+        "created_at": "2026-11-09T07:59:08.440Z"
+      },
+      "harness_commit": "2b08c8c03d39b2e91e7232aa446185a3ef728a57",
+      "registered_internal_cv_folds": 4,
+      "trials": [
+        {
+          "attempt": 1,
+          "run_id": "run_bfbba12366fe4b0fab90bbc8b8c49209",
+          "task_digest": "sha256:38b8ae6f0362da3805e4ffd3f3595828ccbbc0528d357ff5350490bb3593187c",
+          "artifact_digest": "sha256:977cc841c924451fd1423074cd21c377433ee6b3d430d95c8dc0b3685b491278",
+          "submission": [
+            {
+              "name": "output/submission.csv",
+              "path": "output/submission.csv",
+              "media_type": "text/csv",
+              "bytes": 24,
+              "sha256": "sha256:81724ca876c51419038f1f60dcab6e056af962673d687b16eda664591516f191"
+            }
+          ],
+          "rewards": {
+            "reward": 1,
+            "total_score": 1,
+            "valid_output": 1,
+            "completed": 1,
+            "quality_available": 1,
+            "task_score": 1
+          },
+          "resource_evidence_sha256": "sha256:324287a3f244532c5622ed4f520754f96a7678f39726a67fe7fbb38333c6507c",
+          "parameter_evidence_sha256": "sha256:a657111a026a88df75832d97130665ecabc89d6f431406edbb39dbb9960fd63a",
+          "parameter_audit": [
+            {
+              "actor": "target",
+              "path": "/method/cv/folds",
+              "old_value": 5,
+              "new_value": 4,
+              "rule": {
+                "actors": [
+                  "meta",
+                  "target"
+                ],
+                "apply_at": "training_start",
+                "maximum": 10,
+                "minimum": 3,
+                "mutable": true
+              },
+              "phase": "training_start",
+              "accepted": true,
+              "reason": "accepted"
+            },
+            {
+              "actor": "target",
+              "path": "/method/cv/seed",
+              "old_value": 42,
+              "new_value": 43,
+              "rule": {
+                "mutable": false
+              },
+              "phase": "training_start",
+              "accepted": false,
+              "reason": "target cannot change /method/cv/seed at training_start"
+            }
+          ],
+          "registered_actions": 1
+        },
+        {
+          "attempt": 2,
+          "run_id": "run_ef6396a0f36b4d5d8ee94b9ea6271db5",
+          "task_digest": "sha256:38b8ae6f0362da3805e4ffd3f3595828ccbbc0528d357ff5350490bb3593187c",
+          "artifact_digest": "sha256:1d9f36e585895225bc7711a0bd14604c950c2b480c9251901894cff9904db1d9",
+          "submission": [
+            {
+              "name": "output/submission.csv",
+              "path": "output/submission.csv",
+              "media_type": "text/csv",
+              "bytes": 24,
+              "sha256": "sha256:81724ca876c51419038f1f60dcab6e056af962673d687b16eda664591516f191"
+            }
+          ],
+          "rewards": {
+            "reward": 1,
+            "total_score": 1,
+            "valid_output": 1,
+            "completed": 1,
+            "quality_available": 1,
+            "task_score": 1
+          },
+          "resource_evidence_sha256": "sha256:3cd0c8c7eb72c65d104857d97fefb7962ecaa08f168d4da0500d9b6a8f8790cc",
+          "parameter_evidence_sha256": "sha256:a3c2e403dff5583383ddf0805d0ed998107819ce2fe7d56ace4be9cd06251fbf",
+          "parameter_audit": [
+            {
+              "actor": "target",
+              "path": "/method/cv/folds",
+              "old_value": 5,
+              "new_value": 4,
+              "rule": {
+                "actors": [
+                  "meta",
+                  "target"
+                ],
+                "apply_at": "training_start",
+                "maximum": 10,
+                "minimum": 3,
+                "mutable": true
+              },
+              "phase": "training_start",
+              "accepted": true,
+              "reason": "accepted"
+            },
+            {
+              "actor": "target",
+              "path": "/method/cv/seed",
+              "old_value": 42,
+              "new_value": 43,
+              "rule": {
+                "mutable": false
+              },
+              "phase": "training_start",
+              "accepted": false,
+              "reason": "target cannot change /method/cv/seed at training_start"
+            }
+          ],
+          "registered_actions": 1
+        }
+      ]
+    },
+    {
+      "name": "candidate-a",
+      "eval_id": "eval_8fc78cb8dfe64f8b95b7754323022a2e",
+      "result_sha256": "sha256:cc44b582dad7737d719c9d9a9a6243944c4469c07c2ec5d50e888a357d614ef1",
+      "runtime": {
+        "schema_version": "1",
+        "storage": "controller-runtime-ref-v1",
+        "runtime_id": "sha256:8551ef0451a2d28444db96e9cf5dac90d4a54a3dfad526f66bf8356b0c2941f1",
+        "manifest_digest": "sha256:8551ef0451a2d28444db96e9cf5dac90d4a54a3dfad526f66bf8356b0c2941f1",
+        "created_at": "2026-11-09T08:00:54.510Z"
+      },
+      "harness_commit": "c433794c6b5d122a597dc074cb26e7de777ffa89",
+      "registered_internal_cv_folds": 6,
+      "trials": [
+        {
+          "attempt": 1,
+          "run_id": "run_faa04acd36934ecc85db7b2029285988",
+          "task_digest": "sha256:38b8ae6f0362da3805e4ffd3f3595828ccbbc0528d357ff5350490bb3593187c",
+          "artifact_digest": "sha256:496c0befc5727161b0aab37a95bfad5428fc6daa73cd47b9c3c02f5c01b05fdf",
+          "submission": [
+            {
+              "name": "output/submission.csv",
+              "path": "output/submission.csv",
+              "media_type": "text/csv",
+              "bytes": 24,
+              "sha256": "sha256:81724ca876c51419038f1f60dcab6e056af962673d687b16eda664591516f191"
+            }
+          ],
+          "rewards": {
+            "reward": 1,
+            "total_score": 1,
+            "valid_output": 1,
+            "completed": 1,
+            "quality_available": 1,
+            "task_score": 1
+          },
+          "resource_evidence_sha256": "sha256:324361fb1e9d456c192522edac91143219b31c95d72e43eb2b351b0a2ac0d779",
+          "parameter_evidence_sha256": "sha256:49bf45c4aa9d626208b4544d8e4e53ebe65c07b0f7795d1089af9d4b600aabbb",
+          "parameter_audit": [
+            {
+              "actor": "target",
+              "path": "/method/cv/folds",
+              "old_value": 5,
+              "new_value": 6,
+              "rule": {
+                "actors": [
+                  "meta",
+                  "target"
+                ],
+                "apply_at": "training_start",
+                "maximum": 10,
+                "minimum": 3,
+                "mutable": true
+              },
+              "phase": "training_start",
+              "accepted": true,
+              "reason": "accepted"
+            },
+            {
+              "actor": "target",
+              "path": "/method/cv/seed",
+              "old_value": 42,
+              "new_value": 43,
+              "rule": {
+                "mutable": false
+              },
+              "phase": "training_start",
+              "accepted": false,
+              "reason": "target cannot change /method/cv/seed at training_start"
+            }
+          ],
+          "registered_actions": 1
+        },
+        {
+          "attempt": 2,
+          "run_id": "run_6575d5908cbe400d82739a475e10c74f",
+          "task_digest": "sha256:38b8ae6f0362da3805e4ffd3f3595828ccbbc0528d357ff5350490bb3593187c",
+          "artifact_digest": "sha256:493a1aecb2153badd657e30cd88f63bf6f5882c12f7f23aad99ee3f4b0c10fae",
+          "submission": [
+            {
+              "name": "output/submission.csv",
+              "path": "output/submission.csv",
+              "media_type": "text/csv",
+              "bytes": 24,
+              "sha256": "sha256:81724ca876c51419038f1f60dcab6e056af962673d687b16eda664591516f191"
+            }
+          ],
+          "rewards": {
+            "reward": 1,
+            "total_score": 1,
+            "valid_output": 1,
+            "completed": 1,
+            "quality_available": 1,
+            "task_score": 1
+          },
+          "resource_evidence_sha256": "sha256:fe2e9f3535477c98836e60b3de4fdf2a989f395bc207a8379ffcb144f7e37447",
+          "parameter_evidence_sha256": "sha256:8dcf6ef31d29ff22be2642f03d6a6b94110cb2fb28512ad82fc525af3020900d",
+          "parameter_audit": [
+            {
+              "actor": "target",
+              "path": "/method/cv/folds",
+              "old_value": 5,
+              "new_value": 6,
+              "rule": {
+                "actors": [
+                  "meta",
+                  "target"
+                ],
+                "apply_at": "training_start",
+                "maximum": 10,
+                "minimum": 3,
+                "mutable": true
+              },
+              "phase": "training_start",
+              "accepted": true,
+              "reason": "accepted"
+            },
+            {
+              "actor": "target",
+              "path": "/method/cv/seed",
+              "old_value": 42,
+              "new_value": 43,
+              "rule": {
+                "mutable": false
+              },
+              "phase": "training_start",
+              "accepted": false,
+              "reason": "target cannot change /method/cv/seed at training_start"
+            }
+          ],
+          "registered_actions": 1
+        }
+      ]
+    },
+    {
+      "name": "candidate-b",
+      "eval_id": "eval_b5a8c54f60404c6581807e46c05f67db",
+      "result_sha256": "sha256:872b4156df5e5257bbe7c6c2060365fc8d9bbdb43669d090cc49009ca3fbd8fe",
+      "runtime": {
+        "schema_version": "1",
+        "storage": "controller-runtime-ref-v1",
+        "runtime_id": "sha256:8551ef0451a2d28444db96e9cf5dac90d4a54a3dfad526f66bf8356b0c2941f1",
+        "manifest_digest": "sha256:8551ef0451a2d28444db96e9cf5dac90d4a54a3dfad526f66bf8356b0c2941f1",
+        "created_at": "2026-11-09T08:00:58.282Z"
+      },
+      "harness_commit": "1266ef5f99c52663b431ba06a4750f20cc0e5335",
+      "registered_internal_cv_folds": 8,
+      "trials": [
+        {
+          "attempt": 1,
+          "run_id": "run_e8a2fa4ba014499a91f27a72b0ebfbe7",
+          "task_digest": "sha256:38b8ae6f0362da3805e4ffd3f3595828ccbbc0528d357ff5350490bb3593187c",
+          "artifact_digest": "sha256:56eb7ed5f77aa0dab35039c369d554eb424382dbe9537370d2f769a729937624",
+          "submission": [
+            {
+              "name": "output/submission.csv",
+              "path": "output/submission.csv",
+              "media_type": "text/csv",
+              "bytes": 24,
+              "sha256": "sha256:81724ca876c51419038f1f60dcab6e056af962673d687b16eda664591516f191"
+            }
+          ],
+          "rewards": {
+            "reward": 1,
+            "total_score": 1,
+            "valid_output": 1,
+            "completed": 1,
+            "quality_available": 1,
+            "task_score": 1
+          },
+          "resource_evidence_sha256": "sha256:d10fd5ff94bca68d634bc7c53bb280231bdf1d7a423d8edc267b9d937232625b",
+          "parameter_evidence_sha256": "sha256:b996b04bea222fb3065f071157576b235031778d11e0b246e16b1b9f5bfc90ec",
+          "parameter_audit": [
+            {
+              "actor": "target",
+              "path": "/method/cv/folds",
+              "old_value": 5,
+              "new_value": 8,
+              "rule": {
+                "actors": [
+                  "meta",
+                  "target"
+                ],
+                "apply_at": "training_start",
+                "maximum": 10,
+                "minimum": 3,
+                "mutable": true
+              },
+              "phase": "training_start",
+              "accepted": true,
+              "reason": "accepted"
+            },
+            {
+              "actor": "target",
+              "path": "/method/cv/seed",
+              "old_value": 42,
+              "new_value": 43,
+              "rule": {
+                "mutable": false
+              },
+              "phase": "training_start",
+              "accepted": false,
+              "reason": "target cannot change /method/cv/seed at training_start"
+            }
+          ],
+          "registered_actions": 1
+        },
+        {
+          "attempt": 2,
+          "run_id": "run_7b96c5c78b0d40cb8ae618cc4b35583a",
+          "task_digest": "sha256:38b8ae6f0362da3805e4ffd3f3595828ccbbc0528d357ff5350490bb3593187c",
+          "artifact_digest": "sha256:412da0977f3e390d86ae82eea4c2a81ae718ccdb9e217be0ccd7754bc9220b13",
+          "submission": [
+            {
+              "name": "output/submission.csv",
+              "path": "output/submission.csv",
+              "media_type": "text/csv",
+              "bytes": 24,
+              "sha256": "sha256:81724ca876c51419038f1f60dcab6e056af962673d687b16eda664591516f191"
+            }
+          ],
+          "rewards": {
+            "reward": 1,
+            "total_score": 1,
+            "valid_output": 1,
+            "completed": 1,
+            "quality_available": 1,
+            "task_score": 1
+          },
+          "resource_evidence_sha256": "sha256:61adc57d073ddfeb60d712a9394bd2fb4317454f37badfa50d975163c27eec4c",
+          "parameter_evidence_sha256": "sha256:402881bd219a6203e366b9e4dac35b22631ea83ed4a96de73f358dd97fd94163",
+          "parameter_audit": [
+            {
+              "actor": "target",
+              "path": "/method/cv/folds",
+              "old_value": 5,
+              "new_value": 8,
+              "rule": {
+                "actors": [
+                  "meta",
+                  "target"
+                ],
+                "apply_at": "training_start",
+                "maximum": 10,
+                "minimum": 3,
+                "mutable": true
+              },
+              "phase": "training_start",
+              "accepted": true,
+              "reason": "accepted"
+            },
+            {
+              "actor": "target",
+              "path": "/method/cv/seed",
+              "old_value": 42,
+              "new_value": 43,
+              "rule": {
+                "mutable": false
+              },
+              "phase": "training_start",
+              "accepted": false,
+              "reason": "target cannot change /method/cv/seed at training_start"
+            }
+          ],
+          "registered_actions": 1
+        }
+      ]
+    }
+  ],
+  "complete_task_executions": 6,
+  "native_grader_parity": {
+    "status": "passed",
+    "results": [
+      {
+        "competition": "tabular-playground-series-may-2022",
+        "native_score": 0.875,
+        "quality_available": 1
+      },
+      {
+        "competition": "nomad2018-predict-transparent-conductors",
+        "native_score": 0.11169,
+        "quality_available": 1
+      }
+    ],
+    "upstream_revision": "507f92e1138bb6e40dac5c6ee7a6758e6424bf97",
+    "image_config_digest": "sha256:5ffc04dd9b3258c46edca2d4bc0937abecae3bc44fffed1283d9986a2b7b2673",
+    "additional_dependencies": [
+      "PyYAML==6.0.2",
+      "py7zr==0.22.0",
+      "tqdm==4.67.1"
+    ],
+    "network": "none",
+    "raw_grade_fn_probe": [
+      {
+        "competition": "tabular-playground-series-may-2022",
+        "native_score": 0.875,
+        "quality_available": 1
+      },
+      {
+        "competition": "nomad2018-predict-transparent-conductors",
+        "native_score": 0.11168883981198442,
+        "quality_available": 1
+      }
+    ],
+    "scoring_entry": "Original mlebench.grade_helpers.Grader.__call__ (round to five decimal places)",
+    "verifier_sha256": "sha256:0141bdfddea7ec4ed427081a733881f40dac54f600cf01ad8f41cb7c15ee80f1"
+  },
+  "initial_full_task_smoke": {
+    "eval_id": "eval_c9c9cd3a21df450d980b16569e5e9867",
+    "separate_from_six_task_comparison": true
+  },
+  "training_failure": {
+    "original_observation": {
+      "eval_id": "eval_f22461aeebe847fcb103a1ebffe480d5",
+      "run_id": "run_7e8d7f96717241018b5dbc6d855ac7b0",
+      "invalid_reason": "infrastructure_failure",
+      "retained_unchanged": true
+    },
+    "fixed_observation": {
+      "eval_id": "eval_ef666c02888e4faa9f4edaa4c1e0a56c",
+      "run_id": "run_a91f5dbccd90467c92afb7c9944788ce",
+      "invalid_reason": "agent_failed",
+      "process_exit_code": 1,
+      "quality_available": false,
+      "retry_count": 0
+    },
+    "bounded_error_available_via": "hitch trajectory project RUN_ID --profile analysis --json",
+    "parameter_audit_available_via": "hitch verifier artifact RUN_ID parameter-evidence.json --json",
+    "public_trajectory_sha256": "sha256:b9494ab56ab37c9cdaa31f5a1901a0fa234af88beb434387ccadbf3788a69b92",
+    "public_parameter_page_sha256": "sha256:d4ff06cfc0bae632a028bc48a2d3037d837d4060fc1a799397d579b9fe4b0a7b"
+  }
+}

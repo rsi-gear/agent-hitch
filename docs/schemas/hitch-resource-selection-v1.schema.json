@@ -16,7 +16,7 @@
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "const": "2"
+          "const": "3"
         },
         "kind": {
           "const": "gear-harbor-benchmark"

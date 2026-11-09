@@ -189,11 +189,6 @@ export async function executeRun({
         cwd: workspaceLease.execution_workspace, privateCredentials: endpointRuntime.credentials, managedLocal: Boolean(normalized.endpoint_binding) || Boolean(trainingIdentity) });
       // Runtime-assigned provenance; cannot be replaced by inherited/adapter env.
       childEnvironment.HITCH_RUN_ID = runId;
-      if (reference.harness_id === 'sealed-python') {
-        for (const name of Object.keys(childEnvironment)) {
-          if (!['PATH', 'LANG', 'LC_ALL', 'HOME', 'TMPDIR', 'PYTHONDONTWRITEBYTECODE', 'HITCH_RUN_ID'].includes(name)) delete childEnvironment[name];
-        }
-      }
       const invocation = prepareSpawnCommand(specification.executable, specification.args);
       const remainingMs = candidateDeadlineNs === undefined ? normalized.timeout_ms
         : Number((candidateDeadlineNs - process.hrtime.bigint()) / 1_000_000n);

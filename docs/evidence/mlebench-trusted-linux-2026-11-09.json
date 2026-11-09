@@ -1,0 +1,270 @@
+{
+  "date": "2026-11-09",
+  "kind": "trusted-service-linux-validation",
+  "model_api_calls": 0,
+  "platform": "linux/arm64",
+  "harbor_version": "0.21.0",
+  "coverage": "trusted-service-top-level-attempts",
+  "count_unit": "trusted-service-top-level-attempt",
+  "limitations": [
+    "Synthetic20-row classification input validates mechanics, not benchmark model quality.",
+    "Counts only top-level attempts in the pinned closed tabular service; arbitrary training outside that service remains outside this guarantee.",
+    "The service accepts numeric features and logistic regression/decision tree JSON specifications; arbitrary Python factories and pickles are unsupported.",
+    "Host ledger concurrency/cancellation tests are recorded separately; the full Harbor run below covers successful execution, rejected actions, replay, and frozen final delivery."
+  ],
+  "initial_admission_failure": {
+    "eval_id": "eval_6bf0c1c93d4e4274ad4ee286f08bc816",
+    "run_id": "run_0be821d8e0f44faabc109f2d8a679401",
+    "before_agent": true,
+    "fits": 0,
+    "reason": "Installed build-template comparison rejected the generic resource materializer inert LABEL suffix.",
+    "fix": "Accept only exact known materializer LABEL suffix and approved same-manifest FROM alias; arbitrary build changes remain rejected.",
+    "original_result_sha256": "sha256:559a94b60b62fe9fe43e21e9a776f73b8f9da9b8facdea08f673a7aca2658f10"
+  },
+  "full_task": {
+    "eval_id": "eval_26ebeb75c4be4e369456bb37d39b1f22",
+    "run_id": "run_85eb2c78420e4be3b4f76a96d6719bd2",
+    "dataset_digest": "sha256:0cb791162f51218d9f989ffcfa55cf9994f0ed0c17c4e77c98360e062e8c7ef9",
+    "result_sha256": "sha256:2fc59f432d1ae0a564acc69b087e7fdac43f4de24840c36b1b1bc6e5ed74a838",
+    "parameter_evidence_sha256": "sha256:b98a9b7c87b7f7083d0b0be59b476b9d9649437f931141035e7ba517798925c1",
+    "controller_runtime": {
+      "schema_version": "1",
+      "storage": "controller-runtime-ref-v1",
+      "runtime_id": "sha256:79e78a5ef75b33ffefabac46331cb8b6e8f62c05c8f4a63af4a1338c4bfb0c47",
+      "manifest_digest": "sha256:79e78a5ef75b33ffefabac46331cb8b6e8f62c05c8f4a63af4a1338c4bfb0c47",
+      "created_at": "2026-11-09T08:44:50.886Z"
+    },
+    "harness_commit": "c5a664e602683b2d0f1099817cbb9c10f973165b",
+    "harness_source_sha256": "sha256:66b2a34fabe894ae89092b7200fe81ebcb5ccaab6b6fe45e70b09803d45d2fdf",
+    "rewards": {
+      "reward": 1.0,
+      "total_score": 1.0,
+      "valid_output": 1,
+      "completed": 1,
+      "quality_available": 1,
+      "constraints_verified": 1,
+      "task_score": 1.0
+    },
+    "counter": {
+      "reserved": 0,
+      "consumed": 9,
+      "limit": 9,
+      "unit": "trusted-service-top-level-attempt"
+    },
+    "runtime_observation": {
+      "source_digest": "sha256:33fbd1d780892f94364fbb50fa4292bd566e2e6f3774e28e233abd3c02490bd5",
+      "runtime": {
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "python": "3.11.18",
+        "sklearn": "1.5.2"
+      },
+      "container_id": "905551d4b68bcffd91053d65858ac92f5114c10f1b6d344bb45d9c408d486bde",
+      "image_identity": "sha256:9b0fc9bace7faac25617335418db19b92d39b6cabbfbe8ede8d941fb842d1e72",
+      "network_mode": "none",
+      "mounts": [],
+      "privileged": false,
+      "cpu_millis": 1000,
+      "memory_bytes": 1073741824
+    },
+    "actions": {
+      "cv-five": {
+        "operation": "evaluate",
+        "status": "completed",
+        "fits": 5,
+        "parameter_action_id": "sha256:3f2eb71dbc9b8c55c956a4d9a32704d0ff242d16e6085b97ef07d205f9a6f197",
+        "plan_id": "sha256:0db227c55dfe44ab6f798c41be19d1352bd1b7855c39912382da9699511642df",
+        "assignments_digest": "sha256:539f92112e1cb9d9fd6d443f0013bbb61819f645a95e4c47aa9503a20c693b15",
+        "selected_plan_id": null,
+        "model_digest": "sha256:9b84183a5b6ebe4e762b944fcfc1f65619198ef3c8685d9a92558e8f8e17bd9e"
+      },
+      "cv-three": {
+        "operation": "evaluate",
+        "status": "completed",
+        "fits": 3,
+        "parameter_action_id": "sha256:bb89ffc5fd0fd83aa05a1232f0d5faa05d2c004e8daf34ccbb0fe1bca8417829",
+        "plan_id": "sha256:052c27c6ecb3aab57bd1baaa41ad3b2fab5999f0c10d0f1c3794f895498c2917",
+        "assignments_digest": "sha256:f5a8de87fab7cceb9f9d540c7a1b5bb94621c2e0013ca53881ed8692e974d0b8",
+        "selected_plan_id": null,
+        "model_digest": "sha256:9b84183a5b6ebe4e762b944fcfc1f65619198ef3c8685d9a92558e8f8e17bd9e"
+      },
+      "final": {
+        "operation": "deliver",
+        "status": "completed",
+        "fits": 1,
+        "parameter_action_id": "sha256:bb89ffc5fd0fd83aa05a1232f0d5faa05d2c004e8daf34ccbb0fe1bca8417829",
+        "plan_id": "sha256:0c7dab2be676a0ef8c95b7d6f2096cee4ac024c2ea77128226323bce74baff4f",
+        "assignments_digest": "sha256:22e5bb202d7029401cf32282edccdd69e361cacdffbdbd0564244450d950a865",
+        "selected_plan_id": "sha256:052c27c6ecb3aab57bd1baaa41ad3b2fab5999f0c10d0f1c3794f895498c2917",
+        "model_digest": "sha256:9b84183a5b6ebe4e762b944fcfc1f65619198ef3c8685d9a92558e8f8e17bd9e"
+      }
+    },
+    "rejections": [
+      "capability execution quota exhausted",
+      "capability execution quota exhausted",
+      "capability process failed with exit 1: {\"error\":{\"message\":\"delivery must use selected concrete parameters\",\"type\":\"ValueError\"},\"status\":\"service_error\",\"version\":1}\n",
+      "capability selection is frozen; no new actions are permitted"
+    ],
+    "assertions": [
+      "CV5 retry reused exact response and counter5",
+      "Changed CV3 generated distinct row-allocation digest and counter8",
+      "Second5fold action rejected before reservation beyond quota9",
+      "Delivery with different parameter action rejected before any fit",
+      "Final refit on all20training rows consumed exactly1",
+      "Final retry reused exact response and counter9",
+      "A new action after selection freeze was rejected"
+    ],
+    "submission_sha256": "sha256:f7931bfd1c65117563fd78f8340223b042388be95521504e1931d566c683cdad",
+    "evidence_scope_note": "Earlier benign service run retained unchanged; protected_host_authority_canary is the final authority-boundary proof."
+  },
+  "isolated_real_estimator_test": {
+    "command": "docker run --rm --network none -v REPOSITORY/benchmark-packages/kaggle:/work:ro -e PYTHONDONTWRITEBYTECODE=1 hitch-mlebench-native-canary:20261109 python3 /work/tests/training-service.py",
+    "status": "passed",
+    "script_sha256": "sha256:b94de28a917ea7b23bf1106aa021f32806eee784dc866eaea121f9b5fdb04aa8",
+    "service_sha256": "sha256:33fbd1d780892f94364fbb50fa4292bd566e2e6f3774e28e233abd3c02490bd5",
+    "verifier_sha256": "sha256:fe11cd92df4d0113098c8a4b19d99f04a05e54188557086826af9a7cb4a514ba",
+    "cv_fits": 5,
+    "final_fits": 1,
+    "failures_checked": [
+      "Actual LogisticRegression fit with only one class records training_failed and one consumed attempt",
+      "Unknown executable/model fields rejected",
+      "Frozen model/parameter changes rejected",
+      "Modified frozen plan rejected",
+      "Quota excess fails trusted verification",
+      "Replaced wellformed CSV fails contract verification without fake quality score",
+      "Missing host evidence is infrastructure unavailable",
+      "Missing actual runtime isolation observation is infrastructure unavailable"
+    ],
+    "no_fit_commands": [
+      "plan",
+      "finalize"
+    ]
+  },
+  "independent_reverification": {
+    "status": "passed",
+    "source": "unchanged sealed task descriptor, archived original CSV and host-owned parameter evidence",
+    "rewards": {
+      "reward": 1.0,
+      "total_score": 1.0,
+      "valid_output": 1,
+      "completed": 1,
+      "quality_available": 1,
+      "constraints_verified": 1,
+      "task_score": 1.0
+    },
+    "verifier_sha256": "sha256:fe11cd92df4d0113098c8a4b19d99f04a05e54188557086826af9a7cb4a514ba",
+    "checks": [
+      "exact sealed binding equality",
+      "actual runtime dependencies",
+      "no-network/no-mount observations",
+      "actual service cgroup CPU/memory",
+      "step/counter consistency",
+      "exact delivery CSV digest"
+    ]
+  },
+  "actual_linux_host_recovery": {
+    "version": 1,
+    "image": "trusted-training__kw2krfa__env-trainer:latest",
+    "concurrent": {
+      "reserved_slots": 5,
+      "requests": 2,
+      "accepted": 1
+    },
+    "cancelled": {
+      "consumed": 1,
+      "reserved": 4,
+      "replay": "unavailable; no new worker launched",
+      "stdout_bytes": 0,
+      "worker_cpu_millis": 10
+    },
+    "recreated": {
+      "new_container_per_step": true,
+      "consumed": 3,
+      "plan_id": "sha256:4e254b949e7addfe22e66e18813954e16e20e7a96a301e23be2d9feb37e08fcd",
+      "assignment_digest": "sha256:f5a8de87fab7cceb9f9d540c7a1b5bb94621c2e0013ca53881ed8692e974d0b8",
+      "status": "completed"
+    },
+    "evidence_sha256": "sha256:f5d02cf7163896aab0c9a4622b5f535d5032f8c1de6864e55ec1e7d5c5b62aa4",
+    "script_sha256": "sha256:b4319d131c08e46c60a199ee1eabf8765a3310217f1e50080b52be6f17c7a1b0"
+  },
+  "protected_host_authority_canary": {
+    "status": "passed",
+    "eval_id": "eval_007b87a44c60462abb3f4a76d397c8ed",
+    "run_id": "run_0a81cf9c50724e7a84e2a0a675837838",
+    "dataset_digest": "sha256:0b32d5c5272ec292cd64b34298ca94736c7534f39b44061a74a899b080c2bd69",
+    "controller_runtime": {
+      "schema_version": "1",
+      "storage": "controller-runtime-ref-v1",
+      "runtime_id": "sha256:c7dfa28894d057827efb6f814211ddafeb90da39b65a6e5d51088a9607dc1031",
+      "manifest_digest": "sha256:c7dfa28894d057827efb6f814211ddafeb90da39b65a6e5d51088a9607dc1031",
+      "created_at": "2026-11-09T09:09:23.593Z"
+    },
+    "harness_commit": "1cd951540240d2b318330d1924612492592b8973",
+    "harness_source_sha256": "sha256:681c4a766331f6e38dc62338f7dd905c32ad91cd8a44ec15246912f92fb9dd68",
+    "attack": "After legitimate5+3+1fits, a detached candidate process repeatedly atomically overwrote writable /logs/agent/parameter-evidence.json with a forged host-claiming receipt every20ms.",
+    "agent_log": {
+      "execution_id": "FORGED_AGENT_LOG",
+      "consumed": 0,
+      "sha256": "sha256:91cca505f5616ec1e0326da8c0fded203c93fe62be3dc657c2099f028403f8f9",
+      "trusted": false
+    },
+    "protected_trial_root_receipt": {
+      "execution_id": "sha256:0efee79ec7f5655d0c6d8104a30e7dcf3b66a61ddab24a3c9a8d0aa90ec33327",
+      "counter": {
+        "reserved": 0,
+        "consumed": 9,
+        "limit": 9,
+        "unit": "trusted-service-top-level-attempt"
+      },
+      "sha256": "sha256:20d62fddabad78dbeda39124cbb6311399a687213ad68cc910523e4a88e713fa"
+    },
+    "public_evidence_api": {
+      "command": "hitch verifier artifact RUN_ID parameter-evidence.json --json",
+      "execution_id": "sha256:0efee79ec7f5655d0c6d8104a30e7dcf3b66a61ddab24a3c9a8d0aa90ec33327",
+      "consumed": 9,
+      "artifact_sha256": "sha256:2869cdb43d3f2f7549abd01c505ee8fb4ef3ec6db034dda7bfe87d8f5edf53d0",
+      "complete": true
+    },
+    "private_verifier_rewards": {
+      "reward": 1.0,
+      "total_score": 1.0,
+      "valid_output": 1,
+      "completed": 1,
+      "quality_available": 1,
+      "constraints_verified": 1,
+      "task_score": 1.0
+    },
+    "service_runtime_observation": {
+      "source_digest": "sha256:33fbd1d780892f94364fbb50fa4292bd566e2e6f3774e28e233abd3c02490bd5",
+      "runtime": {
+        "numpy": "1.26.4",
+        "pandas": "2.2.3",
+        "python": "3.11.18",
+        "sklearn": "1.5.2"
+      },
+      "container_id": "ad5312179ef28f8fffaad81a1902dea9996238d121420a14021c39b71e90795a",
+      "image_identity": "sha256:58fdce26fde62d38d8d7e2db499b1b0a8233e55a767d2b5cf0069e69da25b6f5",
+      "network_mode": "none",
+      "mounts": [],
+      "privileged": false,
+      "cpu_millis": 1000,
+      "memory_bytes": 1073741824
+    },
+    "result_sha256": "sha256:fed77aab7a0af67424b0e0085cdcc0faec3f5d75bea68d628e33c8b18a52ebe8",
+    "whole_task_deadline_ms": 1794215557496
+  },
+  "additional_native_runs": [
+    {
+      "eval_id": "eval_9d911020e1494c3aba9f8c2f935bc7cd",
+      "reason": "Validate persisted deadline and evaluation input preservation before writable-log issue was fixed.",
+      "model_api_calls": 0,
+      "result_sha256": "sha256:d3e394c6fc353e8e5f830d7035ab25b6e3b3adce1861fa9de0828327612cae3c"
+    },
+    {
+      "eval_id": "eval_b8fd9ef96e994f00a7fe1e8f71718cbe",
+      "reason": "Non-atomic attack left an empty Agent log; protected root receipt and verifier still recorded9; rerun atomically for explicit forged JSON proof.",
+      "model_api_calls": 0,
+      "result_sha256": "sha256:773a6656a8c9c0cd14620d476bf33c94f277ebb6585a8a0b7437b61eef5bd68e"
+    }
+  ]
+}

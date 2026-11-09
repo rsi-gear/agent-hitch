@@ -22,7 +22,7 @@ export async function captureTrialOutputArtifacts(input: {
     const task = manifest?.tasks.find(t => t.task_id === input.taskId);
     if (!manifest || !task) throw unavailable();
     let bytes: Buffer;
-    if (manifest.schema_version === "2") {
+    if (manifest.schema_version === "3") {
       const resourceTask = manifest.tasks.find(t => t.task_id === input.taskId)!;
       const { store } = await configuredResourceStore(input.root);
       const tree = await store.objects.readTree(resourceTask.sourceTree.manifestDigest);

@@ -97,7 +97,6 @@ Shared by `eval run` and `eval submit` unless a row limits the scope. Start with
 | `--backend harbor` | Current backend; default `harbor`. |
 | `--dataset REF`, `--harness REF` | Required dataset and immutable harness reference. |
 | `--model ID` | Select the model independently of the harness. |
-| `--no-model` | Execute an immutable `sealed-python` source without a model session. Requires `--infrastructure-retries 0` and one attempt; cannot be combined with `--model`, model/environment bindings, credential forwarding, or agent arguments. See [sealed source execution](../../sealed-python.zh-CN.md). |
 | `--attempts N`, `--max-concurrent N` | Positive integers; ordinary dataset defaults are 1 attempt and up to 4 concurrent trials, further bounded by resources. |
 | `--timeout DURATION`, `--setup-timeout DURATION` | Candidate and setup budgets. Standard compiled tasks retain their task budget unless overridden; other defaults are described in the [evaluation contract](../../evals.md). |
 | `--infrastructure-retries N`, `--infrastructure-retry-backoff DURATION` | Control eligible infrastructure retries; N can be 0 to disable. |

@@ -22,6 +22,6 @@ hitch --root /absolute/hitch-root runs artifacts export RUN_ID \
 
 目标路径会规范化其父目录。导出的 `hitch-output-manifest.json` 是完整清单，其他文件按清单路径排列。调用者应同时检查期望的 run、eval、commit、task digest 和 attempt。读取和导出不会重新调用 Agent 或 verifier。
 
-产物属于 durable run bundle，不依赖活动 workspace 或 Harbor trial 目录，进入 run 的既有保留范围。导出锁协调并发导出；当前没有单独清理这些 run 文件的资源 GC。任务进程清理仍由执行后端负责；本接口封存的是已采集的主机快照。Kaggle 固定 runner 在发布声明文件前清理候选 UID 的所有进程。
+产物属于 durable run bundle，不依赖活动 workspace 或 Harbor trial 目录，进入 run 的既有保留范围。导出锁协调并发导出；当前没有单独清理这些 run 文件的资源 GC。任务进程清理仍由执行后端负责；本接口封存的是已采集的主机快照。
 
 不存在的 run、未封存的 run、无可用产物、版本不符、损坏/不安全文件、超出预算、不同目标内容分别使用 `output_artifacts_run_not_found`、`output_artifacts_not_sealed`、`output_artifacts_unavailable`、`output_artifacts_version_mismatch`、`output_artifacts_corrupt`、`output_artifacts_too_large`、`output_artifacts_destination_exists`。历史 run、非 commit harness 和未实现的远程后端不补猜产物来源。

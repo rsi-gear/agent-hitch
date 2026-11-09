@@ -1,3 +1,0 @@
-# Use Python 3.12 in a separate environment for the pinned analysis dependencies.
--r requirements.txt
--r ../benchmark-packages/kaggle/runtime/requirements.txt

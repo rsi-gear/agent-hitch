@@ -13,7 +13,7 @@ export const MAX_VERIFIER_DIAGNOSTIC_MAX_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_VERIFIER_DIAGNOSTIC_MAX_BYTES = MAX_VERIFIER_DIAGNOSTIC_MAX_BYTES;
 export const VERIFIER_DIAGNOSTICS_INDEX_REF = "verifier/diagnostics.json";
 export const VERIFIER_ARTIFACT_NAMES: readonly VerifierArtifactExcerptV1["name"][] = [
-  "ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt",
+  "ctrf.json", "parameter-evidence.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt",
 ];
 
 export interface PersistedVerifierArtifactV1 {
@@ -72,7 +72,7 @@ export async function persistTrialVerifierDiagnostics(input: {
   verifiedTrialBenchmark?: VerifiedTrialBenchmark | undefined;
   verifiedTrialBinding?: TrialBenchmarkBinding | undefined;
   signal?: AbortSignal | undefined;
-}): Promise<CapturedVerifierScoreEvidenceV1> {
+}): Promise<CapturedVerifierScoreEvidenceV1 & { parameterEvidence?: { ref: string; sha256: Sha256 } }> {
   const env = input.env ?? process.env;
   const credentialValues = credentialValuesFromEnv(
     [...PROVIDER_ENVIRONMENT_NAMES, ...(input.passEnv ?? [])],
@@ -91,12 +91,13 @@ export async function persistTrialVerifierDiagnostics(input: {
     ...(input.benchmarkRevision === undefined ? {} : { benchmarkRevision: input.benchmarkRevision }),
     ...(input.signal ? { signal: input.signal } : {}),
   });
-  await captureVerifierDiagnostics(input.trialDirectory, input.runDirectory, {
+  const diagnosticIndex = await captureVerifierDiagnostics(input.trialDirectory, input.runDirectory, {
     ...(input.maxArtifactBytes === undefined ? {} : { maxArtifactBytes: input.maxArtifactBytes }),
     credentialValues,
     ...(input.signal ? { signal: input.signal } : {}),
   });
-  return scores;
+  const parameters = diagnosticIndex?.artifacts.find(artifact => artifact.name === "parameter-evidence.json");
+  return { ...scores, ...(parameters ? { parameterEvidence: { ref: parameters.ref, sha256: parameters.stored_sha256 } } : {}) };
 }
 
 async function copyCandidateIneligibleDiagnostic(trialDirectory: string, runDirectory: string, signal?: AbortSignal): Promise<void> {
@@ -136,7 +137,7 @@ export async function captureVerifierDiagnostics(
     throwIfAborted(options.signal);
     const safe = await safeArtifact(root, name);
     if (!safe) continue;
-    const mediaType = name === "ctrf.json" ? "application/json" : "text/plain";
+    const mediaType = (name === "ctrf.json" || name === "parameter-evidence.json") ? "application/json" : "text/plain";
     if (safe.size > maxArtifactBytes) {
       try {
         await safe.assertUnchanged();
@@ -154,7 +155,7 @@ export async function captureVerifierDiagnostics(
     }
     let captured: Awaited<ReturnType<typeof captureArtifact>>;
     try {
-      captured = await captureArtifact(safe.handle, safe.size, mediaType, options.credentialValues ?? [], options.signal);
+      captured = await captureArtifact(safe.handle, safe.size, mediaType, options.credentialValues ?? [], options.signal, name === "parameter-evidence.json");
       await safe.assertUnchanged();
       if (captured.sourceBytes !== safe.size) throw new TypeError(`verifier artifact changed while being captured: ${name}`);
     } finally {
@@ -204,7 +205,8 @@ export async function captureVerifierDiagnostics(
 
 async function safeArtifact(root: string, name: string, maximumBytes?: number): Promise<ContainedRegularFile | null> {
   try {
-    return await openContainedRegularFile(root, `verifier/${name}`, maximumBytes);
+    // Parameter evidence is produced by the host authority, never the verifier or Agent artifact directory.
+    return await openContainedRegularFile(root, name === "parameter-evidence.json" ? "parameter-evidence.json" : `verifier/${name}`, maximumBytes);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new TypeError(`unsafe verifier artifact: ${name}`, { cause: error });
@@ -217,6 +219,7 @@ async function captureArtifact(
   mediaType: VerifierArtifactExcerptV1["media_type"],
   credentialValues: readonly string[],
   signal?: AbortSignal | undefined,
+  preserveParameterPointers = false,
 ): Promise<{
   sourceSha256: Sha256;
   sourceBytes: number;
@@ -249,7 +252,7 @@ async function captureArtifact(
         lossReason: "invalid_json", redactions: new Map(),
       };
     }
-    const sanitized = sanitizeVerifierJson(parsed, credentialValues);
+    const sanitized = sanitizeVerifierJson(parsed, credentialValues, preserveParameterPointers);
     stored = Buffer.from(JSON.stringify(sanitized.value), "utf8");
     redactions = sanitized.redactions;
   } else {

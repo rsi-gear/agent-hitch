@@ -1,3 +1,4 @@
+import { admitTaskParameters } from "../parameters/index.js";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { inspectHarborTaskResources } from "../backends/index.js";
@@ -63,6 +64,7 @@ export async function resolveLocalTaskPlanningInputs(input: {
     const task = resource?.tasks.find(t => t.task_id === taskId);
     if (resource && !task) throw new Error("resource task selection mismatch");
     const taskDirectory = task ? await resourceDescriptorDirectory(resourceHost!.store, task) : singleTask ? dataset : path.join(dataset, taskId);
+    await admitTaskParameters(taskDirectory);
     let declaration: HarborTaskResourceDeclarationV1;
     try {
       declaration = await inspectHarborTaskResources({

@@ -89,10 +89,10 @@ async function resourceFixture(t: test.TestContext, kind: "dataset" | "selection
   });
   const store = new ResourceStore(s.root, { limits: { minFreeBytes: 0 } });
   const task = await sealResourceTask(store, directory, s.taskId, "resource-output-fixture");
-  const body = { schema_version: "2", kind: "gear-harbor-benchmark", resource_protocol: "hitch-resource-lock@1",
+  const body = { schema_version: "3", kind: "gear-harbor-benchmark", resource_protocol: "hitch-resource-lock@1",
     execution: { backend: "harbor-role-context@1", resolver: "hitch-resource-resolver@1", platform: "linux/amd64" },
     required_capabilities: [], benchmark: s.manifest.benchmark, adapter: s.manifest.adapter, scoring: s.manifest.scoring, tasks: [task] };
-  const manifest = parseResourceDataset({ ...body, dataset_digest: identity("hitch-resource-dataset@2", body) });
+  const manifest = parseResourceDataset({ ...body, dataset_digest: identity("hitch-resource-dataset@3", body) });
   const selection = selectResources(manifest, [s.taskId]);
   const dataset = kind === "dataset" ? s.dataset : path.join(s.root, "selection.json");
   const benchmarkRevision = kind === "dataset" ? manifest.dataset_digest : selection.digest;

@@ -241,9 +241,12 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(input.trialDirectory, credentialValuesFromEnv(input.request.pass_env ?? [], input.env ?? process.env))
       : null;
+    const candidateResult = beforeObservation.record_status === "valid" && beforeObservation.record.result_ref
+      ? await readJSON<{ error?: { code?: string } }>(path.join(staging, beforeObservation.record.result_ref)) : undefined;
     const initialObservation = verifierObservation({
       trial: input.trial,
       runStatus: beforeObservation.record.status,
+      candidateErrorCode: candidateResult?.error?.code,
       trajectoryStatus: beforeObservation.trajectory_status,
       recordStatus: beforeObservation.record_status,
       verifierRef,
@@ -256,7 +259,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
       : initialObservation.status === "valid" && structured.issue
       ? { status: "invalid", invalid_reason: "verifier_score_contract_invalid", ...(verifierRef ? { verifier_result_ref: verifierRef } : {}) }
       : initialObservation.status === "invalid"
-      && initialObservation.invalid_reason === "infrastructure_failure"
+      && ["infrastructure_failure", "agent_failed", "agent_timed_out"].includes(initialObservation.invalid_reason ?? "")
       && bridgeError?.failureClassification
       ? { ...initialObservation, invalid_reason: bridgeError.failureClassification.code }
       : initialObservation;
@@ -274,6 +277,7 @@ async function importRunBundle(input: TrialInput & { bundle: string }): Promise<
     await sealTrialResources(input, staging, record.run_id, observation.status === "valid");
     await atomicWriteJSON(path.join(staging, "manifest.json"), {
       ...portableManifest,
+      ...(structured.parameterEvidence ? { parameter_evidence: structured.parameterEvidence } : {}),
       observation,
       result_ref: "result.json",
       ...(manifest.trajectory_ref ? {} : { trajectory_ref: "trajectory.ref.json" }),
@@ -318,7 +322,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
     );
     const candidateIneligible = await readCandidateIneligibleDiagnostic(input.trialDirectory);
     if (verifierInfrastructure) await writeVerifierInfrastructureDiagnostic(runDirectory, verifierInfrastructure);
-    await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, verifiedTrialBenchmark: input.verifiedTrialBenchmark, verifiedTrialBinding: input.verifiedTrialBinding, signal: input.signal });
+    const structured = await persistTrialVerifierDiagnostics({ trialDirectory: input.trialDirectory, runDirectory, passEnv: input.request.pass_env, env: input.env, maxArtifactBytes: input.verifierDiagnosticsMaxBytes, verifierResult: verifier, dataset: input.request.dataset, benchmarkRevision: input.benchmarkRevision, verifiedTrialBenchmark: input.verifiedTrialBenchmark, verifiedTrialBinding: input.verifiedTrialBinding, signal: input.signal });
     const bridgeError = input.trial.exception_info
       ? await readHarborBridgeError(
         input.trialDirectory,
@@ -421,6 +425,7 @@ async function createDiagnosticRun(input: TrialInput): Promise<EvalTrialRefV1> {
       completed_at: now,
       sealed: true,
       ...(bridgeErrorRef ? { diagnostics: { harbor_bridge_error_ref: bridgeErrorRef } } : {}),
+      ...(structured.parameterEvidence ? { parameter_evidence: structured.parameterEvidence } : {}),
     });
     const ref = evalTrialRef(input, runId, observation);
     await writeEvalTrialPublication(runDirectory, input.evalId, input.publicationMode ?? "settle", ref);

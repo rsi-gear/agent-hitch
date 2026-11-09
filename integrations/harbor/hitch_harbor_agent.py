@@ -623,29 +623,40 @@ class HitchHarborAgent(BaseAgent):
         config = session.config if session else None
         driver = config["task"]["driver"] if config else None
         phases = driver["config"].get("native_phases") if driver and driver["kind"] == "tool-server" else None
-        if phases:
-            from hitch_phase_supervisor import NativePhaseSupervisor
-            task_timeout = int(config["agent_timeout_sec"] * 1000)
-            remaining = min(task_timeout, self.hitch_timeout_ms) if self.hitch_timeout_ms > 0 else task_timeout
-            result = await NativePhaseSupervisor(
-                self, environment, controller={"service": driver["config"]["service"], "argv": phases["argv"]},
-                binding={"endpoint": driver["config"]["endpoint"], "tools": config["tools"]},
-                task_digest=config["task_digest"], timeout_ms=remaining,
-                shutdown_timeout_ms=phases["shutdown_timeout_ms"],
-                finalization_timeout_ms=phases.get("finalization_timeout_ms"),
-                task_instruction=instruction,
-            ).run()
-            context.metadata = {"candidate_id": self.candidate_id, "harness_ref": self.harness_ref,
-                                "revision_identity": self.revision_identity, "controller_runtime_id": self.controller_runtime_id,
-                                "hitch_context_kind": "benchmark_phase_group", "hitch_run_group_id": result["run_group_id"],
-                                "hitch_phase_count": len(result["phases"]), "hitch_status": "succeeded",
-                                "hitch_phase_supervision": "hitch-native-phases/supervision.json"}
-            return
         started_ns = time.monotonic_ns()
+        parameter_session = None
+        parameter_directory = Path(getattr(environment, "environment_dir", "/__no_parameter_task__/environment")).parent
+        if (parameter_directory / "parameters.json").is_file():
+            from hitch_parameters import ParameterSession
+            parameter_session = ParameterSession(self, environment)
         try:
-            await self._run(instruction, environment, context)
+            if parameter_session is not None and await parameter_session.start():
+                instruction += "\n\nParameter contract: run `python3 /tmp/hitch-parameters.py show` to read the effective configuration and immutable policy. To change authorized values for a new training action, submit the complete configuration with `python3 /tmp/hitch-parameters.py submit ACTION_ID FULL_PARAMETERS_JSON_FILE`. Reuse the same action ID only for identical values. Registration validates configuration; ordinary code execution compliance is unverified.\n"
+            if phases:
+                from hitch_phase_supervisor import NativePhaseSupervisor
+                task_timeout = int(config["agent_timeout_sec"] * 1000)
+                remaining = min(task_timeout, self.hitch_timeout_ms) if self.hitch_timeout_ms > 0 else task_timeout
+                result = await NativePhaseSupervisor(
+                    self, environment, controller={"service": driver["config"]["service"], "argv": phases["argv"]},
+                    binding={"endpoint": driver["config"]["endpoint"], "tools": config["tools"]},
+                    task_digest=config["task_digest"], timeout_ms=remaining,
+                    shutdown_timeout_ms=phases["shutdown_timeout_ms"],
+                    finalization_timeout_ms=phases.get("finalization_timeout_ms"),
+                    task_instruction=instruction,
+                ).run()
+                context.metadata = {"candidate_id": self.candidate_id, "harness_ref": self.harness_ref,
+                                    "revision_identity": self.revision_identity, "controller_runtime_id": self.controller_runtime_id,
+                                    "hitch_context_kind": "benchmark_phase_group", "hitch_run_group_id": result["run_group_id"],
+                                    "hitch_phase_count": len(result["phases"]), "hitch_status": "succeeded",
+                                    "hitch_phase_supervision": "hitch-native-phases/supervision.json"}
+            else:
+                await self._run(instruction, environment, context)
         finally:
-            self._write_phase_timing("agent", started_ns)
+            try:
+                if parameter_session is not None:
+                    await parameter_session.stop()
+            finally:
+                self._write_phase_timing("agent", started_ns)
 
     def _phase_identity(self) -> str:
         identity = [self.candidate_id, self.harness_ref, self.revision_identity, self.controller_runtime_id,

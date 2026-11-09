@@ -59,8 +59,8 @@ export async function nativePhaseDescriptor(input: ImportEvalRunOptions, taskId:
     if (!manifest || manifest.benchmark.id !== input.benchmarkId || manifest.dataset_digest !== input.benchmarkRevision) return null;
     const snapshot = input.verifiedTrialBenchmark
       ? verifiedNativeDescriptor(input.verifiedTrialBenchmark, binding!) : undefined;
-    const resourceTask = manifest.schema_version === "2" ? manifest.tasks.find(task => task.task_id === taskId) : undefined;
-    if (manifest.schema_version === "2" && !resourceTask) throw new Error("native descriptor task is absent from resource manifest");
+    const resourceTask = manifest.schema_version === "3" ? manifest.tasks.find(task => task.task_id === taskId) : undefined;
+    if (manifest.schema_version === "3" && !resourceTask) throw new Error("native descriptor task is absent from resource manifest");
     const descriptor = (snapshot === undefined
       ? resourceTask ? await resourceNativeDescriptor(input.root, resourceTask)
         : await readJSON<RecordValue | null>(path.join(input.request.dataset, taskId, ".hitch-benchmark.json"), null) : snapshot) as RecordValue | null;

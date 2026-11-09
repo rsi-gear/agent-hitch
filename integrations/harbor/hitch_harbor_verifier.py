@@ -133,6 +133,9 @@ class HitchRetryingVerifier(Verifier):
 
     async def _verify_with_retries(self) -> VerifierResult:
         directory = getattr(getattr(getattr(self, "task", None), "paths", None), "environment_dir", None)
+        if directory and (directory.parent / "parameters.json").is_file():
+            from hitch_capabilities import restore_capability_evidence
+            await restore_capability_evidence(self)
         if directory and (directory.parent / ".hitch-benchmark.json").is_file():
             from hitch_benchmark import restore_final_response, validate_collected_submission
             validate_collected_submission(self)

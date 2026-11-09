@@ -8,7 +8,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 export type VerifierEvidenceStatus = "complete" | "result_only" | "missing" | "corrupt";
 
 export interface VerifierArtifactExcerptV1 {
-  name: "ctrf.json" | "test-stdout.txt" | "test-stderr.txt" | "stdout.txt" | "stderr.txt";
+  name: "ctrf.json" | "parameter-evidence.json" | "test-stdout.txt" | "test-stderr.txt" | "stdout.txt" | "stderr.txt";
   media_type: "application/json" | "text/plain";
   /** Size and digest of the sanitized content available to this inspector before output excerpting. */
   bytes: number;

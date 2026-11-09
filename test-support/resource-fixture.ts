@@ -40,7 +40,7 @@ export async function resourceFixture(directory: string, count = 3, taskIds?: st
     await writeFile(path.join(task, "resource.lock.json"), JSON.stringify(lock)); tasks.push(await sealResourceTask(store, task, taskId, `dataset:${taskId}`));
   }
   await store.finishLease(runtime.leaseId, "ended"); await store.finishLease(secret.leaseId, "ended");
-  const body = { schema_version: "2", kind: "gear-harbor-benchmark", resource_protocol: "hitch-resource-lock@1", execution: { backend: "harbor-role-context@1", resolver: "hitch-resource-resolver@1", platform: fixtureImage.platform }, required_capabilities: ["harbor-role-context@1"], benchmark: { id: "fixture", revision: "fixed" }, adapter: { id: "tree-producer", revision: "fixed", output_protocol: "gear-harbor-eval-result-v1" }, scoring: { total_score: { source_metric: "reward", direction: "maximize", range: [0, 1], reducer: "task-macro-mean" } }, tasks };
-  const dataset = parseResourceDataset({ ...body, dataset_digest: identity("hitch-resource-dataset@2", body) }); await writeFile(path.join(source, "benchmark.adapter.json"), JSON.stringify(dataset));
+  const body = { schema_version: "3", kind: "gear-harbor-benchmark", resource_protocol: "hitch-resource-lock@1", execution: { backend: "harbor-role-context@1", resolver: "hitch-resource-resolver@1", platform: fixtureImage.platform }, required_capabilities: ["harbor-role-context@1"], benchmark: { id: "fixture", revision: "fixed" }, adapter: { id: "tree-producer", revision: "fixed", output_protocol: "gear-harbor-eval-result-v1" }, scoring: { total_score: { source_metric: "reward", direction: "maximize", range: [0, 1], reducer: "task-macro-mean" } }, tasks };
+  const dataset = parseResourceDataset({ ...body, dataset_digest: identity("hitch-resource-dataset@3", body) }); await writeFile(path.join(source, "benchmark.adapter.json"), JSON.stringify(dataset));
   return { store, dataset, source, provider };
 }

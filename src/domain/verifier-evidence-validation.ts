@@ -7,7 +7,7 @@ import {
 } from "./verifier-score-contract.js";
 import { asArray, asInteger, asRecord, asSha256, asString, validateEvalRunParent, validateRunObservation } from "./validation.js";
 
-const ARTIFACT_NAMES = new Set(["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"]);
+const ARTIFACT_NAMES = new Set(["ctrf.json", "parameter-evidence.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"]);
 const STATUSES = new Set(["complete", "result_only", "missing", "corrupt"]);
 
 export function validateVerifierEvidence(value: unknown): HitchVerifierEvidenceV1 {
@@ -156,7 +156,7 @@ function parseArtifact(value: unknown): VerifierArtifactExcerptV1 {
   const name = asString(record.name, "verifier artifact name");
   if (!ARTIFACT_NAMES.has(name)) throw new TypeError("verifier artifact name is invalid");
   const mediaType = asString(record.media_type, "verifier artifact media_type");
-  if (mediaType !== (name === "ctrf.json" ? "application/json" : "text/plain")) throw new TypeError("verifier artifact media_type is invalid");
+  if (mediaType !== ((name === "ctrf.json" || name === "parameter-evidence.json") ? "application/json" : "text/plain")) throw new TypeError("verifier artifact media_type is invalid");
   const bytes = asInteger(record.bytes, "verifier artifact bytes");
   if (bytes < 0 || typeof record.truncated !== "boolean") throw new TypeError("verifier artifact size metadata is invalid");
   const json = record.json === undefined ? undefined : jsonValue(record.json, "verifier artifact JSON");

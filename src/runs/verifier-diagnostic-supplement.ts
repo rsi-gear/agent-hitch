@@ -7,7 +7,7 @@ import { loadRunRecord } from "./records.js";
 
 const DIAGNOSTICS_INDEX_REF = "verifier/diagnostics.json";
 const MAX_INDEX_BYTES = 1024 * 1024;
-const ARTIFACT_NAMES = new Set(["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"]);
+const ARTIFACT_NAMES = new Set(["ctrf.json", "parameter-evidence.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"]);
 
 export interface VerifierDiagnosticSourceIdentityV1 {
   name: VerifierArtifactExcerptV1["name"];

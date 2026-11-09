@@ -11,10 +11,7 @@
   ],
   "properties": {
     "schema_version": {
-      "enum": [
-        "1",
-        "2"
-      ]
+      "const": "1"
     },
     "backend": {
       "const": "harbor"
@@ -36,10 +33,7 @@
       "minLength": 1
     },
     "model": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "attempts": {
       "type": "integer",
@@ -160,66 +154,5 @@
         }
       }
     }
-  },
-  "allOf": [
-    {
-      "if": {
-        "required": [
-          "schema_version"
-        ],
-        "properties": {
-          "schema_version": {
-            "const": "2"
-          }
-        }
-      },
-      "then": {
-        "required": [
-          "model",
-          "infrastructure_retries"
-        ],
-        "properties": {
-          "harness_ref": {
-            "pattern": "^sealed-python@"
-          },
-          "model": {
-            "enum": [
-              null,
-              ""
-            ]
-          },
-          "attempts": {
-            "const": 1
-          },
-          "infrastructure_retries": {
-            "const": 0
-          },
-          "agent_args": {
-            "maxItems": 0
-          },
-          "pass_env": {
-            "maxItems": 0
-          },
-          "local_inference": false,
-          "endpoint_binding": false,
-          "model_binding": false,
-          "training_binding": false,
-          "environment_binding": false,
-          "generation": false
-        }
-      },
-      "else": {
-        "properties": {
-          "model": {
-            "type": "string"
-          },
-          "harness_ref": {
-            "not": {
-              "pattern": "^sealed-python@"
-            }
-          }
-        }
-      }
-    }
-  ]
+  }
 }

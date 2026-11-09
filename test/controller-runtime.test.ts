@@ -24,28 +24,26 @@ async function payloadFixture(): Promise<{ root: string; expectedFileCount: numb
   await mkdir(path.join(root, "dist", "src"), { recursive: true });
   await mkdir(path.join(root, "dist", "scripts"), { recursive: true });
   await mkdir(path.join(root, "integrations", "harbor"), { recursive: true });
+  await writeFile(path.join(root, "integrations", "capability-plugins.json"), '{"version":1,"plugins":[]}\n');
+  await mkdir(path.join(root, "benchmark-packages", "kaggle", "runtime"), { recursive: true });
+  await writeFile(path.join(root, "benchmark-packages", "kaggle", "runtime", "training-service.json"), '{}\n');
+  await writeFile(path.join(root, "benchmark-packages", "kaggle", "runtime", "training-service.py"), '# trusted plugin fixture\n');
   await mkdir(path.join(root, "integrations", "model-call"), { recursive: true });
   await writeFile(path.join(root, "integrations", "model-call", "cli.js"), "// trusted model-call fixture\n");
   await mkdir(path.join(root, "integrations", "training-tool"), { recursive: true });
   await writeFile(path.join(root, "integrations", "training-tool", "cli.js"), "// trusted training-tool fixture\n");
-  await mkdir(path.join(root, "integrations", "sealed-python"), { recursive: true });
-  await writeFile(path.join(root, "integrations", "sealed-python", "cli.js"), "sealed executor fixture\n");
-  await mkdir(path.join(root, "integrations", "analysis-runtime"), { recursive: true });
-  for (const name of ["client.mjs", "worker.py", "scoring.py", "confinement.py", "research_worker.py", "pipeline_runner.py", "runtime-integrity.json"]) {
-    await writeFile(path.join(root, "integrations", "analysis-runtime", name), `sealed fixture ${name}\n`);
-  }
   await mkdir(path.join(root, "node_modules", "smol-toml"), { recursive: true });
   await writeFile(path.join(root, "node_modules", "smol-toml", "index.js"), "export const parse = () => ({});\n");
   await writeFile(path.join(root, "package.json"), `${JSON.stringify({ name: "fake-hitch", version: "0.2.0" })}\n`);
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
   await writeFile(path.join(root, "dist", "scripts", "check.js"), "export const check = () => {};\n");
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs", "hitch_parameters.py", "hitch_parameters_client.py", "hitch_capabilities.py"]) {
     await writeFile(path.join(root, "integrations", "harbor", name), `# ${name}\n`);
   }
   return {
     root,
-    expectedFileCount: 4 + (await readdir(path.join(root, "integrations"), { recursive: true, withFileTypes: true })).filter(entry => entry.isFile()).length,
+    expectedFileCount: 6 + (await readdir(path.join(root, "integrations"), { recursive: true, withFileTypes: true })).filter(entry => entry.isFile()).length,
     cleanup: () => forceRemove(root),
   };
 }
@@ -54,11 +52,12 @@ async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): P
   await cp(path.join(sourceRoot, "node_modules"), path.join(destinationRoot, "node_modules"), { recursive: true });
   await cp(path.join(sourceRoot, "integrations", "model-call"), path.join(destinationRoot, "integrations", "model-call"), { recursive: true });
   await cp(path.join(sourceRoot, "integrations", "training-tool"), path.join(destinationRoot, "integrations", "training-tool"), { recursive: true });
-  await cp(path.join(sourceRoot, "integrations", "sealed-python"), path.join(destinationRoot, "integrations", "sealed-python"), { recursive: true });
-  await cp(path.join(sourceRoot, "integrations", "analysis-runtime"), path.join(destinationRoot, "integrations", "analysis-runtime"), { recursive: true });
+  await mkdir(path.join(destinationRoot, "integrations"), { recursive: true });
+  await cp(path.join(sourceRoot, "integrations", "capability-plugins.json"), path.join(destinationRoot, "integrations", "capability-plugins.json"));
+  await cp(path.join(sourceRoot, "benchmark-packages"), path.join(destinationRoot, "benchmark-packages"), { recursive: true });
   const relative = path.join("integrations", "harbor");
   await mkdir(path.join(destinationRoot, relative), { recursive: true });
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs", "hitch_parameters.py", "hitch_parameters_client.py", "hitch_capabilities.py"]) {
     await writeFile(
       path.join(destinationRoot, relative, name),
       await readFile(path.join(sourceRoot, relative, name)),

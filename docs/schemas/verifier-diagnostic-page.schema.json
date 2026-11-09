@@ -14,7 +14,7 @@
       "additionalProperties": false,
       "required": ["name", "media_type", "bytes", "sha256", "source_complete"],
       "properties": {
-        "name": { "enum": ["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"] },
+        "name": { "enum": ["ctrf.json", "parameter-evidence.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"] },
         "media_type": { "enum": ["application/json", "text/plain"] },
         "bytes": { "type": "integer", "minimum": 0 },
         "sha256": { "$ref": "#/$defs/sha256" },
@@ -23,7 +23,7 @@
       },
       "allOf": [
         {
-          "if": { "type": "object", "properties": { "name": { "const": "ctrf.json" } }, "required": ["name"] },
+          "if": { "type": "object", "properties": { "name": { "enum": ["ctrf.json", "parameter-evidence.json"] } }, "required": ["name"] },
           "then": { "type": "object", "properties": { "media_type": { "const": "application/json" } } },
           "else": { "type": "object", "properties": { "media_type": { "const": "text/plain" } } }
         },

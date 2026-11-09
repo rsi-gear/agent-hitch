@@ -1,6 +1,6 @@
 # 通用 benchmark 资源存储
 
-该功能显式启用。普通 task 与 `benchmark.adapter.json` v1 沿用原协议；资源任务使用 v2、`hitch-resource-lock@1` 和 `hitch-resource-selection@1`。公共 API 为 `agent-hitch/resources`，CLI 为 `hitch --root ROOT resources request OPERATION --input REQUEST.json`，均返回 JSON。schema 在 `docs/schemas/hitch-resource-*.schema.json`，跨仓库固定向量在 `test-contracts/hitch-resources-v1.json`。
+该功能显式启用。普通 task 与 `benchmark.adapter.json` v1 沿用原协议；资源任务使用 v3、`hitch-resource-lock@1` 和 `hitch-resource-selection@1`。公共 API 为 `agent-hitch/resources`，CLI 为 `hitch --root ROOT resources request OPERATION --input REQUEST.json`，均返回 JSON。schema 在 `docs/schemas/hitch-resource-*.schema.json`，跨仓库固定向量在 `test-contracts/hitch-resources-v1.json`。
 
 ## 配置与 producer
 
@@ -211,3 +211,7 @@ HITCH_HARBOR_TEST_PYTHON=/path/to/harbor/venv/bin/python \
 HITCH_IMAGE_PREPARATION_TEST_IMAGE='node@sha256:YOUR_DIGEST' \
   node --test dist/test/image-preparation.integration.test.js
 ```
+
+资源数据集当前只接受 schema 3，摘要域为 `hitch-resource-dataset@3`；历史 schema 2 数据集与包含旧 manifest 的 selection 必须由当前 producer 重新导入，不能按原格式继续执行或只改版本号。该切换不影响普通 schema 1 数据集及其他独立协议的版本。
+
+宿主编译器可通过 `agent-hitch/resources` 调用 `verifyResourceDatasetSource(directory, manifest?)` 校验当前 schema 3 的本地任务成员、描述文件和资源锁；`deriveResourceDatasetSource(directory, originalManifest, taskIds?)` 在保留原资源锁和 closure 身份的前提下重算描述文件及数据集摘要。两者均不读取镜像，也不授权运行。资源锁变化必须重新执行完整 seal。`resources request ingest-dataset-source --input REQUEST.json` 接受 `{ "directory": "/absolute/dataset", "owner": "optional-owner" }`，校验后仅将描述树导入并固定到资源存储；随后常规 admission 仍校验完整资源和镜像。描述文件总量限制为 32 MiB，较大数据应声明为独立资源。

@@ -16,7 +16,10 @@ export async function validateRoleContexts(directory: string, bindings: Binding[
   if (!services || typeof services !== "object" || !services.main) throw new Error("resource tasks require an explicit candidate Compose service");
   for (const [id, service] of Object.entries(services)) {
     if (!service || typeof service !== "object" || service.platform !== platform) throw new Error("resource service platform mismatch");
-    object(service, ["platform", "build", "command", "entrypoint", "environment", "networks", "depends_on", "healthcheck", "working_dir", "init", "user", "ports", "expose", "tmpfs"]);
+    object(service, ["platform", "build", "command", "entrypoint", "environment", "networks", "depends_on", "healthcheck", "working_dir", "init", "user", "ports", "expose", "tmpfs", "cpus", "mem_limit", "network_mode"]);
+    if (service.network_mode !== undefined && (service.network_mode !== "none" || service.networks !== undefined || service.ports !== undefined || service.expose !== undefined)) throw new Error("role network_mode supports isolated none only");
+    if (service.cpus !== undefined && (typeof service.cpus !== "number" || !Number.isFinite(service.cpus) || service.cpus <= 0 || !Number.isSafeInteger(service.cpus * 1000))) throw new Error("role cpus must be positive whole millicores");
+    if (service.mem_limit !== undefined && (!Number.isSafeInteger(service.mem_limit) || Number(service.mem_limit) < 128 * 1024 * 1024)) throw new Error("role memory must be explicit positive bytes");
     if (service.tmpfs !== undefined) {
       if (!Array.isArray(service.tmpfs) || service.tmpfs.length > 8) throw new Error('bounded tmpfs mounts must be a small explicit list');
       const targets = new Set<string>();

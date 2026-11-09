@@ -43,6 +43,9 @@ export const RUNTIME_HARBOR_BRIDGE_FILES = [
   "integrations/harbor/hitch_harbor_verifier.py",
   "integrations/harbor/hitch_benchmark.py",
   "integrations/harbor/hitch_tool_client.mjs",
+  "integrations/harbor/hitch_parameters.py",
+  "integrations/harbor/hitch_capabilities.py",
+  "integrations/harbor/hitch_parameters_client.py",
 ] as const;
 
 /**
@@ -64,16 +67,11 @@ export interface RuntimePayloadRule {
 /** Include the pinned TOML parser's execution closure in transported runtimes. */
 export const RUNTIME_PAYLOAD_RULES: RuntimePayloadRule[] = [
   { path: "package.json" },
+  { path: "integrations/capability-plugins.json" },
+  { path: "benchmark-packages/kaggle/runtime/training-service.json" },
+  { path: "benchmark-packages/kaggle/runtime/training-service.py" },
   { path: "integrations/model-call/cli.js" },
   { path: "integrations/training-tool/cli.js" },
-  { path: "integrations/sealed-python/cli.js" },
-  { path: "integrations/analysis-runtime/worker.py" },
-  { path: "integrations/analysis-runtime/client.mjs" },
-  { path: "integrations/analysis-runtime/scoring.py" },
-  { path: "integrations/analysis-runtime/confinement.py" },
-  { path: "integrations/analysis-runtime/runtime-integrity.json" },
-  { path: "integrations/analysis-runtime/pipeline_runner.py" },
-  { path: "integrations/analysis-runtime/research_worker.py" },
   ...RUNTIME_PAYLOAD_DIRECTORIES.map((directory) => ({ directory })),
   ...RUNTIME_HARBOR_BRIDGE_FILES.map((bridge) => ({ path: bridge })),
 ];

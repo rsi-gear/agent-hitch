@@ -1,0 +1,3 @@
+# Use Python 3.12 in a separate environment for the MLE-bench verifier dependencies.
+-r requirements.txt
+-r ../benchmark-packages/kaggle/runtime/requirements.txt
