@@ -18,3 +18,5 @@ export { exportResourceBundle, importResourceBundle } from "./bundle.js";
 export { readResourceEvidence, sealResourceEvidence, confirmResourceResultSealed, reclaimResourceExecution } from "./evidence.js";
 export { resourceStorageStats } from "./stats.js";
 export { retainResourceResult } from "./result-retention.js";
+
+export { verifyResourceDatasetSource, deriveResourceDatasetSource } from "./source.js";

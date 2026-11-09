@@ -29,6 +29,7 @@ export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src", "node_module
 export const RUNTIME_HARBOR_BRIDGE_FILES = [
   "integrations/harbor/hitch_harbor_agent.py",
   "integrations/harbor/hitch_harbor_environment.py",
+  "integrations/harbor/hitch_attempt_isolation.py",
   "integrations/harbor/hitch_shared_runtime.py",
   "integrations/harbor/hitch_build_inputs.py",
   "integrations/harbor/hitch_build_process.py",
@@ -43,6 +44,9 @@ export const RUNTIME_HARBOR_BRIDGE_FILES = [
   "integrations/harbor/hitch_harbor_verifier.py",
   "integrations/harbor/hitch_benchmark.py",
   "integrations/harbor/hitch_tool_client.mjs",
+  "integrations/harbor/hitch_parameters.py",
+  "integrations/harbor/hitch_capabilities.py",
+  "integrations/harbor/hitch_parameters_client.py",
 ] as const;
 
 /**
@@ -64,6 +68,9 @@ export interface RuntimePayloadRule {
 /** Include the pinned TOML parser's execution closure in transported runtimes. */
 export const RUNTIME_PAYLOAD_RULES: RuntimePayloadRule[] = [
   { path: "package.json" },
+  { path: "integrations/capability-plugins.json" },
+  { path: "benchmark-packages/kaggle/runtime/training-service.json" },
+  { path: "benchmark-packages/kaggle/runtime/training-service.py" },
   { path: "integrations/model-call/cli.js" },
   { path: "integrations/training-tool/cli.js" },
   ...RUNTIME_PAYLOAD_DIRECTORIES.map((directory) => ({ directory })),

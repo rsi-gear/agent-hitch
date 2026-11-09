@@ -61,7 +61,7 @@ export function runtimeResourcesForTask(
   plan: { task_resources?: readonly TaskResourceRequirementV1[] },
   taskId: string,
   fallback: ResourceVectorV1,
-): { mainLimits: ResourceVectorV1; sidecarLimits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }> } {
+): { mainLimits: ResourceVectorV1; verifierLimits?: ResourceVectorV1; sidecarLimits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }> } {
   const requirement = resourceRequirementForTask(plan, taskId);
   const sidecarLimits = Object.fromEntries((requirement?.components ?? [])
     .filter((entry) => entry.role === "task-sidecar" || entry.role === "provider-sidecar")
@@ -70,14 +70,16 @@ export function runtimeResourcesForTask(
       memory_bytes: entry.fields.memory_bytes.value,
       ...(entry.fields.gpu_count && entry.fields.gpu_count.value > 0 ? { gpu_count: entry.fields.gpu_count.value } : {}),
     }]));
-  return { mainLimits: requirement?.main_limits ?? fallback, sidecarLimits };
+  return { mainLimits: requirement?.main_limits ?? fallback, ...(requirement?.verifier_limits ? { verifierLimits: requirement.verifier_limits } : {}), sidecarLimits };
 }
 
 function parseRequirement(value: unknown, index: number): TaskResourceRequirementV1 {
-  const record = exactRecord(value, ["task_id", "reservation", "main_limits", "fields", "components", "diagnostics"], `task resources ${index}`);
+  const record = exactRecord(value, ["task_id", "reservation", "main_limits", "fields", "components", "diagnostics"], `task resources ${index}`, ["verifier_limits"]);
   if (typeof record.task_id !== "string" || !record.task_id) throw new TypeError(`task resources ${index} identity is invalid`);
   const reservation = parseVector(record.reservation, `task resources ${index} reservation`);
   const mainLimits = parseVector(record.main_limits, `task resources ${index} main limits`);
+  const verifierLimits = record.verifier_limits === undefined ? undefined : parseVector(record.verifier_limits, `task resources ${index} verifier limits`);
+  if (verifierLimits && (verifierLimits.container_slots !== 1 || verifierLimits.build_slots !== 0 || verifierLimits.cpu_millis < 1 || verifierLimits.memory_bytes < 1)) throw new TypeError("invalid verifier runtime limits");
   if (mainLimits.container_slots !== 1 || mainLimits.build_slots !== 0) throw new TypeError(`task resources ${index} main limits are invalid`);
   const fieldsRecord = exactRecord(record.fields, RESOURCE_FIELDS, `task resources ${index} fields`, OPTIONAL_RESOURCE_FIELDS);
   const fields = Object.fromEntries(RESOURCE_FIELDS.map((name) => [name, parseField(fieldsRecord[name], `task resources ${index} ${name}`)])) as unknown as TaskResourceRequirementV1["fields"];
@@ -99,7 +101,9 @@ function parseRequirement(value: unknown, index: number): TaskResourceRequiremen
   if (RESOURCE_FIELDS.some((name) => sum[name] !== reservation[name])
     || OPTIONAL_RESOURCE_FIELDS.some((name) => (sum[name] ?? 0) !== (reservation[name] ?? 0))) throw new TypeError(`task resources ${index} components do not match reservation`);
   for (const component of components.filter((entry) => entry.role === "main" || entry.role === "verifier")) {
-    if (component.fields.cpu_millis.value > mainLimits.cpu_millis || component.fields.memory_bytes.value > mainLimits.memory_bytes) {
+    const limits = component.role === "verifier" ? verifierLimits ?? mainLimits : mainLimits;
+    if (component.fields.cpu_millis.value > limits.cpu_millis || component.fields.memory_bytes.value > limits.memory_bytes
+      || verifierLimits && (component.fields.cpu_millis.value !== limits.cpu_millis || component.fields.memory_bytes.value !== limits.memory_bytes)) {
       throw new TypeError(`task resources ${index} main limits do not cover runtime components`);
     }
   }
@@ -109,6 +113,7 @@ function parseRequirement(value: unknown, index: number): TaskResourceRequiremen
     task_id: record.task_id,
     reservation,
     main_limits: mainLimits,
+    ...(verifierLimits ? { verifier_limits: verifierLimits } : {}),
     fields,
     components,
     diagnostics: [...record.diagnostics] as string[],

@@ -14,6 +14,38 @@ import { forceRemove, prepareHostHarborArtifactForTest, writeFakeHarbor, writeFa
 
 const runEval = (options: RunEvalOptions) => runEvalProduction({ ...options, harborArtifactBuilder: prepareHostHarborArtifactForTest });
 
+test("direct task-slot evaluations use the default Docker reaper after each attempt", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-direct-cleanup-"));
+  t.after(() => forceRemove(root));
+  const dataset = path.join(root, "dataset");
+  await mkdir(path.join(dataset, "one"), { recursive: true });
+  await writeFile(path.join(dataset, "one/task.toml"), 'name = "one"\n');
+  const harbor = await writeFakeHarbor(root), npm = await writeFakeNpm(root);
+  const docker = path.join(root, "docker"), calls = path.join(root, "docker-calls.jsonl");
+  await writeFile(docker, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`, { mode: 0o755 });
+  const result = await runEval({ root, harborExecutable: harbor, executionStrategy: "local-task-slots-v1",
+    trialBundleGraceMs: 0, env: { ...process.env, HITCH_NPM_PATH: npm, HITCH_DOCKER_PATH: docker },
+    request: { dataset, harness_ref: "pi@version:1.2.3", attempts: 2, max_concurrent: 1, infrastructure_retries: 0 } });
+  // This fixture emits Harbor results without a native trajectory. Cleanup
+  // must still run for the sealed diagnostic observations of both attempts.
+  assert.equal(result.task_completed, true);
+  assert.equal((result.trials as unknown[]).length, 2);
+  const evalDirectory = path.join(root, "evals", result.eval_id);
+  const events = (await readFile(path.join(evalDirectory, "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  const cleanup = events.filter(event => event.type === "sandbox.cleanup.completed");
+  assert.equal(cleanup.length, 2);
+  assert.ok(cleanup.every(event => event.residual_resources === 0));
+  const commands: string[][] = (await readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  for (const kind of ["container", "network", "volume"]) {
+    const lists = commands.filter(args => args[0] === kind && args[1] === "ls");
+    assert.ok(lists.length >= 2, `missing ${kind} cleanup`);
+    assert.ok(lists.every(args => args.includes(`label=io.hitch.root-id=${hitchRootId(root)}`)));
+  }
+  const leases = await readExecutionLeases(evalDirectory);
+  assert.equal(leases.length, 2);
+  assert.ok(leases.every(lease => lease.state === "released"));
+});
+
 test("planned local execution overlaps different tasks and serializes attempts of the same task", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-planned-execution-"));
   t.after(() => forceRemove(root));
@@ -360,7 +392,7 @@ for (const imageObservation of ["matching", "matching-verifier", "missing", "mis
   const useSidecar = useVerifier || imageObservation === "matching" || imageObservation === "unstarted-sidecar-only";
   const unstarted = imageObservation.startsWith("unstarted");
   if (useSidecar) await writeFile(path.join(environment, "Dockerfile.simulator"), "FROM scratch\n");
-  const harbor = unstarted ? await writeInfrastructureFailureHarbor(root, true) : await writeFakeHarbor(root);
+  const harbor = unstarted ? await writeInfrastructureFailureHarbor(root, true) : await writeFakeHarbor(root, { version: "0.21.0" });
   const npm = await writeFakeNpm(root);
   if (useVerifier) {
     await mkdir(path.join(dataset, "one", "tests"));

@@ -223,7 +223,7 @@
       "additionalProperties": false,
       "required": ["name", "media_type", "bytes", "sha256", "truncated"],
       "properties": {
-        "name": { "enum": ["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"] },
+        "name": { "enum": ["ctrf.json", "parameter-evidence.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"] },
         "media_type": { "enum": ["application/json", "text/plain"] },
         "bytes": { "type": "integer", "minimum": 0 },
         "sha256": { "$ref": "#/$defs/sha256" },
@@ -237,7 +237,7 @@
       ],
       "allOf": [
         {
-          "if": { "properties": { "name": { "const": "ctrf.json" } }, "required": ["name"] },
+          "if": { "properties": { "name": { "enum": ["ctrf.json", "parameter-evidence.json"] } }, "required": ["name"] },
           "then": { "properties": { "media_type": { "const": "application/json" } } },
           "else": { "properties": { "media_type": { "const": "text/plain" } } }
         },
@@ -249,7 +249,7 @@
           "if": { "required": ["json"] },
           "then": {
             "properties": {
-              "name": { "const": "ctrf.json" },
+              "name": { "enum": ["ctrf.json", "parameter-evidence.json"] },
               "media_type": { "const": "application/json" },
               "truncated": { "const": false }
             }

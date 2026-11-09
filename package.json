@@ -40,10 +40,13 @@
     "./workspaces": "./dist/src/workspaces/index.js",
     "./cli": "./dist/src/cli/index.js",
     "./package.json": "./package.json",
-    "./resources": "./dist/src/resources/index.js"
+    "./resources": "./dist/src/resources/index.js",
+    "./mlebench": "./benchmark-packages/kaggle/index.mjs",
+    "./parameters": "./dist/src/parameters/index.js"
   },
   "bin": {
-    "hitch": "dist/bin/hitch.js"
+    "hitch": "dist/bin/hitch.js",
+    "hitch-mlebench": "benchmark-packages/kaggle/import.mjs"
   },
   "files": [
     "dist/bin/",
@@ -53,6 +56,7 @@
     "docs/local-model-inference-spec.zh-CN.md",
     "integrations/harbor/hitch_harbor_agent.py",
     "integrations/harbor/hitch_harbor_environment.py",
+    "integrations/harbor/hitch_attempt_isolation.py",
     "integrations/harbor/hitch_shared_runtime.py",
     "integrations/harbor/hitch_build_inputs.py",
     "integrations/harbor/hitch_build_process.py",
@@ -67,21 +71,30 @@
     "integrations/harbor/hitch_harbor_verifier.py",
     "integrations/harbor/hitch_benchmark.py",
     "integrations/harbor/hitch_tool_client.mjs",
+    "integrations/harbor/hitch_parameters.py",
+    "integrations/harbor/hitch_parameters_client.py",
+    "integrations/harbor/hitch_capabilities.py",
+    "integrations/capability-plugins.json",
     "integrations/model-call/cli.js",
     "integrations/training-tool/cli.js",
     "docs/resource-storage.zh-CN.md",
+    "docs/run-output-artifacts.zh-CN.md",
+    "test-contracts/run-output-artifacts-v1.json",
     "docs/evidence/eval-preparation-2026-10-09.md",
     "docs/evidence/eval-preparation-2026-10-09.json",
     "benchmark-packages/shared-tree/",
     "benchmark-packages/automationbench/resources.mjs",
     "benchmark-packages/automationbench/RESOURCES.md",
     "test-contracts/hitch-resources-v1.json",
-    "examples/external-inference/"
+    "examples/external-inference/",
+    "benchmark-packages/kaggle/",
+    "docs/mlebench-tasks.zh-CN.md",
+    "!benchmark-packages/kaggle/tests/**"
   ],
   "scripts": {
     "docs:check": "node scripts/check-guide.mjs",
     "typecheck": "tsc --noEmit",
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/bin/hitch.js', 0o755)\"",
     "test": "node --test --test-timeout=120000 \"dist/test/*.test.js\"",
     "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test --test-timeout=120000 \"dist/test/*.test.js\"",
     "canary:buildkit-secrets": "npm run build && node dist/scripts/canary-buildkit-secrets.js",
@@ -92,10 +105,12 @@
     "canary:packaged-harness": "npm run build && node dist/scripts/canary-packaged-harness.js",
     "canary:collision-domains": "npm run build && node dist/scripts/canary-collision-domains.js",
     "canary:gpu-hardware": "npm run build && node dist/scripts/canary-gpu-hardware.js",
-    "check:architecture": "node dist/scripts/check-architecture.js",
+    "check:architecture": "node dist/scripts/check-architecture.js && node scripts/check-mlebench-boundaries.mjs",
     "check": "npm run typecheck && npm run build && npm run check:architecture && node dist/scripts/check-syntax.js && npm test",
     "prepublishOnly": "npm run check",
-    "canary:external-endpoint": "npm run build && node dist/scripts/canary-external-endpoint.js"
+    "canary:external-endpoint": "npm run build && node dist/scripts/canary-external-endpoint.js",
+    "test:mlebench": "npm run build && node --test benchmark-packages/kaggle/tests/*.test.mjs",
+    "test:mlebench:package": "npm run build && node scripts/check-mlebench-package.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -110,6 +125,7 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "js-yaml": "^4.3.2",
     "smol-toml": "1.8.0"
   },
   "bundleDependencies": true

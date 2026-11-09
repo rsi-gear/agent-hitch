@@ -1,6 +1,8 @@
+import { supportsLocalTaskIsolation } from "./task-isolation.js";
 import { cumulativeEndpointUsage } from "./endpoint-usage.js";
 import { freezeEndpointRequest, loadFrozenEndpoint } from "../model-access/index.js";
 import { admitEvalResources } from "./resource-eval-lifecycle.js";
+import { reapOwnedDockerResources } from "./docker-reaper.js";
 import path from "node:path";
 import { resolveHarness } from "../artifacts/index.js";
 import { HitchError, SCHEMA_VERSION, atomicWriteJSON, beginEvalEnvironmentImagePlanning, ensureDir, invalidInput, statePaths, withEnvironmentImageReferenceLock, writeEvalEnvironmentImageReferences } from "../foundation/index.js";
@@ -35,7 +37,9 @@ import { planTaskSchedulingHints, schedulingHintsFromPlan } from "./duration-est
 import { buildCompletedEvalResult, buildFailedEvalResult } from "./eval-result-builder.js";
 import { verifyBenchmarkExecution } from "./benchmark-verification.js";
 import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
-export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
+// Direct CLI/API callers need the same cleanup as scheduler-owned evaluations
+// so sealed resource workspaces stop consuming concurrency slots.
+export async function runEval({ evalId = newEvalId(), request, root, env = process.env, harborExecutable, signal, onEvent, trialBundleGraceMs, precreated = false, replaceTerminal = false, normalizedRequest, maxConcurrentOverride, executionResources, executionResourceSource = "operator-default", executionStrategy = "legacy-attempt-shards", executionWorker, modelCapturePlan, workItemAdmission, remoteWorkExecutor, resumeExisting = false, onControlPhase, onWorkItemState, onWorkItemQueued, evolutionBaselineDurations, dockerResourceReaper = reapOwnedDockerResources, environmentBuildMode = "backend", environmentImageResolver, environmentImageBuilder, environmentImageManifestLoader, harborArtifactBuilder }: RunEvalOptions): Promise<EvalResult> {
   if (!root) throw invalidInput("a Hitch state root is required for eval");
   evalId = validateEvalId(evalId);
   const frozenRequest = await freezeEndpointRequest(root, normalizedRequest || request, env);
@@ -44,7 +48,6 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     throw invalidInput("control-plane max concurrency override is invalid");
   }
   const normalized = maxConcurrentOverride === undefined ? persistedRequest : { ...persistedRequest, max_concurrent: maxConcurrentOverride };
-  await admitEvalResources(root, normalized, evalId, environmentBuildMode, signal);
   const evalsDirectory = await ensureDir(statePaths(root).evals);
   const evalDirectory = await prepareEvalDirectory({ evalsDirectory, evalId, request: persistedRequest, precreated, replaceTerminal });
   let startedAt = new Date();
@@ -64,6 +67,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     sink.emit({ type: "eval.started", backend: normalized.backend, dataset: normalized.dataset });
     sink.emit({ type: "eval.planning.started" });
     await onControlPhase?.("planning");
+    await admitEvalResources(root, normalized, evalId, environmentBuildMode, signal);
     const requestedReference = parseHarnessReference(normalized.harness_ref);
     const resolvedRevision = await resolveHarness(normalized.harness_ref, { root, env });
     failureStage = "preparing";
@@ -183,6 +187,12 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     capture.plan = activeCaptureRuntime.plan;
     const plan = materializeEvalPlan(logicalPlan, capture.persist ? capture.plan : undefined, preparedArtifactPlanFields(preparedAssignments));
     const taskSlotPlanning = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null;
+    const isolatedSameTaskAttempts = taskSlotPlanning && !remoteWorkExecutor
+      && (executionWorker?.provider ?? "local-docker") === "local-docker"
+      && await supportsLocalTaskIsolation({ root, dataset: normalized.dataset, taskIds: localTaskIds,
+        runtimeDirectory: preparedArtifact.sharedRuntime?.runtime_directory ?? controllerRuntime.directory, env,
+        ...(harborExecutable ? { harborExecutable } : {}), ...(signal ? { signal } : {}) });
+    sink.emit({ type: "eval.task-isolation", isolated_same_task_attempts: isolatedSameTaskAttempts });
     const taskScheduling = taskSlotPlanning
       ? resume
         ? schedulingHintsFromPlan(resume.executionPlan)
@@ -274,6 +284,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
     const plannedTaskExecution = (executionStrategy === "local-task-slots-v1" || multipleRuntimeContracts || standardDataset) && localTaskIds !== null;
     if (plannedTaskExecution) {
       const execution = await executePlannedHarborTasks({
+        isolatedSameTaskAttempts,
         evalId,
         evalDirectory,
         plan: executionPlan,
@@ -299,7 +310,7 @@ export async function runEval({ evalId = newEvalId(), request, root, env = proce
         ...(workItemAdmission ? { admission: workItemAdmission } : {}),
         ...(onWorkItemState ? { onWorkItemState } : {}),
         ...(onWorkItemQueued ? { onWorkItemQueued } : {}),
-        ...(dockerResourceReaper ? { dockerResourceReaper } : {}),
+        dockerResourceReaper,
         ...(environmentImageManifestLoader ? { environmentImageManifestLoader } : {}),
         ...(activeCaptureRuntime.exporter ? { interactionCaptureExporter: activeCaptureRuntime.exporter } : {}),
         ...(remoteWorkExecutor ? { remoteWorkExecutor: (execution) => remoteWorkExecutor({

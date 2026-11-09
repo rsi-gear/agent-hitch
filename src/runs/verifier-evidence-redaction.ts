@@ -29,11 +29,25 @@ export function sanitizeVerifierText(
 export function sanitizeVerifierJson(
   value: JsonValue,
   credentialValues: readonly string[],
+  preserveParameterPointers = false,
 ): { value: JsonValue; redactions: Map<string, number> } {
   const redactions = new Map<string, number>();
+  // These are task-declared JSON Pointers, not host paths. Retain them only in
+  // host-origin parameter evidence; every other string follows normal redaction.
+  const pointers = new Set<string>();
+  if (preserveParameterPointers && value && typeof value === "object" && !Array.isArray(value) && value.source === "host_parameter_authority") {
+    const root = value as Record<string, JsonValue>;
+    const state = root.state && typeof root.state === "object" && !Array.isArray(root.state) ? root.state : {};
+    const policy = state.policy && typeof state.policy === "object" && !Array.isArray(state.policy) ? state.policy : {};
+    const audit = Array.isArray(state.audit) ? state.audit : Array.isArray(root.audit) ? root.audit : [];
+    for (const candidate of [...Object.keys(policy), ...audit.map(row => row && typeof row === "object" && !Array.isArray(row) ? row.path : null)]) {
+      if (typeof candidate === "string" && candidate.startsWith("/") && !/~(?:[^01]|$)/.test(candidate)) pointers.add(candidate);
+    }
+  }
+  const safeText = (text: string) => pointers.has(text) ? redactCredentialText(text, credentialValues) : sanitizeVerifierText(text, credentialValues);
   const visit = (entry: JsonValue): JsonValue => {
     if (typeof entry === "string") {
-      const safe = sanitizeVerifierText(entry, credentialValues);
+      const safe = safeText(entry);
       merge(redactions, safe.redactions);
       return safe.text;
     }
@@ -42,7 +56,7 @@ export function sanitizeVerifierJson(
       const result: Array<[string, JsonValue]> = [];
       const keys = new Set<string>();
       for (const [key, child] of Object.entries(entry)) {
-        const safeKey = sanitizeVerifierText(key, credentialValues);
+        const safeKey = safeText(key);
         merge(redactions, safeKey.redactions);
         let uniqueKey = safeKey.text;
         for (let suffix = 2; keys.has(uniqueKey); suffix += 1) uniqueKey = `${safeKey.text}#${suffix}`;

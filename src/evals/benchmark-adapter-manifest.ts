@@ -124,10 +124,10 @@ export async function verifyBenchmarkTaskMembership(root: string, manifest: Benc
 }
 
 /** Snapshot one admitted task, including descriptor bytes from the same verified read. */
-export async function verifyBenchmarkTaskSnapshot(root: string, task: BenchmarkAdapterManifestV1["tasks"][number]): Promise<{ descriptor: unknown | null }> {
+export async function verifyBenchmarkTaskSnapshot(root: string, task: BenchmarkAdapterManifestV1["tasks"][number]): Promise<{ descriptor: unknown | null; taskToml?: Buffer }> {
   const snapshot = await scanTaskTree(path.join(root, task.task_id));
   if (snapshot.digest !== task.task_digest) throw invalidInput(`manifest task digest mismatch: ${task.task_id}`);
-  return { descriptor: snapshot.descriptor === undefined ? null : JSON.parse(snapshot.descriptor.toString("utf8")) };
+  return { descriptor: snapshot.descriptor === undefined ? null : JSON.parse(snapshot.descriptor.toString("utf8")), ...(snapshot.taskToml ? { taskToml: snapshot.taskToml } : {}) };
 }
 
 export function scoreWithinRange(score: number, definition: BenchmarkScoreDefinitionV1): boolean {
@@ -211,7 +211,7 @@ const contentReads = channel("hitch.benchmark.task-content-read");
 
 async function taskTreeDigest(root: string): Promise<Sha256> { return (await scanTaskTree(root)).digest; }
 
-async function scanTaskTree(inputRoot: string): Promise<{ digest: Sha256; descriptor?: Buffer }> {
+async function scanTaskTree(inputRoot: string): Promise<{ digest: Sha256; descriptor?: Buffer; taskToml?: Buffer }> {
   const original = await lstat(inputRoot);
   if (!original.isDirectory() || original.isSymbolicLink()) throw invalidInput("benchmark task directory is unsafe");
   const root = await realpath(inputRoot);
@@ -220,6 +220,7 @@ async function scanTaskTree(inputRoot: string): Promise<{ digest: Sha256; descri
   const rows: Array<{ path: string; mode: "file" | "executable"; sha256: string }> = [];
   const fingerprints: Array<{ path: string; info: Awaited<ReturnType<typeof lstat>> }> = [];
   let descriptor: Buffer | undefined;
+  let taskToml: Buffer | undefined;
   const visit = async (directory: string): Promise<void> => {
     const before = await lstat(directory);
     if (!before.isDirectory() || before.isSymbolicLink()) throw invalidInput("benchmark task directory is unsafe");
@@ -247,6 +248,7 @@ async function scanTaskTree(inputRoot: string): Promise<{ digest: Sha256; descri
         fingerprints.push({ path: absolute, info });
         if (contentReads.hasSubscribers) contentReads.publish({ root, path: relative, bytes: bytes.length });
         if (relative === ".hitch-benchmark.json") descriptor = bytes;
+        if (relative === "task.toml") taskToml = bytes;
         rows.push({ path: relative, mode: info.mode & 0o111 ? "executable" : "file", sha256: createHash("sha256").update(bytes).digest("hex") });
       } else throw invalidInput(`benchmark task contains a special file: ${relative}`);
     }
@@ -260,7 +262,7 @@ async function scanTaskTree(inputRoot: string): Promise<{ digest: Sha256; descri
       throw invalidInput("benchmark task changed while being verified");
     }
   }
-  return { digest: sha256(JSON.stringify(rows)), ...(descriptor === undefined ? {} : { descriptor }) };
+  return { digest: sha256(JSON.stringify(rows)), ...(descriptor === undefined ? {} : { descriptor }), ...(taskToml === undefined ? {} : { taskToml }) };
 }
 
 function canonicalJson(value: unknown): string {

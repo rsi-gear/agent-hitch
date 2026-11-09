@@ -1,4 +1,5 @@
-import type { BackendWorkItemV1, EvalExecutionPlanV1 } from "../domain/index.js";
+import type { PendingRetryWork } from "./planned-retry-execution.js";
+import type { BackendWorkItemV1, EvalExecutionPlanV1, EvalProgressV1 } from "../domain/index.js";
 import type { EvalTrialRefV1 } from "../domain/index.js";
 import type { HarborBackendResult } from "../backends/index.js";
 
@@ -78,4 +79,40 @@ export function assertTaskSlotPlan(plan: EvalExecutionPlanV1): void {
 
 export function workOrder(plan: EvalExecutionPlanV1, workId: string): number {
   return plan.work_items.findIndex((item) => item.work_id === workId);
+}
+
+/** Each isolated logical attempt retains its own initial/retry dependency chain. */
+export function plannedWorkEntries(plan: EvalExecutionPlanV1, progress: EvalProgressV1,
+  pendingRetriesByTask: Map<string, PendingRetryWork[]>, isolated: boolean): Array<{
+    taskId: string; items: BackendWorkItemV1[]; retries: PendingRetryWork[];
+  }> {
+  const byTask = new Map<string, BackendWorkItemV1[]>();
+  for (const item of plan.work_items) {
+    const taskId = item.task_ids[0] as string;
+    if (progress.trials.some((trial) => trial.task_id === taskId && trial.attempt === item.logical_attempt)) continue;
+    const items = byTask.get(taskId) || [];
+    items.push(item);
+    byTask.set(taskId, items);
+  }
+  for (const items of byTask.values()) items.sort((left, right) => (left.logical_attempt as number) - (right.logical_attempt as number));
+  const taskIds = [...new Set([...byTask.keys(), ...pendingRetriesByTask.keys()])];
+  const taskEntries = taskIds.map((taskId) => ({
+    taskId,
+    items: byTask.get(taskId) ?? [],
+    retries: pendingRetriesByTask.get(taskId) ?? [],
+  })).sort((left, right) => workSchedulingPriority((right.items[0] ?? right.retries[0]?.item) as BackendWorkItemV1)
+    - workSchedulingPriority((left.items[0] ?? left.retries[0]?.item) as BackendWorkItemV1)
+    || Buffer.compare(Buffer.from(left.taskId), Buffer.from(right.taskId)));
+  // A logical attempt owns its initial execution and physical retry chain.
+  // Providers without verified isolation retain the task-wide dependency chain.
+  return isolated ? taskEntries.flatMap(({ taskId, items, retries }) => {
+    const lanes = new Map<string, (typeof taskEntries)[number]>();
+    for (const item of items) lanes.set(item.work_id, { taskId, items: [item], retries: [] });
+    for (const retry of retries) {
+      const lane = lanes.get(retry.item.work_id) ?? { taskId, items: [], retries: [] };
+      lane.retries.push(retry);
+      lanes.set(retry.item.work_id, lane);
+    }
+    return [...lanes.values()];
+  }) : taskEntries;
 }

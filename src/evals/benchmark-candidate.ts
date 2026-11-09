@@ -28,8 +28,8 @@ export async function assertStandardBenchmarkCandidate(
 ): Promise<void> {
   // Resource descriptors are resolved from their sealed source tree during
   // resource admission; a selection reference is not a filesystem task root.
-  if (manifest.schema_version === "2" && !root) return;
-  const host = manifest.schema_version === "2" ? await configuredResourceStore(root!) : undefined;
+  if (manifest.schema_version === "3" && !root) return;
+  const host = manifest.schema_version === "3" ? await configuredResourceStore(root!) : undefined;
   const tasks: CandidateRequirements[] = [];
   for (const item of manifest.tasks) {
     const { task_id } = item;

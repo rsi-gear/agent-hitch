@@ -99,6 +99,7 @@ export interface TaskResourceRequirementV1 {
   task_id: string;
   reservation: ResourceVectorV1;
   main_limits: ResourceVectorV1;
+  verifier_limits?: ResourceVectorV1;
   fields: {
     cpu_millis: ResourceRequirementFieldV1;
     memory_bytes: ResourceRequirementFieldV1;

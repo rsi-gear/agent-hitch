@@ -1,3 +1,4 @@
+import { admitTaskParameters } from "../parameters/index.js";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { inspectHarborTaskResources } from "../backends/index.js";
@@ -63,6 +64,7 @@ export async function resolveLocalTaskPlanningInputs(input: {
     const task = resource?.tasks.find(t => t.task_id === taskId);
     if (resource && !task) throw new Error("resource task selection mismatch");
     const taskDirectory = task ? await resourceDescriptorDirectory(resourceHost!.store, task) : singleTask ? dataset : path.join(dataset, taskId);
+    await admitTaskParameters(taskDirectory);
     let declaration: HarborTaskResourceDeclarationV1;
     try {
       declaration = await inspectHarborTaskResources({
@@ -115,8 +117,7 @@ export function deriveTaskResourceRequirement(input: {
   if (input.declaration.verifier.separate) {
     verifierCpu = chooseSingle(input.declaration.verifier.environment?.cpu_millis, "task", input.defaultResources.cpu_millis, input.defaultSource);
     verifierMemory = chooseSingle(input.declaration.verifier.environment?.memory_bytes, "task", input.defaultResources.memory_bytes, input.defaultSource);
-    runtimeCpu = Math.max(runtimeCpu, verifierCpu.value);
-    runtimeMemory = Math.max(runtimeMemory, verifierMemory.value);
+
   }
   const mainRuntimeFields = {
     cpu_millis: withRuntimeMaximum(mainCpu, runtimeCpu),
@@ -135,8 +136,8 @@ export function deriveTaskResourceRequirement(input: {
   }
   if (input.declaration.verifier.separate) {
     components.push(component("verifier", "verifier", 1, {
-      cpu_millis: withRuntimeMaximum(verifierCpu as ResourceRequirementFieldV1, runtimeCpu),
-      memory_bytes: withRuntimeMaximum(verifierMemory as ResourceRequirementFieldV1, runtimeMemory),
+      cpu_millis: verifierCpu as ResourceRequirementFieldV1,
+      memory_bytes: verifierMemory as ResourceRequirementFieldV1,
       ...(gpuAware ? { gpu_count: field(0, "derived-components", false) } : {}),
       ...(diskAware ? { ephemeral_disk_bytes: field(0, "derived-components", false) } : {}),
     }));
@@ -156,6 +157,7 @@ export function deriveTaskResourceRequirement(input: {
     task_id: input.taskId,
     reservation,
     main_limits: { cpu_millis: runtimeCpu, memory_bytes: runtimeMemory, container_slots: 1, build_slots: 0, ...(mainGpu ? { gpu_count: mainGpu.value } : {}), ...(diskAware ? { ephemeral_disk_bytes: input.defaultResources.ephemeral_disk_bytes ?? 0 } : {}) },
+    ...(verifierCpu && verifierMemory ? { verifier_limits: { cpu_millis: verifierCpu.value, memory_bytes: verifierMemory.value, container_slots: 1, build_slots: 0, ...(gpuAware ? { gpu_count: 0 } : {}), ...(diskAware ? { ephemeral_disk_bytes: 0 } : {}) } } : {}),
     fields: {
       cpu_millis: field(reservation.cpu_millis, "derived-components", estimated),
       memory_bytes: field(reservation.memory_bytes, "derived-components", estimated),

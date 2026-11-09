@@ -1,0 +1,9 @@
+{
+  "name": "hitch-mlebench-deterministic-canary",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"require('node:fs').mkdirSync('packages/coding-agent/dist',{recursive:true});require('node:fs').copyFileSync('cli.js','packages/coding-agent/dist/cli.js')\""
+  }
+}

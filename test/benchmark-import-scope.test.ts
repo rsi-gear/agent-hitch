@@ -162,7 +162,7 @@ for (const kind of ["dataset", "selection"] as const) test(`resource ${kind} kee
   const dataset = path.join(s.root, `resource-${kind}`);
   if (kind === "dataset") { await mkdir(dataset); await atomicWriteJSON(path.join(dataset, "benchmark.adapter.json"), fixture.dataset); }
   else await atomicWriteJSON(dataset, fixture.selection);
-  const manifest = await loadBenchmarkAdapterManifest(dataset); assert.ok(manifest); assert.equal(manifest.schema_version, "2");
+  const manifest = await loadBenchmarkAdapterManifest(dataset); assert.ok(manifest); assert.equal(manifest.schema_version, "3");
   const request = { ...s.request, dataset, benchmark_id: manifest.benchmark.id, benchmark_revision: manifest.dataset_digest };
   await atomicWriteJSON(path.join(s.evalDirectory, "request.json"), request);
   const binding = { ...s.binding, request, benchmarkId: manifest.benchmark.id, benchmarkRevision: manifest.dataset_digest,

@@ -7,7 +7,7 @@ import type { Sha256 } from "../domain/index.js";
 import { canonical, identity, object, parseResourceLock, parseStrictJson, portablePath, resourceId, sha, type Resource, type TaskResourceLock } from "./protocol.js";
 import { ResourceStore, type ResourceClosure } from "./store.js";
 
-export const RESOURCE_EXECUTION_CAPABILITIES = ["blob@1", "tree@1", "oci-image@1", "input-file@1", "input-tree@1", "environment-image@1", "private-copy@1", "harbor-role-context@1"];
+export const RESOURCE_EXECUTION_CAPABILITIES = ["blob@1", "tree@1", "oci-image@1", "input-file@1", "input-tree@1", "environment-image@1", "private-copy@1", "harbor-role-context@1", "bounded-tmpfs@1"];
 export interface ResourceTask {
   task_id: string;
   source_task_digest: Sha256;
@@ -25,7 +25,7 @@ export interface ResourcePlan {
   digest: Sha256;
 }
 export interface ResourceDataset {
-  schema_version: "2";
+  schema_version: "3";
   kind: "gear-harbor-benchmark";
   resource_protocol: "hitch-resource-lock@1";
   execution: { backend: "harbor-role-context@1"; resolver: "hitch-resource-resolver@1"; platform: string };
@@ -58,7 +58,7 @@ export function parseResourceTask(value: unknown): ResourceTask {
 }
 export function parseResourceDataset(value: unknown): ResourceDataset {
   const raw = object(value, ["schema_version", "kind", "resource_protocol", "execution", "required_capabilities", "benchmark", "adapter", "scoring", "raw_metrics", "tasks", "dataset_digest"]);
-  if (raw.schema_version !== "2" || raw.kind !== "gear-harbor-benchmark" || raw.resource_protocol !== "hitch-resource-lock@1") throw new TypeError("unsupported resource dataset");
+  if (raw.schema_version !== "3" || raw.kind !== "gear-harbor-benchmark" || raw.resource_protocol !== "hitch-resource-lock@1") throw new TypeError("unsupported resource dataset");
   const execution = object(raw.execution, ["backend", "resolver", "platform"]);
   if (execution.backend !== "harbor-role-context@1" || execution.resolver !== "hitch-resource-resolver@1" || typeof execution.platform !== "string" || !/^linux\/(amd64|arm64)(\/v[0-9]+)?$/.test(execution.platform)) throw new TypeError("unsupported resource execution contract");
   const benchmark = object(raw.benchmark, ["id", "revision"]), adapter = object(raw.adapter, ["id", "revision", "output_protocol"]);
@@ -75,7 +75,7 @@ export function parseResourceDataset(value: unknown): ResourceDataset {
   const tasks = raw.tasks.map(parseResourceTask), ids = tasks.map(t => t.task_id);
   if (new Set(ids.map(id => id.toLowerCase())).size !== ids.length || canonical(ids) !== canonical([...ids].sort())) throw new TypeError("resource dataset tasks must be sorted and unique");
   const { dataset_digest, ...body } = raw;
-  if (sha(dataset_digest) !== identity("hitch-resource-dataset@2", body)) throw new TypeError("resource dataset digest mismatch");
+  if (sha(dataset_digest) !== identity("hitch-resource-dataset@3", body)) throw new TypeError("resource dataset digest mismatch");
   return { ...raw, tasks } as unknown as ResourceDataset;
 }
 export function selectResources(dataset: ResourceDataset, ids: string[]): ResourceSelection {
@@ -92,7 +92,7 @@ export function parseResourceSelection(value: unknown): ResourceSelection {
   sha(raw.sourceDatasetDigest);
   const manifest = object(raw.manifest, ["schema_version", "kind", "resource_protocol", "execution", "required_capabilities", "benchmark", "adapter", "scoring", "raw_metrics"]);
   const datasetBody = { ...manifest, tasks: raw.tasks };
-  const dataset = parseResourceDataset({ ...datasetBody, dataset_digest: identity("hitch-resource-dataset@2", datasetBody) });
+  const dataset = parseResourceDataset({ ...datasetBody, dataset_digest: identity("hitch-resource-dataset@3", datasetBody) });
   return { ...raw, tasks: dataset.tasks } as unknown as ResourceSelection;
 }
 export async function readResourceInput(input: string): Promise<ResourceDataset | ResourceSelection | undefined> {
@@ -103,8 +103,10 @@ export async function readResourceInput(input: string): Promise<ResourceDataset 
   try {
     const file = path.join(input, "benchmark.adapter.json"), metadata = await lstat(file);
     if (!metadata.isFile() || metadata.size > 16 * 1024 ** 2) throw new Error("resource manifest must be a bounded regular file");
-    const text = await readFile(file, "utf8"), raw = parseStrictJson(text) as { schema_version?: string };
-    return raw.schema_version === "2" ? parseResourceDataset(raw) : undefined;
+    const text = await readFile(file, "utf8"), raw = parseStrictJson(text) as { schema_version?: string; kind?: string; resource_protocol?: string };
+    // Resource datasets have one current schema. Old inputs must never fall
+    // through to ordinary directory admission or be silently upgraded.
+    return raw.kind === "gear-harbor-benchmark" && (raw.resource_protocol !== undefined || raw.schema_version === "2" || raw.schema_version === "3") ? parseResourceDataset(raw) : undefined;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
 }
 export async function sealResourceTask(store: ResourceStore, directory: string, taskId: string, owner: string, signal?: AbortSignal): Promise<ResourceTask> {

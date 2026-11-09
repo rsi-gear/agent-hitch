@@ -183,7 +183,7 @@ function validImageReference(value: string): boolean {
   return value.length <= 1_024 && !/[\s\0]/.test(value) && !value.includes("://") && !value.includes("$");
 }
 
-async function harborPython(harborExecutable: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+export async function harborPython(harborExecutable: string, env: NodeJS.ProcessEnv): Promise<string | null> {
   const sibling = path.join(path.dirname(harborExecutable), process.platform === "win32" ? "python.exe" : "python");
   const candidates = [env.HITCH_HARBOR_PYTHON_PATH, sibling];
   if (process.platform !== "win32") {

@@ -33,6 +33,18 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/hitch-test-python"
           "$RUNNER_TEMP/hitch-test-python/bin/python" -m pip install -r test-support/requirements.txt
           echo "$RUNNER_TEMP/hitch-test-python/bin" >> "$GITHUB_PATH"
+          echo "HITCH_TEST_PYTHON=$RUNNER_TEMP/hitch-test-python/bin/python" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare isolated MLE-bench test dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/hitch-mlebench-python"
+          "$RUNNER_TEMP/hitch-mlebench-python/bin/python" -m pip install -r test-support/mlebench-requirements.txt
+          echo "KAGGLE_TEST_PYTHON=$RUNNER_TEMP/hitch-mlebench-python/bin/python" >> "$GITHUB_ENV"
+          echo "HITCH_MLEBENCH_PYTHON=$RUNNER_TEMP/hitch-mlebench-python/bin/python" >> "$GITHUB_ENV"
+          # Preserve the existing host interpreter for Harbor runtime identity tests.
+          echo "$RUNNER_TEMP/hitch-test-python/bin" >> "$GITHUB_PATH"
       - run: npm ci
       # The build invokes tsc with the same configuration as typecheck.
       - name: Build and typecheck
@@ -64,6 +76,11 @@ jobs:
       - name: Test with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm run coverage
+      - name: Standard MLE-bench task contracts
+        run: node --test benchmark-packages/kaggle/tests/*.test.mjs
+      - name: Standalone MLE-bench package
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: node scripts/check-mlebench-package.mjs
       - name: Packaged harness canary
         if: matrix.os == 'ubuntu-latest'
         run: node dist/scripts/canary-packaged-harness.js

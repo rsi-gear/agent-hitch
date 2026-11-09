@@ -1,11 +1,29 @@
 import path from "node:path";
-import { deriveTrainingDataCandidate, loadRunRecord, queryRuns, rebuildRunIndexes } from "../../runs/index.js";
+import { deriveTrainingDataCandidate, loadRunRecord, queryRuns, rebuildRunIndexes, listRunOutputArtifacts, exportRunOutputArtifacts } from "../../runs/index.js";
 import { SCHEMA_VERSION, invalidInput, statePaths } from "../../foundation/index.js";
 import { assertNoArgs, takeFlag, takeOption } from "../arguments.js";
 import { takeRunQuery } from "./compare.js";
 
 export async function runsCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();
+  if (action === "artifacts") {
+    const operation = args.shift();
+    const json = takeFlag(args, "--json");
+    const digest = takeOption(args, "--manifest-digest");
+    const out = takeOption(args, "--out");
+    const runId = args.shift();
+    if (!runId || !/^run_[a-f0-9]{32}$/.test(runId)) throw invalidInput("runs artifacts requires a valid run ID");
+    assertNoArgs(args);
+    if (operation === "list" && digest === undefined && out === undefined) {
+      const manifest = await listRunOutputArtifacts(root, runId);
+      if (json) process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+      else for (const entry of manifest.entries) process.stdout.write(`${entry.sha256}  ${entry.bytes}  ${entry.path}\n`);
+    } else if (operation === "export" && digest && out) {
+      const result = await exportRunOutputArtifacts(root, runId, { manifestDigest: digest, out });
+      process.stdout.write(json ? `${JSON.stringify(result, null, 2)}\n` : `${result.destination}\n`);
+    } else throw invalidInput("runs artifacts requires list RUN_ID or export RUN_ID --manifest-digest SHA256 --out ABSOLUTE_DIRECTORY");
+    return;
+  }
   if (action === "inspect") {
     const json = takeFlag(args, "--json");
     const runId = args.shift();
@@ -51,5 +69,5 @@ export async function runsCommand(args: string[], root: string): Promise<void> {
     else process.stdout.write(`${derived.candidate.candidate_id}  ${derived.candidate.eligibility}  ${derived.path}\n`);
     return;
   }
-  throw invalidInput("runs requires list, inspect, rebuild-index, or candidate");
+  throw invalidInput("runs requires list, inspect, artifacts, rebuild-index, or candidate");
 }

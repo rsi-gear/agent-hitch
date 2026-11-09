@@ -47,5 +47,7 @@ test("package exports contain only module facades", () => {
     "./cli",
     "./package.json",
     "./resources",
+    "./mlebench",
+    "./parameters",
   ]);
 });

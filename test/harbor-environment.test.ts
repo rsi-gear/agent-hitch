@@ -25,6 +25,7 @@ class DockerEnvironment:
         self.extra_docker_compose_paths = [pathlib.Path(p) for p in (extra_docker_compose or [])]
         self._enable_egress_control = False
         self.task_env_config = kwargs.get("task_env_config")
+        self.overrides = (kwargs.get("override_cpus"), kwargs.get("override_memory_mb"))
     @property
     def _docker_compose_paths(self): return [pathlib.Path("base.json")]
     def _compose_env_vars(self, include_os_env=True):
@@ -128,6 +129,11 @@ assert json.loads(verifier_env._hitch_ownership_compose_path.read_text())["servi
 verifier_prebuilt = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="task__verifier__trial", task_env_config=TaskEnvironment(None), hitch_prebuilt_task_image=prebuilt)
 assert verifier_prebuilt.task_env_config.docker_image is None
 assert verifier_prebuilt._hitch_prebuilt_task_image is None
+independent = {"cpu_millis": 1000, "memory_bytes": 256 * 1024 * 1024}
+main_limits = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="same__env", trial_paths=types.SimpleNamespace(trial_dir=root/"same"), override_cpus=2, override_memory_mb=1024, hitch_verifier_resource_limits=independent)
+verifier_limits = module.HitchHarborDockerEnvironment(environment_dir=root, session_id="same__verifier__trial", trial_paths=types.SimpleNamespace(trial_dir=root/"same"), override_cpus=2, override_memory_mb=1024, hitch_verifier_resource_limits=independent)
+assert main_limits.overrides == (2, 1024)
+assert verifier_limits.overrides == (1, 256)
 for trial_name in ("short", "task-" + "a" * 80, "task__verifier__name"):
     trial_paths = types.SimpleNamespace(trial_dir=root / trial_name)
     candidate = module.HitchHarborDockerEnvironment(environment_dir=root, session_id=trial_name + "__env", trial_paths=trial_paths,

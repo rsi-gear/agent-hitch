@@ -26,10 +26,10 @@ test("task resources include Compose sidecars, separate verifier, and provider o
     },
   });
 
-  assert.deepEqual(requirement.main_limits, { cpu_millis: 4_000, memory_bytes: GIB, container_slots: 1, build_slots: 0 });
+  assert.deepEqual(requirement.main_limits, { cpu_millis: 3_000, memory_bytes: 512 * MIB, container_slots: 1, build_slots: 0 });
   assert.deepEqual(requirement.reservation, {
-    cpu_millis: 9_500,
-    memory_bytes: 2 * GIB + 384 * MIB,
+    cpu_millis: 8_500,
+    memory_bytes: GIB + 896 * MIB,
     container_slots: 6,
     build_slots: 0,
   });
@@ -109,4 +109,14 @@ test("ephemeral disk quota is reserved once for the trial main component", () =>
   assert.ok(requirement.components.slice(1).every((entry) => entry.resources.ephemeral_disk_bytes === 0));
   assert.equal(requirement.fields.ephemeral_disk_bytes?.source, "derived-components");
   assert.equal(requirement.fields.ephemeral_disk_bytes?.estimated, true);
+});
+
+test("candidate and separate verifier retain independent limits and reserve their exact sum", () => {
+  const requirement = deriveTaskResourceRequirement({ taskId: "titanic", defaultResources: defaults, defaultSource: "operator-default", declaration: {
+    schema_version: "1", task: { cpu_millis: 2000, memory_bytes: GIB }, verifier: { separate: true, environment: { cpu_millis: 1000, memory_bytes: 256 * MIB } },
+    compose_services: [{ name: "main", replicas: 1 }], provider_sidecars: { main_egress: false, verifier_egress: false }, environment_images: [], environment_image_fallbacks: [], environment_builds: [],
+  }});
+  assert.deepEqual(requirement.main_limits, { cpu_millis: 2000, memory_bytes: GIB, container_slots: 1, build_slots: 0 });
+  assert.deepEqual(requirement.verifier_limits, { cpu_millis: 1000, memory_bytes: 256 * MIB, container_slots: 1, build_slots: 0 });
+  assert.deepEqual(requirement.reservation, { cpu_millis: 3000, memory_bytes: 1280 * MIB, container_slots: 2, build_slots: 0 });
 });
