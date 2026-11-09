@@ -119,8 +119,6 @@ hitch --root /absolute/hitch-state eval run \
 
 `npm run test:mlebench` 验证确定性任务与评分合同；`npm run test:mlebench:package` 验证安装包 API、CLI 和旧执行链缺失；通用测试覆盖 Terminal-Bench、AutomationBench 和 Harbor 回归。
 
-[2026-11-09 并行验收证据](evidence/mlebench-concurrency-linux-2026-11-09.json)记录本地 Linux 的串行、双并行、跨候选双并行和同 eval 三并行，实测候选 1 CPU／1 GiB、verifier 1 CPU／256 MiB。最终运行时另做三次并行复验；该验收使用确定性 Agent，模型调用数为零。
-
 验收应分别登记静态/确定性测试、真实 Linux sandbox 执行和真实模型执行。前两类不能代替真实模型验证，CSV 格式通过也不能描述为模型质量通过。
 
 参数合同可声明 `evaluation_inputs`（任务目录中的不可变普通文件）以及 `candidate_inputs`（候选文件或目录）。宿主按内容、路径和可执行位计算身份：原始任务、正式评分配置与 frozen policy 决定 `evaluation_id`；实际候选内容、harness 和 Meta 参数决定 `candidate_id`；编译后 dataset、运行时、重复序号和完整有效参数进入 `execution_id`。因此仅修改候选 prompt 或获准方法参数不会产生新的评价版本，评分输入或权限变化会产生新的评价版本。

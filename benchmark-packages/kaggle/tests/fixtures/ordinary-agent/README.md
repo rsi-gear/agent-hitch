@@ -14,4 +14,3 @@ Inputs: `/data/train.csv` with `id,x,label` columns, and an explicit delivery
 contract for IDs 101 and 102. The canary training rows all use label 1; the
 fixture's constant classifier demonstrates execution, not model quality.
 It registers a four-fold configuration but does not claim to execute CV.
-The completed live run evidence is in `docs/evidence/mlebench-linux-2026-11-09.json`.
