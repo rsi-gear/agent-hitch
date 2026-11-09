@@ -223,6 +223,16 @@ export function evalTaskCollisionKey(request: EvalRequest, taskId: string, colli
   }).slice("sha256:".length)}`;
 }
 
+/** Keep a collision lock for duplicate work while allowing independently isolated executions. */
+export function evalWorkCollisionKey(request: EvalRequest, taskId: string, collisionDomainId: string, evalId: string, workId: string): string {
+  if (!/^eval_[a-f0-9]{32}$/.test(evalId) || !/^work_[a-f0-9]{32}$/.test(workId)) throw new TypeError("isolated work collision identity is invalid");
+  return `collision_${sha256JSON({
+    task: evalTaskCollisionKey(request, taskId, collisionDomainId),
+    eval_id: evalId,
+    work_id: workId,
+  }).slice("sha256:".length)}`;
+}
+
 function persistedRequestInput(request: EvalRequest): EvalRequestInput {
   return {
     schema_version: request.schema_version,

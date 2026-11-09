@@ -56,6 +56,7 @@
     "docs/local-model-inference-spec.zh-CN.md",
     "integrations/harbor/hitch_harbor_agent.py",
     "integrations/harbor/hitch_harbor_environment.py",
+    "integrations/harbor/hitch_attempt_isolation.py",
     "integrations/harbor/hitch_shared_runtime.py",
     "integrations/harbor/hitch_build_inputs.py",
     "integrations/harbor/hitch_build_process.py",
@@ -93,7 +94,7 @@
   "scripts": {
     "docs:check": "node scripts/check-guide.mjs",
     "typecheck": "tsc --noEmit",
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/bin/hitch.js', 0o755)\"",
     "test": "node --test --test-timeout=120000 \"dist/test/*.test.js\"",
     "coverage": "node --experimental-test-coverage --test-coverage-include=dist/src/**/*.js --test-coverage-lines=75 --test-coverage-branches=65 --test-coverage-functions=70 --test --test-timeout=120000 \"dist/test/*.test.js\"",
     "canary:buildkit-secrets": "npm run build && node dist/scripts/canary-buildkit-secrets.js",

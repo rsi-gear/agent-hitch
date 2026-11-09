@@ -11,6 +11,7 @@ export interface DockerResourceObserverOptions {
   collisionDomainId: string;
   reservation: ResourceVectorV1;
   mainLimits: ResourceVectorV1;
+  verifierLimits?: ResourceVectorV1;
   sidecarLimits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -33,6 +34,8 @@ interface MutableContainer {
   image_config_digest?: Sha256;
   first_observed_at: string;
   last_observed_at: string;
+  cpu_limit_millis?: number;
+  memory_limit_bytes?: number;
   peak_memory_bytes?: number;
   cpu_time_ns?: number;
   oom_killed?: boolean;
@@ -104,7 +107,7 @@ export function startDockerResourceObserver(options: DockerResourceObserverOptio
     lease_epoch: ownership.lease_epoch,
     task_id: ownership.task_id,
     reservation: options.reservation,
-    enforced: { main_limits: options.mainLimits, sidecar_limits: options.sidecarLimits },
+    enforced: { main_limits: options.mainLimits, ...(options.verifierLimits ? { verifier_limits: options.verifierLimits } : {}), sidecar_limits: options.sidecarLimits },
     observed: observation(startedAt, sampleCount, containers, issues),
   });
   return {
@@ -180,6 +183,12 @@ async function observeContainer(
   if (typeof item.Name === "string" && item.Name.replace(/^\//, "")) observed.name = item.Name.replace(/^\//, "").replace(/[\0\r\n]/g, " ").slice(0, 256);
   if (typeof config.Image === "string" && config.Image && config.Image.length <= 1_024 && !/[\0\r\n]/.test(config.Image)) observed.image_reference = config.Image;
   if (typeof item.Image === "string" && /^sha256:[a-f0-9]{64}$/.test(item.Image)) observed.image_config_digest = item.Image as Sha256;
+  const host = record(item.HostConfig) ? item.HostConfig : {};
+  const nano = host.NanoCpus;
+  const cpu = typeof nano === "number" && nano > 0 ? nano / 1_000_000
+    : typeof host.CpuQuota === "number" && host.CpuQuota > 0 && typeof host.CpuPeriod === "number" && host.CpuPeriod > 0 ? host.CpuQuota / host.CpuPeriod * 1000 : nano === 0 ? 0 : undefined;
+  if (cpu !== undefined && Number.isSafeInteger(cpu) && cpu >= 0) observed.cpu_limit_millis = cpu;
+  if (Number.isSafeInteger(host.Memory) && Number(host.Memory) >= 0) observed.memory_limit_bytes = Number(host.Memory);
   const state = record(item.State) ? item.State : {};
   if (typeof state.OOMKilled === "boolean") observed.oom_killed = Boolean(observed.oom_killed || state.OOMKilled);
   if (state.Running === false && Number.isSafeInteger(state.ExitCode) && (state.ExitCode as number) >= 0 && (state.ExitCode as number) <= 255) {

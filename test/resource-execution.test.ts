@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { auditResources, createResourceDelivery, exportResourceBundle, finishResourceWorkspace, importResourceBundle, materializeResourceTask, preflightResourceInput, preflightResourceTask, receiveResourceDelivery, ResourceStore, selectResources, resourceDescriptorDirectory, sealResourceEvidence, retainResourceResult, type ResourceRoot } from "../src/resources/index.js";
+import { auditResources, confirmResourceResultSealed, createResourceDelivery, exportResourceBundle, finishResourceWorkspace, importResourceBundle, materializeResourceTask, preflightResourceInput, preflightResourceTask, receiveResourceDelivery, reclaimResourceExecution, ResourceStore, selectResources, resourceDescriptorDirectory, sealResourceEvidence, retainResourceResult, type ResourceRoot } from "../src/resources/index.js";
 import type { ExecutionEvidenceV1 } from "../src/domain/index.js";
 import { FixtureImageProvider, resourceFixture } from "../test-support/resource-fixture.js";
 async function temp(t: TestContext) { const root = await mkdtemp(path.join(os.tmpdir(), "hitch-resource-execution-")); t.after(() => rm(root, { recursive: true, force: true })); return root; }
@@ -73,6 +73,28 @@ test("workspace byte/concurrency budgets reject early and leave no writable shar
   const w = await materializeResourceTask(store, plan, { owner: "budget", generation: 1, policy: { maxWorkspaces: 1 } });
   await assert.rejects(materializeResourceTask(store, plan, { owner: "budget", generation: 1, policy: { maxWorkspaces: 1 } }), /concurrency/);
   await finishResourceWorkspace(store, w.id, { executionEnded: true, resultSealed: true });
+});
+
+test("sequential experiments release a single workspace slot only after sealed results and confirmed cleanup", async t => {
+  const directory = await temp(t), { store, dataset } = await resourceFixture(directory, 1);
+  const { plan } = await preflightResourceTask(store, dataset.tasks[0]!, { owner: "sequence", generation: 1, platform: "linux/amd64" });
+  for (let slot = 1; slot <= 5; slot++) {
+    const workspace = await materializeResourceTask(store, plan, { owner: `experiment:${slot}`, generation: 1, policy: { maxWorkspaces: 1 } });
+    const evidenceFile = path.join(directory, `evidence-${slot}.json`), runDirectory = path.join(directory, `run-${slot}`);
+    await mkdir(runDirectory);
+    const evidence = { ...workspace, executionEnded: false, preflightPlanDigest: plan.digest };
+    await writeFile(evidenceFile, JSON.stringify(evidence));
+    assert.equal(await reclaimResourceExecution(store, evidenceFile, true), false);
+    await writeFile(evidenceFile, JSON.stringify({ ...evidence, executionEnded: true }));
+    assert.equal(await reclaimResourceExecution(store, evidenceFile, true), false);
+    await sealResourceEvidence({ store, file: evidenceFile, runDirectory, owner: `run:${slot}`, taskId: dataset.tasks[0]!.task_id, requireObserved: false });
+    await confirmResourceResultSealed(evidenceFile);
+    assert.equal(await reclaimResourceExecution(store, evidenceFile, false), false);
+    assert.equal(await reclaimResourceExecution(store, evidenceFile, true), true);
+    assert.equal((await store.readRecord<{ state: string }>("leases", workspace.leaseId))!.state, "released");
+    assert.equal((await store.readRecord<ResourceRoot>("roots", `run:${slot}`))!.state, "active");
+    await store.objects.verify(workspace.materializedTree!.manifestDigest);
+  }
 });
 test("descriptor views share root protection, quarantine, reacquire and final collection", async t => {
   const { store, dataset } = await resourceFixture(await temp(t), 1), task = dataset.tasks[0]!;

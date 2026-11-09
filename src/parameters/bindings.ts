@@ -90,7 +90,7 @@ export async function verifyCapabilityBindings(contract: { capability_bindings?:
     if (typeof taskAgent.timeout_sec !== "number" || binding.max_action_seconds > taskAgent.timeout_sec) failure("capability action exceeds whole-task wall limit");
     const cpu = Number(taskEnv.cpus) * 1000, memory = Number(taskEnv.memory_mb) * 1024 * 1024;
     const verifierCpu = Number(verifierEnv.cpus) * 1000, verifierMemory = Number(verifierEnv.memory_mb) * 1024 * 1024;
-    let totalCpu = Math.max(cpu, verifierCpu) + Math.max(cpu, verifierCpu), totalMemory = Math.max(memory, verifierMemory) * 2;
+    let totalCpu = cpu + verifierCpu, totalMemory = memory + verifierMemory;
     for (const [id, raw] of Object.entries(services)) if (id !== "main") {
       const sidecar = record(raw, "task service resources"), c = Number(sidecar.cpus) * 1000, m = Number(sidecar.mem_limit);
       if (!Number.isSafeInteger(c) || c < 1 || !Number.isSafeInteger(m) || m < 128 * 1024 * 1024) failure("capability sidecars need explicit bounded CPU/memory");

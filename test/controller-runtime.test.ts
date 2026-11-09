@@ -38,7 +38,7 @@ async function payloadFixture(): Promise<{ root: string; expectedFileCount: numb
   await writeFile(path.join(root, "dist", "bin", "hitch.js"), "#!/usr/bin/env node\nconsole.log('hitch');\n", { mode: 0o755 });
   await writeFile(path.join(root, "dist", "src", "cli.js"), "export const main = () => {};\n");
   await writeFile(path.join(root, "dist", "scripts", "check.js"), "export const check = () => {};\n");
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs", "hitch_parameters.py", "hitch_parameters_client.py", "hitch_capabilities.py"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_attempt_isolation.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs", "hitch_parameters.py", "hitch_parameters_client.py", "hitch_capabilities.py"]) {
     await writeFile(path.join(root, "integrations", "harbor", name), `# ${name}\n`);
   }
   return {
@@ -57,7 +57,7 @@ async function copyBridgeFixture(sourceRoot: string, destinationRoot: string): P
   await cp(path.join(sourceRoot, "benchmark-packages"), path.join(destinationRoot, "benchmark-packages"), { recursive: true });
   const relative = path.join("integrations", "harbor");
   await mkdir(path.join(destinationRoot, relative), { recursive: true });
-  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs", "hitch_parameters.py", "hitch_parameters_client.py", "hitch_capabilities.py"]) {
+  for (const name of ["hitch_harbor_agent.py", "hitch_harbor_environment.py", "hitch_attempt_isolation.py", "hitch_shared_runtime.py", "hitch_build_inputs.py", "hitch_build_process.py", "hitch_image_cache.py", "hitch_compose_preparation.py", "hitch_host_credentials.py", "hitch_private_exec.py", "hitch_candidate_recycle.py", "hitch_phase_supervisor.py", "hitch_harbor_task_resources.py", "hitch_python_runtime.py", "hitch_harbor_verifier.py", "hitch_benchmark.py", "hitch_tool_client.mjs", "hitch_parameters.py", "hitch_parameters_client.py", "hitch_capabilities.py"]) {
     await writeFile(
       path.join(destinationRoot, relative, name),
       await readFile(path.join(sourceRoot, relative, name)),

@@ -29,6 +29,7 @@ export const RUNTIME_PAYLOAD_DIRECTORIES = ["dist/bin", "dist/src", "node_module
 export const RUNTIME_HARBOR_BRIDGE_FILES = [
   "integrations/harbor/hitch_harbor_agent.py",
   "integrations/harbor/hitch_harbor_environment.py",
+  "integrations/harbor/hitch_attempt_isolation.py",
   "integrations/harbor/hitch_shared_runtime.py",
   "integrations/harbor/hitch_build_inputs.py",
   "integrations/harbor/hitch_build_process.py",

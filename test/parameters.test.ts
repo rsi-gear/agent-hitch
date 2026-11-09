@@ -125,3 +125,33 @@ test("concurrent host submissions serialize, retries preserve accepted actions, 
   const changed = await authority(["init", state, directory], { task: "one", repetition: 2 }); assert.notEqual(changed.code, 0); assert.match(changed.stderr, /identity changed/);
   assert.deepEqual(JSON.parse(await readFile(state, "utf8")), before);
 });
+
+
+test("same-task trial roots keep identical action names and recovery evidence independent", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hitch-authority-isolation-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(path.join(directory, "parameters.json"), JSON.stringify(contract()));
+  const trials = await Promise.all([1, 2, 3].map(async repetition => {
+    const trial = path.join(directory, `trial-${repetition}`); await mkdir(trial);
+    const file = path.join(trial, "parameter-state.json");
+    const identity = { task: "same", eval: "same-eval", repetition };
+    const admitted = await authority(["init", file, directory], identity); assert.equal(admitted.code, 0);
+    return { file, identity, state: admitted.value };
+  }));
+  assert.equal(new Set(trials.map(t => t.state.evaluation_id)).size, 1);
+  assert.equal(new Set(trials.map(t => t.state.execution_id)).size, 3);
+  const requests = trials.map((trial, i) => authority(["submit", trial.file], {
+    action: "same-action-name", parameters: { ...defaults(), method: { folds: 6 + i, seed: 42 } },
+  }));
+  const responses = await Promise.all(requests); assert.ok(responses.every(r => r.code === 0 && r.value.accepted));
+  const before = await Promise.all(trials.map(t => readFile(t.file, "utf8")));
+  assert.deepEqual(before.map(raw => JSON.parse(raw).effective.method.folds), [6, 7, 8]);
+  const rejected = await authority(["submit", trials[0]!.file], { action: "same-action-name", parameters: defaults() });
+  assert.equal(rejected.value.accepted, false);
+  assert.equal(await readFile(trials[1]!.file, "utf8"), before[1]);
+  assert.equal(await readFile(trials[2]!.file, "utf8"), before[2]);
+  for (const trial of trials) {
+    const saved = JSON.parse(await readFile(trial.file, "utf8"));
+    assert.deepEqual((await authority(["init", trial.file, directory], trial.identity)).value, saved);
+  }
+});

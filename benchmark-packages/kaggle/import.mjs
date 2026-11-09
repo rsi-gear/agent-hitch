@@ -10,7 +10,7 @@ export async function importCompetition(options, resourceRequest) {
   return produceTask(options, resourceRequest);
 }
 export const usage = `hitch-mlebench --config TASK.json --out NEW_DATASET --root HITCH_ROOT
-hitch-mlebench --repository MLE_BENCH_REPO --data-root PREPARED_DATA --competition ID --base-image IMAGE@sha256:DIGEST --out NEW_DATASET --root HITCH_ROOT [--platform linux/amd64] [--timeout-seconds 3600] [--public-assets ASSET_MANIFEST.json]
+hitch-mlebench --repository MLE_BENCH_REPO --data-root PREPARED_DATA --competition ID --base-image IMAGE@sha256:DIGEST --out NEW_DATASET --root HITCH_ROOT [--platform linux/amd64] [--timeout-seconds 3600] [--cpus 2] [--memory-mb 4096] [--verifier-cpus 1] [--verifier-memory-mb 1024] [--public-assets ASSET_MANIFEST.json]
 
 Custom TASK.json explicitly declares instruction, publicDirectory, delivery, evaluation,
 parameters (optional), and baseImage. Relative input paths are relative to TASK.json.
@@ -20,11 +20,11 @@ Old research projects/checkpoints/rollout configuration are not supported.
 `;
 export function parseArgs(argv) {
   const options = {};
-  const names = { '--config': 'config', '--out': 'out', '--root': 'root', '--repository': 'repository', '--data-root': 'dataRoot', '--competition': 'competition', '--base-image': 'baseImage', '--platform': 'platform', '--timeout-seconds': 'timeoutSeconds', '--public-assets': 'publicAssetsFile' };
+  const names = { '--config': 'config', '--out': 'out', '--root': 'root', '--repository': 'repository', '--data-root': 'dataRoot', '--competition': 'competition', '--base-image': 'baseImage', '--platform': 'platform', '--timeout-seconds': 'timeoutSeconds', '--cpus': 'cpus', '--memory-mb': 'memoryMb', '--verifier-cpus': 'verifierCpus', '--verifier-memory-mb': 'verifierMemoryMb', '--public-assets': 'publicAssetsFile' };
   for (let i = 0; i < argv.length; i += 2) {
     const key = names[argv[i]], value = argv[i + 1];
     assert(key && !Object.hasOwn(options, key) && typeof value === 'string' && value && !value.startsWith('--'), usage);
-    options[key] = key === 'timeoutSeconds' ? Number(value) : value;
+    options[key] = ['timeoutSeconds', 'cpus', 'memoryMb', 'verifierCpus', 'verifierMemoryMb'].includes(key) ? Number(value) : value;
   }
   assert(options.out && options.root && (options.config ? !options.repository && !options.dataRoot && !options.competition && !options.publicAssetsFile : options.repository && options.dataRoot && options.competition && options.baseImage), usage);
   return options;

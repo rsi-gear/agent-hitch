@@ -403,7 +403,7 @@ export class EvalScheduler {
         ...(lease ? { parentAllocationId: lease.allocation.allocation_id } : {}),
       },
       ...(fineGrained && !remote ? {
-        workItemAdmission: workItemAdmission({ dispatcher: this.workItems, request: entry.request, collisionDomainId: this.collisionDomainId }),
+        workItemAdmission: workItemAdmission({ dispatcher: this.workItems, request: entry.request, collisionDomainId: this.collisionDomainId, isolatedSameTaskAttempts: this.provider === "local-docker" }),
       } : {}),
       ...(remote && this.remoteWork ? { remoteWorkExecutor: this.remoteWork.execute } : {}),
       precreated: true,

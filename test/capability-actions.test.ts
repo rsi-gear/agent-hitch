@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -54,4 +54,26 @@ test("recovery cannot extend a persisted capability wall budget",()=>{
  assert.throws(()=>startCapabilityStep(reserved,"a",0),/wall budget exhausted/);
  assert.throws(()=>reserveCapabilityAction(reserved,request("b"),planned(reserved,"b",1)),/wall budget exhausted/);
  assert.deepEqual(reserveCapabilityAction(reserved,request("a"),p).counters,reserved.counters);
+});
+
+
+test("parallel same-task services have separate quota and frozen delivery selection", async () => {
+ const folder = await mkdtemp(path.join(os.tmpdir(), "hitch-capability-trials-"));
+ const trials = await Promise.all([1, 2, 3].map(async repetition => {
+  const directory = path.join(folder, `trial-${repetition}`); await mkdir(directory);
+  const file = path.join(directory, "parameter-state.json"), state = fixture();
+  state.execution_id += `-${repetition}`; await writeFile(file, JSON.stringify(state));
+  return { file, state };
+ }));
+ const results = await Promise.all(trials.map(({ file, state }) => cli(file, "capability-reserve", {
+  request: request("same-final"), plan: planned(state, "same-final", 1, true),
+ })));
+ assert.ok(results.every(r => r.accepted !== false));
+ await cli(trials[0]!.file, "capability-start", { id: "same-final", index: 0 });
+ await cli(trials[0]!.file, "capability-unavailable", { id: "same-final", reason: "lost receipt" });
+ const states = await Promise.all(trials.map(({ file }) => cli(file, "show", {})));
+ assert.deepEqual(states.map(s => s.counters.service.consumed), [1, 0, 0]);
+ assert.deepEqual(states.map(s => s.counters.service.reserved), [0, 1, 1]);
+ assert.deepEqual(states.map(s => s.capability_actions["same-final"].status), ["unavailable", "reserved", "reserved"]);
+ for (const { file } of trials) assert.equal((await cli(file, "capability-plan", request("later"))).accepted, false);
 });

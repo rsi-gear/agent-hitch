@@ -41,6 +41,8 @@ export function harborEnvironmentConfig(
   preparation: HarborPreparationOptions = {},
   prebuiltServiceImages: Record<string, string> = {},
   verifierImages?: HarborVerifierImagesV1,
+  isolatedSameTaskAttempts = false,
+  verifierResources?: ResourceVectorV1,
 ): Record<string, unknown> {
   const environment: Record<string, unknown> = { type: "docker", delete: true };
   let gpuCount = 0;
@@ -56,6 +58,8 @@ export function harborEnvironmentConfig(
     if (cpus > 0) Object.assign(environment, { cpu_enforcement_policy: "limit", override_cpus: cpus });
     if (memoryMb > 0) Object.assign(environment, { memory_enforcement_policy: "limit", override_memory_mb: memoryMb });
   }
+  if (verifierResources && (!ownership || !Number.isSafeInteger(verifierResources.cpu_millis) || verifierResources.cpu_millis < 1000 || verifierResources.cpu_millis % 1000 || !Number.isSafeInteger(verifierResources.memory_bytes) || verifierResources.memory_bytes < 128 * 1024 ** 2 || verifierResources.memory_bytes % 1024 ** 2)) throw invalidInput("independent verifier limits require fenced whole-CPU/MiB resources");
+  if (isolatedSameTaskAttempts && !ownership) throw invalidInput("isolated attempts require fenced Docker ownership");
   if (serviceLimits && !ownership) throw invalidInput("Harbor sidecar limits require Docker ownership");
   const images = resolvedImages ? parseResolvedImages(resolvedImages) : {};
   const verifierResolved = verifierImages ? parseResolvedImages(verifierImages.resolvedImages) : undefined;
@@ -73,6 +77,8 @@ export function harborEnvironmentConfig(
       ...(preparation.cacheDirectory ? { hitch_image_cache_dir: preparation.cacheDirectory, hitch_image_build_slots: preparation.buildSlots ?? 2 } : {}),
       ...(preparation.managedKeepalive ? { hitch_managed_keepalive: true } : {}),
       ...(sharedRuntime ? { hitch_shared_runtime: sharedRuntime } : {}),
+      ...(isolatedSameTaskAttempts ? { hitch_isolated_attempts: true } : {}),
+      ...(verifierResources ? { hitch_verifier_resource_limits: { cpu_millis: verifierResources.cpu_millis, memory_bytes: verifierResources.memory_bytes } } : {}),
       ...(ownership ? { hitch_ownership_labels: harborOwnershipLabels(ownership) } : {}),
       ...(serviceLimits && Object.keys(serviceLimits).length > 0 ? { hitch_service_resource_limits: parseServiceLimits(serviceLimits) } : {}),
       ...(Object.keys(images).length > 0 ? { hitch_resolved_images: images } : {}),

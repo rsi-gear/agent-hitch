@@ -19,3 +19,5 @@ export type { DoctorCheck, DoctorHarborOptions, DoctorResult, HarborLocation, Lo
 export { prepareEvaluationBinding, boundEvaluationEnvironment } from "./harbor/index.js";
 export { parseEvalArtifactPins, assertHarborArtifactPin, assertHarborArtifactPins } from "./harbor/index.js";
 export { evaluationCredentialValidity } from "./harbor/host-credential-helper.js";
+
+export { supportsHarborAttemptIsolation, HARBOR_ATTEMPT_ISOLATION_PROTOCOL } from "./harbor/attempt-isolation.js";

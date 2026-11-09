@@ -386,7 +386,32 @@
     "imageUse": {
       "type": "object",
       "additionalProperties": false,
-      "allOf": [{ "if": { "required": ["service"] }, "then": { "properties": { "resolution": { "const": "prebuilt" } }, "not": { "required": ["role"], "properties": { "role": { "const": "verifier" } } } } }],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolution": {
+                "const": "prebuilt"
+              }
+            },
+            "not": {
+              "required": [
+                "role"
+              ],
+              "properties": {
+                "role": {
+                  "const": "verifier"
+                }
+              }
+            }
+          }
+        }
+      ],
       "required": [
         "task_ids",
         "image_id",
@@ -398,11 +423,18 @@
         "cache_hit"
       ],
       "properties": {
-        "role": { "enum": ["candidate", "verifier"] },
+        "role": {
+          "enum": [
+            "candidate",
+            "verifier"
+          ]
+        },
         "service": {
           "type": "string",
           "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$",
-          "not": { "const": "main" }
+          "not": {
+            "const": "main"
+          }
         },
         "task_ids": {
           "type": "array",
@@ -598,6 +630,9 @@
             "minLength": 1
           },
           "uniqueItems": true
+        },
+        "verifier_limits": {
+          "$ref": "#/$defs/resources"
         }
       }
     }

@@ -93,7 +93,7 @@ export async function inspectMlebench({ repository, dataRoot, competition, publi
 }
 
 export async function importMlebench(options, resourceRequest) {
-  const allowed = ['repository', 'dataRoot', 'competition', 'out', 'root', 'baseImage', 'platform', 'parameters', 'userParameters', 'parameterPolicy', 'timeoutSeconds', 'cpus', 'memoryMb', 'publicAssets', 'trustedTraining'];
+  const allowed = ['repository', 'dataRoot', 'competition', 'out', 'root', 'baseImage', 'platform', 'parameters', 'userParameters', 'parameterPolicy', 'timeoutSeconds', 'cpus', 'memoryMb', 'verifierCpus', 'verifierMemoryMb', 'publicAssets', 'trustedTraining'];
   assert(options && Object.keys(options).every(k => allowed.includes(k)), 'unsupported MLE-bench import option; old research configuration is not accepted');
   const imported = await inspectMlebench(options), temporary = await mkdtemp(join(tmpdir(), 'mlebench-native-'));
   try {
@@ -106,6 +106,6 @@ export async function importMlebench(options, resourceRequest) {
       instruction: imported.description, delivery: imported.delivery, expected: imported.answers,
       evaluation: { mode: 'scored', version: digest(imported.descriptor), metric: imported.descriptor.metric, grader: imported.descriptor.grader },
       nativeGraderDirectory: native, provenance: imported.descriptor, baseImage: options.baseImage, platform: options.platform,
-      trustedTraining: options.trustedTraining, parameters: options.parameters, userParameters: options.userParameters, parameterPolicy: options.parameterPolicy, timeoutSeconds: options.timeoutSeconds, cpus: options.cpus, memoryMb: options.memoryMb }, resourceRequest);
+      trustedTraining: options.trustedTraining, parameters: options.parameters, userParameters: options.userParameters, parameterPolicy: options.parameterPolicy, timeoutSeconds: options.timeoutSeconds, cpus: options.cpus, memoryMb: options.memoryMb, verifierCpus: options.verifierCpus, verifierMemoryMb: options.verifierMemoryMb }, resourceRequest);
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }

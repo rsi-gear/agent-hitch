@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { produceTask, importMlebench, defaultParameters } from '../index.mjs';
 import { admitTaskParameters, admitParameters } from 'agent-hitch/parameters';
 import { inspectMlebench } from '../mlebench/import.mjs';
+import { parseArgs } from '../import.mjs';
 import { ResourceStore, identity, parseResourceDataset, sealResourceTask } from '../../../dist/src/resources/index.js';
 import { FixtureImageProvider, fixtureReference } from '../../../dist/test-support/resource-fixture.js';
 const python = process.env.KAGGLE_TEST_PYTHON ?? 'python3';
@@ -143,7 +144,8 @@ class Grader:
   }
   const inspected = await inspectMlebench({ repository, dataRoot, competition });
   assert.equal(inspected.descriptor.competitionId, competition); assert.equal(inspected.descriptor.grader.kind, 'native');
-  const produced = await importMlebench({ repository, dataRoot, competition, root: f.options.root, out: f.options.out, baseImage: fixtureReference }, f.rpc);
+  const produced = await importMlebench({ repository, dataRoot, competition, root: f.options.root, out: f.options.out, baseImage: fixtureReference, verifierCpus: 1, verifierMemoryMb: 256 }, f.rpc);
+  assert.match(await readFile(join(produced.path, produced.taskId, 'task.toml'), 'utf8'), /\[verifier.environment\][\s\S]*?cpus = 1\nmemory_mb = 256/);
   assert.match(await readFile(join(produced.path, produced.taskId, 'instruction.md'), 'utf8'), /ORIGINAL_DESCRIPTION/);
   assert.equal(await readFile(join(f.privateDir, 'native/mlebench/competitions', competition, 'grade.py'), 'utf8'), grade);
   await assert.rejects(readFile(join(f.dir, 'candidate/mlebench/competitions', competition, 'grade.py')), { code: 'ENOENT' });
@@ -214,4 +216,37 @@ test('explicit trusted training binds installed implementation and fits all role
   await assert.rejects(produceTask({ ...options, out: join(f.dir, 'invalid-budget'), cpus: 2 }, rpc), /total budget/);
   const broad = defaultParameters(); broad.parameters.training.max_fits = 6;
   await assert.rejects(produceTask({ ...options, out: join(f.dir, 'invalid-coverage'), parameters: broad }, rpc), /unsupported_constraint/);
+});
+
+
+test('ordinary task declares independent verifier resources and rejects invalid budgets before import', async t => {
+  const f = await fixture(t);
+  const produced = await produceTask({ ...f.options, cpus: 1, memoryMb: 1024, verifierCpus: 1, verifierMemoryMb: 256, timeoutSeconds: 3600 }, f.rpc);
+  const task = join(produced.path, produced.taskId);
+  const toml = await readFile(join(task, 'task.toml'), 'utf8');
+  assert.match(toml, /\[environment\][\s\S]*?cpus = 1\nmemory_mb = 1024/);
+  assert.match(toml, /\[verifier.environment\][\s\S]*?cpus = 1\nmemory_mb = 256/);
+  assert.match(toml, /timeout_sec = 3600/);
+  const descriptor = JSON.parse(await readFile(join(task, 'task-contract.json')));
+  assert.equal(descriptor.runtime.verifierMemoryMb, 256);
+  assert.equal(descriptor.runtime.verifierCpus, 1);
+  for (const override of [{ verifierMemoryMb: 127 }, { verifierMemoryMb: 0 }, { verifierCpus: 0 }, { verifierCpus: 0.5 }]) {
+    let called = false;
+    await assert.rejects(produceTask({ ...f.options, ...override, out: join(f.dir, 'invalid-budget') }, async () => { called = true; }), /invalid verifier resource limits/);
+    assert.equal(called, false);
+  }
+  const flags = parseArgs(['--config', 'task.json', '--out', 'dataset', '--root', 'state', '--cpus', '1', '--memory-mb', '1024', '--verifier-cpus', '1', '--verifier-memory-mb', '256']);
+  assert.equal(flags.memoryMb, 1024); assert.equal(flags.verifierMemoryMb, 256); assert.equal(flags.verifierCpus, 1);
+});
+
+test('trusted trainer allocation subtracts the explicitly configured verifier budget', async t => {
+  const f = await fixture(t), coverage = 'trusted-service-top-level-attempts';
+  const baseImage = 'registry.test/runtime@sha256:6965b4ceca603f9fe9b0fd00a46bcfe8b684c2052bea79ae08a57ace0dcc7e14';
+  const rpc = async (...args) => args[1] === 'seal-dataset' ? { tasks: [{ task_digest: 'fixture' }], dataset_digest: 'fixture' } : f.rpc(...args);
+  const produced = await produceTask({ ...f.options, baseImage, trustedTraining: { version: 1, coverage }, cpus: 4, memoryMb: 2048, verifierCpus: 2, verifierMemoryMb: 256 }, rpc);
+  const task = join(produced.path, produced.taskId), compose = JSON.parse(await readFile(join(task, 'environment/docker-compose.yaml')));
+  assert.equal(compose.services.trainer.cpus, 1);
+  assert.equal(compose.services.trainer.mem_limit, 1280 * 1024 ** 2);
+  const state = await admitTaskParameters(task);
+  assert.deepEqual(state.bindings[0].resource_budget, { cpu_millis: 4000, memory_bytes: 2048 * 1024 ** 2 });
 });

@@ -72,9 +72,14 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         hitch_image_cache_dir: str | None = None,
         hitch_image_build_slots: int = 2,
         hitch_managed_keepalive: bool = False,
+        hitch_isolated_attempts: bool = False,
+        hitch_verifier_resource_limits: Mapping[str, int] | None = None,
         **kwargs: Any,
     ) -> None:
         self._hitch_ownership_labels = _validate_labels(hitch_ownership_labels)
+        if not isinstance(hitch_isolated_attempts, bool):
+            raise ValueError("invalid isolated attempt capability")
+        self._hitch_isolated_attempts = hitch_isolated_attempts
         self._hitch_service_resource_limits = _validate_resource_limits(
             hitch_service_resource_limits
         )
@@ -99,6 +104,15 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
         trial_name = trial_paths.trial_dir.name if trial_paths is not None else None
         candidate = _candidate_session(session_id, trial_name)
         self._hitch_environment_role = "candidate" if candidate or not session_id else "verifier"
+        if hitch_verifier_resource_limits is not None:
+            limits = _validate_resource_limits({"verifier": hitch_verifier_resource_limits})["verifier"]
+            if limits["cpu_millis"] % 1000 or limits["memory_bytes"] % (1024 * 1024) or limits["memory_bytes"] < 128 * 1024 * 1024:
+                raise ValueError("independent verifier limits require whole CPU/MiB")
+            if session_id and not candidate:
+                kwargs["override_cpus"] = limits["cpu_millis"] // 1000
+                kwargs["override_memory_mb"] = limits["memory_bytes"] // (1024 * 1024)
+                kwargs["cpu_enforcement_policy"] = "limit"
+                kwargs["memory_enforcement_policy"] = "limit"
         verifier_image = _validate_prebuilt_task_image(hitch_prebuilt_verifier_image)
         verifier_images = _validate_resolved_images(hitch_verifier_resolved_images)
         if session_id and not candidate:
@@ -147,7 +161,24 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                     kwargs["task_env_config"] = updated
                 else:
                     positional[task_env_position] = updated
+        if hitch_isolated_attempts:
+            from hitch_attempt_isolation import project_name, inspect_task
+            if not self._hitch_ownership_labels or trial_paths is None:
+                raise ValueError("isolated attempts require fenced ownership and a host trial directory")
+            directory = kwargs.get("environment_dir", positional[0] if positional else None)
+            task_root = Path(directory).parent if directory is not None else None
+            if task_root is None or not inspect_task(task_root)["supported"]:
+                raise ValueError("task does not support isolated concurrent attempts")
+            isolated_session = project_name(self._hitch_ownership_labels, session_id, trial_paths.trial_dir)
+            if len(positional) >= 3:
+                positional[2] = isolated_session
+            else:
+                kwargs["session_id"] = isolated_session
         super().__init__(*positional, **kwargs)
+        if hitch_isolated_attempts:
+            # Native Harbor defaults build tags to a task-content identity. A
+            # fallback build must not retag an image in use by another attempt.
+            self._env_vars.main_image_name = self.session_id + "-main"
         self._hitch_benchmark = None
         self._hitch_benchmark_platform = None
         directory = getattr(self, "environment_dir", None)
@@ -213,6 +244,11 @@ class HitchHarborDockerEnvironment(DockerEnvironment):
                 # Compose can remove networks/volumes. Keep shared images for
                 # Hitch image GC; physical cleanup remains owner-scoped.
                 command = command[:index] + command[index + 2:]
+        if command[:1] == ["up"] and self._hitch_isolated_attempts:
+            from hitch_attempt_isolation import assert_resolved
+            resolved = await run(["config", "--format", "json"])
+            readonly = tuple((self._hitch_shared_runtime or {}).values())
+            assert_resolved(json.loads(resolved.stdout), self.session_id, self.trial_paths.trial_dir, readonly)
         if preparation:
             if command == ["build"]:
                 cached = await preparation.build(run)

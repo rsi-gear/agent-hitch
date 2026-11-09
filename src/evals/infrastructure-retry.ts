@@ -44,7 +44,7 @@ export interface InfrastructureRetryRun {
 }
 
 type RetryBackendOverrides = Pick<RunHarborBackendOptions,
-  "executionResources" | "dockerOwnership" | "dockerServiceLimits" | "resolvedImages"
+  "executionResources" | "verifierResources" | "dockerOwnership" | "dockerServiceLimits" | "resolvedImages" | "isolatedSameTaskAttempts"
   | "prebuiltTaskImage" | "prebuiltServiceImages" | "verifierImages" | "recoverableProcess" | "onProcessStarted" | "onProcessExited">;
 
 export interface InfrastructureRetryLifecycle {

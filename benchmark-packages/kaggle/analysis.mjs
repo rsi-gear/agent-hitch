@@ -10,7 +10,7 @@ const here = import.meta.dirname;
 const capabilities = ['tree@1', 'oci-image@1', 'private-copy@1', 'harbor-role-context@1'];
 
 export async function produceTask(options, resourceRequest) {
-  const allowed = ['root', 'out', 'id', 'instruction', 'publicDirectory', 'delivery', 'evaluation', 'expected', 'nativeGraderDirectory', 'parameters', 'userParameters', 'parameterPolicy', 'baseImage', 'platform', 'timeoutSeconds', 'cpus', 'memoryMb', 'provenance', 'trustedTraining'];
+  const allowed = ['root', 'out', 'id', 'instruction', 'publicDirectory', 'delivery', 'evaluation', 'expected', 'nativeGraderDirectory', 'parameters', 'userParameters', 'parameterPolicy', 'baseImage', 'platform', 'timeoutSeconds', 'cpus', 'memoryMb', 'verifierCpus', 'verifierMemoryMb', 'provenance', 'trustedTraining'];
   assert(options && Object.keys(options).every(k => allowed.includes(k)), 'unsupported task input; import a new task instead of an old research request');
   const { root, out, instruction, publicDirectory, expected, nativeGraderDirectory, baseImage } = options;
   assert(typeof root === 'string' && typeof out === 'string' && typeof publicDirectory === 'string', 'root, out and publicDirectory required');
@@ -29,11 +29,13 @@ export async function produceTask(options, resourceRequest) {
   assert(!await lstat(out).catch(e => { if (e.code !== 'ENOENT') throw e; }), 'output already exists');
   const { admitParameters, admitTaskParameters, validateParameterContract } = await import('agent-hitch/parameters');
   const trusted = options.trustedTraining;
+  const verifierCpus = options.verifierCpus ?? 1, verifierMemoryMb = options.verifierMemoryMb ?? (trusted ? 512 : 1024);
+  assert(Number.isSafeInteger(verifierCpus) && verifierCpus > 0 && Number.isSafeInteger(verifierMemoryMb) && verifierMemoryMb >= 128, 'invalid verifier resource limits');
   let plugin;
   if (trusted !== undefined) {
     assert(trusted && trusted.version === 1 && trusted.coverage === 'trusted-service-top-level-attempts'
       && Object.keys(trusted).every(k => ['version', 'coverage', 'maxActionSeconds'].includes(k)), 'trustedTraining must explicitly declare supported service-only coverage');
-    assert(Number.isInteger(cpus) && cpus >= 3 && memoryMb >= 1536, 'trusted training requires a total budget of at least 3 CPUs and 1536 MiB');
+    assert(Number.isInteger(cpus) && cpus >= 2 + verifierCpus && memoryMb >= 1024 + verifierMemoryMb, 'trusted training total budget must include 1 candidate CPU/512 MiB, the verifier, and at least 1 trainer CPU/512 MiB');
     assert(delivery.path === 'submission.csv' && delivery.targetColumns.length === 1 && ['label', 'probability'].includes(delivery.valueType), 'trusted service supports one classification submission.csv');
     plugin = JSON.parse(await readFile(join(here, 'runtime/training-service.json'), 'utf8'));
   }
@@ -72,7 +74,7 @@ export async function produceTask(options, resourceRequest) {
   const verifierFiles = ['verify.py', 'scoring.py'];
   const revision = digest(Object.fromEntries(await Promise.all(verifierFiles.map(async name => [name, sha(await readFile(join(here, 'runtime', name)))]))));
   const taskBody = { version: 1, delivery, evaluation, parameters, ...(trusted ? { trustedTraining: { ...trusted, binding: 'trainer', count_unit: plugin.count_unit, source_digest: parameters.capability_bindings[0].source.sha256 } } : {}), ...(parameterOverrides ? { parameterOverrides } : {}), publicFiles, privateAnswersDigest,
-    graderFiles, verifierRevision: revision, runtime: { image: baseImage, platform, cpus, memoryMb, timeoutSeconds }, provenance: options.provenance ?? {} };
+    graderFiles, verifierRevision: revision, runtime: { image: baseImage, platform, cpus, memoryMb, verifierCpus, verifierMemoryMb, timeoutSeconds }, provenance: options.provenance ?? {} };
   const taskIdentity = digest(taskBody), id = options.id ?? `task-${taskIdentity.slice(7, 31)}`;
   assert(typeof id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/.test(id), 'invalid task ID');
   const staging = `${resolve(out)}.partial-${randomUUID()}`, temporary = await mkdtemp(join(tmpdir(), 'hitch-task-'));
@@ -130,7 +132,7 @@ Use parameter_action:"task" for admitted task-start values, or the ID of a prior
     const services = { main: { platform, build: { context: 'candidate', dockerfile: 'Dockerfile' }, user: '0:0', init: true } };
     if (trusted) {
       services.trainer = { platform, build: { context: 'services/trainer', dockerfile: 'Dockerfile' },
-        network_mode: 'none', cpus: cpus - 2, mem_limit: (memoryMb - 1024) * 1024 ** 2, init: true };
+        network_mode: 'none', cpus: cpus - 1 - verifierCpus, mem_limit: (memoryMb - 512 - verifierMemoryMb) * 1024 ** 2, init: true };
       await mkdir(join(task, 'environment/services/trainer'), { recursive: true });
       await copyFile(join(here, 'runtime/training-service.py'), join(task, 'environment/services/trainer/runner.py'));
       await writeFile(join(task, 'environment/services/trainer/Dockerfile'), `FROM ${baseImage}\nCOPY data /data\nCOPY runner.py /opt/mlebench-service/runner.py\nRUN --network=none chmod -R a-w /data /opt/mlebench-service\nWORKDIR /opt/mlebench-service\nCMD ["sleep", "infinity"]\n`);
@@ -142,7 +144,7 @@ Use parameter_action:"task" for admitted task-start values, or the ID of a prior
     await writeFile(join(task, 'tests/Dockerfile'), `FROM ${baseImage}\nCOPY . /tests\nWORKDIR /tests\n${nativeProbe}CMD ["sleep", "infinity"]\n`);
     for (const name of verifierFiles) await copyFile(join(here, 'runtime', name), join(task, 'tests', name));
     await writeFile(join(task, 'tests/test.sh'), '#!/bin/sh\nset -eu\npython3 /tests/verify.py --private /tests/private --output /output --result /logs/verifier\n', { mode: 0o755 });
-    await writeFile(join(task, 'task.toml'), `schema_version = "1.4"\nartifacts = [{ source = "/output" }]\n[environment]\nworkdir = "/app"\nnetwork_mode = "public"\ncpus = ${trusted ? 1 : cpus}\nmemory_mb = ${trusted ? 512 : memoryMb}\n[agent]\ntimeout_sec = ${timeoutSeconds}\n[verifier]\ntimeout_sec = 120\nenvironment_mode = "separate"\n[verifier.environment]\nnetwork_mode = "no-network"\ncpus = 1\nmemory_mb = ${trusted ? 512 : 1024}\n`);
+    await writeFile(join(task, 'task.toml'), `schema_version = "1.4"\nartifacts = [{ source = "/output" }]\n[environment]\nworkdir = "/app"\nnetwork_mode = "public"\ncpus = ${trusted ? 1 : cpus}\nmemory_mb = ${trusted ? 512 : memoryMb}\n[agent]\ntimeout_sec = ${timeoutSeconds}\n[verifier]\ntimeout_sec = 120\nenvironment_mode = "separate"\n[verifier.environment]\nnetwork_mode = "no-network"\ncpus = ${verifierCpus}\nmemory_mb = ${verifierMemoryMb}\n`);
     await admitTaskParameters(task);
     const common = { revision, unit: 'ratio', direction: 'maximize', range: { min: 0, max: 1 }, granularity: 'trial', repetitionReducer: 'mean', taskReducer: 'weighted-mean', comparisonPrecision: 1e-9 };
     const metrics = ['valid_output', 'completed', 'quality_available', ...(trusted ? ['constraints_verified'] : [])].map(metric => ({ ...common, id: metric, source: { path: `verifier.result.rewards.${metric}`, extractor: 'number-v1' } }));

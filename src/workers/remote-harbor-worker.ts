@@ -74,6 +74,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
     const observer = startDockerResourceObserver({
       ownership, workerId: offer.worker_id, collisionDomainId: offer.lease.collision_domain_id,
       reservation: offer.lease.reservation, mainLimits: runtimeResources.mainLimits,
+      ...(runtimeResources.verifierLimits ? { verifierLimits: runtimeResources.verifierLimits } : {}),
       sidecarLimits: runtimeResources.sidecarLimits, env, signal,
     });
     const backendDirectory = path.join(evalDirectory, "remote-work", offer.work.work_id, `epoch-${String(offer.lease.epoch).padStart(6, "0")}`);
@@ -106,6 +107,7 @@ export function remoteHarborWorker(options: RemoteHarborWorkerOptions): RemoteWo
         root, resolvedRevision: spec.resolution, runtimeDirectory: runtime.directory,
         runtimeId: runtime.runtime_id, preparedArtifact: preparedUse(prepared, harnessDirectory, spec.harness_artifact),
         executionResources: runtimeResources.mainLimits,
+        ...(runtimeResources.verifierLimits ? { verifierResources: runtimeResources.verifierLimits } : {}),
         ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
         dockerOwnership: ownership, resolvedImages: resolvedImageMapping(offer.work.image_refs ?? []),
         verifierImages: { resolvedImages: resolvedImageMapping(offer.work.image_refs ?? [], "verifier") },
