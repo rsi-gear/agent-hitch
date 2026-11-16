@@ -1,6 +1,8 @@
+import { normalizeHarborResult } from "./result-normalization.js";
+export { normalizeHarborResult } from "./result-normalization.js";
 import { harborRequestEnvironment } from "./evaluation-binding.js";
 import { assertHarborArtifactPin } from "./artifact-pins.js";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { withResourceAdmission } from "./resource-admission.js";
 import path from "node:path";
 import { HitchError, atomicWriteJSON, detectVersion, ensureDir, fingerprintExecutable, invalidInput, readJSON, sha256JSON } from "../../foundation/index.js";
@@ -28,6 +30,7 @@ export interface RunHarborBackendOptions {
   backendDirectory?: string;
   taskNames?: readonly string[];
   logicalAttempt?: number;
+  isolatedSameTaskAttempts?: boolean;
   request: EvalRequest;
   root: string;
   resolvedRevision: ResolvedRevision;
@@ -44,6 +47,7 @@ export interface RunHarborBackendOptions {
   onProcessExited?: (result: { code: number | null; signal: NodeJS.Signals | null }) => void | Promise<void>;
   recoverableProcess?: boolean;
   executionResources?: ResourceVectorV1;
+  verifierResources?: ResourceVectorV1;
   dockerOwnership?: DockerResourceOwnershipV1;
   dockerServiceLimits?: HarborDockerServiceLimitsV1;
   resolvedImages?: Record<string, string>;
@@ -96,6 +100,7 @@ async function executeHarborBackend({
   backendDirectory: requestedBackendDirectory,
   taskNames,
   logicalAttempt,
+  isolatedSameTaskAttempts = false,
   request,
   root,
   resolvedRevision,
@@ -112,6 +117,7 @@ async function executeHarborBackend({
   onProcessExited,
   recoverableProcess = false,
   executionResources,
+  verifierResources,
   dockerOwnership,
   dockerServiceLimits,
   resolvedImages,
@@ -135,6 +141,11 @@ async function executeHarborBackend({
   const harborRelease = version.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? "";
   const hostCredentialHelper = parseHostCredentialHelperConfig(env);
   const hostCredentialNames = helperCredentialNamesForRequest(hostCredentialHelper, request.pass_env);
+  if (verifierResources) {
+    const provider = await readFile(path.join(executionRuntimeDirectory, "payload/integrations/harbor/hitch_harbor_environment.py"), "utf8");
+    if (harborRelease !== DEFAULT_HARBOR_VERSION || !provider.includes("hitch_verifier_resource_limits")) throw new HitchError("independent verifier limits require a capable frozen runtime", { code: "verifier_resource_limits_unsupported", exitCode: 10 });
+  }
+  if (isolatedSameTaskAttempts && harborRelease !== DEFAULT_HARBOR_VERSION) throw new HitchError("isolated attempts require the verified Harbor release", { code: "attempt_isolation_unsupported", exitCode: 10 });
   if (hostCredentialHelper !== null && harborRelease !== DEFAULT_HARBOR_VERSION) {
     throw new HitchError(`host task credentials require Harbor ${DEFAULT_HARBOR_VERSION}`, {
       code: "host_credential_helper_backend_unsupported",
@@ -157,9 +168,11 @@ async function executeHarborBackend({
     backendDirectory,
     ...(taskNames === undefined ? {} : { taskNames }),
     ...(logicalAttempt === undefined ? {} : { logicalAttempt }),
+    isolatedSameTaskAttempts,
     jobName,
     env,
     ...(executionResources ? { executionResources } : {}),
+    ...(verifierResources ? { verifierResources } : {}),
     ...(dockerOwnership ? { dockerOwnership } : {}),
     ...(dockerServiceLimits ? { dockerServiceLimits } : {}),
     ...(resolvedImages ? { resolvedImages } : {}),
@@ -313,9 +326,11 @@ export interface BuildHarborJobConfigOptions {
   backendDirectory: string;
   taskNames?: readonly string[];
   logicalAttempt?: number;
+  isolatedSameTaskAttempts?: boolean;
   jobName?: string;
   env?: NodeJS.ProcessEnv;
   executionResources?: ResourceVectorV1;
+  verifierResources?: ResourceVectorV1;
   dockerOwnership?: DockerResourceOwnershipV1;
   dockerServiceLimits?: HarborDockerServiceLimitsV1;
   resolvedImages?: Record<string, string>;
@@ -335,9 +350,11 @@ export async function buildHarborJobConfig({
   backendDirectory,
   taskNames,
   logicalAttempt,
+  isolatedSameTaskAttempts = false,
   jobName = "job",
   env = process.env,
   executionResources,
+  verifierResources,
   dockerOwnership,
   dockerServiceLimits,
   resolvedImages,
@@ -421,6 +438,8 @@ export async function buildHarborJobConfig({
       harborPreparationOptions(env),
       prebuiltServiceImages,
       verifierImages,
+      isolatedSameTaskAttempts,
+      verifierResources,
     ),
     verifier: harborVerifierConfig(request),
     agents: [agent],
@@ -439,45 +458,6 @@ export function lockedHarnessRef(resolvedRevision: ResolvedRevision): string {
   throw invalidInput("Harbor eval requires a resolved exact version or commit");
 }
 
-export function normalizeHarborResult(raw: Record<string, unknown>): Record<string, unknown> {
-  const trials = Array.isArray(raw?.trial_results) ? raw.trial_results as Record<string, unknown>[] : [];
-  const rewardValues = new Map<string, number[]>();
-  const normalizedTrials = trials.map((trial) => {
-    const verifier = (trial?.verifier_result || {}) as Record<string, unknown>;
-    const rewards = (verifier.rewards || {}) as Record<string, unknown>;
-    for (const [name, value] of Object.entries(rewards)) {
-      if (typeof value !== "number" || !Number.isFinite(value)) continue;
-      const values = rewardValues.get(name) || [];
-      values.push(value);
-      rewardValues.set(name, values);
-    }
-    return {
-      task_name: trial?.task_name || null,
-      trial_name: trial?.trial_name || null,
-      status: trial?.exception_info ? "errored" : "completed",
-      rewards,
-      exception: trial?.exception_info || null,
-    };
-  });
-  const rewards = Object.fromEntries([...rewardValues.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, values]) => [name, {
-    count: values.length,
-    mean: values.reduce((sum, value) => sum + value, 0) / values.length,
-    min: Math.min(...values),
-    max: Math.max(...values),
-  }]));
-  const rewardEntries = Object.entries(rewards);
-  const primary = (rewards.reward as Record<string, unknown>) || rewardEntries[0]?.[1] || null;
-  const stats = (raw?.stats || {}) as Record<string, unknown>;
-  return {
-    n_trials: raw?.n_total_trials ?? trials.length,
-    n_completed: stats.n_completed_trials ?? normalizedTrials.filter((trial) => trial.status === "completed").length,
-    n_errored: stats.n_errored_trials ?? normalizedTrials.filter((trial) => trial.status === "errored").length,
-    n_cancelled: stats.n_cancelled_trials ?? 0,
-    primary_reward: (primary as Record<string, unknown>)?.mean ?? null,
-    rewards,
-    trials: normalizedTrials,
-  };
-}
 
 function credentialEnvironmentNames(explicitNames: string[], env: NodeJS.ProcessEnv, helperNames: readonly string[] = []): string[] {
   const names = new Set<string>(HARBOR_CREDENTIAL_ENV.filter((name) => env[name] !== undefined));

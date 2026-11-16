@@ -10,6 +10,8 @@ export interface ObservedContainerResourcesV1 {
   image_config_digest?: Sha256;
   first_observed_at: string;
   last_observed_at: string;
+  cpu_limit_millis?: number;
+  memory_limit_bytes?: number;
   peak_memory_bytes?: number;
   cpu_time_ns?: number;
   oom_killed?: boolean;
@@ -30,6 +32,7 @@ export interface ExecutionEvidenceV1 {
   reservation: ResourceVectorV1;
   enforced: {
     main_limits: ResourceVectorV1;
+    verifier_limits?: ResourceVectorV1;
     sidecar_limits: Record<string, { cpu_millis: number; memory_bytes: number; gpu_count?: number }>;
   };
   observed: {

@@ -30,6 +30,7 @@ export function assertRemoteVerifierOutcome(input: {
     || e.worker_id !== l.worker_id || e.provider !== l.provider || e.collision_domain_id !== l.collision_domain_id
     || e.task_id !== v.source_ref.task_id || sha256JSON(e.reservation) !== sha256JSON(input.work.reservation)
     || sha256JSON(l.reservation) !== sha256JSON(e.reservation)
+    || limits.verifierLimits && sha256JSON(e.enforced.verifier_limits ?? null) !== sha256JSON(limits.verifierLimits)
     || sha256JSON(e.enforced.main_limits) !== sha256JSON(limits.mainLimits) || sha256JSON(e.enforced.sidecar_limits) !== sha256JSON(limits.sidecarLimits)
     || o.controller_runtime_id !== v.verifier_runtime_id || o.trial.task_name !== v.source_trial.task_name
     || o.trial.trial_name !== remoteVerifierTrialName(v.assessment_id)

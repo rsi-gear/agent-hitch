@@ -187,6 +187,8 @@ export async function executeRun({
       workspaceLease = await markWorkspaceRunning(workspaceLease, { recordPath: workspacePath });
       const childEnvironment = harnessChildEnvironment({ parent: process.env, ...(specification.env ? { adapter: specification.env } : {}),
         cwd: workspaceLease.execution_workspace, privateCredentials: endpointRuntime.credentials, managedLocal: Boolean(normalized.endpoint_binding) || Boolean(trainingIdentity) });
+      // Runtime-assigned provenance; cannot be replaced by inherited/adapter env.
+      childEnvironment.HITCH_RUN_ID = runId;
       const invocation = prepareSpawnCommand(specification.executable, specification.args);
       const remainingMs = candidateDeadlineNs === undefined ? normalized.timeout_ms
         : Number((candidateDeadlineNs - process.hrtime.bigint()) / 1_000_000n);

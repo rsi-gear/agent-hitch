@@ -20,7 +20,7 @@ export function localWorkerSnapshot(input: {
       backends: ["harbor"],
       platforms: [`${process.platform}-${process.arch}`],
       task_membership: ["known", "opaque"],
-      isolated_same_task_attempts: false,
+      isolated_same_task_attempts: input.provider === "local-docker",
       remote: false,
     },
     capacity: {
@@ -52,7 +52,7 @@ export function localProviderStatusSnapshot(input: {
       docker: true,
       buildkit: true,
       model_proxy: true,
-      isolated_same_task_attempts: false,
+      isolated_same_task_attempts: input.provider === "local-docker",
     },
     capacity: {
       total: resources.capacity,

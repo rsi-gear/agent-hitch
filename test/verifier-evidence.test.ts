@@ -790,3 +790,35 @@ function legacyExcerpt(value: Buffer, limit: number): Buffer {
   const head = Math.floor(payload / 2);
   return Buffer.concat([value.subarray(0, head), marker, value.subarray(value.length - (payload - head))]);
 }
+
+test("host parameter evidence is sealed and available through the public artifact API; candidate/verifier spoof is ignored", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hitch-parameter-evidence-"));
+  t.after(() => forceRemove(root));
+  const runId = `run_${"9".repeat(32)}`;
+  const runDirectory = await writeRun(root, runId, { status: "valid", reward: 1, verifier_result_ref: "verifier/result.json" });
+  await atomicWriteJSON(path.join(runDirectory, "verifier/result.json"), { rewards: { reward: 1 } });
+  const trial = await ensureDir(path.join(root, "trial"));
+  await ensureDir(path.join(trial, "verifier"));
+  await atomicWriteJSON(path.join(trial, "verifier/parameter-evidence.json"), { forged: true });
+  await atomicWriteJSON(path.join(trial, "agent/parameter-evidence.json"), { forged: true });
+  assert.equal(await captureVerifierDiagnostics(trial, runDirectory), null);
+  const evidence = { version: 1, source: "host_parameter_authority", execution_compliance: "unverified",
+    state: { effective: { method: { folds: 5 } }, audit: [{ actor: "target", path: "/method/seed", accepted: false, reason: "locked" }] } };
+  await atomicWriteJSON(path.join(trial, "parameter-evidence.json"), evidence);
+  const index = await captureVerifierDiagnostics(trial, runDirectory);
+  assert.equal(index?.artifacts[0]?.name, "parameter-evidence.json");
+  assert.equal(index?.artifacts[0]?.media_type, "application/json");
+  await writeEvalRecord(root, runId);
+  await writeResultBundleIndex(runDirectory);
+  const page = await loadVerifierDiagnosticPage(root, runId, "parameter-evidence.json");
+  assert.equal(page.artifact.source_complete, true);
+  // Host-declared JSON Pointers stay readable while other diagnostic strings
+  // retain the normal path/credential redaction policy.
+  const visible = JSON.parse(page.page.text);
+  assert.deepEqual(visible.state.effective, evidence.state.effective);
+  assert.equal(visible.source, "host_parameter_authority");
+  assert.equal(visible.state.audit[0].path, "/method/seed");
+  const cli = spawnSync(process.execPath, [executable, "--root", root, "verifier", "artifact", runId, "parameter-evidence.json", "--json"], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).artifact.sha256, page.artifact.sha256);
+});

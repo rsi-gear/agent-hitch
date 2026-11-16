@@ -218,6 +218,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 | --- | --- |
 | `hitch runs list [FILTERS] [--json]` | Query recorded runs. |
 | `hitch runs inspect RUN_ID [--json]` | Inspect a run and verify linked trajectory evidence. |
+| `hitch runs artifacts list RUN_ID [--json]` | Verify and list declared output artifacts from a sealed local Docker run. JSON includes the manifest digest needed for export. |
+| `hitch runs artifacts export RUN_ID --manifest-digest SHA256 --out ABSOLUTE_DIRECTORY [--json]` | Export the exact output manifest and verified files. The parent directory must exist; the destination must be absent or already contain the same complete export. See the [output artifact contract](../../run-output-artifacts.zh-CN.md). |
 | `hitch runs rebuild-index [--json]` | Rebuild derived query indexes from stored runs. |
 | `hitch runs candidate RUN_ID [--context-license allowed\|denied\|unknown] [--capture-required] [--redaction-policy ID] [--json]` | Derive a training-data candidate from a verified bundle. License defaults to unknown; the policy label defaults to `hitch-provider-redaction-v1`. |
 | `hitch compare model [FILTERS] [--reference-run RUN_ID] [--json]` | Compare model outcomes and report whether the runs meet strict comparability requirements. |

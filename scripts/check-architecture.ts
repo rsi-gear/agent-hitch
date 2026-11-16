@@ -3,27 +3,29 @@ import path from "node:path";
 
 const SRC_ROOT = path.resolve("src");
 const MODULES = new Set([
-  "domain", "foundation", "benchmarks", "adapters", "revisions", "artifacts", "controller-runtime",
+  "domain", "foundation", "parameters", "benchmarks", "adapters", "revisions", "artifacts", "controller-runtime",
   "images", "resources", "inference", "model-access", "trajectories", "feedback", "workspaces", "runs", "backends", "evals", "control-plane", "workers", "daemon", "cli",
 ]);
 const ALLOWED = new Map<string, Set<string>>([
   ["domain", new Set()],
   ["foundation", new Set(["domain"])],
+  ["parameters", new Set(["domain", "foundation"])],
   ["benchmarks", new Set(["domain", "foundation"])],
   ["adapters", new Set(["domain", "foundation"])],
   ["revisions", new Set(["domain", "foundation", "adapters"])],
   ["artifacts", new Set(["domain", "foundation", "adapters", "revisions"])],
   ["controller-runtime", new Set(["domain", "foundation"])],
   ["images", new Set(["domain", "foundation"])],
-  ["resources", new Set(["domain", "foundation", "images"])],
+  // Resource materialization preserves generic parameter identity inputs before transport rewrites.
+  ["resources", new Set(["domain", "foundation", "images", "parameters"])],
   ["inference", new Set(["domain", "foundation"])],
   ["model-access", new Set(["domain", "foundation"])],
   ["trajectories", new Set(["domain", "foundation", "adapters"])],
   ["feedback", new Set(["domain", "foundation", "trajectories"])],
   ["workspaces", new Set(["domain", "foundation"])],
   ["runs", new Set(["domain", "foundation", "adapters", "revisions", "artifacts", "workspaces", "trajectories", "model-access"])],
-  ["backends", new Set(["domain", "foundation", "resources", "model-access"])],
-  ["evals", new Set(["domain", "foundation", "resources", "benchmarks", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
+  ["backends", new Set(["domain", "foundation", "parameters", "resources", "model-access"])],
+  ["evals", new Set(["domain", "foundation", "parameters", "resources", "benchmarks", "backends", "runs", "artifacts", "revisions", "controller-runtime", "workspaces", "trajectories", "model-access"])],
   ["control-plane", new Set(["domain", "foundation", "resources", "adapters", "model-access", "evals", "images", "inference"])],
   ["workers", new Set(["domain", "foundation", "resources", "artifacts", "backends", "controller-runtime", "evals", "control-plane", "model-access"])],
   ["daemon", new Set(["domain", "foundation", "runs", "workspaces", "control-plane"])],

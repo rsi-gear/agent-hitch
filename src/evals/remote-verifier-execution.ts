@@ -76,9 +76,10 @@ export async function runRemoteVerifierWork(input: {
     || environment.override_cpus !== limits.mainLimits.cpu_millis / 1000 || environment.override_memory_mb !== limits.mainLimits.memory_bytes / 1024 ** 2
     || (kwargs.hitch_main_gpu_count ?? 0) !== (limits.mainLimits.gpu_count ?? 0)
     || environment.override_gpus != null && environment.override_gpus !== (limits.mainLimits.gpu_count ?? 0)
+    || limits.verifierLimits && sha256JSON(kwargs.hitch_verifier_resource_limits ?? null) !== sha256JSON({ cpu_millis: limits.verifierLimits.cpu_millis, memory_bytes: limits.verifierLimits.memory_bytes })
     || sha256JSON(kwargs.hitch_service_resource_limits ?? {}) !== sha256JSON(limits.sidecarLimits)) throw unavailable("remote verifier resource settings differ from its lease plan");
   const observer = startDockerResourceObserver({ ownership, workerId: input.lease.worker_id, collisionDomainId: input.lease.collision_domain_id,
-    reservation: input.lease.reservation, mainLimits: limits.mainLimits, sidecarLimits: limits.sidecarLimits, env: input.env,
+    reservation: input.lease.reservation, mainLimits: limits.mainLimits, ...(limits.verifierLimits ? { verifierLimits: limits.verifierLimits } : {}), sidecarLimits: limits.sidecarLimits, env: input.env,
     ...(input.signal ? { signal: input.signal } : {}) });
   let outcome: Awaited<ReturnType<typeof runHarborRegrade>>;
   try {

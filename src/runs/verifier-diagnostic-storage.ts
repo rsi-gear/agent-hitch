@@ -12,7 +12,7 @@ import { sanitizeVerifierJson, sanitizeVerifierText } from "./verifier-evidence-
 
 export const VERIFIER_DIAGNOSTICS_INDEX_REF = "verifier/diagnostics.json";
 export const VERIFIER_DIAGNOSTIC_ARTIFACT_NAMES: readonly VerifierArtifactExcerptV1["name"][] = [
-  "ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt",
+  "ctrf.json", "parameter-evidence.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt",
 ];
 
 const MAX_DIAGNOSTICS_INDEX_BYTES = 1024 * 1024;
@@ -103,7 +103,7 @@ async function readIndexedStorage(
     if (artifact.truncated === false && (availableBytes !== storedBytes || availableDigest !== storedDigest)) {
       throw new TypeError("complete verifier diagnostic metadata mismatch");
     }
-    const bytes = sanitizeArtifact(stored, mediaType, artifact.truncated === false, credentialValues, redactions);
+    const bytes = sanitizeArtifact(stored, mediaType, artifact.truncated === false, credentialValues, redactions, name === "parameter-evidence.json");
     artifacts.push({
       name,
       mediaType,
@@ -175,7 +175,7 @@ async function readLegacyStorage(
       });
       continue;
     }
-    const bytes = sanitizeArtifact(raw, mediaType, mediaType === "application/json", credentialValues, redactions);
+    const bytes = sanitizeArtifact(raw, mediaType, mediaType === "application/json", credentialValues, redactions, name === "parameter-evidence.json");
     artifacts.push({ name, mediaType, bytes, sha256: sha256Bytes(bytes), sourceComplete: true });
   }
   return { artifacts, redactions };
@@ -187,11 +187,12 @@ function sanitizeArtifact(
   parseJson: boolean,
   credentials: readonly string[],
   redactions: Map<string, number>,
+  preserveParameterPointers = false,
 ): Buffer {
   if (mediaType === "application/json" && parseJson) {
     const parsed = JSON.parse(stored.toString("utf8")) as unknown;
     if (!isJsonValue(parsed)) throw new TypeError("CTRF artifact is not JSON data");
-    const safe = sanitizeVerifierJson(parsed, credentials);
+    const safe = sanitizeVerifierJson(parsed, credentials, preserveParameterPointers);
     mergeCounts(redactions, safe.redactions);
     return Buffer.from(JSON.stringify(safe.value), "utf8");
   }
@@ -201,7 +202,7 @@ function sanitizeArtifact(
 }
 
 function mediaTypeFor(name: VerifierArtifactExcerptV1["name"]): VerifierArtifactExcerptV1["media_type"] {
-  return name === "ctrf.json" ? "application/json" : "text/plain";
+  return (name === "ctrf.json" || name === "parameter-evidence.json") ? "application/json" : "text/plain";
 }
 
 async function secureRead(root: string, ref: string, maxBytes: number): Promise<Buffer> {

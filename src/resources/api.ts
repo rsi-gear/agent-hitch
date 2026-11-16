@@ -10,6 +10,7 @@ import { identity, object, parseStrictJson, resourceId, type Resource } from "./
 import { limits, type ResourceLimits } from "./object-store.js";
 import { ResourceStore } from "./store.js";
 import { exportResourceBundle, importResourceBundle } from "./bundle.js";
+import { verifyResourceDatasetSource } from "./source.js";
 import { resourceStorageStats } from "./stats.js";
 import { parseResourceDataset, preflightResourceTask, readResourceInput, sealResourceTask, selectResources, RESOURCE_EXECUTION_CAPABILITIES, type ResourcePlan } from "./tasks.js";
 
@@ -56,6 +57,22 @@ export async function resourceRequest(root: string, operation: string, value: un
   const { store, config } = await configuredResourceStore(root);
   switch (operation) {
     case "inspect": { object(value, []); return resourceStorageStats(store); }
+    case "ingest-dataset-source": {
+      const input = object(value, ["directory", "owner"]);
+      if (typeof input.directory !== "string" || input.owner !== undefined && typeof input.owner !== "string") throw new TypeError("invalid dataset source ingest request");
+      const manifest = await verifyResourceDatasetSource(input.directory);
+      const owner = input.owner as string | undefined ?? `dataset-source:${manifest.dataset_digest}`;
+      for (const task of manifest.tasks) {
+        const imported = await store.import(path.join(input.directory, task.task_id), "tree", `${owner}:${task.task_id}`);
+        try {
+          if (identity("hitch-source-task@1", imported.resource) !== task.source_task_digest) throw new Error("resource source changed during ingestion");
+          await store.pin({ owner: `${owner}:${task.task_id}`, generation: 1, purpose: "dataset-source", lock: {
+            protocol: "hitch-resource-lock@1", resources: { source: imported.resource }, bindings: [], requiredCapabilities: ["tree@1"],
+          } });
+        } finally { await store.finishLease(imported.leaseId, "ended"); }
+      }
+      return manifest;
+    }
     case "import": {
       const input = object(value, ["source", "kind", "owner"]);
       if (typeof input.source !== "string" || typeof input.owner !== "string" || input.kind !== "blob" && input.kind !== "tree") throw new TypeError("invalid resource import request");
@@ -90,8 +107,8 @@ export async function resourceRequest(root: string, operation: string, value: un
       const metadata = object(input.manifest, ["benchmark", "adapter", "scoring", "raw_metrics", "required_capabilities", "execution"]);
       const tasks: Awaited<ReturnType<typeof sealResourceTask>>[] = [];
       for (const id of [...taskIds].sort()) { resourceId(id); tasks.push(await sealResourceTask(store, path.join(directory, id), id, `${owner}:${id}`)); }
-      const body = { schema_version: "2", kind: "gear-harbor-benchmark", resource_protocol: "hitch-resource-lock@1", ...metadata, tasks };
-      const manifest = parseResourceDataset({ ...body, dataset_digest: identity("hitch-resource-dataset@2", body) });
+      const body = { schema_version: "3", kind: "gear-harbor-benchmark", resource_protocol: "hitch-resource-lock@1", ...metadata, tasks };
+      const manifest = parseResourceDataset({ ...body, dataset_digest: identity("hitch-resource-dataset@3", body) });
       if (manifest.execution.platform !== config.platform) throw new Error("resource execution platform differs from host");
       for (const capability of manifest.required_capabilities) if (!RESOURCE_EXECUTION_CAPABILITIES.includes(capability)) throw new Error(`unsupported required resource capability: ${capability}`);
       for (const task of tasks) await preflightResourceTask(store, task, { owner: `${owner}:admission:${task.task_id}`, generation: 1, platform: config.platform });

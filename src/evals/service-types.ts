@@ -96,10 +96,13 @@ export interface WorkItemAdmissionPermit {
 }
 
 export interface WorkItemAdmissionController {
+  /** Host-verified provider isolation; absent providers retain task-scoped scheduling. */
+  readonly isolatedSameTaskAttempts?: boolean;
   acquire(input: {
     evalId: EvalId;
     workItem: BackendWorkItemV1;
     maxParallelism: number;
+    isolatedSameTaskAttempts?: boolean;
     signal?: AbortSignal;
   }): Promise<WorkItemAdmissionPermit>;
 }

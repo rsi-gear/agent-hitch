@@ -4,7 +4,7 @@ import { loadVerifierDiagnosticPage, loadVerifierEvidence, MAX_VERIFIER_DIAGNOST
 import type { Sha256, VerifierArtifactExcerptV1 } from "../../domain/index.js";
 import { assertNoArgs, takeFlag, takeOption } from "../arguments.js";
 
-const ARTIFACT_NAMES = new Set(["ctrf.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"]);
+const ARTIFACT_NAMES = new Set(["ctrf.json", "parameter-evidence.json", "test-stdout.txt", "test-stderr.txt", "stdout.txt", "stderr.txt"]);
 
 export async function verifierCommand(args: string[], root: string): Promise<void> {
   const action = args.shift();

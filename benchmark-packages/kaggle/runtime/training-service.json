@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "tabular-training@1",
+  "protocol": "hitch-service-actions@1",
+  "source": "benchmark-packages/kaggle/runtime/training-service.py",
+  "entrypoint": "/opt/mlebench-service/runner.py",
+  "capabilities": [
+    "trusted-fit-count@1",
+    "trusted-cv@1",
+    "frozen-delivery@1"
+  ],
+  "coverage": "trusted-service-top-level-attempts",
+  "count_unit": "trusted-service-top-level-attempt",
+  "dependencies": {
+    "python": "3.11",
+    "sklearn": "1.5.2",
+    "numpy": "1.26.4",
+    "pandas": "2.2.3"
+  },
+  "operations": [
+    "evaluate",
+    "deliver"
+  ],
+  "runtime_image_digests": [
+    "sha256:6965b4ceca603f9fe9b0fd00a46bcfe8b684c2052bea79ae08a57ace0dcc7e14"
+  ],
+  "dependency_packages": {
+    "numpy": "numpy",
+    "pandas": "pandas",
+    "sklearn": "scikit-learn"
+  },
+  "build_template": "FROM ${runtime_image}\nCOPY data /data\nCOPY runner.py /opt/mlebench-service/runner.py\nRUN --network=none chmod -R a-w /data /opt/mlebench-service\nWORKDIR /opt/mlebench-service\nCMD [\"sleep\", \"infinity\"]\n"
+}

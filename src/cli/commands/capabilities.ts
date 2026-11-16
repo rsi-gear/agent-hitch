@@ -10,6 +10,8 @@ export function capabilitiesCommand(args: string[]): void {
     trajectory_events_page: "1",
     verifier_evidence: "1",
     verifier_diagnostic_pages: "1",
+    run_output_artifacts: "1",
+    run_output_artifact_backends: ["local-docker"],
     training_external_binding: "1",
     external_endpoint_binding: "1",
     endpoint_evaluation_attempts: "1",

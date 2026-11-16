@@ -1,8 +1,8 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { EvalRequest } from "../domain/index.js";
-import { readResourceInput } from "../resources/index.js";
-import { readJSON, sha256JSON, statePaths } from "../foundation/index.js";
+import { configuredResourceStore, parseStrictJson, readResourceInput, type ResourceTask } from "../resources/index.js";
+import { readJSON, sha256Bytes, sha256JSON, statePaths } from "../foundation/index.js";
 import { loadBenchmarkAdapterManifest, readStandardBenchmarkManifest, verifyBenchmarkTaskMembership, verifyBenchmarkTaskSnapshot } from "./benchmark-adapter-manifest.js";
 import type { BenchmarkAdapterManifest, BenchmarkAdapterManifestV1 } from "./benchmark-adapter-manifest.js";
 
@@ -20,7 +20,7 @@ interface ExecutionReceipt {
 export interface TrialBenchmarkBinding extends BenchmarkVerificationBinding {
   benchmarkId: string; benchmarkRevision: string; taskId: string; trialDirectory: string;
 }
-interface TrialReceipt { binding: string; trialDirectory: string; taskId: string; manifest: BenchmarkAdapterManifest | null; descriptor?: unknown | null }
+interface TrialReceipt { binding: string; trialDirectory: string; taskId: string; manifest: BenchmarkAdapterManifest | null; descriptor?: unknown | null; taskToml?: Buffer }
 const executions = new WeakMap<VerifiedBenchmarkExecution, ExecutionReceipt>();
 const trials = new WeakMap<VerifiedTrialBenchmark, TrialReceipt>();
 
@@ -50,6 +50,7 @@ export async function verifyTrialBenchmark(input: BenchmarkVerificationBinding &
   }
   let manifest: BenchmarkAdapterManifest | null;
   let descriptor: unknown | null | undefined;
+  let taskToml: Buffer | undefined;
   if (execution) {
     const admitted = executions.get(execution);
     if (!admitted || admitted.binding !== key) throw new TypeError("benchmark execution receipt identity changed");
@@ -64,7 +65,9 @@ export async function verifyTrialBenchmark(input: BenchmarkVerificationBinding &
     await verifyBenchmarkTaskMembership(datasetRoot, manifest);
     const task = manifest.tasks.find(item => item.task_id === taskId);
     if (!task) throw new TypeError("trial task is absent from the admitted benchmark manifest");
-    descriptor = (await verifyBenchmarkTaskSnapshot(datasetRoot, task)).descriptor;
+    const snapshot = await verifyBenchmarkTaskSnapshot(datasetRoot, task);
+    descriptor = snapshot.descriptor;
+    taskToml = snapshot.taskToml;
   } else {
     manifest = await loadBenchmarkAdapterManifest(input.request.dataset);
     if (manifest?.schema_version === "1") {
@@ -77,7 +80,7 @@ export async function verifyTrialBenchmark(input: BenchmarkVerificationBinding &
     throw new TypeError("benchmark adapter manifest changed after eval admission");
   }
   const receipt = Object.freeze({}) as VerifiedTrialBenchmark;
-  trials.set(receipt, { binding: key, trialDirectory: path.resolve(input.trialDirectory), taskId, manifest: manifest ? structuredClone(manifest) : null, ...(descriptor === undefined ? {} : { descriptor }) });
+  trials.set(receipt, { binding: key, trialDirectory: path.resolve(input.trialDirectory), taskId, manifest: manifest ? structuredClone(manifest) : null, ...(descriptor === undefined ? {} : { descriptor }), ...(taskToml ? { taskToml } : {}) });
   return receipt;
 }
 
@@ -94,9 +97,27 @@ export async function verifiedTrialManifest(receipt: VerifiedTrialBenchmark, inp
   return verified.manifest ? structuredClone(verified.manifest) : null;
 }
 
+/** Resource selections name metadata files; optional native descriptors live in their sealed source trees. */
+export async function resourceNativeDescriptor(root: string, task: ResourceTask): Promise<unknown | null> {
+  const { store } = await configuredResourceStore(root);
+  const tree = await store.objects.readTree(task.sourceTree.manifestDigest);
+  const entry = tree.entries.find(value => value.path === ".hitch-benchmark.json");
+  if (!entry) return null;
+  if (entry.kind !== "file" || entry.size > 1024 * 1024) throw new TypeError("invalid resource native descriptor");
+  await store.objects.verify(entry.digest, entry.size);
+  const bytes = await readFile(store.objects.objectPath(entry.digest));
+  if (bytes.length !== entry.size || sha256Bytes(bytes) !== entry.digest) throw new TypeError("resource native descriptor changed");
+  return parseStrictJson(bytes.toString("utf8"));
+}
+
 export function verifiedNativeDescriptor(receipt: VerifiedTrialBenchmark, input: TrialBenchmarkBinding): unknown | null | undefined {
   const verified = assertTrialBinding(receipt, input);
   return verified.descriptor === undefined ? undefined : structuredClone(verified.descriptor);
+}
+
+export function verifiedTaskToml(receipt: VerifiedTrialBenchmark, input: TrialBenchmarkBinding): Buffer | undefined {
+  const bytes = assertTrialBinding(receipt, input).taskToml;
+  return bytes ? Buffer.from(bytes) : undefined;
 }
 
 function assertTrialBinding(receipt: VerifiedTrialBenchmark, input: TrialBenchmarkBinding): TrialReceipt {

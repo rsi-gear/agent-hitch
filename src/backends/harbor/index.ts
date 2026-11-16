@@ -20,3 +20,5 @@ export { HOST_CREDENTIAL_HELPER_CAPABILITY, HOST_CREDENTIAL_HELPER_ENV } from ".
 export type { DoctorCheck, DoctorHarborOptions, DoctorResult, HarborLocation, LocateHarborOptions, HarborSetupResult, SetupHarborOptions } from "./tools.js";
 export { prepareEvaluationBinding, boundEvaluationEnvironment } from "./evaluation-binding.js";
 export { parseEvalArtifactPins, assertHarborArtifactPin, assertHarborArtifactPins } from "./artifact-pins.js";
+
+export { supportsHarborAttemptIsolation, HARBOR_ATTEMPT_ISOLATION_PROTOCOL } from "./attempt-isolation.js";

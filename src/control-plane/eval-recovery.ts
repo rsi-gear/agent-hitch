@@ -1,5 +1,5 @@
 import { readEvalProgress } from "../evals/index.js";
-import { persistTerminalEvalResult } from "../evals/index.js";
+import { writeSyntheticEvalResult } from "./synthetic-result.js";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { EvalControlV1, EvalExecutionPolicyV1, EvalId, EvalRequest, ExecutionLeaseV1 } from "../domain/index.js";
@@ -181,19 +181,7 @@ async function writeSyntheticResult(
   message: string,
   completedAt: string,
 ): Promise<void> {
-  if (await readJSON(path.join(directory, "result.json"), null)) return;
-  await persistTerminalEvalResult(directory, {
-    schema_version: SCHEMA_VERSION,
-    eval_id: evalId,
-    status,
-    exit_code: status === "cancelled" ? 9 : 12,
-    error: { code, message },
-    benchmark_id: request.benchmark_id,
-    benchmark_revision: request.benchmark_revision,
-    trials: [],
-    started_at: control.created_at,
-    completed_at: completedAt,
-  });
+  await writeSyntheticEvalResult({ directory, evalId, request, status, code, message, completedAt });
 }
 
 async function updateControl(directory: string, update: (control: EvalControlV1) => EvalControlV1): Promise<void> {
