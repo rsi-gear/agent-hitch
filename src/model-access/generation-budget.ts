@@ -20,7 +20,7 @@ export function parseGenerationLimits(value: unknown): GenerationLimits {
 /** Text-only Responses input. Byte-level tokens cannot outnumber their UTF-8 bytes.
  * Reserve framing separately and reject server-side expansion/references/modalities.
  * Opaque reasoning is accepted only from this gateway's own measured responses;
- * its entire original output allowance is reserved again when reused as input.
+ * its entire measured response output is reserved again when reused as input.
  */
 export function inputTokenCeiling(body: Record<string, unknown>, reasoning: Map<string, number>): number {
   const fields = new Set([
@@ -156,11 +156,20 @@ export class GenerationBudgetMeter {
   settle(payload: unknown): void {
     if (!this.active) throw invalidInput("generation budget has no active request");
     let response: Record<string, unknown> | undefined;
+    const completedReasoning = new Set<string>();
+    const observeReasoning = (item: unknown): void => {
+      if (object(item) && item.type === "reasoning" && typeof item.encrypted_content === "string")
+        completedReasoning.add(hash(item.encrypted_content));
+    };
     if (object(payload) && typeof payload.body === "string" && payload.truncated === false) {
       for (const line of payload.body.split(/\r?\n/)) {
         if (!line.startsWith("data:")) continue;
         let event: unknown;
         try { event = JSON.parse(line.slice(5)); } catch { continue; }
+        // Some Responses streams emit complete items only here; their terminal
+        // response.output is empty. Trust them only after the same stream's
+        // terminal usage has settled, never from partial or later events.
+        if (object(event) && !response && event.type === "response.output_item.done") observeReasoning(event.item);
         if (object(event) && ["response.completed", "response.incomplete", "response.failed"].includes(String(event.type))) {
           if (response || !object(event.response)) { this.fail(); return; }
           response = event.response;
@@ -178,10 +187,8 @@ export class GenerationBudgetMeter {
     Object.assign(this.attempts.at(-1)!, { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, status: String(response!.status ?? "complete") });
     if (usage.input_tokens > this.active.ceiling || (this.active.outputLimit !== undefined && usage.output_tokens > this.active.outputLimit))
       this.failure = "generation_budget_violation";
-    if (Array.isArray(response!.output)) for (const item of response!.output) {
-      if (object(item) && item.type === "reasoning" && typeof item.encrypted_content === "string")
-        this.reasoning.set(hash(item.encrypted_content), usage.output_tokens);
-    }
+    if (Array.isArray(response!.output)) for (const item of response!.output) observeReasoning(item);
+    for (const digest of completedReasoning) this.reasoning.set(digest, usage.output_tokens);
     this.active = undefined;
   }
 

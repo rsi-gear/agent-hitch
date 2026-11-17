@@ -75,6 +75,39 @@ test("Codex client metadata, namespaces and deferred client tools remain metered
   assert.throws(() => new GenerationBudgetMeter({ tokens: 10000 }).reserve({ ...body, tools: [{ type: "namespace", name: "hidden", tools: [{ type: "web_search" }] }] }), /unsupported/);
 });
 
+test("completed streamed reasoning is reusable when the terminal response omits output", () => {
+  const meter = new GenerationBudgetMeter({ model_requests: 2, tokens: 10000 });
+  meter.reserve(body);
+  const payload = terminal(20, 500, { output: [] });
+  payload.body = [
+    { type: "response.output_item.added", item: { id: "rs_1", type: "reasoning", encrypted_content: "partial" } },
+    { type: "response.output_item.done", item: { id: "rs_1", type: "reasoning", encrypted_content: "complete" } },
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join("") + payload.body;
+  meter.settle(payload);
+  assert.equal(meter.usage().tokens, 520);
+  assert.throws(() => meter.reserve({ ...body, input: [{ type: "reasoning", encrypted_content: "partial" }] }), /unmeasured_reasoning/);
+  const next = meter.reserve({ ...body, input: [{ type: "reasoning", encrypted_content: "complete" }] });
+  assert.ok(Number(next.max_output_tokens) < 10000 - 520 - 500);
+  meter.settle(terminal());
+  assert.equal(meter.usage().tokens, 545);
+  assert.throws(() => meter.reserve(body), /exhausted/);
+});
+
+test("streamed reasoning without settled usage or after the terminal event remains untrusted", () => {
+  const done = `data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "reasoning", encrypted_content: "opaque" } })}\n\n`;
+  const incomplete = new GenerationBudgetMeter({ tokens: 10000 });
+  incomplete.reserve(body);
+  incomplete.settle({ body: done, truncated: false });
+  assert.equal(incomplete.usage().tokens, null);
+  assert.throws(() => incomplete.reserve({ ...body, input: [{ type: "reasoning", encrypted_content: "opaque" }] }), /unknown/);
+
+  const late = new GenerationBudgetMeter({ tokens: 10000 });
+  late.reserve(body);
+  late.settle({ ...terminal(), body: terminal().body + done });
+  assert.throws(() => late.reserve({ ...body, input: [{ type: "reasoning", encrypted_content: "opaque" }] }), /unmeasured_reasoning/);
+  assert.equal(late.usage().model_requests, 1);
+});
+
 test("the real proxy enforces the same allowance before forwarding and never routes compaction around it", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "hitch-budget-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -85,7 +118,9 @@ test("the real proxy enforces the same allowance before forwarding and never rou
     request.on("end", () => {
       forwarded.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       assert.equal(request.headers.authorization, "Bearer private-upstream");
-      response.writeHead(200, { "content-type": "text/event-stream" }); response.write(terminal().body);
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      if (forwarded.length === 1) response.write(`data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "reasoning", encrypted_content: "streamed" } })}\n\n`);
+      response.write(terminal(20, 5, { output: [] }).body);
       setTimeout(() => response.end(), 30);
     });
   });
@@ -97,16 +132,17 @@ test("the real proxy enforces the same allowance before forwarding and never rou
     upstreamWireModels: { openai: "test" }, generationLimits: { model_requests: 2, tokens: 10000 } });
   t.after(() => proxy.close());
   const base = `${proxy.localBaseUrl}/run_${"b".repeat(32)}/openai/responses`;
-  const send = (url = base) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const send = (url = base, payload: Record<string, unknown> = body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
   const blocked = await send(base + "/compact"); await blocked.text(); assert.equal(blocked.status, 400);
   for (let index = 0; index < 2; index++) {
-    const response = await send(); assert.equal(response.status, 200);
+    const payload = index === 0 ? body : { ...body, input: [...body.input, { type: "reasoning", encrypted_content: "streamed" }] };
+    const response = await send(base, payload); assert.equal(response.status, 200);
     const reader = response.body!.getReader(); await reader.read(); await reader.cancel();
     assert.equal(proxy.generationBudget!.usage().tokens, 25 * (index + 1));
   }
   const exhausted = await send(); assert.equal(exhausted.status, 502); assert.match(await exhausted.text(), /exhausted/);
   assert.equal(forwarded.length, 2);
-  assert.equal(Number(forwarded[0]!.max_output_tokens) - Number(forwarded[1]!.max_output_tokens), 25);
+  assert.ok(Number(forwarded[0]!.max_output_tokens) - Number(forwarded[1]!.max_output_tokens) > 25 + 5);
   assert.equal(proxy.generationBudget!.usage().tokens, 50);
 });
 
