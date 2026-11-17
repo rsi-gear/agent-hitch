@@ -16,3 +16,5 @@ export { freezeEndpointSubmission, connectEndpoint, resolveEndpoint, loadFrozenE
 export { persistEndpointCredential } from "./endpoint-credentials.js";
 export { verifyEndpoint } from "./endpoint-verification.js";
 export { aggregateModelUsage } from "./usage.js";
+export { parseGenerationLimits } from "./generation-budget.js";
+export type { GenerationLimits } from "./generation-budget.js";

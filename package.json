@@ -89,7 +89,8 @@
     "examples/external-inference/",
     "benchmark-packages/kaggle/",
     "docs/mlebench-tasks.zh-CN.md",
-    "!benchmark-packages/kaggle/tests/**"
+    "!benchmark-packages/kaggle/tests/**",
+    "integrations/isolated-run/process-guard.py"
   ],
   "scripts": {
     "docs:check": "node scripts/check-guide.mjs",
@@ -125,8 +126,13 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.55",
     "js-yaml": "^4.3.2",
     "smol-toml": "1.8.0"
   },
-  "bundleDependencies": true
+  "bundleDependencies": [
+    "@anthropic-ai/sandbox-runtime",
+    "js-yaml",
+    "smol-toml"
+  ]
 }

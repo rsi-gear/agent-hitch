@@ -13,6 +13,11 @@ Inspection reports the stored run and trajectory verification state. Check the s
 
 By default, records live under `~/.hitch/runs/RUN_ID/`. If you used `--root` or `HITCH_ROOT`, use that same root for inspection commands.
 
+
+For a controller-owned Codex run, submit the JSON [run request](../../schemas/run-request.schema.json) with `hitch run --request-file /absolute/request.json --output json`. Set `isolation` to the exact read/write paths, allowed UNIX sockets, authorized model domains, optional result schema/file and reasoning effort. Use `generation_budget: {model_requests: 8, tokens: 100000}` for a per-run allowance. This mode requires macOS/Linux, Codex, a shared staged workspace, a bounded timeout and a prompt no larger than 4 KiB. Extra agent arguments and endpoint overrides are rejected. It runs in a dedicated CLI process; `--daemon` is not supported. A supervising controller can hold stdin open with `--watch-stdin`; EOF cancels the run.
+
+Hitch keeps API keys or `HITCH_CODEX_AUTH_HOME/auth.json` credentials outside the model. Only its budgeted model gateway is reachable. Every actual Responses request, including retries, consumes an allowance before forwarding. Total tokens include input and output (cached input counted once). Text input uses a conservative byte ceiling; unmeasured server references, modalities and server-side tools are rejected. A bounded response is settled before delivery to prevent a client closing its SSE reader from discarding usage. Unknown usage stops further calls and stays null. `execution.stopped` confirms process-group termination; missing confirmation must not be interpreted as a retry permission. `generation_usage` and `generation-budget.json` preserve the run's usage and audit. Optional `executable_sha256` rejects a changed Codex binary before launch. Explicit HTTP(S) upstream proxies remain private and require Node 22.21+ or 24.5+.
+
 ## Read a bounded trajectory
 
 ```bash

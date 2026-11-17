@@ -54,6 +54,8 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 
 运行 Harness 并等待结果。提示词也可以来自非交互 stdin。直接运行默认输出 JSONL；`--daemon` 提交给 daemon 并跟踪执行。托管 `local/…` 模型会按需启动本地推理 daemon。[运行教程](quickstart.md)。
 
+可用 `hitch run --request-file JSON --output json` 提交不超过 4 MiB 的完整请求文件，与各个 run 输入参数互斥。Codex 隔离请求可以包含生成预算。`--watch-stdin` 仅用于直接执行的隔离运行，控制器关闭 stdin 时取消。详见[隔离与计量](runs-and-evidence.md)。
+
 ### 共享 Run 参数
 
 以下参数也适用于 `hitch daemon submit`。

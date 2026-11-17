@@ -32,6 +32,7 @@ test("CLI advertises bounded trajectory capabilities", () => {
   assert.equal(result.status, 0, result.stderr || undefined);
   assert.deepEqual(JSON.parse(result.stdout), {
     schema_version: "1",
+    isolated_agent_run: "1", generation_budget: "1", isolated_harnesses: ["codex"],
     trajectory_analysis: "1",
     trajectory_events_page: "1",
     verifier_evidence: "1",

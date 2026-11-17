@@ -68,6 +68,8 @@ export function buildManifest(runId: RunId, request: ValidatedRunRequest, worksp
     model: request.model_identity,
     ...(request.endpoint_binding ? { endpoint_binding: request.endpoint_binding } : {}),
     protocol: {
+      ...(request.isolation ? { isolation: request.isolation } : {}),
+      ...(request.generation_budget ? { generation_budget: request.generation_budget } : {}),
       timeout_ms: request.timeout_ms,
       workspace_mode: request.workspace_mode,
       environment_identity: environmentIdentity,
