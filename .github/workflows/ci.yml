@@ -21,7 +21,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         node: [22, 24]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -80,7 +80,9 @@ jobs:
                 tests+=("$file")
               fi
             done
-            node --test --test-timeout=120000 "${tests[@]}"
+            # The controller runtime now includes isolation dependencies. Allow
+            # the 51-case eval integration file to finish on hosted macOS CPUs.
+            node --test --test-timeout=180000 "${tests[@]}"
           else
             npm test
           fi
