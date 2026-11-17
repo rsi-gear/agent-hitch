@@ -16,7 +16,10 @@ test("isolated Codex executes through Hitch, denies private files and credential
   t.after(() => rm(root, { recursive: true, force: true }));
   const secret = path.join(root, "private.txt"), fake = path.join(root, "codex");
   await writeFile(secret, "private-source");
-  const python = (await promisify(execFile)("/usr/bin/python3", ["-c", "import sys;print(sys.executable)"])).stdout.trim();
+  const pythonRuntime = JSON.parse((await promisify(execFile)("/usr/bin/python3", ["-c",
+    "import json,sys;print(json.dumps({'executable':sys.executable,'prefixes':list({sys.prefix,sys.base_prefix,sys.exec_prefix})}))",
+  ])).stdout) as { executable: string; prefixes: string[] };
+  const python = pythonRuntime.executable;
   await writeFile(fake, `#!${python}
 import json,os,sys,time
 if '--version' in sys.argv:
@@ -28,7 +31,7 @@ assert 'HITCH_CODEX_AUTH_HOME' not in os.environ
 try:
  open(${JSON.stringify(secret)}).read()
  raise AssertionError('private file was readable')
-except PermissionError: pass
+except (PermissionError, FileNotFoundError): pass  # Linux hides paths outside the mount allowlist.
 if prompt == 'hang':
  open(${JSON.stringify(path.join(output, "started"))},'w').write('started')
  time.sleep(60)
@@ -47,7 +50,9 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':0,'output_toke
   });
   const request = { harness_ref: "codex@installed", cwd: candidate, model: "test", prompt: "check", timeout_ms: 10000,
     workspace_mode: "shared", agent_args: [], generation_budget: { model_requests: 1, tokens: 1000 },
-    isolation: { read_paths: [candidate, output], write_paths: [output], unix_sockets: [], allowed_domains: ["api.openai.com"], output_file: path.join(output, "result.json") } };
+    // The test double is a Python script; CI's interpreter may live inside Xcode.
+    // Native Codex needs no interpreter paths in the caller's read allowance.
+    isolation: { read_paths: [candidate, output, python, ...pythonRuntime.prefixes], write_paths: [output], unix_sockets: [], allowed_domains: ["api.openai.com"], output_file: path.join(output, "result.json") } };
   const diagnostics: unknown[] = [];
   const first = await executeRun({ root, runsRoot: path.join(root, "runs"), runId: newRunId(), request,
     onEvent: event => { if (event.type === "process.stderr") diagnostics.push(event.text); } });
@@ -55,6 +60,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':0,'output_toke
   assert.deepEqual(first.execution, { stopped: true });
   assert.equal((first.generation_usage as Record<string, unknown>).model_requests, 0);
   assert.deepEqual(JSON.parse(await readFile(path.join(output, "result.json"), "utf8")), { isolated: true });
+  assert.equal(await readFile(secret, "utf8"), "private-source");
   const controller = new AbortController();
   const cancelled = await executeRun({ root, runsRoot: path.join(root, "runs"), runId: newRunId(), request: { ...request, prompt: "hang" },
     signal: controller.signal, onProcess: control => { if (control?.child) setTimeout(() => controller.abort(), 250); } });
