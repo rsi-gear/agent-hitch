@@ -159,7 +159,8 @@ export async function prepareRunIsolation(input: {
           args: ["-I", "-B", fileURLToPath(new URL("../../../integrations/isolated-run/process-guard.py", import.meta.url))],
           input: JSON.stringify({ argv: wrapped.argv, cwd, prompt: specification.input,
             cleanupRoot: home, timeoutMs,
-            env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", HOME: home, CODEX_HOME: home, TMPDIR: home,
+            // zsh uses TMPPREFIX for here-documents even when TMPDIR is set.
+            env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", HOME: home, CODEX_HOME: home, TMPDIR: home, TMPPREFIX: path.join(home!, "zsh"),
               HITCH_ISOLATED_MODEL_KEY: "hitch-budget-gateway", ...(certificates ? { CODEX_CA_CERTIFICATE: certificates, SSL_CERT_FILE: certificates } : {}) } }) + "\n",
         };
       },

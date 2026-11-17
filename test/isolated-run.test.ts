@@ -32,6 +32,9 @@ if cat ${quote(secret)} >/dev/null 2>&1; then
   printf '%s\\n' 'private file was readable' >&2
   exit 42
 fi
+${process.platform === "darwin" ? "/bin/zsh" : "/bin/sh"} -lc 'cat <<END
+heredoc-ok
+END'
 if [ "$prompt" = 'hang' ]; then
   printf '%s' 'started' > ${quote(path.join(output, "started"))}
   sleep 60
