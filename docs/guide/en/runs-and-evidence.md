@@ -18,6 +18,8 @@ For a controller-owned Codex run, submit the JSON [run request](../../schemas/ru
 
 Hitch keeps API keys or `HITCH_CODEX_AUTH_HOME/auth.json` credentials outside the model. Only its budgeted model gateway is reachable. Every actual Responses request, including retries, consumes an allowance before forwarding. Total tokens include input and output (cached input counted once). Text input uses a conservative byte ceiling; unmeasured server references, modalities and server-side tools are rejected. A bounded response is settled before delivery to prevent a client closing its SSE reader from discarding usage. Unknown usage stops further calls and stays null. `execution.stopped` confirms process-group termination; missing confirmation must not be interpreted as a retry permission. `generation_usage` and `generation-budget.json` preserve the run's usage and audit. Optional `executable_sha256` rejects a changed Codex binary before launch. Explicit HTTP(S) upstream proxies remain private and require Node 22.21+ or 24.5+.
 
+The host needs Python 3 and `ripgrep` (`rg`). Linux also requires `bubblewrap`, `socat` and permission to create user namespaces; macOS uses its system `sandbox-exec`. Missing isolation dependencies fail before the model starts and return zero generation usage.
+
 ## Read a bounded trajectory
 
 ```bash

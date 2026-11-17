@@ -50,10 +50,13 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y bubblewrap socat
+          sudo apt-get install --no-install-recommends -y bubblewrap socat ripgrep
           if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
+      - name: Prepare macOS isolated-run dependencies
+        if: matrix.os == 'macos-latest'
+        run: command -v rg >/dev/null || brew install ripgrep
       # The build invokes tsc with the same configuration as typecheck.
       - name: Build and typecheck
         run: npm run build

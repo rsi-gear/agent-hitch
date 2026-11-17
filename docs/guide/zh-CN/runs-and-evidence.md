@@ -20,6 +20,8 @@ Inspect 返回保存的运行和轨迹校验状态。比较运行前，先确认
 
 Hitch 在模型进程外保管 API key 或 `HITCH_CODEX_AUTH_HOME/auth.json` 凭据，模型只能访问本次预算网关。每个实际 Responses 请求（含重试）在转发前占用额度；token 包含输入和输出，缓存输入只计一次。文本输入采用保守字节上界，无法计量的服务端引用、多模态输入及服务端工具会被拒绝。有界响应先结算再交给客户端，避免 SSE 客户端提前关闭导致用量丢失。未知用量保持 null 并阻止后续调用。`execution.stopped` 确认模型进程组已终止；缺失确认不能作为重试依据。`generation_usage` 与 `generation-budget.json` 保存用量和逐请求审计。可选 `executable_sha256` 在启动前拒绝已变化的 Codex 二进制。显式 HTTP(S) 上游代理只留在可信进程，要求 Node 22.21+ 或 24.5+。
 
+宿主机需要 Python 3 和 `ripgrep`（`rg`）。Linux 还需要 `bubblewrap`、`socat` 及创建用户命名空间的权限；macOS 使用系统自带的 `sandbox-exec`。缺少隔离依赖时，运行会在启动模型前失败，并返回零生成用量。
+
 ## 读取有界轨迹
 
 ```bash
