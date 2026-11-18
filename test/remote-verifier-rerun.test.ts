@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CollisionLockManager, RemoteWorkerRegistry, RemoteWorkerProtocol, RemoteWorkerHttpClient, remoteExecutionBindingDigest } from "../src/control-plane/index.js";
@@ -10,7 +11,7 @@ import { handleRemoteWorkRoute } from "../src/daemon/worker-routes.js";
 import { encodeRemoteVerifierResultEnvelope } from "../src/control-plane/remote-verifier-result.js";
 import { parseRemoteHarborWorkSpec } from "../src/workers/remote-harbor-work-spec.js";
 import { readExecutionLeases, readEvalProgress, rerunEval, remoteVerifierTrialName, readRemoteRerunCompletion } from "../src/evals/index.js";
-import { atomicWriteJSON, delay, readJSON, sha256JSON } from "../src/foundation/index.js";
+import { atomicWriteJSON, readJSON, sha256JSON } from "../src/foundation/index.js";
 import { verifyResultBundleIndex } from "../src/runs/index.js";
 import { remoteVerifierFixture } from "../test-support/remote-verifier.js";
 import { writeRemoteVerifierProcess } from "../test-support/remote-verifier-process.js";
@@ -35,16 +36,18 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-  const client = new RemoteWorkerHttpClient({ baseUrl: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`,
-    credential: { schema_version: "1", worker_id: registered.worker.worker.worker_id, generation: registered.worker.generation, token: registered.token } });
-  const coordinator = new RemoteWorkCoordinator({ root: f.root, registry, protocol, collisions: new CollisionLockManager(), pollIntervalMs: 50, releaseTimeoutMs: interruptedRelease ? 200 : 5000 });
-  const rerunId = f.physical.rerun_id, rerunDirectory = path.join(f.evalDirectory, "reruns", rerunId);
-  const before = sha256JSON(await verifyResultBundleIndex(f.runDirectory));
   const controller = new AbortController();
   // Runtime transfer, verification and result import share the test runner's
   // deadline. A separate wall-clock budget makes release assertions depend on
   // host throughput; interrupted-release cases keep their explicit 200 ms bound.
   const requestSignal = AbortSignal.any([controller.signal, t.signal]);
+  const client = new RemoteWorkerHttpClient({ baseUrl: `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`,
+    credential: { schema_version: "1", worker_id: registered.worker.worker.worker_id, generation: registered.worker.generation, token: registered.token },
+    request: (input, init) => fetch(input, { ...init,
+      signal: AbortSignal.any([requestSignal, ...(init?.signal ? [init.signal] : [])]) }) });
+  const coordinator = new RemoteWorkCoordinator({ root: f.root, registry, protocol, collisions: new CollisionLockManager(), pollIntervalMs: 50, releaseTimeoutMs: interruptedRelease ? 200 : 5000 });
+  const rerunId = f.physical.rerun_id, rerunDirectory = path.join(f.evalDirectory, "reruns", rerunId);
+  const before = sha256JSON(await verifyResultBundleIndex(f.runDirectory));
   let dispatches = 0;
   const options = { root: f.root, evalId: f.evalId, rerunId, signal: requestSignal, rerunType: "verifier-only" as const, selector: { mode: "invalid" as const },
     executionWorker: { provider: f.plan.provider, workerId: "controller", collisionDomainId: "controller" },
@@ -53,7 +56,7 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
       assert.ok(input.verifierOnly); return coordinator.execute(input);
     } };
   const worker = (async () => {
-    const offer = await waitFor(async () => (await client.listOffers()).find(item => item.state === "offered"));
+    const offer = await waitFor("work offer", requestSignal, async () => (await client.listOffers()).find(item => item.state === "offered"));
     assert.equal(offer.inputs?.length, 6); assert.deepEqual(offer.credential_names ?? [], []);
     const inputs = await Promise.all(offer.inputs!.map(async ref => [ref.kind, await client.downloadInput(offer, ref)] as const));
     const spec = parseRemoteHarborWorkSpec(JSON.parse(inputs.find(([kind]) => kind === "work-spec")![1].toString()), offer);
@@ -64,7 +67,7 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
       { schema_version: "2", binding_digest: remoteExecutionBindingDigest(offer), root_id: "a".repeat(24), root_digest: sha256JSON("scoring-root"),
         boot_digest: sha256JSON("scoring-boot"), docker_engine_id: "scoring-engine",
         worker_process: { pid: 1001, start_identity: sha256JSON("scoring-worker"), observed_at: new Date().toISOString() } }) : await client.accept(offer);
-    const lease = await waitFor(async () => { const value = await client.executionLease(accepted, new AbortController().signal); return value.state === "running" ? value : undefined; });
+    const lease = await waitFor("running lease", requestSignal, async () => { const value = await client.executionLease(accepted, requestSignal); return value.state === "running" ? value : undefined; });
     let body: Buffer, release: (() => Promise<void>) | undefined;
     if (mode === "success") {
       const processFixture = await writeRemoteVerifierProcess(f.root);
@@ -86,7 +89,7 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
     }
     const artifact = await client.uploadArtifact(accepted, "result-bundle", body);
     await client.complete(accepted, "succeeded", [artifact]);
-    const releasing = await waitFor(async () => (await client.listOffers()).find(item => item.offer_id === offer.offer_id && item.state === "release-requested"));
+    const releasing = await waitFor("release request", requestSignal, async () => (await client.listOffers()).find(item => item.offer_id === offer.offer_id && item.state === "release-requested"));
     if (!interruptedRelease) { await release?.(); await client.release(releasing); }
     return { offer: releasing, descriptor };
   })().catch(error => { controller.abort(error); throw error; });
@@ -138,8 +141,17 @@ for (const mode of ["success", "invalid", "release-lost", "generation-cleanup"] 
   assert.deepEqual(await readdir(path.join(f.evalDirectory, "assessments")), [workerResult.value.descriptor.assessment_id]);
 });
 
-async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) { const value = await read(); if (value !== undefined) return value; await delay(50); }
-  throw new Error("remote scoring test timed out");
+async function waitFor<T>(stage: string, signal: AbortSignal, read: () => Promise<T | undefined>): Promise<T> {
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const value = await read();
+      signal.throwIfAborted();
+      if (value !== undefined) return value;
+      await delay(50, undefined, { signal });
+    }
+  } catch (error) {
+    if (!signal.aborted) throw error;
+    throw new Error(`remote scoring test cancelled while waiting for ${stage}`, { cause: error });
+  }
 }
