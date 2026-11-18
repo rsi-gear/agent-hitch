@@ -10,6 +10,7 @@ import { invalidInput, atomicWriteJSON } from "../foundation/index.js";
 import { HostModelProxy } from "../model-access/index.js";
 import type { GenerationLimits } from "../model-access/index.js";
 import type { ProcessSpecification } from "../adapters/index.js";
+import { isolatedCodexInvocation } from "./isolated-codex.js";
 
 import type { RunIsolation } from "../domain/index.js";
 export type { RunIsolation } from "../domain/index.js";
@@ -124,7 +125,8 @@ export async function prepareRunIsolation(input: {
       error: () => proxy!.generationBudget!.error(),
       close,
       wrap: async (specification: ProcessSpecification, cwd: string, timeoutMs: number) => {
-        const executable = await realpath(specification.executable);
+        const invocation = await isolatedCodexInvocation(specification);
+        const { executable } = invocation;
         if (input.isolation.executable_sha256) {
           const digest = createHash("sha256");
           for await (const bytes of createReadStream(executable)) digest.update(bytes);
@@ -152,13 +154,13 @@ export async function prepareRunIsolation(input: {
         if (process.platform === "linux") config.filesystem.allowRead!.push(...[
           SandboxManager.getLinuxHttpSocketPath(), SandboxManager.getLinuxSocksSocketPath(),
         ].filter((socket): socket is string => socket !== undefined));
-        const wrapped = await SandboxManager.wrapWithSandboxArgv([executable, ...specification.args].map(quote).join(" "), "/bin/bash", config);
+        const wrapped = await SandboxManager.wrapWithSandboxArgv([executable, ...invocation.args].map(quote).join(" "), "/bin/bash", config);
         const certificates = process.platform === "darwin" ? await realpath("/etc/ssl/cert.pem") : undefined;
         return {
           executable: process.env.HITCH_GUARD_PYTHON || "python3",
           args: ["-I", "-B", fileURLToPath(new URL("../../../integrations/isolated-run/process-guard.py", import.meta.url))],
           input: JSON.stringify({ argv: wrapped.argv, cwd, prompt: specification.input,
-            cleanupRoot: home, timeoutMs,
+            cleanupRoot: home, timeoutMs, ...(process.platform === "darwin" ? { darwinSandbox: true } : {}),
             // zsh uses TMPPREFIX for here-documents even when TMPDIR is set.
             env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", HOME: home, CODEX_HOME: home, TMPDIR: home, TMPPREFIX: path.join(home!, "zsh"),
               HITCH_ISOLATED_MODEL_KEY: "hitch-budget-gateway", ...(certificates ? { CODEX_CA_CERTIFICATE: certificates, SSL_CERT_FILE: certificates } : {}) } }) + "\n",

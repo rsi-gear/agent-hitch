@@ -68,8 +68,17 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":0,"output_token
   assert.deepEqual(JSON.parse(await readFile(path.join(output, "result.json"), "utf8")), { isolated: true });
   assert.equal(await readFile(secret, "utf8"), "private-source");
   const controller = new AbortController();
-  const cancelled = await executeRun({ root, runsRoot: path.join(root, "runs"), runId: newRunId(), request: { ...request, prompt: "hang" },
-    signal: controller.signal, onProcess: control => { if (control?.child) setTimeout(() => controller.abort(), 250); } });
+  const cancelling = executeRun({ root, runsRoot: path.join(root, "runs"), runId: newRunId(), request: { ...request, prompt: "hang" },
+    signal: controller.signal });
+  // Cancel the running model; interpreter startup timing is not a readiness signal.
+  let started = false;
+  for (let index = 0; index < 200 && !started; index++) {
+    started = await readFile(path.join(output, "started")).then(() => true).catch(() => false);
+    if (!started) await delay(25);
+  }
+  controller.abort();
+  const cancelled = await cancelling;
+  assert.ok(started, JSON.stringify(cancelled));
   assert.equal(cancelled.status, "cancelled", JSON.stringify(cancelled));
   assert.deepEqual(cancelled.execution, { stopped: true });
   await rm(path.join(output, "started"), { force: true });
@@ -94,4 +103,66 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":0,"output_token
   assert.deepEqual(changed.execution, { stopped: true });
   assert.equal((changed.generation_usage as Record<string, unknown>).model_requests, 0);
   await assert.rejects(validateRunRequest({ ...request, isolation: undefined }), /isolated runs require/);
+});
+
+test("isolated installed npm Codex executes its native binary and checks that binary's digest", { skip: process.platform !== "darwin" && process.platform !== "linux" }, async t => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "hitch-isolated-npm-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = path.join(root, "candidate"), output = path.join(root, "output");
+  await mkdir(candidate); await mkdir(output);
+  const packageRoot = path.join(root, "node_modules/@openai/codex"), launcher = path.join(packageRoot, "bin/codex.js");
+  await mkdir(path.dirname(launcher), { recursive: true });
+  await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.145.0", bin: { codex: "bin/codex.js" } }));
+  // The ordinary host-side version probe may use Node. Execution must bypass
+  // the launcher, even on hosts where Node is absent from /usr/bin and /bin.
+  await writeFile(launcher, '#!/usr/bin/env node\nif (process.argv[2] === "--version") console.log("codex-cli 0.145.0"); else process.exit(87);\n', { mode: 0o755 });
+  const target = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-musl"}`;
+  const platform = `${process.platform}-${process.arch}`, dependency = path.join(packageRoot, "node_modules/@openai", `codex-${platform}`);
+  const native = path.join(dependency, "vendor", target, "bin", "codex"), companion = path.join(path.dirname(native), "codex-code-mode-host");
+  await mkdir(path.dirname(native), { recursive: true });
+  await writeFile(path.join(dependency, "package.json"), JSON.stringify({ name: `@openai/codex-${platform}` }));
+  await writeFile(companion, '#!/bin/sh\nprintf \'%s\' \'{"native":true}\'\n', { mode: 0o755 });
+  const quote = (value: string) => "'" + value.split("'").join("'\"'\"'") + "'";
+  await writeFile(native, `#!/bin/sh
+set -eu
+cat >/dev/null
+if cat ${quote(launcher)} >/dev/null 2>&1; then
+  printf '%s\\n' 'npm launcher was readable' >&2
+  exit 88
+fi
+previous=''
+for argument do
+  if [ "$previous" = '--output-last-message' ]; then
+    ${quote(companion)} > "$argument"
+  fi
+  previous=$argument
+done
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0}}'
+`, { mode: 0o755 });
+  const oldPath = process.env.HITCH_CODEX_PATH, oldKey = process.env.OPENAI_API_KEY;
+  process.env.HITCH_CODEX_PATH = launcher; process.env.OPENAI_API_KEY = "test-private-key";
+  t.after(() => {
+    if (oldPath === undefined) delete process.env.HITCH_CODEX_PATH; else process.env.HITCH_CODEX_PATH = oldPath;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldKey;
+  });
+  const { createHash } = await import("node:crypto");
+  const digest = `sha256:${createHash("sha256").update(await readFile(native)).digest("hex")}`;
+  const resultPath = path.join(output, "result.json");
+  const request = { harness_ref: "codex@installed", cwd: candidate, model: "test", prompt: "check", timeout_ms: 10000,
+    workspace_mode: "shared", agent_args: [], generation_budget: { model_requests: 1, tokens: 1000 },
+    isolation: { read_paths: [candidate, output], write_paths: [output], unix_sockets: [], allowed_domains: ["api.openai.com"], output_file: resultPath, executable_sha256: digest } };
+  const diagnostics: unknown[] = [];
+  const result = await executeRun({ root, runsRoot: path.join(root, "runs"), runId: newRunId(), request,
+    onEvent: event => { if (event.type === "process.stderr") diagnostics.push(event.text); } });
+  assert.equal(result.status, "succeeded", JSON.stringify({ result, diagnostics }));
+  assert.deepEqual(result.execution, { stopped: true });
+  assert.deepEqual(JSON.parse(await readFile(resultPath, "utf8")), { native: true });
+  await rm(resultPath);
+  // A matching unchanged launcher cannot conceal a changed native executable.
+  await writeFile(native, (await readFile(native, "utf8")) + "\n# native changed after admission\n");
+  const changed = await executeRun({ root, runsRoot: path.join(root, "runs"), runId: newRunId(), request });
+  assert.equal(changed.status, "failed");
+  assert.deepEqual(changed.execution, { stopped: true });
+  assert.equal((changed.generation_usage as Record<string, unknown>).model_requests, 0);
+  await assert.rejects(readFile(resultPath), { code: "ENOENT" });
 });
