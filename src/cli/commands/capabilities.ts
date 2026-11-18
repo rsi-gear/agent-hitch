@@ -6,6 +6,9 @@ export function capabilitiesCommand(args: string[]): void {
   assertNoArgs(args);
   const capabilities = {
     schema_version: SCHEMA_VERSION,
+    isolated_agent_run: "1",
+    generation_budget: "1",
+    isolated_harnesses: ["codex"],
     trajectory_analysis: "1",
     trajectory_events_page: "1",
     verifier_evidence: "1",

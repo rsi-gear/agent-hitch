@@ -86,6 +86,7 @@ Usage:
   hitch models inspect <endpoint/name|local/name> [--verify] [--json]
   hitch models gc [--dry-run | --apply] [--json]
   hitch run --harness <ref> [--model <id>] [--model-binding-file <ready.json>] [--max-output-tokens <n>] [--context-file <json>] [--workspace-mode <mode>] --prompt <text> [--daemon]
+  hitch run --request-file <json> [--watch-stdin] [--output json|jsonl]
   hitch runs list [filters] [--json]
   hitch runs inspect <run-id> [--json]
   hitch runs artifacts list <run-id> [--json]

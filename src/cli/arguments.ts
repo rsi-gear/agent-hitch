@@ -6,6 +6,13 @@ import type { RunRequestInput } from "../runs/index.js";
 import { WORKSPACE_MODES } from "../workspaces/index.js";
 
 export async function parseRunRequest(args: string[]): Promise<RunRequestInput> {
+  const requestFile = takeOption(args, "--request-file");
+  if (requestFile) {
+    if (args.length) throw invalidInput("--request-file cannot be mixed with run input flags");
+    const bytes = await readFile(path.resolve(requestFile));
+    if (bytes.length > 4 * 1024 * 1024) throw invalidInput("run request exceeds 4 MiB");
+    return JSON.parse(bytes.toString("utf8")) as RunRequestInput;
+  }
   const harness = takeOption(args, "--harness");
   const agent = takeOption(args, "--agent");
   const model = takeOption(args, "--model") || "";

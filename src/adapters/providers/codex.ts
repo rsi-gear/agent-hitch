@@ -40,6 +40,19 @@ export const codexAdapter: AdapterDefinition = {
       capture: { native_events: true, native_session: true, model_proxy_compatible: true },
     },
     process(request, executable, runtime = {}) {
+      if (runtime.isolated) {
+        const isolated = runtime.isolated;
+        return { executable, input: request.prompt, args: [
+          "exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config",
+          "--disable", "apps", "--disable", "plugins", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox",
+          "-C", request.cwd, "-m", request.model, "-c", "project_doc_max_bytes=0", "-c", 'web_search="disabled"',
+          "-c", 'model_provider="hitch_isolated"',
+          "-c", `model_providers.hitch_isolated={name="Hitch isolated",base_url=${JSON.stringify(isolated.provider_url)},wire_api="responses",env_key="HITCH_ISOLATED_MODEL_KEY",request_max_retries=0,stream_max_retries=0,requires_openai_auth=false}`,
+          ...(isolated.reasoning_effort ? ["-c", `model_reasoning_effort=${JSON.stringify(isolated.reasoning_effort)}`] : []),
+          ...(isolated.output_schema ? ["--output-schema", isolated.output_schema] : []),
+          ...(isolated.output_file ? ["--output-last-message", isolated.output_file] : []), "-",
+        ] };
+      }
       const args = ["exec", "--json"];
       if (codexSupportsEphemeral(runtime.observed_version)) args.push("--ephemeral");
       args.push("--skip-git-repo-check", "--color", "never", "-C", request.cwd);

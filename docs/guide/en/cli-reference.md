@@ -54,6 +54,8 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 
 Run a harness and wait for its result. Prompt input can also come from non-interactive stdin. Direct runs default to JSONL; `--daemon` submits to the daemon and follows the run. An endpoint model resolves and freezes an already deployed service at submission. [Run tutorial](quickstart.md).
 
+Use `hitch run --request-file JSON --output json` to submit a bounded 4 MiB request file instead of individual run options. An isolated Codex request can include a generation budget. `--watch-stdin` is limited to direct isolated runs and cancels when its supervising controller closes stdin. See [isolation and accounting](runs-and-evidence.md).
+
 ### Shared run options
 
 These options are also accepted by `hitch daemon submit`.

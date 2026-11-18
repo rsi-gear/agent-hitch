@@ -15,6 +15,13 @@ Inspect 返回保存的运行和轨迹校验状态。比较运行前，先确认
 
 比较本地与远程模型时，还需核对 Checkpoint、推理运行时和节点身份，见[保存模型证据](model-inference.md#保存模型证据)。
 
+
+控制器可用 `hitch run --request-file /absolute/request.json --output json` 提交 [run request](../../schemas/run-request.schema.json)，通过 `isolation` 精确指定可读/可写路径、允许的 UNIX socket、模型服务域名，以及可选的结果 schema、输出文件和推理强度。`generation_budget: {model_requests: 8, tokens: 100000}` 限定本次运行额度。当前支持 macOS/Linux 上的 Codex，要求已暂存的 shared 工作目录、有界超时和不超过 4 KiB 的提示词；不允许额外 agent 参数或 endpoint 覆盖。每次使用独立 CLI 进程，不支持 `--daemon`。控制器可用 `--watch-stdin` 保持控制管道，EOF 会取消运行。
+
+Hitch 在模型进程外保管 API key 或 `HITCH_CODEX_AUTH_HOME/auth.json` 凭据，模型只能访问本次预算网关。每个实际 Responses 请求（含重试）在转发前占用额度；token 包含输入和输出，缓存输入只计一次。文本输入采用保守字节上界，无法计量的服务端引用、多模态输入及服务端工具会被拒绝。有界响应先结算再交给客户端，避免 SSE 客户端提前关闭导致用量丢失。未知用量保持 null 并阻止后续调用。`execution.stopped` 确认模型进程组已终止；缺失确认不能作为重试依据。`generation_usage` 与 `generation-budget.json` 保存用量和逐请求审计。可选 `executable_sha256` 在启动前拒绝已变化的 Codex 二进制。显式 HTTP(S) 上游代理只留在可信进程，要求 Node 22.21+ 或 24.5+。
+
+宿主机需要 Python 3 和 `ripgrep`（`rg`）。Linux 还需要 `bubblewrap`、`socat` 及创建用户命名空间的权限；macOS 使用系统自带的 `sandbox-exec`。缺少隔离依赖时，运行会在启动模型前失败，并返回零生成用量。
+
 ## 读取有界轨迹
 
 ```bash

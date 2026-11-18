@@ -15,6 +15,7 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   const invocationStartedNs = process.hrtime.bigint();
   let useDaemon = takeFlag(args, "--daemon");
   const output = takeOption(args, "--output") || "jsonl";
+  const watchStdin = takeFlag(args, "--watch-stdin");
   const internalFlags = takeInternalLocalGitFlags(args);
   const internalArtifactFlags = takeInternalPreparedArtifactFlags(args);
   const internalRunId = takeOption(args, "--internal-run-id");
@@ -26,6 +27,7 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   }
   if (internalRunId && !/^run_[a-f0-9]{32}$/.test(internalRunId)) throw invalidInput("invalid internal run ID");
   const request = await parseRunRequest(args);
+  if (watchStdin && (!request.isolation || useDaemon)) throw invalidInput("--watch-stdin requires a directly executed isolated run");
   if (phaseControlFile && (!internalRunId || useDaemon || deferBenchmarkObservation
     || (request.context as { kind?: unknown } | undefined)?.kind !== "benchmark_phase")) {
     throw invalidInput("phase control requires a directly executed, normally sealed benchmark phase with an assigned run ID");
@@ -60,6 +62,13 @@ export async function runCommand(args: string[], root: string): Promise<void> {
   const cancellation = phaseControlFile ? await monitorPhaseCancellation({
     configurationPath: phaseControlFile, expectedRunId: runId, runsRoot: statePaths(root).runs,
   }) : undefined;
+  const isolatedController = request.isolation ? new AbortController() : undefined;
+  const stopIsolated = () => isolatedController?.abort();
+  if (isolatedController) { process.once("SIGTERM", stopIsolated); process.once("SIGINT", stopIsolated); }
+  if (watchStdin) {
+    process.stdin.once("end", stopIsolated); process.stdin.once("error", stopIsolated);
+    process.stdin.resume();
+  }
   try {
     const result = await executeRun({
       runId,
@@ -71,7 +80,7 @@ export async function runCommand(args: string[], root: string): Promise<void> {
       } : {}),
       runsRoot: statePaths(root).runs,
       root,
-      ...(cancellation ? { signal: cancellation.signal } : {}),
+      ...(cancellation ? { signal: cancellation.signal } : isolatedController ? { signal: isolatedController.signal } : {}),
       ...(handedOffResolution ? { resolvedRevision: handedOffResolution } : {}),
       ...(internalArtifact ? { preparedArtifact: internalArtifact.artifact } : {}),
       ...(internal ? { verifiedLocalGitSource: internal.source } : {}),
@@ -80,6 +89,8 @@ export async function runCommand(args: string[], root: string): Promise<void> {
     if (output === "json") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     process.exitCode = result.exit_code as number;
   } finally {
+    if (isolatedController) { process.removeListener("SIGTERM", stopIsolated); process.removeListener("SIGINT", stopIsolated); }
+    if (watchStdin) { process.stdin.removeListener("end", stopIsolated); process.stdin.removeListener("error", stopIsolated); process.stdin.pause(); }
     await cancellation?.close();
   }
 }

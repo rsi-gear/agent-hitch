@@ -10,8 +10,12 @@ import type { EvalRunParentV1, LocalInferenceSelectionV1, ModelIdentityV1, Proto
 import { asBoolean, asOptionalString, asRecord, asSha256, asString, validateEvalRunParent, validateRunContext } from "../domain/index.js";
 import { sha256JSON } from "../foundation/index.js";
 import { defaultModelIdentity } from "./identity.js";
+import { canonicalRunIsolation, type RunIsolation } from "./isolation.js";
+import { parseGenerationLimits, type GenerationLimits } from "../model-access/index.js";
 
 export interface RunRequestInput {
+  isolation?: unknown;
+  generation_budget?: unknown;
   schema_version?: unknown;
   harness_ref?: unknown;
   agent?: unknown;
@@ -36,6 +40,8 @@ export interface RunRequestInput {
 }
 
 export interface ValidatedRunRequest extends AdapterRequest {
+  isolation?: RunIsolation;
+  generation_budget?: GenerationLimits;
   context: RunContextV1;
   parent?: EvalRunParentV1;
   model_identity: ModelIdentityV1;
@@ -51,6 +57,7 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
     throw invalidInput("run request must be a JSON object");
   }
   const allowedFields = new Set([
+    "isolation", "generation_budget",
     "schema_version", "harness_ref", "agent", "model", "cwd", "workspace_mode", "prompt", "timeout_ms", "agent_args", "credential_names",
     "context", "parent", "model_identity", "protocol_identity", "defer_benchmark_observation", "local_inference", "endpoint_binding", "model_binding", "generation",
   ]);
@@ -90,6 +97,12 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
   const request = normalizeRequest(input as Record<string, unknown>);
   const reference = parseHarnessReference(request.harness_ref);
   getAdapter(reference.harness_id);
+  const isolation = input.isolation === undefined ? undefined : await canonicalRunIsolation(input.isolation);
+  const generationBudget = input.generation_budget === undefined ? undefined : parseGenerationLimits(input.generation_budget);
+  if ((generationBudget && !isolation) || (isolation && (reference.harness_id !== "codex" || request.agent_args.length ||
+      request.workspace_mode !== "shared" || request.timeout_ms <= 0 || Buffer.byteLength(request.prompt) > 4096 ||
+      input.endpoint_binding !== undefined || input.model_binding !== undefined)))
+    throw invalidInput("isolated runs require Codex, shared staged inputs, a bounded timeout/prompt and no external config overrides");
   let workspace: Awaited<ReturnType<typeof stat>>;
   try {
     workspace = await stat(request.cwd);
@@ -134,6 +147,8 @@ export async function validateRunRequest(input: RunRequestInput): Promise<Valida
   }
   return {
     ...request,
+    ...(isolation ? { isolation } : {}),
+    ...(generationBudget ? { generation_budget: generationBudget } : {}),
     ...(input.endpoint_binding ? { endpoint_binding: parseEndpointBinding(input.endpoint_binding) } : {}),
     credential_names: [...new Set((input.credential_names ?? []) as string[])].sort(),
     context,

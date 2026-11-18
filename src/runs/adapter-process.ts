@@ -20,7 +20,7 @@ export async function prepareAdapterProcess(
   resolution: ResolvedRevision,
   runDirectory: string,
   runtimeHome: string,
-  runtimeOverrides: Pick<AdapterProcessRuntime, "model_endpoint" | "model_endpoint_credential" | "model_endpoint_max_output_tokens"> = {},
+  runtimeOverrides: Pick<AdapterProcessRuntime, "model_endpoint" | "model_endpoint_credential" | "model_endpoint_max_output_tokens" | "isolated"> = {},
 ): Promise<ProcessSpecification> {
   const specification = await adapter.process(request, artifact.executable, {
     entrypoint_integrity: artifact.entrypoint_integrity,

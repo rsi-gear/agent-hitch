@@ -136,6 +136,8 @@ export interface RunRecordV1 {
 export type PlatformTriple = `${string}-${string}`;
 
 export interface RunRequest {
+  isolation?: RunIsolation;
+  generation_budget?: GenerationLimits;
   schema_version?: string;
   harness_ref: string;
   model: string;
@@ -153,6 +155,8 @@ export interface RunRequest {
 }
 
 export interface RunResult {
+  execution?: { stopped: boolean };
+  generation_usage?: Record<string, number | null>;
   schema_version: string;
   run_id: RunId;
   status: "succeeded" | "failed" | "cancelled" | "timed_out";
@@ -184,3 +188,17 @@ export interface RunResult {
 }
 
 /** `native` is retained only for trajectory.ref.json V1 compatibility. */
+
+export interface RunIsolation {
+  executable_sha256?: Sha256;
+  read_paths: string[];
+  write_paths: string[];
+  unix_sockets: string[];
+  allowed_domains: string[];
+  linux_isolation?: "seccomp" | "bubblewrap-only";
+  output_schema?: string;
+  output_file?: string;
+  reasoning_effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+export interface GenerationLimits { model_requests?: number; tokens?: number }
