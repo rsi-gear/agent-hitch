@@ -3,7 +3,7 @@ import { dockerResourceOwnership } from "./docker-ownership.js";
 import { startDockerResourceObserver } from "./docker-resource-observer.js";
 import { DEFAULT_EXECUTION_LEASE_HEARTBEAT_MS, DEFAULT_EXECUTION_LEASE_TTL_MS, createExecutionLease } from "./execution-leases.js";
 import type { ExecutionLeaseHandle } from "./execution-leases.js";
-import { resourceRequirementForTask, runtimeResourcesForTask } from "./execution-plan-resources.js";
+import { runtimeResourcesForTask } from "./execution-plan-resources.js";
 import type { InfrastructureRetryLifecycle } from "./infrastructure-retry.js";
 import { recordLocalDockerProcessExit, recordLocalDockerProcessStart, releaseLocalDockerProcessRecord } from "./local-docker-provider.js";
 import type { ExecutePlannedHarborOptions } from "./planned-execution.js";
@@ -32,6 +32,7 @@ export async function beginPlannedInfrastructureRetry(input: {
       evalId: options.evalId,
       workItem: item,
       maxParallelism: options.plan.max_parallelism,
+      isolatedSameTaskAttempts: options.isolatedSameTaskAttempts === true,
       ...(options.signal ? { signal: options.signal } : {}),
     });
     if (permit) options.sink.emit({
@@ -100,6 +101,7 @@ function retryLifecycle(
     collisionDomainId: options.worker.collisionDomainId,
     reservation: item.reservation,
     mainLimits: runtime.mainLimits,
+    ...(runtime.verifierLimits ? { verifierLimits: runtime.verifierLimits } : {}),
     sidecarLimits: runtime.sidecarLimits,
     env: options.env,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -134,9 +136,11 @@ function retryLifecycle(
       return persistTrialEnvironmentImageExecution(input.backendDirectory, await observer.capture(), input.environmentImages);
     },
     backend: {
-      executionResources: resourceRequirementForTask(options.plan, taskId)?.main_limits ?? options.plan.default_trial_resources,
+      executionResources: runtime.mainLimits,
+      ...(runtime.verifierLimits ? { verifierResources: runtime.verifierLimits } : {}),
       ...(Object.keys(runtime.sidecarLimits).length > 0 ? { dockerServiceLimits: runtime.sidecarLimits } : {}),
       dockerOwnership: ownership,
+      isolatedSameTaskAttempts: options.isolatedSameTaskAttempts === true,
       resolvedImages: resolvedImageMapping(item.image_refs ?? []),
       ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
       prebuiltServiceImages: prebuiltServiceImages(input.environmentImages),

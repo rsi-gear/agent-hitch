@@ -65,6 +65,7 @@ export class Scheduler {
   }
 
   async submit(request: RunRequestInput): Promise<RunId> {
+    if (request.isolation !== undefined) throw new Error("isolated runs require a dedicated CLI worker");
     if (!this.accepting) throw new Error("daemon is shutting down");
     if (this.resources && !this.resources.canEverFit(this.runResources)) throw new Error("run resource request exceeds daemon capacity");
     const queued = await createQueuedRun({ request, runsRoot: this.runsRoot, root: this.root });

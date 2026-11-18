@@ -54,6 +54,8 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 
 运行 Harness 并等待结果。提示词也可以来自非交互 stdin。直接运行默认输出 JSONL；`--daemon` 提交给 daemon 并跟踪执行。托管 `local/…` 模型会按需启动本地推理 daemon。[运行教程](quickstart.md)。
 
+可用 `hitch run --request-file JSON --output json` 提交不超过 4 MiB 的完整请求文件，与各个 run 输入参数互斥。Codex 隔离请求可以包含生成预算。`--watch-stdin` 仅用于直接执行的隔离运行，控制器关闭 stdin 时取消。详见[隔离与计量](runs-and-evidence.md)。
+
 ### 共享 Run 参数
 
 以下参数也适用于 `hitch daemon submit`。
@@ -155,7 +157,7 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 | `hitch resources request OPERATION [--input JSON_FILE]` | 在选定的 `--root` 下调用资源 API，始终返回 JSON。输入文件提供该操作的请求对象；省略时传入 `{}`。 |
 | `hitch resources legacy-export --ref DATASET_OR_SELECTION --output NEW_DIRECTORY` | 显式物化为具有新身份的旧协议数据集；目标目录必须尚不存在。 |
 
-操作包括 `capabilities`、`configure`、`inspect`、`import`、`seal-task`、`seal-dataset`、`selection`、`preflight`、`pin`、`release`、`materialize`、`workspace-end`、`lease-end`、`audit`、`bundle-export` 和 `bundle-import`。资源数据集通过 v2 输入显式启用，普通 v1 数据集保持原有行为。查看和审计可以省略输入文件；审计默认 dry-run，只有请求显式设置 `apply: true` 才变更存储。
+操作包括 `capabilities`、`configure`、`inspect`、`import`、`seal-task`、`seal-dataset`、`selection`、`preflight`、`pin`、`release`、`materialize`、`workspace-end`、`lease-end`、`audit`、`bundle-export` 和 `bundle-import`。资源数据集通过 v3 输入显式启用，普通 v1 数据集保持原有行为。查看和审计可以省略输入文件；审计默认 dry-run，只有请求显式设置 `apply: true` 才变更存储。
 
 释放引用须使用原 owner 和 generation。只有执行结束且结果封存得到确认后才能结束执行工作区；超时或 Worker 失联不能证明资源可以安全释放。请求字段、固定 OCI 身份、角色隔离、离线包与恢复边界见[资源存储协议及请求示例](../../resource-storage.zh-CN.md)。
 
@@ -218,6 +220,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 | --- | --- |
 | `hitch runs list [FILTERS] [--json]` | 查询运行记录。 |
 | `hitch runs inspect RUN_ID [--json]` | 查看 Run 并校验关联轨迹证据。 |
+| `hitch runs artifacts list RUN_ID [--json]` | 校验并列出已封存本地 Docker Run 的声明产物；JSON 包含导出所需的 manifest digest。 |
+| `hitch runs artifacts export RUN_ID --manifest-digest SHA256 --out ABSOLUTE_DIRECTORY [--json]` | 导出指定清单及已校验文件。父目录必须存在；目标目录须不存在或已包含相同的完整导出。见[产物协议](../../run-output-artifacts.zh-CN.md)。 |
 | `hitch runs rebuild-index [--json]` | 从已存 Run 重建查询索引。 |
 | `hitch runs candidate RUN_ID [--context-license allowed\|denied\|unknown] [--capture-required] [--redaction-policy ID] [--json]` | 从验证过的结果包派生训练数据候选。许可默认 unknown，策略标签默认 `hitch-provider-redaction-v1`。 |
 | `hitch compare model [FILTERS] [--reference-run RUN_ID] [--json]` | 比较模型结果，并报告是否满足严格可比条件。 |

@@ -31,6 +31,7 @@ import { runEndpointRuntime, endpointPrivateCredentials } from "./endpoint-runti
 import { freezeEndpointRequest, aggregateModelUsage } from "../model-access/index.js";
 import type { ExecuteRunOptions } from "./executor-types.js";
 import { trainingHarborIdentity } from "./training-runtime.js";
+import { prepareRunIsolation, watchGuard } from "./isolation.js";
 export async function executeRun({
   runId,
   request,
@@ -52,6 +53,7 @@ export async function executeRun({
   if (trainingIdentity) normalized.model_identity = { provider: "slime-training", requested_id: normalized.model, effective_id: trainingIdentity.policy_version, identity_resolved: true };
   validateCandidateDeadline(normalized, candidateDeadlineNs);
   let endpointRuntime: Awaited<ReturnType<typeof runEndpointRuntime>> = { runtime: {}, close: async () => {}, credentials: [] };
+  let isolated: Awaited<ReturnType<typeof prepareRunIsolation>> | undefined, isolatedStopped = true;
   const endpointCredentials = await endpointPrivateCredentials(root, normalized.endpoint_binding);
   const credentialValues = [...credentialValuesFromEnv(normalized.credential_names, process.env), ...endpointCredentials];
   workspacePlan ||= await planWorkspace({ runId, sourceCwd: normalized.cwd, mode: normalized.workspace_mode, root });
@@ -174,10 +176,15 @@ export async function executeRun({
       workspace: workspaceLease.execution_workspace,
     });
     stage = "adapter_setup";
+    if (normalized.isolation) {
+      isolated = await prepareRunIsolation({ root, runId, model: normalized.model, isolation: normalized.isolation,
+        ...(normalized.generation_budget ? { limits: normalized.generation_budget } : {}) });
+      credentialValues.push(...isolated.credentials);
+    }
     const adapterState: Record<string, unknown> = {};
     const executionRequest = { ...normalized, cwd: workspaceLease.execution_workspace };
     const specification = await prepareAdapterProcess(adapter, executionRequest, artifact, resolution, runDirectory, runtimeHome,
-      endpointRuntime.runtime);
+      isolated?.runtime ?? endpointRuntime.runtime);
     processCleanup = specification.cleanup;
     if (signal?.aborted) {
       result = failureResult(runId, startedAt, "cancelled", "agent run cancelled before launch", 9);
@@ -187,7 +194,10 @@ export async function executeRun({
       workspaceLease = await markWorkspaceRunning(workspaceLease, { recordPath: workspacePath });
       const childEnvironment = harnessChildEnvironment({ parent: process.env, ...(specification.env ? { adapter: specification.env } : {}),
         cwd: workspaceLease.execution_workspace, privateCredentials: endpointRuntime.credentials, managedLocal: Boolean(normalized.endpoint_binding) || Boolean(trainingIdentity) });
-      const invocation = prepareSpawnCommand(specification.executable, specification.args);
+      // Runtime-assigned provenance; cannot be replaced by inherited/adapter env.
+      childEnvironment.HITCH_RUN_ID = runId;
+      const guarded = await isolated?.wrap(specification, workspaceLease.execution_workspace, normalized.timeout_ms);
+      const invocation = prepareSpawnCommand(guarded?.executable ?? specification.executable, guarded?.args ?? specification.args);
       const remainingMs = candidateDeadlineNs === undefined ? normalized.timeout_ms
         : Number((candidateDeadlineNs - process.hrtime.bigint()) / 1_000_000n);
       if (candidateDeadlineNs !== undefined && remainingMs <= 0) {
@@ -195,13 +205,15 @@ export async function executeRun({
       }
       child = spawn(invocation.executable, invocation.args, {
         cwd: workspaceLease.execution_workspace,
-        env: childEnvironment,
-        stdio: ["pipe", "pipe", "pipe"],
+        env: isolated ? { PATH: process.env.PATH } : childEnvironment,
+        stdio: isolated ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
       const launched = child;
+      const confirmed = isolated ? watchGuard(launched) : undefined;
+      if (isolated && launched.pid !== undefined) isolatedStopped = false;
       launched.stdin?.on("error", () => { /* Process-level error/exit determines the typed result. */ });
       onProcess?.({ child: launched });
       abortHandler = () => {
@@ -280,10 +292,15 @@ export async function executeRun({
         }, processTimeoutMs);
         timeout.unref?.();
       }
-      launched.stdin?.end(specification.input);
+      if (guarded) launched.stdin?.write(guarded.input);
+      else launched.stdin?.end(specification.input);
       const exit = await close;
+      if (confirmed) isolatedStopped = confirmed(exit);
       if (timeout) clearTimeout(timeout);
-      if (timedOut) {
+      if (isolated && (!isolatedStopped || isolated.error())) {
+        result = failureResult(runId, startedAt, isolatedStopped ? isolated.error()! : "execution_state_unknown", isolatedStopped ? "isolated model budget stopped execution" : "agent process termination is unconfirmed", 12, exit);
+        sink.emit({ type: "run.failed", status: "failed", error: result.error });
+      } else if (timedOut) {
         result = failureResult(runId, startedAt, "timed_out", "agent run timed out", 8, exit);
         sink.emit({ type: "run.failed", status: "timed_out", error: (result.error as { code: string; message: string }) });
       } else if (cancelled) {
@@ -328,6 +345,9 @@ export async function executeRun({
     onProcess?.(null);
     await processCleanup?.().catch((error) => { result = failureResult(runId, startedAt, "adapter_cleanup_failed", redactProviderText((error as Error)?.message || String(error), new Map(), credentialValues), 12); });
     await endpointRuntime.close().catch(error => { result = failureResult(runId, startedAt, (error as { code?: string }).code ?? "endpoint_evidence_failed", "endpoint request evidence could not be finalized", 12); });
+    if (isolated) {
+      await isolated.close().catch(() => { result = failureResult(runId, startedAt, "isolation_cleanup_failed", "isolated run cleanup failed", 12); });
+    }
   }
   if (workspaceLease) {
     try {
@@ -471,6 +491,7 @@ export async function executeRun({
   }
   manifest = applyEffectiveModelIdentity({ manifest, requested: normalized.model_identity, result, ...(observedEffectiveModel ? { observed: observedEffectiveModel } : {}) });
   if (normalized.endpoint_binding) { result.endpoint_binding = normalized.endpoint_binding; result.usage = await aggregateModelUsage(root, [runId]); }
+  if (normalized.isolation) { result.execution = { stopped: isolatedStopped }; result.generation_usage = isolated?.usage() ?? { model_requests: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, tokens: 0 }; }
   await atomicWriteJSON(resultPath, result);
   const terminalManifest = completedRunManifest(manifest, result as Record<string, unknown>, normalized);
   await atomicWriteJSON(manifestPath, terminalManifest);

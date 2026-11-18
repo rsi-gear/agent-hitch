@@ -24,7 +24,7 @@ import { resolvedImageMapping } from "./environment-image-planning.js";
 import { loadTrialEnvironmentImages, prebuiltTaskImage, prebuiltVerifierImage, prebuiltServiceImages, persistTrialEnvironmentImageExecution, writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import type { TrialEnvironmentImagesV1 } from "./trial-environment-evidence.js";
-import { PrioritySemaphore, assertTaskSlotPlan, workOrder, workSchedulingPriority } from "./planned-execution-support.js";
+import { PrioritySemaphore, assertTaskSlotPlan, plannedWorkEntries, workOrder, workSchedulingPriority } from "./planned-execution-support.js";
 import type { PlannedBackendRun } from "./planned-execution-support.js";
 export type { PlannedBackendRun } from "./planned-execution-support.js";
 import { harborPhaseTimingEvents } from "./harbor-phase-timings.js";
@@ -55,6 +55,8 @@ export interface ExecutePlannedHarborOptions {
   sink: EvalEventSink;
   worker: ExecutionWorkerIdentity;
   admission?: WorkItemAdmissionController;
+  /** Set only after the local runtime isolation contract has been verified. */
+  isolatedSameTaskAttempts?: boolean;
   onWorkItemState?: (workId: string, leaseId: string, state: "running" | "terminal") => Promise<void>;
   onWorkItemQueued?: (workId: string) => Promise<void>;
   dockerResourceReaper?: EvalDockerResourceReaper;
@@ -75,28 +77,14 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
   const metrics = new EvalSchedulerMetrics();
   await reconcilePersistedInitialRetryDecisions(options);
   const pendingRetriesByTask = await pendingRetryWork(options);
-  const byTask = new Map<string, BackendWorkItemV1[]>();
-  for (const item of options.plan.work_items) {
-    const taskId = item.task_ids[0] as string;
-    if (options.progress.trials.some((trial) => trial.task_id === taskId && trial.attempt === item.logical_attempt)) continue;
-    const items = byTask.get(taskId) || [];
-    items.push(item);
-    byTask.set(taskId, items);
-  }
-  for (const items of byTask.values()) items.sort((left, right) => (left.logical_attempt as number) - (right.logical_attempt as number));
   const results: PlannedBackendRun[] = [];
   const infrastructureRetryRuns: InfrastructureRetryRun[] = [];
   let stopDispatch = false;
   let executionFailure: unknown;
-  const taskIds = [...new Set([...byTask.keys(), ...pendingRetriesByTask.keys()])];
-  const taskEntries = taskIds.map((taskId) => ({
-    taskId,
-    items: byTask.get(taskId) ?? [],
-    retries: pendingRetriesByTask.get(taskId) ?? [],
-  })).sort((left, right) => workSchedulingPriority((right.items[0] ?? right.retries[0]?.item) as BackendWorkItemV1)
-    - workSchedulingPriority((left.items[0] ?? left.retries[0]?.item) as BackendWorkItemV1)
-    || Buffer.compare(Buffer.from(left.taskId), Buffer.from(right.taskId)));
-  const workResults = await Promise.allSettled(taskEntries.map(async ({ taskId, items, retries: pendingRetries }) => {
+  const isolated = options.isolatedSameTaskAttempts === true
+    && (!options.admission || options.admission.isolatedSameTaskAttempts === true);
+  const workEntries = plannedWorkEntries(options.plan, options.progress, pendingRetriesByTask, isolated);
+  const workResults = await Promise.allSettled(workEntries.map(async ({ taskId, items, retries: pendingRetries }) => {
     for (const pending of pendingRetries) {
       if (stopDispatch || options.signal?.aborted) break;
       try {
@@ -131,6 +119,7 @@ export async function executePlannedHarborTasks(options: ExecutePlannedHarborOpt
             evalId: options.evalId,
             workItem: item,
             maxParallelism: options.plan.max_parallelism,
+            isolatedSameTaskAttempts: isolated,
             ...(options.signal ? { signal: options.signal } : {}),
           });
           parentAllocationId = permit.allocationId;
@@ -372,7 +361,7 @@ async function executeLeasedWorkItem(
   const harborJobDirectory = path.join(backendDirectory, "job");
   const prebuiltImage = prebuiltTaskImage(environmentImages);
   await writeTrialEnvironmentImageEvidence(backendDirectory, taskId, environmentImages);
-  const resourceObserver = startDockerResourceObserver({ ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
+  const resourceObserver = startDockerResourceObserver({ ownership, workerId: options.worker.workerId, collisionDomainId: options.worker.collisionDomainId, reservation: item.reservation, mainLimits: runtimeResources.mainLimits, ...(runtimeResources.verifierLimits ? { verifierLimits: runtimeResources.verifierLimits } : {}), sidecarLimits: runtimeResources.sidecarLimits, env: options.env, ...(options.signal ? { signal: options.signal } : {}) });
   const refs: EvalTrialRefV1[] = [];
   const publish = async (ref: EvalTrialRefV1): Promise<void> => {
     if (ref.attempt !== logicalAttempt || ref.task_id !== taskId) {
@@ -407,8 +396,10 @@ async function executeLeasedWorkItem(
     preparedArtifact: preparedArtifactForWorkItem(options, item),
     ...(options.interactionCaptureExporter ? { modelProxy: options.interactionCaptureExporter.route } : {}),
     executionResources: runtimeResources.mainLimits,
+    ...(runtimeResources.verifierLimits ? { verifierResources: runtimeResources.verifierLimits } : {}),
     ...(Object.keys(runtimeResources.sidecarLimits).length > 0 ? { dockerServiceLimits: runtimeResources.sidecarLimits } : {}),
     dockerOwnership: ownership,
+    isolatedSameTaskAttempts: options.isolatedSameTaskAttempts === true,
     resolvedImages: resolvedImageMapping(item.image_refs ?? []),
     ...(prebuiltImage ? { prebuiltTaskImage: prebuiltImage } : {}),
     prebuiltServiceImages: prebuiltServiceImages(environmentImages),

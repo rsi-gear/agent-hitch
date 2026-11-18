@@ -54,6 +54,8 @@ hitch run --harness HARNESS_REF [--prompt TEXT | --prompt-file PATH] [RUN_OPTION
 
 Run a harness and wait for its result. Prompt input can also come from non-interactive stdin. Direct runs default to JSONL; `--daemon` submits to the daemon and follows the run. An endpoint model resolves and freezes an already deployed service at submission. [Run tutorial](quickstart.md).
 
+Use `hitch run --request-file JSON --output json` to submit a bounded 4 MiB request file instead of individual run options. An isolated Codex request can include a generation budget. `--watch-stdin` is limited to direct isolated runs and cancels when its supervising controller closes stdin. See [isolation and accounting](runs-and-evidence.md).
+
 ### Shared run options
 
 These options are also accepted by `hitch daemon submit`.
@@ -218,6 +220,8 @@ hitch worker run --server URL --registration JSON --credential-file FILE [--harb
 | --- | --- |
 | `hitch runs list [FILTERS] [--json]` | Query recorded runs. |
 | `hitch runs inspect RUN_ID [--json]` | Inspect a run and verify linked trajectory evidence. |
+| `hitch runs artifacts list RUN_ID [--json]` | Verify and list declared output artifacts from a sealed local Docker run. JSON includes the manifest digest needed for export. |
+| `hitch runs artifacts export RUN_ID --manifest-digest SHA256 --out ABSOLUTE_DIRECTORY [--json]` | Export the exact output manifest and verified files. The parent directory must exist; the destination must be absent or already contain the same complete export. See the [output artifact contract](../../run-output-artifacts.zh-CN.md). |
 | `hitch runs rebuild-index [--json]` | Rebuild derived query indexes from stored runs. |
 | `hitch runs candidate RUN_ID [--context-license allowed\|denied\|unknown] [--capture-required] [--redaction-policy ID] [--json]` | Derive a training-data candidate from a verified bundle. License defaults to unknown; the policy label defaults to `hitch-provider-redaction-v1`. |
 | `hitch compare model [FILTERS] [--reference-run RUN_ID] [--json]` | Compare model outcomes and report whether the runs meet strict comparability requirements. |

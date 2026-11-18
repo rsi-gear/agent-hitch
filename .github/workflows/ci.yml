@@ -18,10 +18,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Keep the seccomp host stable: Ubuntu 26.04 adds a bwrap AppArmor
+        # profile that blocks the pinned runtime's nested user namespace.
+        os: [ubuntu-24.04, macos-latest]
         node: [22, 24]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,18 +35,41 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/hitch-test-python"
           "$RUNNER_TEMP/hitch-test-python/bin/python" -m pip install -r test-support/requirements.txt
           echo "$RUNNER_TEMP/hitch-test-python/bin" >> "$GITHUB_PATH"
+          echo "HITCH_TEST_PYTHON=$RUNNER_TEMP/hitch-test-python/bin/python" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare isolated MLE-bench test dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/hitch-mlebench-python"
+          "$RUNNER_TEMP/hitch-mlebench-python/bin/python" -m pip install -r test-support/mlebench-requirements.txt
+          echo "KAGGLE_TEST_PYTHON=$RUNNER_TEMP/hitch-mlebench-python/bin/python" >> "$GITHUB_ENV"
+          echo "HITCH_MLEBENCH_PYTHON=$RUNNER_TEMP/hitch-mlebench-python/bin/python" >> "$GITHUB_ENV"
+          # Preserve the existing host interpreter for Harbor runtime identity tests.
+          echo "$RUNNER_TEMP/hitch-test-python/bin" >> "$GITHUB_PATH"
       - run: npm ci
+      - name: Prepare Linux isolated-run dependencies
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap socat ripgrep
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Prepare macOS isolated-run dependencies
+        if: matrix.os == 'macos-latest'
+        run: command -v rg >/dev/null || brew install ripgrep
       # The build invokes tsc with the same configuration as typecheck.
       - name: Build and typecheck
         run: npm run build
       - name: Check architecture and compiled syntax
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == 24
         run: |
           npm run check:architecture
           node dist/scripts/check-syntax.js
           npm run docs:check
       - name: Test
-        if: matrix.os != 'ubuntu-latest' || matrix.node != 24
+        if: matrix.os != 'ubuntu-24.04' || matrix.node != 24
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -57,23 +82,31 @@ jobs:
                 tests+=("$file")
               fi
             done
-            node --test --test-timeout=120000 "${tests[@]}"
+            # The controller runtime now includes isolation dependencies. Allow
+            # the 51-case eval integration file to finish on hosted macOS CPUs.
+            node --test --test-timeout=180000 "${tests[@]}"
           else
-            npm test
+            # Match macOS for the complete eval integration file on hosted CPUs.
+            node --test --test-timeout=180000 dist/test/*.test.js
           fi
       - name: Test with coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == 24
         run: npm run coverage
+      - name: Standard MLE-bench task contracts
+        run: node --test benchmark-packages/kaggle/tests/*.test.mjs
+      - name: Standalone MLE-bench package
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == 24
+        run: node scripts/check-mlebench-package.mjs
       - name: Packaged harness canary
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         run: node dist/scripts/canary-packaged-harness.js
       - name: External endpoint canary without Python or CUDA
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         run: node dist/scripts/canary-external-endpoint.js
-      - if: matrix.os != 'ubuntu-latest' || matrix.node != 24
+      - if: matrix.os != 'ubuntu-24.04' || matrix.node != 24
         run: npm pack --dry-run
       - name: Release validation smoke test
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        if: matrix.os == 'ubuntu-24.04' && matrix.node == 24
         run: |
           PREFIX="$(mktemp -d)"
           npm pack --pack-destination "$PREFIX"

@@ -32,9 +32,11 @@ test("CLI advertises bounded trajectory capabilities", () => {
   assert.equal(result.status, 0, result.stderr || undefined);
   assert.deepEqual(JSON.parse(result.stdout), {
     schema_version: "1",
+    isolated_agent_run: "1", generation_budget: "1", isolated_harnesses: ["codex"],
     trajectory_analysis: "1",
     trajectory_events_page: "1",
     verifier_evidence: "1",
+    run_output_artifacts: "1", run_output_artifact_backends: ["local-docker"],
     verifier_diagnostic_pages: "1",
     training_external_binding: "1", exact_policy_tokens: "1", training_policy_fencing: "1",
     training_harnesses: ["training-tool"], training_gpu_validation: "pending",

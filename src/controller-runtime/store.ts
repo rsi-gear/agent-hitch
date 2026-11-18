@@ -133,7 +133,7 @@ async function promoteStagedRuntime(paths: StatePaths, staging: StagedRuntime): 
   }
   if (promoted) {
     const manifest = await loadManifest(destination);
-    await applyReadOnlyPermissions(destination, manifest.entrypoints.cli.path);
+    await applyReadOnlyPermissions(destination, new Set(manifest.files.filter(file => file.executable).map(file => file.path)));
     // Verify the promoted tree a second time before it can be used.
     await verifyRuntimePayload(path.join(destination, "payload"), manifest);
     return {
@@ -174,7 +174,7 @@ async function pathExists(file: string): Promise<boolean> {
   }
 }
 
-async function applyReadOnlyPermissions(directory: string, cliEntrypoint: string): Promise<void> {
+async function applyReadOnlyPermissions(directory: string, executablePaths: Set<string>): Promise<void> {
   if (process.platform === "win32") return;
   const stack: string[] = [directory];
   while (stack.length > 0) {
@@ -186,10 +186,9 @@ async function applyReadOnlyPermissions(directory: string, cliEntrypoint: string
         stack.push(absolute);
       } else if (entry.isFile()) {
         const payloadRelative = relativeToPayload(directory, absolute);
-        // Only the declared CLI entrypoint becomes executable (0555); sibling
-        // files such as .map sources stay read-only (0444) (spec §4.5).
-        const isEntrypoint = payloadRelative === cliEntrypoint;
-        await chmod(absolute, isEntrypoint ? 0o555 : 0o444);
+        // Preserve the manifest's executable helpers as well as the CLI.
+        // Source maps and other data stay read-only and non-executable.
+        await chmod(absolute, executablePaths.has(payloadRelative) ? 0o555 : 0o444);
       }
     }
     await chmod(current, 0o555);

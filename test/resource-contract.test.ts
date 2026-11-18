@@ -9,7 +9,7 @@ test("published schemas and public cross-repository fixtures agree", async () =>
   assert.equal(canonical(parseResourceLock(f.lock)), f.lockCanonical); assert.equal(identity(f.lock.protocol, f.lock), f.lockIdentity);
   assert.deepEqual(selectResources(parseResourceDataset(f.dataset), ["case-1"]), parseResourceSelection(f.selection)); assert.deepEqual(parseTree(f.tree), f.tree);
   const ajv = new Ajv({ strict: true });
-  for (const [name, value] of [["hitch-resource-lock-v1", f.lock], ["hitch-tree-v1", f.tree], ["hitch-resource-dataset-v2", f.dataset], ["hitch-resource-selection-v1", f.selection]] as const) {
+  for (const [name, value] of [["hitch-resource-lock-v1", f.lock], ["hitch-tree-v1", f.tree], ["hitch-resource-dataset-v3", f.dataset], ["hitch-resource-selection-v1", f.selection]] as const) {
     const validate = ajv.compile(JSON.parse(await readFile(`docs/schemas/${name}.schema.json`, "utf8")));
     assert.equal(validate(value), true, JSON.stringify(validate.errors)); assert.equal(validate({ ...value, unknown: true }), false);
   }

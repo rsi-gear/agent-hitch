@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Match CI's tested seccomp host; newer Ubuntu AppArmor profiles block
+    # the pinned isolation runtime's nested user namespace.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -25,6 +27,13 @@ jobs:
 
       # check builds dist/ and runs the full repository checks once.
       - run: npm ci
+      - name: Prepare Linux isolated-run dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap socat ripgrep
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: npm run check
 
       - name: Validate release metadata

@@ -1,3 +1,4 @@
+import { capturedPayload, modelFromPayload, usageFromPayload } from "./payload.js";
 import { endpointRequest } from "./endpoint-contract.js";
 import { randomBytes } from "node:crypto";
 import http from "node:http";
@@ -12,6 +13,7 @@ import { ModelInteractionCapture } from "./capture.js";
 import { loadInteractionCapture } from "./records.js";
 import { bindTrainingRun, trainingProxyIdentity } from "./training.js";
 import type { RegisteredTrainingEndpoint } from "./training.js";
+import { GenerationBudgetMeter, type GenerationLimits } from "./generation-budget.js";
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_REWRITE_BYTES = 32 * 1024 * 1024;
@@ -20,6 +22,12 @@ const RUN_ID = /^run_[a-f0-9]{32}$/;
 type Provider = "openai" | "anthropic";
 
 export interface HostModelProxyOptions {
+  upstreamProxyEnv?: Record<string, string>;
+  /** Frozen allowance for the entire isolated run, including retries. */
+  generationLimits?: GenerationLimits;
+  /** Accept HTTP proxy absolute-form requests only for this fixed origin. */
+  forwardProxyOrigin?: string;
+  upstreamHeaders?: Partial<Record<Provider, Record<string, string>>>;
   captureRoot: string;
   evalId: string;
   mode: "proxy" | "hybrid";
@@ -56,6 +64,10 @@ interface CaptureEntry {
 }
 
 export class HostModelProxy {
+  readonly generationBudget: GenerationBudgetMeter | undefined;
+  private readonly forwardProxyOrigin: string | undefined;
+  private readonly upstreamHeaders: HostModelProxyOptions["upstreamHeaders"];
+  private readonly upstreamAgents: { http: http.Agent; https: https.Agent } | undefined;
   readonly route: ModelProxyRouteV1;
   readonly localBaseUrl: string;
   private readonly server: Server;
@@ -81,6 +93,15 @@ export class HostModelProxy {
   private trainingRunId: string | undefined;
 
   private constructor(input: HostModelProxyOptions, server: Server, token: string, port: number) {
+    this.generationBudget = input.generationLimits ? new GenerationBudgetMeter(input.generationLimits) : undefined;
+    this.forwardProxyOrigin = input.forwardProxyOrigin;
+    this.upstreamHeaders = input.upstreamHeaders;
+    if (input.upstreamProxyEnv && Object.keys(input.upstreamProxyEnv).length) {
+      const [major, minor] = process.versions.node.split('.').map(Number);
+      if (!(major! > 24 || (major === 24 && minor! >= 5) || (major === 22 && minor! >= 21))) throw new TypeError("upstream proxy requires Node 22.21+ or 24.5+");
+      const options: http.AgentOptions & { proxyEnv: Record<string, string> } = { proxyEnv: input.upstreamProxyEnv };
+      this.upstreamAgents = { http: new http.Agent(options), https: new https.Agent(options) };
+    }
     this.server = server;
     this.externalEndpointBinding = input.externalEndpointBinding;
     this.token = token;
@@ -104,6 +125,7 @@ export class HostModelProxy {
     this.credentials = [...new Set([
       ...credentialValues(env),
       ...(input.credentialValues ?? []),
+      ...Object.values(input.upstreamHeaders ?? {}).flatMap(headers => Object.values(headers)),
       ...Object.values(this.upstreamAuthorizations).filter((value): value is string => typeof value === "string"),
     ])];
     const advertised = input.advertisedHost ?? "host.docker.internal";
@@ -144,6 +166,8 @@ export class HostModelProxy {
       proxy.forwards.add(forwarding);
       void forwarding.finally(() => proxy?.forwards.delete(forwarding));
     });
+    server.on("connect", (_request, socket) => socket.end("HTTP/1.1 403 Forbidden\r\n\r\n"));
+    server.on("upgrade", (_request, socket) => socket.destroy());
     const port = await listen(server, bindHost, input.listenPort ?? 0);
     try { proxy = new HostModelProxy(input, server, token, port); }
     catch (error) { await new Promise<void>(resolve => server.close(() => resolve())); throw error; }
@@ -172,6 +196,7 @@ export class HostModelProxy {
     if (this.closed) return;
     this.closed = true;
     for (const request of this.requests) request.destroy(new Error("task model access closed"));
+    this.upstreamAgents?.http.destroy(); this.upstreamAgents?.https.destroy();
     this.server.closeAllConnections();
     await closeServer(this.server);
     await Promise.allSettled([...this.forwards]);
@@ -180,8 +205,18 @@ export class HostModelProxy {
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (this.forwardProxyOrigin) {
+      let url: URL;
+      try { url = new URL(request.url ?? ""); } catch { return respondJSON(response, 403, { error: { code: "model_proxy_route_denied" } }); }
+      if (url.origin !== this.forwardProxyOrigin || url.username || url.password || url.search || url.hash)
+        return respondJSON(response, 403, { error: { code: "model_proxy_route_denied" } });
+      request.url = url.pathname;
+    }
     const route = parseRoute(request.url, this.token);
     if (!route) return respondJSON(response, 404, { error: { code: "model_proxy_route_not_found" } });
+    if (this.generationBudget && (route.kind !== "provider" || route.provider !== "openai" ||
+        request.method !== "POST" || route.tail.replace(/^\/v1\//, "/") !== "/responses"))
+      return respondJSON(response, 400, { error: { code: "generation_budget_route_unsupported" } });
     if (this.externalEndpointBinding && route.kind === "provider" && (route.provider !== "openai" || request.method !== "POST"
       || route.tail.replace(/^\/v1\//, "/") !== (this.externalEndpointBinding.api === "responses" ? "/responses" : "/chat/completions"))) {
       return respondJSON(response, 404, { error: { code: "endpoint_protocol_unsupported" } });
@@ -208,7 +243,12 @@ export class HostModelProxy {
     upstream.search = request.url?.includes("?") ? `?${request.url.split("?").slice(1).join("?")}` : "";
     const startedAt = new Date().toISOString();
     const wireModel = this.upstreamWireModels[provider];
-    const rewritten = wireModel ? rewriteModelRequest(await readBoundedRequest(request), request.headers["content-type"], wireModel, this.externalEndpointBinding) : undefined;
+    let rewritten = wireModel ? rewriteModelRequest(await readBoundedRequest(request), request.headers["content-type"], wireModel, this.externalEndpointBinding) : undefined;
+    if (this.generationBudget) {
+      if (!rewritten) throw new TypeError("budgeted proxy requires a frozen model");
+      const admitted = this.generationBudget.reserve(JSON.parse(rewritten.forwarded.toString("utf8")));
+      rewritten = { ...rewritten, forwarded: Buffer.from(JSON.stringify(admitted)) };
+    }
     const requestCapture = rewritten
       ? Promise.resolve({ body: rewritten.original, truncated: false })
       : captureStream(request);
@@ -216,10 +256,12 @@ export class HostModelProxy {
     const headers = forwardedHeaders(request.headers, upstream);
     const authorization = this.upstreamAuthorizations[provider];
     if (authorization !== undefined) { delete headers.authorization; if (authorization) headers.authorization = authorization; }
+    Object.assign(headers, this.upstreamHeaders?.[provider]);
     if (rewritten) headers["content-length"] = String(rewritten.forwarded.length);
     const upstreamRequest = transport.request(upstream, {
       method: request.method,
       headers,
+      ...(this.upstreamAgents ? { agent: upstream.protocol === "https:" ? this.upstreamAgents.https : this.upstreamAgents.http } : {}),
     });
     this.requests.add(upstreamRequest);
     const cancelUpstream = () => { if (!response.writableEnded) upstreamRequest.destroy(new Error("model client disconnected")); };
@@ -232,11 +274,15 @@ export class HostModelProxy {
         response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders(upstreamResponse.headers));
         const responseCapture = captureStream(upstreamResponse);
         void responseCapture.catch(() => undefined);
-        upstreamResponse.pipe(response);
+        // Codex closes its SSE reader as soon as response.completed arrives.
+        // Budgeted responses are bounded and released only after settlement,
+        // so that normal early close cannot discard usage or race another call.
+        if (!this.generationBudget) upstreamResponse.pipe(response, { end: false });
         upstreamResponse.once("end", () => {
           Promise.all([requestCapture, responseCapture]).then(async ([requestBody, responseBody]) => {
             const requestValue = capturedPayload(requestBody, request.headers["content-type"]);
             const responseValue = capturedPayload(responseBody, upstreamResponse.headers["content-type"]);
+            this.generationBudget?.settle(responseValue);
             const requestedModel = modelFromPayload(requestValue) ?? "unknown";
             await entry.capture.record({
               requestedModel,
@@ -252,6 +298,10 @@ export class HostModelProxy {
               response: responseValue,
               responseHeaders: stringHeaders(upstreamResponse.headers),
             });
+            // Expose completion only after the reservation has been settled;
+            // the next harness request cannot race the previous usage report.
+            if (this.generationBudget && responseBody.truncated) throw new Error("budgeted model response exceeds capture limit");
+            response.end(this.generationBudget ? responseBody.body : undefined);
             resolve();
           }).catch(reject);
         });
@@ -260,6 +310,7 @@ export class HostModelProxy {
       upstreamRequest.once("error", reject);
       request.once("aborted", () => upstreamRequest.destroy(new Error("model proxy client request aborted")));
     }).catch(async (error) => {
+      this.generationBudget?.fail();
       await entry.capture.record({
         requestedModel: "unknown",
         endpoint: upstream.toString(),
@@ -391,49 +442,6 @@ function captureStream(stream: IncomingMessage): Promise<{ body: Buffer; truncat
     stream.once("end", () => resolve({ body: Buffer.concat(chunks), truncated }));
     stream.once("error", reject);
   });
-}
-
-function capturedPayload(value: { body: Buffer; truncated: boolean }, contentType: string | string[] | undefined): unknown {
-  const type = Array.isArray(contentType) ? contentType[0] : contentType;
-  const text = value.body.toString("utf8");
-  if (!value.truncated && type?.toLowerCase().includes("json")) {
-    try { return JSON.parse(text) as unknown; } catch { /* Preserve malformed provider payload as text. */ }
-  }
-  return { encoding: "utf8", body: text, truncated: value.truncated };
-}
-
-function modelFromPayload(value: unknown): string | null {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    const nested = (value as Record<string, unknown>).response;
-    if (nested && typeof nested === "object") return modelFromPayload(nested);
-    const model = (value as Record<string, unknown>).model;
-    if (typeof model === "string" && model) return model;
-    const body = (value as Record<string, unknown>).body;
-    if (typeof body === "string") {
-      for (const line of body.split(/\r?\n/).reverse()) {
-        const payload = line.startsWith("data:") ? line.slice(5).trim() : line.trim();
-        if (!payload || payload === "[DONE]") continue;
-        try { const nested = modelFromPayload(JSON.parse(payload) as unknown); if (nested) return nested; } catch { /* Continue. */ }
-      }
-    }
-  }
-  return null;
-}
-
-function usageFromPayload(value: unknown): Record<string, number> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (record.response && typeof record.response === "object") return usageFromPayload(record.response);
-  if (typeof record.body === "string") {
-    for (const line of record.body.split(/\r?\n/).reverse()) {
-      if (!line.startsWith("data:")) continue;
-      try { const usage = usageFromPayload(JSON.parse(line.slice(5).trim())); if (usage) return usage; } catch { /* SSE sentinel. */ }
-    }
-  }
-  const usage = record.usage;
-  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
-  const numbers = Object.entries(usage).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0);
-  return numbers.length > 0 ? Object.fromEntries(numbers) : null;
 }
 
 function credentialValues(env: NodeJS.ProcessEnv): string[] {

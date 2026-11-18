@@ -140,7 +140,7 @@ export async function verifierOnlyEvalRerun(input: Input): Promise<EvalRerunResu
     const heartbeat = setInterval(() => { void lease.heartbeat().catch(() => controller.abort()); }, 10_000);
     heartbeat.unref();
     const observer = startDockerResourceObserver({ ownership, workerId: "local-regrade", collisionDomainId: "local-docker", reservation: work.reservation,
-      mainLimits: resources.mainLimits, sidecarLimits: resources.sidecarLimits, env, intervalMs: 1000 });
+      mainLimits: resources.mainLimits, ...(resources.verifierLimits ? { verifierLimits: resources.verifierLimits } : {}), sidecarLimits: resources.sidecarLimits, env, intervalMs: 1000 });
     const trialName = `${slot.task_id.slice(0, 32)}__regrade_${assessmentId.slice(-12)}`;
     let config: Record<string, unknown>;
     let outcome: Awaited<ReturnType<typeof runHarborRegrade>>;

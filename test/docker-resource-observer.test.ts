@@ -32,6 +32,7 @@ test("Docker observer records bounded peak memory, OOM, and exit evidence withou
         inspections += 1;
         return { stdout: JSON.stringify([{
           Id: id, Name: "/task-main", Image: `sha256:${"f".repeat(64)}`, Config: { Labels: labels, Image: `registry.test/task@sha256:${"a".repeat(64)}` },
+          HostConfig: { NanoCpus: 1_000_000_000, Memory: 256 * 1024 ** 2 },
           State: inspections === 1
             ? { Running: true, OOMKilled: false, ExitCode: 0, Error: "" }
             : { Running: false, OOMKilled: true, ExitCode: 137, Error: "" },
@@ -51,6 +52,8 @@ test("Docker observer records bounded peak memory, OOM, and exit evidence withou
   assert.equal(terminal.observed.containers[0]?.image_config_digest, `sha256:${"f".repeat(64)}`);
   assert.equal(terminal.observed.containers[0]?.service, "main");
   assert.equal(terminal.observed.containers[0]?.role, "verifier");
+  assert.equal(terminal.observed.containers[0]?.cpu_limit_millis, 1000);
+  assert.equal(terminal.observed.containers[0]?.memory_limit_bytes, 256 * 1024 ** 2);
   assert.deepEqual(terminal.observed.unavailable_fields, ["cpu_time_ns"]);
   assert.deepEqual(parseExecutionEvidence(terminal), terminal);
 });

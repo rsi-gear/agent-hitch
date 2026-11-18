@@ -1,5 +1,5 @@
 import path from "node:path";
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { HitchError, atomicWriteJSON, ensureDir, fingerprintExecutable, readJSON } from "../../foundation/index.js";
 import { locateHarbor } from "./tools.js";
 import { invokeHarbor } from "./process.js";
@@ -80,6 +80,14 @@ export async function runHarborRegrade(input: {
   const located = await locateHarbor({ root: input.root, explicit: input.harborExecutable, env: input.env });
   // Pin the SDK contract; upgrading this gate requires a regrade parity test.
   if (!located.executable || located.version !== "0.21.0") throw new HitchError("verifier-only requires Harbor 0.21.0", { code: "eval_verifier_only_backend_unavailable", exitCode: 2 });
+  const environmentKwargs = (input.config.environment as { kwargs?: Record<string, unknown> } | undefined)?.kwargs;
+  if (environmentKwargs?.hitch_verifier_resource_limits !== undefined || environmentKwargs?.hitch_isolated_attempts === true) {
+    const provider = await readFile(path.join(input.runtimeDirectory, "payload/integrations/harbor/hitch_harbor_environment.py"), "utf8");
+    if ((environmentKwargs.hitch_verifier_resource_limits !== undefined && !provider.includes("hitch_verifier_resource_limits"))
+      || (environmentKwargs.hitch_isolated_attempts === true && !provider.includes("hitch_isolated_attempts"))) {
+      throw new HitchError("frozen runtime cannot enforce the verifier resource/isolation contract", { code: "eval_verifier_only_backend_unavailable", exitCode: 2 });
+    }
+  }
   await ensureDir(input.directory);
   const configPath = path.join(input.directory, "regrade.json");
   await atomicWriteJSON(configPath, input.config);

@@ -30,3 +30,5 @@ export type { TrainingDataCandidatePolicyV1 } from "./training-candidate.js";
 export { inspectBenchmarkPhaseGroup, sealBenchmarkPhaseGroup, readBenchmarkPhaseGroup } from "./phase-group.js";
 export type { BenchmarkPhaseGroupV1, BenchmarkPhaseGroupRefV1 } from "../domain/index.js";
 export { loadTrainingEvidence } from "./training-evidence.js";
+export { RUN_OUTPUT_ARTIFACT_CAPABILITY, sealRunOutputArtifacts, parseRunOutputManifest, listRunOutputArtifacts, exportRunOutputArtifacts } from "./output-artifacts.js";
+export type { RunOutputIdentity, RunOutputEntryV1, RunOutputManifestV1, RunOutputExportV1 } from "./output-artifacts.js";

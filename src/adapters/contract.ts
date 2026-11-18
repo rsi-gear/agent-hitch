@@ -40,6 +40,12 @@ export interface AdapterRequest {
 }
 
 export interface AdapterProcessRuntime {
+  isolated?: {
+    provider_url: string;
+    output_schema?: string;
+    output_file?: string;
+    reasoning_effort?: string;
+  };
   entrypoint_integrity?: string | undefined;
   observed_version?: string | undefined;
   run_directory?: string;

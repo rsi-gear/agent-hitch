@@ -369,10 +369,23 @@ async function evalWatchCommand(args: string[], root: string): Promise<void> {
 }
 
 async function evalCancelCommand(args: string[], root: string): Promise<void> {
+  takeFlag(args, "--json"); // Cancellation already returns JSON; accept the explicit format flag.
   const evalIdValue = args.shift();
   if (!evalIdValue) throw invalidInput("eval cancel requires an eval ID");
   const evalId = validateEvalId(evalIdValue);
   assertNoArgs(args);
+  const evaluation = await inspectEval(evalId, { root });
+  // Direct evals have no daemon control record. Once their terminal result and
+  // released leases prove that no work remains, cancellation is an idempotent
+  // observation. Preserve the original result instead of rewriting it cancelled.
+  if (!evaluation.control && !evaluation.submission && !evaluation.pending_reruns
+    && evaluation.result?.eval_id === evalId
+    && ["succeeded", "failed", "cancelled"].includes(String(evaluation.result.status))
+    && typeof evaluation.result.completed_at === "string" && Number.isFinite(Date.parse(evaluation.result.completed_at))
+    && evaluation.leases.every((lease) => lease.state === "released")) {
+    process.stdout.write(`${JSON.stringify({ schema_version: SCHEMA_VERSION, eval_id: evalId, status: evaluation.result.status }, null, 2)}\n`);
+    return;
+  }
   const result = await (await daemonClient(root)).request(`/v1/evals/${evalId}/cancel`, { method: "POST" });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

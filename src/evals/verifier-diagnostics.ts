@@ -192,6 +192,7 @@ export function primaryVerifierReward(trial: Record<string, unknown>): number | 
 export function verifierObservation(input: {
   trial: Record<string, unknown>;
   runStatus: string;
+  candidateErrorCode?: string | undefined;
   trajectoryStatus: "valid" | "missing" | "corrupt";
   recordStatus: "valid" | "corrupt";
   verifierRef: string | undefined;
@@ -199,7 +200,16 @@ export function verifierObservation(input: {
 }): RunObservationV1 {
   const ref = input.verifierRef ? { verifier_result_ref: input.verifierRef } : {};
   if (input.runStatus === "cancelled") return { status: "invalid", invalid_reason: "cancelled", ...ref };
-  if (input.runStatus !== "succeeded" || input.recordStatus !== "valid") return { status: "invalid", invalid_reason: "infrastructure_failure", ...ref };
+  if (input.recordStatus !== "valid") return { status: "invalid", invalid_reason: "infrastructure_failure", ...ref };
+  // A verified candidate result carries its own terminal failure. Missing
+  // verifier evidence after that failure is not an infrastructure incident
+  // and must not authorize another model sample or manufacture a quality zero.
+  if (input.runStatus !== "succeeded") {
+    const reason = input.runStatus === "failed" && input.candidateErrorCode === "agent_failed" ? "agent_failed"
+      : input.runStatus === "timed_out" && input.candidateErrorCode === "timed_out" ? "agent_timed_out"
+      : "infrastructure_failure";
+    return { status: "invalid", invalid_reason: reason, ...ref };
+  }
   if (input.trajectoryStatus !== "valid") return { status: "invalid", invalid_reason: "trajectory_missing_or_corrupt", ...ref };
   if (input.infrastructure) return { status: "invalid", invalid_reason: "verifier_infrastructure_failure", ...ref };
   // The candidate run and trajectory are already sealed and valid. A later

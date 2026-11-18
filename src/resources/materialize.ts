@@ -1,10 +1,11 @@
+import { preserveParameterEvaluationInputs } from "../parameters/index.js";
 import { roleDirectory, validateRoleContexts } from "./role-context.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { appendFile, chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, statfs, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { durableWriteJSON as atomicWriteJSON } from "../foundation/index.js";
-import { canonical, identity, object, parseStrictJson, type Binding, type Consumer, type Resource } from "./protocol.js";
+import { canonical, hash, identity, object, parseStrictJson, type Binding, type Consumer, type Resource } from "./protocol.js";
 import { ResourceStore, validateLease, type ResourceLease } from "./store.js";
 import { preflightResourceTask, parseResourceTask, taskClosureLock, type ResourcePlan } from "./tasks.js";
 
@@ -59,6 +60,9 @@ export async function materializeResourceTask(store: ResourceStore, plan: Resour
         }
       };
       await tree(plan.task.sourceTree, destination);
+      // Parameters identify the original task, before image transport aliases or
+      // plan labels alter runtime descriptors. Existing compiler copies stay put.
+      await preserveParameterEvaluationInputs(destination, (target, bytes, executable) => file(hash(bytes), target, bytes.length, executable));
       await validateRoleContexts(destination, plan.task.lock.bindings, plan.platform, checked.closure.images);
       for (const binding of plan.task.lock.bindings) {
         if (binding.use === "environment-image") continue;

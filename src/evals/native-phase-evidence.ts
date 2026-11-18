@@ -14,7 +14,7 @@ import { importTrialInteractionCapture } from "./interaction-capture-import.js";
 import { writeTrialExecutionEvidence } from "./trial-execution-evidence.js";
 import { writeTrialEnvironmentImageEvidence } from "./trial-environment-evidence.js";
 import { writeEvalTrialPublication } from "./trial-publication.js";
-import { verifiedNativeDescriptor, verifiedTrialManifest } from "./benchmark-verification.js";
+import { resourceNativeDescriptor, verifiedNativeDescriptor, verifiedTrialManifest } from "./benchmark-verification.js";
 import { loadBenchmarkAdapterManifest } from "./benchmark-adapter-manifest.js";
 
 type RecordValue = Record<string, unknown>;
@@ -59,8 +59,11 @@ export async function nativePhaseDescriptor(input: ImportEvalRunOptions, taskId:
     if (!manifest || manifest.benchmark.id !== input.benchmarkId || manifest.dataset_digest !== input.benchmarkRevision) return null;
     const snapshot = input.verifiedTrialBenchmark
       ? verifiedNativeDescriptor(input.verifiedTrialBenchmark, binding!) : undefined;
+    const resourceTask = manifest.schema_version === "3" ? manifest.tasks.find(task => task.task_id === taskId) : undefined;
+    if (manifest.schema_version === "3" && !resourceTask) throw new Error("native descriptor task is absent from resource manifest");
     const descriptor = (snapshot === undefined
-      ? await readJSON<RecordValue | null>(path.join(input.request.dataset, taskId, ".hitch-benchmark.json"), null) : snapshot) as RecordValue | null;
+      ? resourceTask ? await resourceNativeDescriptor(input.root, resourceTask)
+        : await readJSON<RecordValue | null>(path.join(input.request.dataset, taskId, ".hitch-benchmark.json"), null) : snapshot) as RecordValue | null;
     if (!descriptor) return null;
     const task = descriptor.task as BenchmarkTaskV1;
     if (task?.driver?.kind !== "tool-server" || !task.driver.config.native_phases) return null;

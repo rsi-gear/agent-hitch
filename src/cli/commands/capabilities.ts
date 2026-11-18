@@ -6,10 +6,15 @@ export function capabilitiesCommand(args: string[]): void {
   assertNoArgs(args);
   const capabilities = {
     schema_version: SCHEMA_VERSION,
+    isolated_agent_run: "1",
+    generation_budget: "1",
+    isolated_harnesses: ["codex"],
     trajectory_analysis: "1",
     trajectory_events_page: "1",
     verifier_evidence: "1",
     verifier_diagnostic_pages: "1",
+    run_output_artifacts: "1",
+    run_output_artifact_backends: ["local-docker"],
     training_external_binding: "1",
     external_endpoint_binding: "1",
     endpoint_evaluation_attempts: "1",

@@ -7,6 +7,7 @@ import { finishResourceWorkspace, type WorkspaceEvidence } from "./materialize.j
 import { ResourceStore } from "./store.js";
 import { parseResourceTask, taskClosureLock } from "./tasks.js";
 import { exportResourceResultProof } from "./result-retention.js";
+import { operatorDockerObservation } from './operator-observation.js';
 
 export interface ResourceExecutionEvidence extends WorkspaceEvidence { executionEnded: boolean; resultSealed?: boolean; preflightPlanDigest: string }
 export async function readResourceEvidence(file: string): Promise<ResourceExecutionEvidence | undefined> {
@@ -30,7 +31,16 @@ export async function sealResourceEvidence(input: { store: ResourceStore; file: 
     value = JSON.parse((await runCommand(docker, ["image", "inspect", "--format", "{{json .}}", digest], { timeoutMs: 30_000 })).stdout);
     if (value!.Id !== digest || !Array.isArray(value!.RootFS?.Layers)) throw new Error("observed OCI config identity mismatch"); cache.set(digest, value!); return value!;
   };
-  for (const container of input.execution?.observed.containers ?? []) {
+  let containers = input.execution?.observed.containers ?? [];
+  const recoveryFile = process.env.HITCH_OPERATOR_RESOURCE_OBSERVATION_FILE;
+  if (!input.execution && recoveryFile) {
+    const manifest = JSON.parse(await readFile(path.join(input.runDirectory, 'manifest.json'), 'utf8'));
+    const proof = JSON.parse(await readFile(recoveryFile, 'utf8'));
+    containers = operatorDockerObservation(proof, { runId: input.owner.replace(/^run:/, ''),
+      evalId: manifest.parent?.eval_id, trialId: manifest.parent?.trial_id, planDigest: evidence.plan.digest });
+    await atomicWriteJSON(path.join(input.runDirectory, 'resource.observation-recovery.json'), proof);
+  }
+  for (const container of containers) {
     if (!container.image_config_digest) continue;
     const image = await inspect(container.image_config_digest), labels = image.Config?.Labels ?? {};
     if (labels["dev.hitch.resource.plan"] !== evidence.plan.digest) continue;

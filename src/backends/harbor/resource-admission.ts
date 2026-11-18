@@ -1,6 +1,7 @@
 import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import { atomicWriteJSON } from "../../foundation/index.js";
-import { configuredResourceStore, materializeResourceTask, readResourceEvidence, preflightResourceInput, readResourceInput } from "../../resources/index.js";
+import { configuredResourceStore, materializeResourceTask, readResourceEvidence, preflightResourceInput, readResourceInput, sealResourceEvidence, confirmResourceResultSealed, reclaimResourceExecution } from "../../resources/index.js";
 import type { HarborBackendResult, RunHarborBackendOptions } from "./backend.js";
 
 export async function withResourceAdmission(options: RunHarborBackendOptions, run: (options: RunHarborBackendOptions) => Promise<HarborBackendResult>): Promise<HarborBackendResult> {
@@ -12,9 +13,28 @@ export async function withResourceAdmission(options: RunHarborBackendOptions, ru
   const workspace = await materializeResourceTask(store, plan, { owner: `${owner}:${plan.task.task_id}`, generation: 1, policy: config.workspace, ...(options.signal ? { signal: options.signal } : {}) });
   const evidencePath = path.join(options.backendDirectory ?? options.evalDirectory, "resource-evidence.json");
   await atomicWriteJSON(evidencePath, { ...workspace, preflightPlanDigest: preflight!.planDigest, executionEnded: false });
-  // The small descriptor is fixed in CAS; each physical attempt receives fresh
-  // role contexts. Unknown/failed attempts retain their lease for recovery.
-  const result = await run({ ...options, request: { ...options.request, dataset: path.dirname(workspace.taskDirectory) } });
-  await atomicWriteJSON(evidencePath, { ...await readResourceEvidence(evidencePath), executionEnded: true });
-  return result;
+  // backend.started is emitted before Harbor is invoked. Beyond that boundary,
+  // a thrown error may leave a live process, so retain its workspace for recovery.
+  let executionRequested = false;
+  try {
+    const result = await run({ ...options, request: { ...options.request, dataset: path.dirname(workspace.taskDirectory) },
+      emit: event => { if (event.type === "eval.backend.started") executionRequested = true; options.emit?.(event); } });
+    await atomicWriteJSON(evidencePath, { ...await readResourceEvidence(evidencePath), executionEnded: true });
+    return result;
+  } catch (error) {
+    if (!executionRequested) {
+      const directory = path.join(path.dirname(evidencePath), "resource-admission-failure");
+      await mkdir(directory, { recursive: true });
+      await sealResourceEvidence({ store, file: evidencePath, runDirectory: directory,
+        owner: `${owner}:preparation:${workspace.id}`, taskId: plan.task.task_id, requireObserved: false });
+      await atomicWriteJSON(path.join(directory, "result.json"), {
+        protocol: "hitch-resource-preparation-failure@1", evalId: options.evalId, workspaceId: workspace.id,
+        executionStarted: false, code: "backend_preparation_failed",
+      });
+      await atomicWriteJSON(evidencePath, { ...await readResourceEvidence(evidencePath), executionEnded: true });
+      await confirmResourceResultSealed(evidencePath);
+      await reclaimResourceExecution(store, evidencePath, true);
+    }
+    throw error;
+  }
 }

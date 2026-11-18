@@ -1,0 +1,152 @@
+{
+  "schema_version": "2",
+  "kind": "gear-harbor-benchmark",
+  "resource_protocol": "hitch-resource-lock@1",
+  "benchmark": {
+    "id": "analysis-single-step",
+    "revision": "sha256:b2491f61d779dbc976472369045017f5863f655eb1e107b69cb0b1844b52516a"
+  },
+  "adapter": {
+    "id": "analysis-tabular",
+    "revision": "sha256:87f0f45d6395e41f1442343cc7d65a121189cd96b229ca4a9fff6651566cfaa7",
+    "output_protocol": "gear-harbor-eval-result-v1"
+  },
+  "scoring": {
+    "total_score": {
+      "source_metric": "total_score",
+      "direction": "maximize",
+      "range": [
+        0,
+        1
+      ],
+      "reducer": "task-macro-mean"
+    }
+  },
+  "raw_metrics": {
+    "schema_version": "1",
+    "metrics": [
+      {
+        "id": "valid_output",
+        "revision": "sha256:87f0f45d6395e41f1442343cc7d65a121189cd96b229ca4a9fff6651566cfaa7",
+        "unit": "ratio",
+        "direction": "maximize",
+        "range": {
+          "min": 0,
+          "max": 1
+        },
+        "granularity": "trial",
+        "repetitionReducer": "mean",
+        "taskReducer": "weighted-mean",
+        "comparisonPrecision": 1e-9,
+        "source": {
+          "path": "verifier.result.rewards.valid_output",
+          "extractor": "number-v1"
+        }
+      },
+      {
+        "id": "completed",
+        "revision": "sha256:87f0f45d6395e41f1442343cc7d65a121189cd96b229ca4a9fff6651566cfaa7",
+        "unit": "ratio",
+        "direction": "maximize",
+        "range": {
+          "min": 0,
+          "max": 1
+        },
+        "granularity": "trial",
+        "repetitionReducer": "mean",
+        "taskReducer": "weighted-mean",
+        "comparisonPrecision": 1e-9,
+        "source": {
+          "path": "verifier.result.rewards.completed",
+          "extractor": "number-v1"
+        }
+      }
+    ]
+  },
+  "execution": {
+    "backend": "harbor-role-context@1",
+    "resolver": "hitch-resource-resolver@1",
+    "platform": "linux/arm64"
+  },
+  "required_capabilities": [
+    "harbor-role-context@1",
+    "bounded-tmpfs@1"
+  ],
+  "tasks": [
+    {
+      "task_id": "analysis-b2491f61d779dbc976472369",
+      "sourceTree": {
+        "kind": "tree",
+        "format": "hitch-tree@1",
+        "manifestDigest": "sha256:c6f9cbd054fec4e298cd34e5e28d9875083e05483624dececa844441f895ce4a"
+      },
+      "source_task_digest": "sha256:b95b9db7e086196427f22f4afd074cd4d1547468e88b88fa5f8c2e1691cca5e2",
+      "resource_closure_digest": "sha256:f4f8b8c50129018cf42c7316ce8b6a64826baf96e762be13fb26b96fd8f76147",
+      "task_digest": "sha256:91930b6b1548431eafcb965ba45a858f494ebbfc061d7ded8c647532c159152f",
+      "lock": {
+        "protocol": "hitch-resource-lock@1",
+        "resources": {
+          "candidate": {
+            "kind": "tree",
+            "format": "hitch-tree@1",
+            "manifestDigest": "sha256:a78dbd7bb542996ff78b2f2bb3b600ab124080d3092b78badd27774f9199fb50"
+          },
+          "runtime": {
+            "kind": "oci-image",
+            "manifestDigest": "sha256:6965b4ceca603f9fe9b0fd00a46bcfe8b684c2052bea79ae08a57ace0dcc7e14",
+            "platform": "linux/arm64"
+          },
+          "verifier": {
+            "kind": "tree",
+            "format": "hitch-tree@1",
+            "manifestDigest": "sha256:7403db886289e4aad81d9171f0967089b11e762bd6017fa0047d118c0cc6a911"
+          }
+        },
+        "bindings": [
+          {
+            "resource": "candidate",
+            "consumer": {
+              "role": "candidate"
+            },
+            "use": "input-tree",
+            "target": "data",
+            "access": "private-copy"
+          },
+          {
+            "resource": "runtime",
+            "consumer": {
+              "role": "candidate"
+            },
+            "use": "environment-image",
+            "slot": "build-base"
+          },
+          {
+            "resource": "verifier",
+            "consumer": {
+              "role": "verifier"
+            },
+            "use": "input-tree",
+            "target": "private",
+            "access": "private-copy"
+          },
+          {
+            "resource": "runtime",
+            "consumer": {
+              "role": "verifier"
+            },
+            "use": "environment-image",
+            "slot": "build-base"
+          }
+        ],
+        "requiredCapabilities": [
+          "tree@1",
+          "oci-image@1",
+          "private-copy@1",
+          "harbor-role-context@1",
+          "bounded-tmpfs@1"
+        ]
+      }
+    }
+  ],
+  "dataset_digest": "sha256:fe0398fcc1769214e9d4561ba5d135ed5bee4a9d9ea8b424a03666bbe4416813"
+}

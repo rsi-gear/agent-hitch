@@ -16,9 +16,10 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
     throw new TypeError("execution evidence identity is invalid");
   }
   const reservation = resources(record.reservation, "execution evidence reservation");
-  const enforcedRecord = exact(record.enforced, ["main_limits", "sidecar_limits"], "execution evidence enforced limits");
+  const enforcedRecord = exact(record.enforced, ["main_limits", "sidecar_limits"], "execution evidence enforced limits", ["verifier_limits"]);
   const mainLimits = resources(enforcedRecord.main_limits, "execution evidence main limits");
   const sidecarLimits = sidecars(enforcedRecord.sidecar_limits);
+  const verifierLimits = enforcedRecord.verifier_limits === undefined ? undefined : resources(enforcedRecord.verifier_limits, "execution evidence verifier limits");
   const observedRecord = exact(record.observed, [
     "status", "started_at", "collected_at", "sample_count", "containers", "unavailable_fields", "issues",
   ], "execution evidence observation");
@@ -46,7 +47,7 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
     lease_epoch: record.lease_epoch as number,
     task_id: record.task_id as string,
     reservation,
-    enforced: { main_limits: mainLimits, sidecar_limits: sidecarLimits },
+    enforced: { main_limits: mainLimits, ...(verifierLimits ? { verifier_limits: verifierLimits } : {}), sidecar_limits: sidecarLimits },
     observed: {
       status: observedRecord.status,
       started_at: observedRecord.started_at as string,
@@ -61,7 +62,7 @@ export function parseExecutionEvidence(value: unknown): ExecutionEvidenceV1 {
 
 function container(value: unknown, index: number): ObservedContainerResourcesV1 {
   const record = exact(value, ["container_id", "first_observed_at", "last_observed_at"], `execution evidence container ${index}`, [
-    "name", "service", "role", "image_reference", "image_config_digest", "peak_memory_bytes", "cpu_time_ns", "oom_killed", "exit_code", "exit_reason",
+    "cpu_limit_millis", "memory_limit_bytes", "name", "service", "role", "image_reference", "image_config_digest", "peak_memory_bytes", "cpu_time_ns", "oom_killed", "exit_code", "exit_reason",
   ]);
   if (typeof record.container_id !== "string" || !/^[a-f0-9]{12,64}$/.test(record.container_id)
     || (record.name !== undefined && !validText(record.name, 256)) || !timestamp(record.first_observed_at) || !timestamp(record.last_observed_at)
@@ -70,6 +71,7 @@ function container(value: unknown, index: number): ObservedContainerResourcesV1 
     || (record.role !== undefined && record.role !== "candidate" && record.role !== "verifier")
     || (record.image_config_digest !== undefined && (typeof record.image_config_digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(record.image_config_digest)))
     || Date.parse(record.last_observed_at as string) < Date.parse(record.first_observed_at as string)
+    || ["cpu_limit_millis", "memory_limit_bytes"].some(key => record[key] !== undefined && (!Number.isSafeInteger(record[key]) || Number(record[key]) < 0))
     || (record.peak_memory_bytes !== undefined && (!Number.isSafeInteger(record.peak_memory_bytes) || (record.peak_memory_bytes as number) < 0))
     || (record.cpu_time_ns !== undefined && (!Number.isSafeInteger(record.cpu_time_ns) || (record.cpu_time_ns as number) < 0))
     || (record.oom_killed !== undefined && typeof record.oom_killed !== "boolean")
